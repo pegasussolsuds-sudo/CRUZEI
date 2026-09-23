@@ -37,7 +37,18 @@ async function bootstrap() {
 
   // Fotos de dev — servidas direto do disco (prod: R2/CDN)
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d', immutable: true }));
+  // CORS aberto nas fotos: o mapa (WebView) desenha avatares em canvas e precisa de imagens não-tainted
+  app.use(
+    '/uploads',
+    express.static(UPLOAD_DIR, {
+      maxAge: '7d',
+      immutable: true,
+      setHeaders: (res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      },
+    }),
+  );
 
   app.enableShutdownHooks();
 

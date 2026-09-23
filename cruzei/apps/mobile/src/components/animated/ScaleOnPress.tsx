@@ -1,5 +1,5 @@
 import React, { useCallback } from 'react';
-import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
+import { Platform, Pressable, type PressableProps, type ViewStyle } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { scale as scaleTokens, spring } from '@cruzei/ui-mobile';
@@ -11,13 +11,14 @@ export interface ScaleOnPressProps extends Omit<PressableProps, 'style'> {
   pressedScale?: number;
   /** vibração leve ao soltar (default true) */
   haptic?: boolean;
-  /** brilho: aumenta a sombra/elevação enquanto pressionado */
+  /** brilho: aumenta a sombra (iOS) / elevação (Android) enquanto pressionado */
   glowColor?: string;
   style?: ViewStyle | ViewStyle[];
 }
 
 /**
  * Pressable com feedback de escala (spring) e glow opcional — o "tap" do design system (100ms).
+ * Só valores numéricos são animados (shadowOffset fica estático) pra não disparar o aviso do RN.
  * Ex.: <ScaleOnPress onPress={...} glowColor="#7FFF00"><Text>Começar</Text></ScaleOnPress>
  */
 export function ScaleOnPress({
@@ -33,18 +34,21 @@ export function ScaleOnPress({
 }: ScaleOnPressProps) {
   const pressed = useSharedValue(0);
 
-  const animated = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 - (1 - pressedScale) * pressed.value }],
-    ...(glowColor
-      ? {
-          shadowColor: glowColor,
-          shadowOpacity: 0.25 + 0.5 * pressed.value,
-          shadowRadius: 8 + 16 * pressed.value,
-          shadowOffset: { width: 0, height: 0 },
-          elevation: 4 + 10 * pressed.value,
-        }
-      : {}),
-  }));
+  const animated = useAnimatedStyle(() => {
+    const base: Record<string, unknown> = { transform: [{ scale: 1 - (1 - pressedScale) * pressed.value }] };
+    if (glowColor) {
+      if (Platform.OS === 'android') base.elevation = 4 + 10 * pressed.value;
+      else {
+        base.shadowOpacity = 0.25 + 0.5 * pressed.value;
+        base.shadowRadius = 8 + 16 * pressed.value;
+      }
+    }
+    return base;
+  });
+
+  const staticGlow: ViewStyle | undefined = glowColor
+    ? { shadowColor: glowColor, shadowOffset: { width: 0, height: 0 } }
+    : undefined;
 
   const handleIn = useCallback<NonNullable<PressableProps['onPressIn']>>(
     (e) => {
@@ -69,7 +73,7 @@ export function ScaleOnPress({
   );
 
   return (
-    <AnimatedPressable {...rest} onPressIn={handleIn} onPressOut={handleOut} onPress={handlePress} style={[style, animated]}>
+    <AnimatedPressable {...rest} onPressIn={handleIn} onPressOut={handleOut} onPress={handlePress} style={[staticGlow, style, animated]}>
       {children}
     </AnimatedPressable>
   );

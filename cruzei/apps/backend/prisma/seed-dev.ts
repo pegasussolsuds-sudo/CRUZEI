@@ -43,14 +43,28 @@ async function main() {
   const qty = Math.min(FAKES.length, Number(process.argv[4] ?? 6));
   if (Number.isNaN(lat) || Number.isNaN(lng)) throw new Error('lat/lng inválidos');
 
+  // POI de demo a ~180m do ponto: vira hotspot (>= 5 pessoas) pra exercitar o pulso no mapa
+  const hotLat = lat + 180 / 111_320;
+  const hotLng = lng + 120 / (111_320 * Math.cos((lat * Math.PI) / 180));
+  const hotPoi = await prisma.pOI.upsert({
+    where: { source_externalId: { source: 'dev', externalId: 'dev-bar-do-leo' } },
+    update: { latitude: hotLat, longitude: hotLng },
+    create: { externalId: 'dev-bar-do-leo', name: 'Bar do Léo', category: 'bar', latitude: hotLat, longitude: hotLng, city: 'Uberlândia', state: 'MG', source: 'dev', isPartner: true, partnerOffer: 'Chopp em dobro pra quem cruzou aqui' },
+  });
+  console.log('🍺 POI de demo', hotPoi.name, '@', hotLat.toFixed(5), hotLng.toFixed(5));
+
   for (let i = 0; i < qty; i++) {
     const f = FAKES[i];
     const phone = `+5534900000${String(i + 1).padStart(3, '0')}`;
     // espalha num raio de ~800m
+    // os 5 primeiros ficam 'no Bar do Léo' (raio ~40m) → hotspot; o resto espalhado num raio de ~800m
+    const atBar = i < 5;
     const angle = (i / qty) * Math.PI * 2;
-    const dist = 150 + (i * 97) % 650;
-    const uLat = lat + (dist * Math.cos(angle)) / 111_320;
-    const uLng = lng + (dist * Math.sin(angle)) / (111_320 * Math.cos((lat * Math.PI) / 180));
+    const dist = atBar ? 15 + i * 6 : 150 + (i * 97) % 650;
+    const baseLat = atBar ? hotLat : lat;
+    const baseLng = atBar ? hotLng : lng;
+    const uLat = baseLat + (dist * Math.cos(angle)) / 111_320;
+    const uLng = baseLng + (dist * Math.sin(angle)) / (111_320 * Math.cos((lat * Math.PI) / 180));
 
     const user = await prisma.user.upsert({
       where: { phone },
@@ -85,7 +99,7 @@ async function main() {
     const geohash = encodeGeohash(uLat, uLng, 5);
     const ttl = 18_000;
     await prisma.location.create({
-      data: { userId: user.id, latitude: uLat, longitude: uLng, geohash, expiresAt: new Date(Date.now() + ttl * 1000) },
+      data: { userId: user.id, latitude: uLat, longitude: uLng, geohash, expiresAt: new Date(Date.now() + ttl * 1000), poiId: atBar ? hotPoi.id : undefined },
     });
     const p = redis.pipeline();
     p.zadd(`presence:${geohash}`, Date.now(), user.id);

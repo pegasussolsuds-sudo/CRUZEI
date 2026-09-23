@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -9,6 +10,7 @@ import { useAuthStore } from './stores/auth';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket } from './services/socket';
 import { useAppFonts } from './theme/fonts';
+import { SplashScreen } from './screens/auth/SplashScreen';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,6 +24,8 @@ export function App() {
   const user = useAuthStore((s) => s.user);
   const setAnonymous = useLocationStore((s) => s.setAnonymous);
   const fontsReady = useAppFonts();
+  const isLoading = useAuthStore((s) => s.isLoading);
+  const [splashDone, setSplashDone] = useState(false);
 
   useEffect(() => {
     hydrate();
@@ -59,8 +63,8 @@ export function App() {
     };
   }, [isAuthenticated]);
 
-  // segura o splash nativo até as fontes estarem prontas (evita troca de fonte visível)
-  if (!fontsReady) return null;
+  // enquanto as fontes carregam, fundo escuro (mesma cor da splash) em vez de tela branca
+  if (!fontsReady) return <View style={{ flex: 1, backgroundColor: '#0A0A1A' }} />;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -68,6 +72,8 @@ export function App() {
         <SafeAreaProvider>
           <StatusBar style={isAuthenticated ? 'dark' : 'light'} />
           <RootNavigator />
+          {/* Splash animada por cima até a sessão hidratar (mín. 2.4s) */}
+          {!splashDone ? <SplashScreen ready={!isLoading} onFinish={() => setSplashDone(true)} /> : null}
         </SafeAreaProvider>
       </QueryClientProvider>
     </GestureHandlerRootView>

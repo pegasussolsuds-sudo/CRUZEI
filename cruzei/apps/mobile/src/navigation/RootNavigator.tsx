@@ -4,7 +4,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View } from 'react-native';
 
 import { useAuthStore } from '../stores/auth';
-import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
+import { WelcomeScreen } from '../screens/auth/WelcomeScreen';
 import { LoginScreen } from '../screens/onboarding/LoginScreen';
 import { RegisterScreen } from '../screens/onboarding/RegisterScreen';
 import { MainTabs } from './MainTabs';
@@ -41,7 +41,7 @@ export function RootNavigator() {
       >
         {!isAuthenticated ? (
           <>
-            <Stack.Screen name="Onboarding" component={OnboardingScreen} options={{ headerShown: false }} />
+            <Stack.Screen name="Onboarding" component={WelcomeScreen} options={{ headerShown: false }} />
             <Stack.Screen name="Login" component={LoginScreen} options={{ title: 'Entrar' }} />
             <Stack.Screen name="Register" component={RegisterScreen} options={{ title: 'Criar conta' }} />
           </>
