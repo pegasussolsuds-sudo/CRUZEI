@@ -8,6 +8,7 @@ import { RootNavigator } from './navigation/RootNavigator';
 import { useAuthStore } from './stores/auth';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket } from './services/socket';
+import { useAppFonts } from './theme/fonts';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,6 +21,7 @@ export function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const user = useAuthStore((s) => s.user);
   const setAnonymous = useLocationStore((s) => s.setAnonymous);
+  const fontsReady = useAppFonts();
 
   useEffect(() => {
     hydrate();
@@ -56,6 +58,9 @@ export function App() {
       active = false;
     };
   }, [isAuthenticated]);
+
+  // segura o splash nativo até as fontes estarem prontas (evita troca de fonte visível)
+  if (!fontsReady) return null;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
