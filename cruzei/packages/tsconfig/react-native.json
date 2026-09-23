@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "React Native",
+  "extends": "./base.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ES2022"],
+    "jsx": "react-native",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowJs": true,
+    "noEmit": true,
+    "incremental": true,
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "types": ["react-native", "jest"]
+  },
+  "include": ["src/**/*", "index.js", "__tests__/**/*"]
+}

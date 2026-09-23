@@ -1,0 +1,68 @@
+// Location + Presence
+
+export interface LocationPoint {
+  latitude: number;
+  longitude: number;
+  accuracyMeters?: number;
+}
+
+export interface LocationUpdatePayload extends LocationPoint {
+  poiId?: number;
+  city?: string;
+  state?: string;
+}
+
+export interface LocationUpdateResponse {
+  geohash: string;
+  nearbyUsers: number;
+  nearbyPois: number;
+  expiresAt: string; // ISO
+}
+
+export interface NearbyUser {
+  id: string;
+  name: string; // "anônimo" quando isAnonymous
+  age: number | null; // null quando anônimo ou showAge=false
+  mainPhotoUrl: string | null;
+  latitude: number;
+  longitude: number;
+  distanceM: number;
+  recordedAt: string | null;
+  isAnonymous: boolean;
+  isOnline: boolean;
+  premiumTier: 'free' | 'premium' | 'premium_plus';
+  isVerified: boolean;
+  isBoosted: boolean; // boost ativo → destaque no mapa
+  poi?: { id: number; name: string } | null;
+}
+
+export interface Hotspot {
+  poi: {
+    id: number;
+    name: string;
+    category: string;
+    rating: number | null;
+  };
+  userCount: number;
+  latitude: number;
+  longitude: number;
+  lastUserAt: string;
+}
+
+export interface POI {
+  id: number;
+  name: string;
+  category: string;
+  subcategory: string | null;
+  latitude: number;
+  longitude: number;
+  address: string | null;
+  city?: string | null;
+  state?: string | null;
+  rating: number | null;
+  totalRatings: number;
+  isPartner: boolean;
+  partnerOffer: string | null;
+  userCount?: number;
+  distanceM?: number;
+}

@@ -1,0 +1,40 @@
+# Cruzei — dev stack local
+# Sobe Postgres+PostGIS e Redis. Backend se conecta via DATABASE_URL/REDIS_URL.
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.4-alpine
+    container_name: cruzei-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cruzei
+      POSTGRES_PASSWORD: cruzei_dev
+      POSTGRES_DB: cruzei
+    ports:
+      - "5544:5432"
+    volumes:
+      - cruzei-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cruzei -d cruzei"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: cruzei-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - cruzei-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cruzei-pg-data:
+  cruzei-redis-data:

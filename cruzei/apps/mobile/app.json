@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "Cruzei",
+    "slug": "cruzei",
+    "scheme": "cruzei",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0A0A1A"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cruzei.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Cruzei mostra quem esteve no mesmo lugar que você. Sem essa permissão o mapa não funciona.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Cruzei atualiza sua localização em segundo plano pra te mostrar cruzamentos.",
+        "NSCameraUsageDescription": "Cruzei usa a câmera pra foto de perfil e verificação.",
+        "NSPhotoLibraryUsageDescription": "Cruzei precisa da sua galeria pra você adicionar fotos.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.cruzei.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#7FFF00"
+      }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Cruzei atualiza sua localização em segundo plano pra te mostrar cruzamentos."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Cruzei precisa da sua galeria pra você adicionar fotos.",
+          "cameraPermission": "Cruzei usa a câmera pra foto de perfil."
+        }
+      ]
+    ],
+    "extra": {
+      "apiBaseUrl": "http://192.168.1.8:3000/v1",
+      "wsUrl": "ws://192.168.1.8:3000",
+      "mapboxToken": ""
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "extends": "@cruzei/tsconfig/nestjs.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*", "test/**/*", "prisma/**/*"]
+}

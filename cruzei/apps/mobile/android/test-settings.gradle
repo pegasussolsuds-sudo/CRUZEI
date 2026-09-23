@@ -1,0 +1,8 @@
+// Test no settings.gradle context
+println "SETTINGS ROOT: " + rootDir
+try {
+    def path = ['node', '--print', "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()
+    println "RESOLVE: " + path
+} catch (Exception e) {
+    println "ERROR: " + e.class.name + ": " + e.message
+}

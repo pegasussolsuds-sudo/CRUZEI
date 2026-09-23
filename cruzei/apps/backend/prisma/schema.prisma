@@ -1,0 +1,488 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String                @id @default(uuid()) @db.Uuid
+  phone                 String?               @unique @db.VarChar(20)
+  email                 String?               @unique @db.VarChar(255)
+  passwordHash          String?               @map("password_hash") @db.VarChar(255)
+  name                  String                @db.VarChar(50)
+  birthDate             DateTime              @map("birth_date") @db.Date
+  gender                Gender
+  orientation           Orientation?
+  lookingFor            LookingFor            @default(unspecified) @map("looking_for")
+  bio                   String?
+  premiumTier           PremiumTier           @default(free) @map("premium_tier")
+  premiumExpiresAt      DateTime?             @map("premium_expires_at")
+  visibilityMode        VisibilityMode        @default(anonymous) @map("visibility_mode")
+  isPaused              Boolean               @default(false) @map("is_paused")
+  pausedUntil           DateTime?             @map("paused_until") @db.Timestamp(6)
+  showDistance          Boolean               @default(true) @map("show_distance")
+  showAge               Boolean               @default(true) @map("show_age")
+  isVerified            Boolean               @default(false) @map("is_verified")
+  verifiedAt            DateTime?             @map("verified_at") @db.Timestamp(6)
+  verificationSelfieUrl String?               @map("verification_selfie_url") @db.VarChar(500)
+  profileCompleteness   Int                   @default(0) @map("profile_completeness") @db.SmallInt
+  dataRetentionUntil    DateTime?             @map("data_retention_until") @db.Date
+  deletedAt             DateTime?             @map("deleted_at") @db.Timestamp(6)
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamp(6)
+  lastActiveAt          DateTime              @default(now()) @map("last_active_at") @db.Timestamp(6)
+  auditLogs             AuditLog[]
+  blocksReceived        Block[]               @relation("Blocked")
+  blocksMade            Block[]               @relation("Blocker")
+  boosts                Boost[]
+  dataDeletionRequests  DataDeletionRequest[]
+  deviceTokens          DeviceToken[]
+  likesReceived         Like[]                @relation("Liked")
+  likesSent             Like[]                @relation("Liker")
+  locations             Location[]
+  matchesAsA            Match[]               @relation("UserA")
+  matchesAsB            Match[]               @relation("UserB")
+  messagesSent          Message[]             @relation("MessageSender")
+  notifications         Notification[]
+  photos                Photo[]
+  poisCheckins          PoisCheckin[]
+  reportsReceived       Report[]              @relation("Reported")
+  reportsMade           Report[]              @relation("Reporter")
+  reportsReviewed       Report[]              @relation("Reviewer")
+  seals                 Seal[]
+  subscriptions         Subscription[]
+  userInterests         UserInterest[]
+  visitsReceived        Visit[]               @relation("Visited")
+  visitsSent            Visit[]               @relation("Visitor")
+
+  @@index([phone], map: "idx_users_phone")
+  @@index([email], map: "idx_users_email")
+  @@index([premiumTier], map: "idx_users_premium")
+  @@index([lastActiveAt(sort: Desc)], map: "idx_users_active")
+  @@map("users")
+}
+
+model Photo {
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  url            String      @db.VarChar(500)
+  thumbnailUrl   String?     @map("thumbnail_url") @db.VarChar(500)
+  orderIndex     Int         @default(0) @map("order_index") @db.SmallInt
+  isMain         Boolean     @default(false) @map("is_main")
+  source         PhotoSource @default(user_upload)
+  isFaceVerified Boolean     @default(false) @map("is_face_verified")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orderIndex])
+  @@index([userId, orderIndex])
+  @@map("photos")
+}
+
+model Interest {
+  id       Int            @id @default(autoincrement()) @db.SmallInt
+  name     String         @unique @db.VarChar(50)
+  icon     String?        @db.VarChar(50)
+  category String?        @db.VarChar(50)
+  users    UserInterest[]
+
+  @@map("interests")
+}
+
+model UserInterest {
+  userId     String   @map("user_id") @db.Uuid
+  interestId Int      @map("interest_id") @db.SmallInt
+  interest   Interest @relation(fields: [interestId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, interestId])
+  @@index([userId])
+  @@map("user_interests")
+}
+
+model Location {
+  id             BigInt   @id @default(autoincrement())
+  userId         String   @map("user_id") @db.Uuid
+  latitude       Decimal  @db.Decimal(10, 8)
+  longitude      Decimal  @db.Decimal(11, 8)
+  geohash        String   @db.VarChar(12)
+  accuracyMeters Int?     @map("accuracy_meters") @db.SmallInt
+  poiId          BigInt?  @map("poi_id")
+  city           String?  @db.VarChar(100)
+  state          String?  @db.Char(2)
+  recordedAt     DateTime @default(now()) @map("recorded_at") @db.Timestamp(6)
+  expiresAt      DateTime @default(now()) @map("expires_at") @db.Timestamp(6)
+  isAnonymous    Boolean  @default(false) @map("is_anonymous")
+  poi            POI?     @relation("PoiLocations", fields: [poiId], references: [id])
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recordedAt(sort: Desc)])
+  @@index([geohash])
+  @@index([expiresAt])
+  @@index([city])
+  @@map("locations")
+}
+
+model POI {
+  id             BigInt        @id @default(autoincrement())
+  externalId     String?       @map("external_id") @db.VarChar(100)
+  name           String        @db.VarChar(255)
+  category       POICategory
+  subcategory    String?       @db.VarChar(50)
+  latitude       Decimal       @db.Decimal(10, 8)
+  longitude      Decimal       @db.Decimal(11, 8)
+  address        String?       @db.VarChar(500)
+  city           String?       @db.VarChar(100)
+  state          String?       @db.Char(2)
+  neighborhood   String?       @db.VarChar(100)
+  rating         Decimal?      @db.Decimal(2, 1)
+  totalRatings   Int           @default(0) @map("total_ratings")
+  phone          String?       @db.VarChar(30)
+  website        String?       @db.VarChar(500)
+  hours          Json?
+  photos         Json?
+  isPartner      Boolean       @default(false) @map("is_partner")
+  partnerOffer   String?       @map("partner_offer")
+  source         String        @default("osm") @db.VarChar(20)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamp(6)
+  lastVerifiedAt DateTime?     @map("last_verified_at") @db.Timestamp(6)
+  locations      Location[]    @relation("PoiLocations")
+  matches        Match[]       @relation("PoiMatches")
+  checkins       PoisCheckin[]
+
+  @@unique([source, externalId])
+  @@index([category])
+  @@index([city, category])
+  @@index([isPartner])
+  @@map("pois")
+}
+
+model PoisCheckin {
+  id              BigInt   @id @default(autoincrement())
+  userId          String   @map("user_id") @db.Uuid
+  poiId           BigInt   @map("poi_id")
+  checkinAt       DateTime @default(now()) @map("checkin_at") @db.Timestamp(6)
+  durationMinutes Int?     @map("duration_minutes")
+  poi             POI      @relation(fields: [poiId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, checkinAt(sort: Desc)])
+  @@index([poiId, checkinAt(sort: Desc)])
+  @@map("pois_checkins")
+}
+
+model Like {
+  id         BigInt   @id @default(autoincrement())
+  likerId    String   @map("liker_id") @db.Uuid
+  likedId    String   @map("liked_id") @db.Uuid
+  isSuper    Boolean  @default(false) @map("is_super")
+  locationId BigInt?  @map("location_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  liked      User     @relation("Liked", fields: [likedId], references: [id], onDelete: Cascade)
+  liker      User     @relation("Liker", fields: [likerId], references: [id], onDelete: Cascade)
+
+  @@unique([likerId, likedId])
+  @@index([likerId, createdAt(sort: Desc)])
+  @@index([likedId, createdAt(sort: Desc)])
+  @@map("likes")
+}
+
+model Match {
+  id            String      @id @default(uuid()) @db.Uuid
+  userAId       String      @map("user_a_id") @db.Uuid
+  userBId       String      @map("user_b_id") @db.Uuid
+  locationId    BigInt?     @map("location_id")
+  poiId         BigInt?     @map("poi_id")
+  contextText   String?     @map("context_text") @db.VarChar(255)
+  status        MatchStatus @default(active)
+  chatExpiresAt DateTime    @default(now()) @map("chat_expires_at") @db.Timestamp(6)
+  lastRenewedAt DateTime    @default(now()) @map("last_renewed_at") @db.Timestamp(6)
+  matchedAt     DateTime    @default(now()) @map("matched_at") @db.Timestamp(6)
+  poi           POI?        @relation("PoiMatches", fields: [poiId], references: [id])
+  userA         User        @relation("UserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB         User        @relation("UserB", fields: [userBId], references: [id], onDelete: Cascade)
+  messages      Message[]
+
+  @@unique([userAId, userBId])
+  @@index([userAId, matchedAt(sort: Desc)])
+  @@index([userBId, matchedAt(sort: Desc)])
+  @@index([status])
+  @@index([chatExpiresAt])
+  @@map("matches")
+}
+
+model Message {
+  id             String      @id @default(uuid()) @db.Uuid
+  matchId        String      @map("match_id") @db.Uuid
+  senderId       String      @map("sender_id") @db.Uuid
+  content        String?
+  messageType    MessageType @default(text) @map("message_type")
+  mediaUrl       String?     @map("media_url") @db.VarChar(500)
+  mediaExpiresAt DateTime?   @map("media_expires_at") @db.Timestamp(6)
+  lat            Decimal?    @db.Decimal(10, 8)
+  lng            Decimal?    @db.Decimal(11, 8)
+  readAt         DateTime?   @map("read_at") @db.Timestamp(6)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
+  expiresAt      DateTime?   @map("expires_at") @db.Timestamp(6)
+  match          Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  sender         User        @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([matchId, createdAt(sort: Desc)])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model Visit {
+  id           BigInt   @id @default(autoincrement())
+  visitorId    String   @map("visitor_id") @db.Uuid
+  visitedId    String   @map("visited_id") @db.Uuid
+  wasAnonymous Boolean  @default(false) @map("was_anonymous")
+  visitedAt    DateTime @default(now()) @map("visited_at") @db.Timestamp(6)
+  visited      User     @relation("Visited", fields: [visitedId], references: [id], onDelete: Cascade)
+  visitor      User     @relation("Visitor", fields: [visitorId], references: [id], onDelete: Cascade)
+
+  @@unique([visitorId, visitedId, visitedAt])
+  @@index([visitorId, visitedAt(sort: Desc)])
+  @@index([visitedId, visitedAt(sort: Desc)])
+  @@map("visits")
+}
+
+model Seal {
+  id          BigInt    @id @default(autoincrement())
+  userId      String    @map("user_id") @db.Uuid
+  sealType    SealType  @map("seal_type")
+  progress    Int       @default(1)
+  target      Int       @default(5)
+  isCompleted Boolean   @default(false) @map("is_completed")
+  earnedAt    DateTime? @map("earned_at") @db.Timestamp(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamp(6)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sealType])
+  @@index([userId])
+  @@map("seals")
+}
+
+model Block {
+  id        BigInt   @id @default(autoincrement())
+  blockerId String   @map("blocker_id") @db.Uuid
+  blockedId String   @map("blocked_id") @db.Uuid
+  reason    String?  @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
+  @@map("blocks")
+}
+
+model Report {
+  id           String       @id @default(uuid()) @db.Uuid
+  reporterId   String?      @map("reporter_id") @db.Uuid
+  reportedId   String       @map("reported_id") @db.Uuid
+  reason       String       @db.VarChar(50)
+  description  String?
+  evidenceUrls Json?        @map("evidence_urls")
+  status       ReportStatus @default(pending)
+  reviewedBy   String?      @map("reviewed_by") @db.Uuid
+  reviewedAt   DateTime?    @map("reviewed_at") @db.Timestamp(6)
+  actionTaken  String?      @map("action_taken") @db.VarChar(255)
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
+  reported     User         @relation("Reported", fields: [reportedId], references: [id], onDelete: Cascade)
+  reporter     User?        @relation("Reporter", fields: [reporterId], references: [id])
+  reviewer     User?        @relation("Reviewer", fields: [reviewedBy], references: [id])
+
+  @@index([status])
+  @@index([reportedId])
+  @@map("reports")
+}
+
+model Subscription {
+  id                    String      @id @default(uuid()) @db.Uuid
+  userId                String      @map("user_id") @db.Uuid
+  tier                  PremiumTier
+  platform              String      @db.VarChar(20)
+  originalTransactionId String?     @map("original_transaction_id") @db.VarChar(255)
+  productId             String?     @map("product_id") @db.VarChar(100)
+  startsAt              DateTime    @map("starts_at") @db.Timestamp(6)
+  expiresAt             DateTime    @map("expires_at") @db.Timestamp(6)
+  cancelledAt           DateTime?   @map("cancelled_at") @db.Timestamp(6)
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
+  updatedAt             DateTime    @updatedAt @map("updated_at") @db.Timestamp(6)
+  user                  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt(sort: Desc)])
+  @@map("subscriptions")
+}
+
+model Boost {
+  id                     String   @id @default(uuid()) @db.Uuid
+  userId                 String   @map("user_id") @db.Uuid
+  startedAt              DateTime @default(now()) @map("started_at") @db.Timestamp(6)
+  expiresAt              DateTime @map("expires_at") @db.Timestamp(6)
+  latitude               Decimal? @db.Decimal(10, 8)
+  longitude              Decimal? @db.Decimal(11, 8)
+  visibilityRadiusMeters Int      @default(5000) @map("visibility_radius_meters")
+  amountCents            Int      @map("amount_cents")
+  platform               String   @db.VarChar(20)
+  transactionId          String?  @map("transaction_id") @db.VarChar(255)
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("boosts")
+}
+
+model Notification {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  type           String    @db.VarChar(50)
+  title          String    @db.VarChar(255)
+  body           String?
+  data           Json?
+  readAt         DateTime? @map("read_at") @db.Timestamp(6)
+  sentAt         DateTime  @default(now()) @map("sent_at") @db.Timestamp(6)
+  deliveryStatus String    @default("pending") @map("delivery_status") @db.VarChar(20)
+  retryCount     Int       @default(0) @map("retry_count") @db.SmallInt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, sentAt(sort: Desc)])
+  @@index([userId])
+  @@map("notifications")
+}
+
+model DeviceToken {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  token      String   @db.VarChar(500)
+  platform   String   @db.VarChar(20)
+  appVersion String?  @map("app_version") @db.VarChar(20)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  lastUsedAt DateTime @default(now()) @map("last_used_at") @db.Timestamp(6)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([platform, token])
+  @@index([userId])
+  @@map("device_tokens")
+}
+
+model DataDeletionRequest {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  requestedAt  DateTime  @default(now()) @map("requested_at") @db.Timestamp(6)
+  scheduledFor DateTime  @map("scheduled_for") @db.Timestamp(6)
+  completedAt  DateTime? @map("completed_at") @db.Timestamp(6)
+  status       String    @default("pending") @db.VarChar(20)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("data_deletion_requests")
+}
+
+model AuditLog {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?  @map("user_id") @db.Uuid
+  action    String   @db.VarChar(100)
+  metadata  Json?
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_log")
+}
+
+enum Gender {
+  female
+  male
+  non_binary
+  other
+}
+
+enum Orientation {
+  heterosexual
+  homosexual
+  bisexual
+  pansexual
+  other
+}
+
+enum LookingFor {
+  relationship
+  casual
+  friendship
+  network
+  unspecified
+}
+
+enum PremiumTier {
+  free
+  premium
+  premium_plus
+}
+
+enum VisibilityMode {
+  visible
+  anonymous
+}
+
+enum MatchStatus {
+  active
+  expired
+  unmatched
+  blocked
+}
+
+enum MessageType {
+  text
+  photo_temp
+  audio
+  location
+  gif
+  system
+}
+
+enum PhotoSource {
+  user_upload
+  facebook
+  instagram
+}
+
+enum SealType {
+  cafeteria
+  praieiro
+  roadie
+  boemio
+  natureza
+  urbanista
+  fitness
+  cultural
+}
+
+enum ReportStatus {
+  pending
+  reviewing
+  resolved
+  dismissed
+}
+
+enum POICategory {
+  bar
+  restaurant
+  cafe
+  park
+  shopping
+  gym
+  show
+  event
+  beach
+  museum
+  other
+}

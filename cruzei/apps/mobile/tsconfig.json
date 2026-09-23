@@ -1,0 +1,11 @@
+{
+  "extends": "@cruzei/tsconfig/react-native.json",
+  "compilerOptions": {
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "types": ["jest", "react-native", "expo"]
+  },
+  "include": ["src/**/*", "app.config.ts", "index.js"]
+}

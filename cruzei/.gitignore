@@ -1,0 +1,30 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.pem
+coverage/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+ios/Pods/
+ios/build/
+android/app/build/
+android/build/
+android/.gradle/
+*.orig
+*.tsbuildinfo
+
+# fotos de dev (uploads locais)
+apps/backend/uploads/
+
+# logs de dev
+apps/backend/backend.log
+apps/mobile/metro.log

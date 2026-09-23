@@ -1,0 +1,38 @@
+# --- dependências e builds ---
+node_modules/
+dist/
+build/
+.turbo/
+.expo/
+*.tsbuildinfo
+coverage/
+
+# --- segredos e config local (use os .env.example) ---
+.env
+.env.*
+!.env.example
+**/android/local.properties
+*.pem
+*.keystore
+!**/android/app/debug.keystore
+
+# --- android/ios ---
+**/android/app/build/
+**/android/build/
+**/android/.gradle/
+**/android/app/.cxx/
+**/ios/Pods/
+**/ios/build/
+
+# --- runtime de dev ---
+*.log
+cruzei/apps/backend/uploads/
+
+# --- sistema/editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.orig
