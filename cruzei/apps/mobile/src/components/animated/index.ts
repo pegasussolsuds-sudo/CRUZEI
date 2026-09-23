@@ -4,3 +4,7 @@ export * from './ScaleOnPress';
 export * from './Pulse';
 export * from './Glow';
 export * from './StaggerText';
+export * from './BlobBackground';
+export * from './Confetti';
+export * from './TypingDots';
+export * from './AnimatedGradient';
