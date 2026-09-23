@@ -15,6 +15,9 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  /** true logo após o cadastro: o RootNavigator abre a tela de fotos antes do mapa */
+  pendingPhotoOnboarding: boolean;
+  clearPhotoOnboarding: () => void;
   hydrate: () => Promise<void>;
   requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; devCode?: string }>;
   verifyCode: (phone: string, code: string) => Promise<{ isNew: boolean }>;
@@ -34,6 +37,11 @@ export const useAuthStore = create<AuthState>((set, get) => {
     user: null,
     isAuthenticated: false,
     isLoading: true,
+    pendingPhotoOnboarding: false,
+
+    clearPhotoOnboarding() {
+      set({ pendingPhotoOnboarding: false });
+    },
 
     async hydrate() {
       const token = await getToken();
@@ -77,7 +85,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       await setToken(res.data.token);
       await setRefreshToken(res.data.refreshToken);
       const me = await api.get('/me');
-      set({ user: me.data, isAuthenticated: true });
+      set({ user: me.data, isAuthenticated: true, pendingPhotoOnboarding: true });
     },
 
     async refreshMe() {

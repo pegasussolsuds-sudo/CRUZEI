@@ -10,10 +10,14 @@ import { RegisterScreen } from '../screens/onboarding/RegisterScreen';
 import { MainTabs } from './MainTabs';
 
 export type RootStackParamList = {
-  Onboarding: undefined;
-  Login: undefined;
-  Register: { phone: string };
+  Onboarding: undefined; // WelcomeScreen
+  Login: undefined; // PhoneScreen
+  Code: { phone: string; devCode?: string | null; expiresIn?: number }; // CodeScreen (OTP)
+  Register: { phone: string }; // ProfileSetupScreen
   Main: undefined;
+  PhotoUpload: { fromOnboarding?: boolean }; // pós-cadastro ou vindo do perfil
+  UserCard: { userId: string; distanceM?: number | null }; // perfil de outra pessoa
+  Boost: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
