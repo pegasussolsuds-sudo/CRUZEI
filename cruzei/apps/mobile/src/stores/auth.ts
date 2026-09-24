@@ -20,7 +20,9 @@ interface AuthState {
   clearPhotoOnboarding: () => void;
   hydrate: () => Promise<void>;
   requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; devCode?: string }>;
-  verifyCode: (phone: string, code: string) => Promise<{ isNew: boolean }>;
+  /** `deferAuth`: guarda token+user mas NÃO vira `isAuthenticated` — a tela chama `commitAuth()` quando terminar a animação */
+  verifyCode: (phone: string, code: string, opts?: { deferAuth?: boolean }) => Promise<{ isNew: boolean }>;
+  commitAuth: () => void;
   register: (input: RegisterInput) => Promise<void>;
   refreshMe: () => Promise<void>;
   setUser: (user: User) => void;
@@ -70,14 +72,18 @@ export const useAuthStore = create<AuthState>((set, get) => {
       return res.data;
     },
 
-    async verifyCode(phone, code) {
+    async verifyCode(phone, code, opts) {
       const res = await api.post('/auth/login', { phone, code });
       if (res.data.user?.isNew) return { isNew: true };
       await setToken(res.data.token);
       await setRefreshToken(res.data.refreshToken);
       const me = await api.get('/me');
-      set({ user: me.data, isAuthenticated: true });
+      set({ user: me.data, isAuthenticated: !opts?.deferAuth });
       return { isNew: false };
+    },
+
+    commitAuth() {
+      if (get().user && !get().isAuthenticated) set({ isAuthenticated: true });
     },
 
     async register(input) {
