@@ -2,7 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { v4 as uuid } from 'uuid';
 
-const PRICE_CENTS_PER_HOUR = 990;
+// mesmo valor exibido no app (BoostScreen): R$ 4,90 por hora
+const PRICE_CENTS_PER_HOUR = 490;
 
 @Injectable()
 export class BoostsService {
@@ -32,13 +33,12 @@ export class BoostsService {
       data: {
         id: uuid(),
         userId,
-        durationHours,
         expiresAt,
         latitude: lat,
         longitude: lng,
         amountCents: durationHours * PRICE_CENTS_PER_HOUR,
         platform,
-      } as never,
+      },
     });
 
     return {

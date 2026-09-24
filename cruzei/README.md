@@ -78,3 +78,5 @@ pnpm clean              # limpa tudo
 
 ✅ **Marco 1 — MVP funcional validado em device (23/09/2026).** Ver `RELATORIO_SESSAO_23-09-2026.md` §10.
 Auth, perfil, mapa, presença (geohash + Redis), matches com contexto, chat 48h.
+
+✅ **Marco 2 — mapa 3D vivo (Mapbox GL JS, camadas GL, tema Day/Dusk/Night) + redesign premium (Reanimated 3 + Skia + Moti) validados no Motorola (24/09/2026).** Ver §11 do relatório: Splash, Welcome, Phone, Code, ProfileSetup, PhotoUpload, Map (bottom sheet, hotspots, boost), Match, Chat, Premium, Boost e UserCard.

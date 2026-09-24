@@ -326,3 +326,35 @@ adb reverse tcp:8081 tcp:8081 && ./android/gradlew -p android assembleDebug -x l
 | iOS, build release assinado, EAS | não tocados |
 | `expo@51.0.28` → `~51.0.39`, `expo-image-picker` → `~15.1.0` | warnings do Metro, não bloqueiam |
 | Fontes Space Grotesk / Inter | `typography` referencia, mas não estão linkadas (cai no sans padrão) |
+
+---
+
+## 11. Sessão 23–24/09/2026 (noite) — mapa 3D vivo + redesign premium validados no Motorola
+
+### 11.1 Mapa (`src/screens/map/mapbox-html.ts` + `bridge.ts` + `components/map/*`)
+- Mapbox GL JS v3.7 no WebView, tudo em **camadas GL** (nada de marcador DOM): avatares via canvas → `addImage`, imagens animadas (`StyleImageInterface`) para sonar de hotspot, anel do "eu", auras premium/boost e anel de seleção, com **um** `triggerRepaint` por tick.
+- Tema Day/Dusk/Night trocado com `setPaintProperty` + `setFog` + `setLights` (nunca `setStyle`), prédios 3D (`fill-extrusion`) com gradiente de altura e flood light à noite, glow neon das vias principais, entrada dos avatares por `feature-state`, `reveal` (flyTo) no 1º fix, idle-cam e partículas só no tier alto (FPS medido, fallback por timeout).
+- Padding do mapa segue a bottom sheet (`useAnimatedReaction` → `setPadding` adiado até o fim do flyTo).
+- Corrigido nesta sessão: sonar do hotspot maior e acima das auras (`icon-pitch-alignment: viewport`), diagnósticos `[cz]` removidos, Voltar do Android fecha o card em vez de sair do app, toque no card abre o **UserCard** (perfil completo), lista da sheet com espaço sob o CTA premium.
+
+### 11.2 Telas do redesign validadas no aparelho (capturas em `%TEMP%claude...scratchpad	*.png`)
+Splash → Welcome (CTAs entram ~2s) → Phone (máscara + check) → Code (OTP 6 caixas, código dev clicável, **animação "Confirmado" agora roda antes do navigator trocar** — `verifyCode(..., { deferAuth })` + `commitAuth()`) → ProfileSetup 5 etapas (chips não quebram mais no meio da palavra) → **PhotoUpload** (galeria → crop 4:5 → upload; após o cadastro é a 1ª rota da pilha) → Mapa (avatar com foto, boost = banner "Boost ativo: 59min" + raio 5 km) → Curtidas (deck) → Matches → Chat (bolhas, ✓, contador 48h, templates) → Premium (coroa Skia) → Perfil (anel de completude, stats) → Boost (foguete, partículas, confete, contador) → Match modal ("É um match!") → UserCard (parallax, ações).
+
+### 11.3 Bugs corrigidos
+| Bug | Causa | Fix |
+|---|---|---|
+| Boost: "Erro interno" (500) | `boosts.service.ts` mandava `durationHours` (campo inexistente no modelo Prisma; `as never` escondia o erro) e cobrava 990 c/h vs R$ 4,90 na UI | campo removido, preço 490 |
+| Header do mapa não mostrava boost | BoostScreen usava a chave `['boost-active']` e o header `['boosts','active']` | chave unificada |
+| Cadastro caía direto no mapa | `initialRouteName` só vale na montagem; ao sumir a pilha de auth o router pega a 1ª rota | PhotoUpload vem primeiro quando `pendingPhotoOnboarding`; `finish()` usa `replace('Main')` quando não há pra onde voltar |
+| UserCard mostrava faixa escura ao rolar | conteúdo menor que a tela | sheet com `flexGrow` + padding do footer |
+| Crash intermitente Reanimated "HostObject … Shareable" | apareceu **1x** em ~8 aberturas (logo após a Splash, junto de pressão de memória/LMK); não reproduziu com instrumentação | em observação — se voltar, instrumentar `shareables.js` (try/catch em `makeShareableClone`) |
+
+### 11.4 Dados de dev
+- Fakes: `npx ts-node prisma/seed-dev.ts -18.923706 -48.270543 8` (fotos self-hosted em `uploads/fakes/fake-N.jpg`, CORS liberado; `PUBLIC_BASE_URL` opcional).
+- Para forçar um match: `insert into likes (liker_id, liked_id) values (<fake>, <eu>)` e curtir o fake no app.
+- Contas de teste no banco: `avell` (+553496566696, 8 dígitos) e `Fable` (+5534965666960, 9 dígitos).
+
+### 11.5 Pendências
+- Testar tema Day/Dusk (só Night foi visto; troca é por hora local em `useMapTheme`).
+- Crash intermitente do Reanimated (acima).
+- Itens anteriores: FCM, selfie/LGPD, pagamento real, R2, background location, iOS, restringir token Mapbox.

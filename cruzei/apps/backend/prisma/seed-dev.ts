@@ -6,6 +6,8 @@ import Redis from 'ioredis';
 import * as crypto from 'node:crypto';
 
 const prisma = new PrismaClient();
+// Fotos dos fakes servidas pelo próprio backend (CORS liberado em /uploads) — o mapa desenha avatares em canvas.
+const PHOTO_BASE = process.env.PUBLIC_BASE_URL ?? 'http://192.168.1.8:3000';
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
 const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';
@@ -27,14 +29,14 @@ function encodeGeohash(lat: number, lng: number, precision = 5): string {
 
 type Fake = { name: string; gender: string; birth: string; bio: string; photo: string; tier?: 'premium' | 'premium_plus'; verified?: boolean; boosted?: boolean };
 const FAKES: Fake[] = [
-  { name: 'Aline', gender: 'female', birth: '2001-04-12', bio: 'Designer. Bar de sexta e trilha de domingo.', photo: 'https://i.pravatar.cc/600?img=47', tier: 'premium_plus', verified: true },
-  { name: 'Rafael', gender: 'male', birth: '1997-09-03', bio: 'Engenheiro recém-chegado. Me mostra a cidade?', photo: 'https://i.pravatar.cc/600?img=12', boosted: true },
-  { name: 'Bia', gender: 'female', birth: '1999-01-25', bio: 'Café forte, playlist melhor ainda.', photo: 'https://i.pravatar.cc/600?img=32' },
-  { name: 'Caio', gender: 'male', birth: '1995-11-17', bio: 'Corrida no parque 6h. Cerveja às 18h.', photo: 'https://i.pravatar.cc/600?img=15' },
-  { name: 'Marina', gender: 'female', birth: '2000-07-08', bio: 'Fotógrafa. Sempre no show de alguém.', photo: 'https://i.pravatar.cc/600?img=45', tier: 'premium', verified: true },
-  { name: 'Theo', gender: 'non_binary', birth: '1998-03-30', bio: 'Boêmio de carteirinha.', photo: 'https://i.pravatar.cc/600?img=56' },
-  { name: 'Lívia', gender: 'female', birth: '1996-12-02', bio: 'Yoga, praia e um bom vinho.', photo: 'https://i.pravatar.cc/600?img=25' },
-  { name: 'Pedro', gender: 'male', birth: '1994-05-21', bio: 'Games e churrasco. Nessa ordem.', photo: 'https://i.pravatar.cc/600?img=33' },
+  { name: 'Aline', gender: 'female', birth: '2001-04-12', bio: 'Designer. Bar de sexta e trilha de domingo.', photo: PHOTO_BASE + '/uploads/fakes/fake-1.jpg', tier: 'premium_plus', verified: true },
+  { name: 'Rafael', gender: 'male', birth: '1997-09-03', bio: 'Engenheiro recém-chegado. Me mostra a cidade?', photo: PHOTO_BASE + '/uploads/fakes/fake-2.jpg', boosted: true },
+  { name: 'Bia', gender: 'female', birth: '1999-01-25', bio: 'Café forte, playlist melhor ainda.', photo: PHOTO_BASE + '/uploads/fakes/fake-3.jpg' },
+  { name: 'Caio', gender: 'male', birth: '1995-11-17', bio: 'Corrida no parque 6h. Cerveja às 18h.', photo: PHOTO_BASE + '/uploads/fakes/fake-4.jpg' },
+  { name: 'Marina', gender: 'female', birth: '2000-07-08', bio: 'Fotógrafa. Sempre no show de alguém.', photo: PHOTO_BASE + '/uploads/fakes/fake-5.jpg', tier: 'premium', verified: true },
+  { name: 'Theo', gender: 'non_binary', birth: '1998-03-30', bio: 'Boêmio de carteirinha.', photo: PHOTO_BASE + '/uploads/fakes/fake-6.jpg' },
+  { name: 'Lívia', gender: 'female', birth: '1996-12-02', bio: 'Yoga, praia e um bom vinho.', photo: PHOTO_BASE + '/uploads/fakes/fake-7.jpg' },
+  { name: 'Pedro', gender: 'male', birth: '1994-05-21', bio: 'Games e churrasco. Nessa ordem.', photo: PHOTO_BASE + '/uploads/fakes/fake-8.jpg' },
 ];
 
 async function main() {
