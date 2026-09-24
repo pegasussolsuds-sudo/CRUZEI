@@ -4,6 +4,7 @@
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import * as crypto from 'node:crypto';
+import { randomAvatarConfig } from '@cruzei/shared-utils';
 
 const prisma = new PrismaClient();
 // Fotos dos fakes servidas pelo próprio backend (CORS liberado em /uploads) — o mapa desenha avatares em canvas.
@@ -55,9 +56,24 @@ async function main() {
   });
   console.log('🍺 POI de demo', hotPoi.name, '@', hotLat.toFixed(5), hotLng.toFixed(5));
 
+  // POI de evento de demo a ~250m (lat -150m, lng -200m): exercita categoria 'event' / "hoje" no mapa
+  const evLat = lat - 150 / 111_320;
+  const evLng = lng - 200 / (111_320 * Math.cos((lat * Math.PI) / 180));
+  const evPoi = await prisma.pOI.upsert({
+    where: { source_externalId: { source: 'dev', externalId: 'dev-sunset-praca' } },
+    update: { latitude: evLat, longitude: evLng, subcategory: 'hoje' },
+    create: { externalId: 'dev-sunset-praca', name: 'Sunset na Praça', category: 'event', subcategory: 'hoje', latitude: evLat, longitude: evLng, city: 'Uberlândia', state: 'MG', source: 'dev' },
+  });
+  console.log('🌇 POI de evento', evPoi.name, '@', evLat.toFixed(5), evLng.toFixed(5));
+
+  // catálogo de interesses (seed.ts) → 3 por fake, escolhidos de forma determinística
+  const interests = await prisma.interest.findMany({ orderBy: { id: 'asc' }, select: { id: true } });
+
   for (let i = 0; i < qty; i++) {
     const f = FAKES[i];
     const phone = `+5534900000${String(i + 1).padStart(3, '0')}`;
+    // avatar estável por fake (seed = telefone)
+    const avatar = randomAvatarConfig(phone, { gender: f.gender as never }) as never;
     // espalha num raio de ~800m
     // os 5 primeiros ficam 'no Bar do Léo' (raio ~40m) → hotspot; o resto espalhado num raio de ~800m
     const atBar = i < 5;
@@ -70,7 +86,7 @@ async function main() {
 
     const user = await prisma.user.upsert({
       where: { phone },
-      update: { name: f.name, bio: f.bio, visibilityMode: 'visible', lastActiveAt: new Date(), premiumTier: (f.tier ?? 'free') as never, isVerified: Boolean(f.verified) },
+      update: { name: f.name, bio: f.bio, visibilityMode: 'visible', lastActiveAt: new Date(), premiumTier: (f.tier ?? 'free') as never, isVerified: Boolean(f.verified), avatarConfig: avatar },
       create: {
         id: crypto.randomUUID(),
         phone,
@@ -83,8 +99,14 @@ async function main() {
         profileCompleteness: 45,
         premiumTier: (f.tier ?? 'free') as never,
         isVerified: Boolean(f.verified),
+        avatarConfig: avatar,
       },
     });
+
+    if (interests.length > 0) {
+      const picks = [0, 1, 2].map((k) => interests[(i * 3 + k) % interests.length].id);
+      await prisma.userInterest.createMany({ data: picks.map((interestId) => ({ userId: user.id, interestId })), skipDuplicates: true });
+    }
 
     if (f.boosted) {
       const hasBoost = await prisma.boost.findFirst({ where: { userId: user.id, expiresAt: { gt: new Date() } } });
@@ -106,7 +128,15 @@ async function main() {
     const p = redis.pipeline();
     p.zadd(`presence:${geohash}`, Date.now(), user.id);
     p.expire(`presence:${geohash}`, ttl);
-    p.hset(`user:loc:${user.id}`, { lat: String(uLat), lng: String(uLng), geohash, updated_at: String(Date.now()) });
+    // poi_id/poi_name = lugar atual (o backend lê daqui no /nearby e no cartão); vazio = em lugar nenhum
+    p.hset(`user:loc:${user.id}`, {
+      lat: String(uLat),
+      lng: String(uLng),
+      geohash,
+      updated_at: String(Date.now()),
+      poi_id: atBar ? String(hotPoi.id) : '',
+      poi_name: atBar ? hotPoi.name : '',
+    });
     p.expire(`user:loc:${user.id}`, ttl);
     p.del(`profile:${user.id}`);
     await p.exec();

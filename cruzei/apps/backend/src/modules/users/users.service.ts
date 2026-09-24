@@ -1,6 +1,21 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import type { AvatarTier } from '@cruzei/shared-types';
+import { AVATAR_CONFIG_MAX_BYTES, FREE_TIERS, isValidAvatarConfig, normalizeAvatarConfig } from '@cruzei/shared-utils';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { avatarOrFallback } from '../../common/avatar';
+
+const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
+
+/**
+ * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
+ * → free + premium; senão só free. 'event' fica bloqueado pra todos por enquanto.
+ */
+export function allowedTiersFor(user: { premiumTier: string; premiumExpiresAt: Date | null } | null | undefined): ReadonlySet<AvatarTier> {
+  if (!user || user.premiumTier === 'free') return FREE_TIERS;
+  const active = user.premiumExpiresAt == null || user.premiumExpiresAt > new Date();
+  return active ? PREMIUM_TIERS : FREE_TIERS;
+}
 
 @Injectable()
 export class UsersService {
@@ -25,6 +40,12 @@ export class UsersService {
     if (!user || user.deletedAt) throw new NotFoundException('Usuário não encontrado');
 
     const matchesCount = (user._count.matchesAsA ?? 0) + (user._count.matchesAsB ?? 0);
+
+    // assinatura vencida → itens premium do avatar caem pro default (salva só se mudou)
+    let avatarConfig: unknown = user.avatarConfig;
+    if (user.premiumTier !== 'free' && user.premiumExpiresAt && user.premiumExpiresAt <= new Date()) {
+      avatarConfig = await this.downgradeAvatarToFree(userId, avatarConfig);
+    }
 
     const profile = {
       id: user.id,
@@ -54,6 +75,7 @@ export class UsersService {
       premiumTier: user.premiumTier,
       isVerified: user.isVerified,
       profileCompleteness: user.profileCompleteness,
+      avatar: avatarOrFallback({ id: user.id, gender: user.gender, avatarConfig }),
       settings: {
         visibilityMode: user.visibilityMode,
         showDistance: user.showDistance,
@@ -76,13 +98,29 @@ export class UsersService {
 
   async update(
     userId: string,
-    dto: { name?: string; bio?: string; lookingFor?: string; orientation?: string; interests?: string[] },
+    dto: { name?: string; bio?: string; lookingFor?: string; orientation?: string; interests?: string[]; avatar?: unknown },
   ) {
     const data: Record<string, unknown> = {};
     if (dto.name) data.name = dto.name.trim();
     if (dto.bio !== undefined) data.bio = dto.bio.trim() || null;
     if (dto.lookingFor) data.lookingFor = dto.lookingFor;
     if (dto.orientation) data.orientation = dto.orientation;
+
+    if (dto.avatar !== undefined) {
+      if (Buffer.byteLength(JSON.stringify(dto.avatar) ?? '') > AVATAR_CONFIG_MAX_BYTES) {
+        throw new BadRequestException('avatar muito grande');
+      }
+      // free só usa itens free; premium/premium_plus com assinatura vigente liberam 'premium'
+      const me = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { premiumTier: true, premiumExpiresAt: true },
+      });
+      const tiers = allowedTiersFor(me);
+      if (!isValidAvatarConfig(dto.avatar, tiers)) {
+        throw new BadRequestException('avatar inválido ou com itens bloqueados');
+      }
+      data.avatarConfig = normalizeAvatarConfig(dto.avatar, tiers);
+    }
 
     if (dto.interests) {
       await this.prisma.userInterest.deleteMany({ where: { userId } });
@@ -194,6 +232,22 @@ export class UsersService {
 
   listInterests() {
     return this.prisma.interest.findMany({ orderBy: { name: 'asc' } });
+  }
+
+  /**
+   * Garante que o avatar só usa itens free (assinatura cancelada ou vencida): normaliza e salva se mudou.
+   * Devolve a config vigente. `current` evita uma query quando o caller já tem a config em mãos.
+   */
+  async downgradeAvatarToFree(userId: string, current?: unknown): Promise<unknown> {
+    const cfg =
+      current !== undefined
+        ? current
+        : (await this.prisma.user.findUnique({ where: { id: userId }, select: { avatarConfig: true } }))?.avatarConfig;
+    if (cfg == null || isValidAvatarConfig(cfg, FREE_TIERS)) return cfg ?? null;
+    const normalized = normalizeAvatarConfig(cfg, FREE_TIERS);
+    await this.prisma.user.update({ where: { id: userId }, data: { avatarConfig: normalized as never } });
+    await this.redis.invalidateProfile(userId);
+    return normalized;
   }
 
   private async refreshCompleteness(userId: string) {

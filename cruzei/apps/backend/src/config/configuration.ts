@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { IsEnum, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
 
@@ -30,6 +31,11 @@ class EnvVars {
   @IsString()
   @IsOptional()
   CORS_ORIGINS?: string;
+
+  // Sal da posição borrada (/nearby, /users/:id). Opcional, mas sem ele o deslocamento é previsível.
+  @IsString()
+  @IsOptional()
+  LOCATION_SALT?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
@@ -39,6 +45,11 @@ export function validateEnv(config: Record<string, unknown>) {
   const errors = validateSync(validatedConfig, { skipMissingProperties: false });
   if (errors.length > 0) {
     throw new Error(`Config inválida: ${errors.toString()}`);
+  }
+  if (!validatedConfig.LOCATION_SALT) {
+    new Logger('Config').warn(
+      'LOCATION_SALT ausente — usando salt padrão de dev pra borrar posições. Defina um valor aleatório em produção.',
+    );
   }
   return validatedConfig;
 }
@@ -55,6 +66,7 @@ export const configuration = () => ({
     refreshTtl: parseInt(process.env.JWT_REFRESH_TTL ?? '2592000', 10),
   },
   corsOrigins: process.env.CORS_ORIGINS ?? 'http://localhost:8081,http://localhost:19006',
+  locationSalt: process.env.LOCATION_SALT,
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID,
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL,

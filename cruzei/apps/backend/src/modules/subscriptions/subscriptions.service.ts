@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../redis/redis.service';
+import { UsersService } from '../users/users.service';
 
 const PLANS = [
   { id: 'premium_monthly', tier: 'premium', interval: 'month', priceCents: 2990, currency: 'BRL', trialDays: 7 },
@@ -10,7 +12,11 @@ const PLANS = [
 
 @Injectable()
 export class SubscriptionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+    private readonly users: UsersService,
+  ) {}
 
   listPlans() {
     return { plans: PLANS };
@@ -60,6 +66,7 @@ export class SubscriptionsService {
       where: { id: userId },
       data: { premiumTier: plan.tier, premiumExpiresAt: expiresAt } as never,
     });
+    await this.redis.invalidateProfile(userId); // premiumTier mudou → /me em cache está velho
 
     return {
       subscriptionId: 'pending',
@@ -74,6 +81,9 @@ export class SubscriptionsService {
       where: { id: userId },
       data: { premiumTier: 'free' } as never,
     });
+    // voltou pra free → itens premium do avatar caem pro default
+    await this.users.downgradeAvatarToFree(userId);
+    await this.redis.invalidateProfile(userId);
     return { expiresAt: null, cancelledAt: new Date().toISOString() };
   }
 }

@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { SmsService } from './sms.service';
-import { normalizePhoneBR } from '@cruzei/shared-utils';
+import { normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
 import { v4 as uuid } from 'uuid';
 
 export interface JwtPayload {
@@ -59,15 +59,18 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) throw new UnauthorizedException('Telefone já cadastrado');
 
+    const id = uuid();
     const user = await this.prisma.user.create({
       data: {
-        id: uuid(),
+        id,
         phone,
         name: payload.name,
         birthDate: payload.birthDate,
         gender: payload.gender as never,
         orientation: (payload.orientation ?? undefined) as never,
         lookingFor: (payload.lookingFor ?? 'unspecified') as never,
+        // avatar inicial determinístico (seed = id → mesmo visual em qualquer cliente)
+        avatarConfig: randomAvatarConfig(id, { gender: payload.gender as 'female' | 'male' | 'non_binary' | 'other' }) as never,
         // completude inicial: nome (10) + intenção definida (5) — resto vem de fotos/bio/interesses
         profileCompleteness: 10 + (payload.lookingFor && payload.lookingFor !== 'unspecified' ? 5 : 0),
       },

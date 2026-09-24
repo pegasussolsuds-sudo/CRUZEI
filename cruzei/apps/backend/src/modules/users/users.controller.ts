@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsEnum,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
   IsUrl,
@@ -20,6 +21,8 @@ class UpdateMeDto {
   @IsOptional() @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified']) lookingFor?: string;
   @IsOptional() @IsEnum(['heterosexual', 'homosexual', 'bisexual', 'pansexual', 'other']) orientation?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(10) interests?: string[];
+  // AvatarConfig (validada no service contra o catálogo + tier do usuário)
+  @IsOptional() @IsObject() avatar?: Record<string, unknown>;
 }
 
 class SettingsDto {

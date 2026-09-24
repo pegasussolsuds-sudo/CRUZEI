@@ -19,6 +19,7 @@ model User {
   orientation           Orientation?
   lookingFor            LookingFor            @default(unspecified) @map("looking_for")
   bio                   String?
+  avatarConfig          Json?                 @map("avatar_config")
   premiumTier           PremiumTier           @default(free) @map("premium_tier")
   premiumExpiresAt      DateTime?             @map("premium_expires_at")
   visibilityMode        VisibilityMode        @default(anonymous) @map("visibility_mode")

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { formatApproxDistance } from '@cruzei/shared-utils';
 
 // Gera o "Vocês se cruzaram no Bar do Léo" — a frase que aparece no match.
 @Injectable()
@@ -47,7 +48,8 @@ export class MatchContextService {
 
     if (close[0]) {
       const when = this.formatWhen(new Date());
-      return `Vocês estiveram a ${Math.round(close[0].dist)}m de distância ${when}`;
+      // distância sempre em degraus (privacidade): '~250 m', nunca '232m'
+      return `Vocês estiveram a ${formatApproxDistance(Number(close[0].dist))} de distância ${when}`;
     }
 
     return null;

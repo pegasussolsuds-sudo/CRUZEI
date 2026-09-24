@@ -3,6 +3,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { MatchContextService } from './match-context.service';
+import { avatarOrFallback } from '../../common/avatar';
 import { v4 as uuid } from 'uuid';
 
 const CHAT_TTL_HOURS = 48;
@@ -11,7 +12,9 @@ const DAILY_LIKE_LIMIT = 200;
 const USER_CARD_SELECT = {
   id: true,
   name: true,
+  gender: true, // seed do avatar de fallback
   birthDate: true,
+  avatarConfig: true,
   photos: { where: { isMain: true }, select: { url: true } },
 } as const;
 
@@ -275,12 +278,20 @@ export class MatchesService {
     return match;
   }
 
-  private card(u: { id: string; name: string; birthDate: Date; photos: { url: string }[] }) {
+  private card(u: {
+    id: string;
+    name: string;
+    gender: string | null;
+    birthDate: Date;
+    avatarConfig: unknown;
+    photos: { url: string }[];
+  }) {
     return {
       id: u.id,
       name: u.name,
       age: this.age(u.birthDate),
       mainPhotoUrl: u.photos[0]?.url ?? null,
+      avatar: avatarOrFallback(u),
     };
   }
 

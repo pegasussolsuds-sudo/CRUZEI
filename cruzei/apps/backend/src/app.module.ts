@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { ExecutionContext, Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bull';
 
@@ -14,6 +15,7 @@ import { UsersModule } from './modules/users/users.module';
 import { LocationModule } from './modules/location/location.module';
 import { PoisModule } from './modules/pois/pois.module';
 import { MatchesModule } from './modules/matches/matches.module';
+import { WavesModule } from './modules/waves/waves.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AnonymousModule } from './modules/anonymous/anonymous.module';
@@ -27,6 +29,13 @@ import { UploadsModule } from './modules/uploads/uploads.module';
 
 import { HealthController } from './health/health.controller';
 
+// Chave de metadata interna do @nestjs/throttler (THROTTLER_LIMIT + nome do throttler) — não é exportada
+const STRICT_LIMIT_KEY = 'THROTTLER:LIMITstrict';
+// 'strict' só vale nas rotas que o declaram com @Throttle({ strict }); sem isso o guard global
+// aplicaria TODOS os throttlers do forRoot em TODAS as rotas (5/min em tudo).
+const hasStrictOverride = (ctx: ExecutionContext) =>
+  Boolean(Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getHandler()) || Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getClass()));
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -36,10 +45,12 @@ import { HealthController } from './health/health.controller';
       validate: validateEnv,
     }),
 
-    // Rate limiting padrão — endpoints sensíveis sobrescrevem com @Throttle
+    // Rate limiting global (ThrottlerGuard em APP_GUARD, abaixo) — endpoints sensíveis apertam com @Throttle.
+    // default 600/min por IP: vários usuários atrás do mesmo NAT (bar, faculdade, CGNAT do 4G) e o app
+    // chama nearby a cada 45 s + pois + boosts + matches; 100/min derrubava gente legítima.
     ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 100 },
-      { name: 'strict', ttl: 60_000, limit: 5 },
+      { name: 'default', ttl: 60_000, limit: 600 },
+      { name: 'strict', ttl: 60_000, limit: 5, skipIf: (ctx) => !hasStrictOverride(ctx) },
     ]),
 
     // Cron jobs (cleanup, expiração de matches etc.)
@@ -61,6 +72,7 @@ import { HealthController } from './health/health.controller';
     LocationModule,
     PoisModule,
     MatchesModule,
+    WavesModule,
     MessagesModule,
     NotificationsModule,
     AnonymousModule,
@@ -73,5 +85,7 @@ import { HealthController } from './health/health.controller';
     UploadsModule,
   ],
   controllers: [HealthController],
+  // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}
