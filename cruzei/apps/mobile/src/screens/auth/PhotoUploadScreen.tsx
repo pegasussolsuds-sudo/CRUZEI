@@ -669,7 +669,7 @@ export function PhotoUploadScreen() {
     // pós-cadastro essa é a única rota da pilha (sem params): não tem pra onde voltar, vai pro mapa
     if (fromOnboarding || !nav.canGoBack()) nav.replace('Main');
     else nav.goBack();
-    useAuthStore.getState().clearPhotoOnboarding();
+    useAuthStore.getState().setOnboardingStep(null);
   }, [fromOnboarding, nav]);
 
   // dica "segura e arrasta" some enquanto arrasta

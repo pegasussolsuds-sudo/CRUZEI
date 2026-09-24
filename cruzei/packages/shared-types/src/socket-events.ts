@@ -1,5 +1,6 @@
 // Tipos de eventos socket compartilhados cliente/server.
 // Fica em shared-types pra evitar drift entre apps.
+import type { AvatarConfig } from './avatar';
 
 export interface ClientToServerEvents {
   join_match: (payload: { matchId: string }) => void;
@@ -14,6 +15,8 @@ export interface ServerToClientEvents {
   presence_update: (payload: { userId: string; latitude: number; longitude: number }) => void;
   match_created: (payload: { matchId: string }) => void;
   like_received: (payload: { fromUserId: string }) => void;
+  // aceno: sem persistência, só o "oi" em tempo real
+  wave_received: (payload: { fromUserId: string; name: string; avatar: AvatarConfig | null; at: string }) => void;
 }
 
 export interface ServerMessage {

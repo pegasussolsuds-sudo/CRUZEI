@@ -19,6 +19,8 @@ export interface LocationUpdateResponse {
   expiresAt: string; // ISO
 }
 
+import type { AvatarConfig } from './avatar';
+
 export interface NearbyUser {
   id: string;
   name: string; // "anônimo" quando isAnonymous
@@ -26,7 +28,8 @@ export interface NearbyUser {
   mainPhotoUrl: string | null;
   latitude: number;
   longitude: number;
-  distanceM: number;
+  /** aproximada (degraus 50/100/250/500 m, 1 km…); null quando a pessoa desligou "mostrar distância" */
+  distanceM: number | null;
   recordedAt: string | null;
   isAnonymous: boolean;
   isOnline: boolean;
@@ -34,6 +37,11 @@ export interface NearbyUser {
   isVerified: boolean;
   isBoosted: boolean; // boost ativo → destaque no mapa
   poi?: { id: number; name: string } | null;
+  /** avatar Cruzei (null → o app gera um determinístico a partir do id) */
+  avatar?: AvatarConfig | null;
+  /** curtida/ match já existentes com quem consulta (pra sheet mostrar 'Curtido' / 'Match') */
+  likedByMe?: boolean;
+  matchId?: string | null;
 }
 
 export interface Hotspot {

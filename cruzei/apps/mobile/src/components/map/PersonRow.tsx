@@ -1,11 +1,13 @@
 import React, { memo } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, radius, spacing, typography, fontFamily } from '@cruzei/ui-mobile';
-import { timeAgo } from '@cruzei/shared-utils';
+import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { formatApproxDistance, timeAgo } from '@cruzei/shared-utils';
 import type { NearbyUser } from '@cruzei/shared-types';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 
 export interface PersonRowProps {
   user: NearbyUser;
@@ -22,19 +24,12 @@ export interface PersonRowProps {
 }
 
 /**
- * Distância SEMPRE aproximada (anti-stalking): arredonda pra 50 m abaixo de 1 km e 0,5 km acima.
+ * Distância SEMPRE aproximada (anti-stalking): degraus 50/100/250/500 m, 1 km... (mesma régua do backend).
  * Anônimo mostra só 'perto'.
  */
 export function approxDistanceLabel(distanceM: number, anonymous: boolean): string {
-  if (anonymous) return 'perto';
-  if (!Number.isFinite(distanceM)) return 'perto';
-  if (distanceM < 1000) {
-    const m = Math.max(50, Math.round(distanceM / 50) * 50);
-    return `a ~${m} m`;
-  }
-  const km = Math.round(distanceM / 500) * 0.5;
-  const txt = Number.isInteger(km) ? String(km) : km.toFixed(1).replace('.', ',');
-  return `a ~${txt} km`;
+  if (anonymous || !Number.isFinite(distanceM)) return 'perto';
+  return `a ${formatApproxDistance(distanceM)}`;
 }
 
 /** timeAgo devolve 'agora' | 'há N min' | 'ontem' | '12/03' (>7 dias) — cada forma pede um prefixo diferente. */
@@ -57,7 +52,7 @@ function borderColorFor(user: NearbyUser): string {
 }
 
 function PersonRowInner({ user, distanceM, onPress, pressHint = 'Mostra no mapa', onLike, onSuperLike, onPass, highlighted = false }: PersonRowProps) {
-  const initial = (user.name || '?').trim().charAt(0).toUpperCase();
+  const avatar = resolveAvatar(user.avatar, user.id);
   const nameAge = user.age ? `${user.name}, ${user.age}` : user.name;
   const distance = approxDistanceLabel(distanceM, user.isAnonymous);
   const presence = presenceLabel(user);
@@ -72,12 +67,8 @@ function PersonRowInner({ user, distanceM, onPress, pressHint = 'Mostra no mapa'
           <View style={[styles.photo, styles.photoAnon]}>
             <Ionicons name="glasses" size={22} color={colors.white} />
           </View>
-        ) : user.mainPhotoUrl ? (
-          <Image source={{ uri: user.mainPhotoUrl }} style={[styles.photo, styles.photoLoading]} accessibilityIgnoresInvertColors />
         ) : (
-          <View style={[styles.photo, styles.photoInitial]}>
-            <Text style={styles.initial}>{initial}</Text>
-          </View>
+          <CruzeiAvatar config={avatar} mode="bust" size={PHOTO} backgroundColor={colors.surfaceAlt} accessibilityLabel={`Avatar de ${user.name}`} />
         )}
       </View>
 
@@ -180,10 +171,7 @@ const styles = StyleSheet.create({
   rowHighlighted: { backgroundColor: colors.surfaceAlt, borderRadius: radius.lg },
   photoWrap: { width: PHOTO + 6, height: PHOTO + 6, borderRadius: (PHOTO + 6) / 2, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
   photo: { width: PHOTO, height: PHOTO, borderRadius: PHOTO / 2 },
-  photoLoading: { backgroundColor: colors.gray[200] },
   photoAnon: { backgroundColor: colors.gray[400], alignItems: 'center', justifyContent: 'center' },
-  photoInitial: { backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
-  initial: { fontFamily: fontFamily.display, fontSize: PHOTO / 2.5, color: colors.black },
   info: { flex: 1, minWidth: 0 },
   nameLine: { flexDirection: 'row', alignItems: 'center' },
   name: { ...typography.h4, color: colors.black, flexShrink: 1 },

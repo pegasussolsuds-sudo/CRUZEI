@@ -11,13 +11,16 @@ interface RegisterInput {
   lookingFor?: string;
 }
 
+/** etapa pendente do pós-cadastro: avatar → foto → null (mapa) */
+export type OnboardingStep = 'avatar' | 'photo' | null;
+
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  /** true logo após o cadastro: o RootNavigator abre a tela de fotos antes do mapa */
-  pendingPhotoOnboarding: boolean;
-  clearPhotoOnboarding: () => void;
+  /** logo após o cadastro: o RootNavigator abre a etapa pendente (avatar, depois fotos) antes do mapa */
+  onboardingStep: OnboardingStep;
+  setOnboardingStep: (step: OnboardingStep) => void;
   hydrate: () => Promise<void>;
   requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; devCode?: string }>;
   /** `deferAuth`: guarda token+user mas NÃO vira `isAuthenticated` — a tela chama `commitAuth()` quando terminar a animação */
@@ -39,10 +42,10 @@ export const useAuthStore = create<AuthState>((set, get) => {
     user: null,
     isAuthenticated: false,
     isLoading: true,
-    pendingPhotoOnboarding: false,
+    onboardingStep: null,
 
-    clearPhotoOnboarding() {
-      set({ pendingPhotoOnboarding: false });
+    setOnboardingStep(step) {
+      set({ onboardingStep: step });
     },
 
     async hydrate() {
@@ -91,7 +94,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       await setToken(res.data.token);
       await setRefreshToken(res.data.refreshToken);
       const me = await api.get('/me');
-      set({ user: me.data, isAuthenticated: true, pendingPhotoOnboarding: true });
+      set({ user: me.data, isAuthenticated: true, onboardingStep: 'avatar' });
     },
 
     async refreshMe() {

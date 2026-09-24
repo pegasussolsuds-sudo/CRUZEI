@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AccessibilityInfo, Image, Modal, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Modal, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   useAnimatedStyle,
@@ -13,16 +13,26 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NavigationProp } from '@react-navigation/native';
 
+import type { AvatarConfig } from '@cruzei/shared-types';
+import { formatApproxDistance } from '@cruzei/shared-utils';
 import { useAuthStore } from '../stores/auth';
+import { resolveAvatar } from '../avatar';
 import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
 import type { MainTabParamList } from '../navigation/MainTabs';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from './animated';
+import { CruzeiAvatar } from './avatar/CruzeiAvatar';
 
 export interface MatchInfo {
   matchId: string;
   name: string;
+  /** foto principal (legado — o card agora mostra avatares) */
   photo: string | null;
   context?: string | null;
+  /** id da pessoa: seed do avatar quando ela ainda não personalizou (cai no matchId se faltar) */
+  userId?: string;
+  avatar?: AvatarConfig | null;
+  /** distância aproximada em metros no momento do match */
+  distanceM?: number | null;
 }
 
 // Timeline da celebração (ms) — cada peça entra em cascata depois do flip do card.
@@ -36,20 +46,29 @@ const T = {
   buttons: 1050,
 } as const;
 
-const AVATAR = 88;
+const AVATAR = 110;
+const RING = 124;
 const CARD_BG = '#12122A';
 
+export interface MatchModalProps {
+  match: MatchInfo | null;
+  onClose: () => void;
+  /** "🗺️ Ver no mapa" — só aparece quando a tela dona sabe centralizar a pessoa no mapa */
+  onViewOnMap?: (info: MatchInfo) => void;
+}
+
 /**
- * "É um match!" — tela de celebração premium: confete, card com flip 3D, coração pulsando
- * com glow magenta, avatares com anel neon e o contexto de ONDE vocês se cruzaram.
- * API pública: <MatchModal match={info | null} onClose={...} />
+ * "CRUZEI! 🔥" — tela de celebração premium: confete, card com flip 3D, coração pulsando
+ * com glow magenta, os dois avatares com anel neon e o contexto de ONDE vocês se cruzaram.
+ * API pública: <MatchModal match={info | null} onClose={...} onViewOnMap={...} />
  */
-export function MatchModal({ match, onClose }: { match: MatchInfo | null; onClose: () => void }) {
+export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
   const nav = useNavigation<NavigationProp<MainTabParamList>>();
   const me = useAuthStore((s) => s.user);
 
   if (!match) return null;
-  const myPhoto = me?.photos?.find((p) => p.isMain)?.url ?? me?.photos?.[0]?.url ?? null;
+  const myAvatar = resolveAvatar(me?.avatar, me?.id ?? 'me', me?.gender);
+  const theirAvatar = resolveAvatar(match.avatar, match.userId ?? match.matchId);
 
   const openChat = () => {
     onClose();
@@ -57,24 +76,43 @@ export function MatchModal({ match, onClose }: { match: MatchInfo | null; onClos
     nav.navigate('Matches', { screen: 'Chat', initial: false, params: { matchId: match.matchId, name: match.name } } as never);
   };
 
+  const viewOnMap = onViewOnMap
+    ? () => {
+        onClose();
+        onViewOnMap(match);
+      }
+    : undefined;
+
   return (
     <Modal visible transparent statusBarTranslucent animationType="fade" onRequestClose={onClose}>
       {/* key = matchId → cada match novo remonta a celebração e roda todas as entradas do zero */}
-      <Celebration key={match.matchId} match={match} myPhoto={myPhoto} onClose={onClose} onOpenChat={openChat} />
+      <Celebration
+        key={match.matchId}
+        match={match}
+        myAvatar={myAvatar}
+        theirAvatar={theirAvatar}
+        onClose={onClose}
+        onOpenChat={openChat}
+        onViewOnMap={viewOnMap}
+      />
     </Modal>
   );
 }
 
 function Celebration({
   match,
-  myPhoto,
+  myAvatar,
+  theirAvatar,
   onClose,
   onOpenChat,
+  onViewOnMap,
 }: {
   match: MatchInfo;
-  myPhoto: string | null;
+  myAvatar: AvatarConfig;
+  theirAvatar: AvatarConfig;
   onClose: () => void;
   onOpenChat: () => void;
+  onViewOnMap?: () => void;
 }) {
   const reduceMotion = useReducedMotion();
   const [confetti, setConfetti] = useState(!reduceMotion);
@@ -111,6 +149,7 @@ function Celebration({
 
   const onConfettiDone = useCallback(() => setConfetti(false), []);
   const contextText = match.context ?? 'Vocês estiveram perto hoje.';
+  const distanceText = match.distanceM != null ? `Vocês estão a ${formatApproxDistance(match.distanceM)} um do outro.` : null;
 
   return (
     <View style={styles.root} accessibilityViewIsModal>
@@ -128,18 +167,19 @@ function Celebration({
           {/* frente do card */}
           <Animated.View style={[styles.card, frontStyle]}>
             <Animated.Text style={[styles.title, titleStyle]} accessibilityRole="header" allowFontScaling>
-              É um match!
+              CRUZEI! 🔥
             </Animated.Text>
             <FadeInView delay={T.names} fromY={8}>
               <Text style={styles.names}>
-                você e <Text style={styles.nameHighlight}>{match.name}</Text>
+                Você e <Text style={styles.nameHighlight}>{match.name}</Text> demonstraram interesse.
               </Text>
+              {distanceText ? <Text style={styles.distance}>{distanceText}</Text> : null}
             </FadeInView>
 
             <View style={styles.avatars}>
               <SlideInView from="left" distance={48} delay={T.avatars} springPreset="bouncy">
                 <Glow color={colors.primary} spread={14} intensity={0.85} cycleMs={1800}>
-                  <Avatar uri={myPhoto} ring={colors.primary} label="Sua foto" />
+                  <AvatarRing config={myAvatar} ring={colors.primary} label="Seu avatar" />
                 </Glow>
               </SlideInView>
 
@@ -155,7 +195,7 @@ function Celebration({
 
               <SlideInView from="right" distance={48} delay={T.avatars} springPreset="bouncy">
                 <Glow color={colors.secondary} spread={14} intensity={0.85} cycleMs={1800}>
-                  <Avatar uri={match.photo} ring={colors.secondary} label={`Foto de ${match.name}`} />
+                  <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} />
                 </Glow>
               </SlideInView>
             </View>
@@ -172,21 +212,32 @@ function Celebration({
                   glowColor={colors.primary}
                   style={styles.primary}
                   accessibilityRole="button"
-                  accessibilityLabel={`Mandar mensagem pra ${match.name}`}
+                  accessibilityLabel={`Conversar com ${match.name}`}
                 >
-                  <Ionicons name="chatbubble-ellipses" size={18} color={colors.black} />
-                  <Text style={styles.primaryText}>Mandar mensagem</Text>
+                  <Text style={styles.primaryText}>💬 Conversar</Text>
                 </ScaleOnPress>
               </Glow>
+              {onViewOnMap ? (
+                <ScaleOnPress
+                  onPress={onViewOnMap}
+                  pressedScale={0.97}
+                  style={styles.secondary}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Ver ${match.name} no mapa`}
+                >
+                  <Text style={styles.secondaryText}>🗺️ Ver no mapa</Text>
+                </ScaleOnPress>
+              ) : null}
               <ScaleOnPress
                 onPress={onClose}
                 pressedScale={0.97}
-                style={styles.secondary}
+                haptic={false}
+                style={styles.ghost}
                 accessibilityRole="button"
-                accessibilityLabel="Continuar explorando"
-                accessibilityHint="Fecha a celebração e volta pro mapa"
+                accessibilityLabel="Fechar"
+                accessibilityHint="Fecha a celebração"
               >
-                <Text style={styles.secondaryText}>Continuar explorando</Text>
+                <Text style={styles.ghostText}>Fechar</Text>
               </ScaleOnPress>
             </FadeInView>
           </Animated.View>
@@ -205,12 +256,11 @@ function Celebration({
   );
 }
 
-function Avatar({ uri, ring, label }: { uri: string | null; ring: string; label: string }) {
-  return uri ? (
-    <Image source={{ uri }} style={[styles.avatar, { borderColor: ring }]} accessibilityLabel={label} accessible />
-  ) : (
-    <View style={[styles.avatar, styles.avatarPlaceholder, { borderColor: ring }]} accessibilityLabel={label} accessible>
-      <Ionicons name="person" size={36} color={colors.gray[400]} />
+/** avatar de corpo inteiro dentro de um anel neon (lima = você, magenta = a pessoa) */
+function AvatarRing({ config, ring, label }: { config: AvatarConfig; ring: string; label: string }) {
+  return (
+    <View style={[styles.avatarRing, { borderColor: ring }]} accessibilityLabel={label} accessible>
+      <CruzeiAvatar config={config} mode="full" size={AVATAR} groundShadow accessibilityLabel={label} />
     </View>
   );
 }
@@ -236,9 +286,10 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(250,250,250,0.25)',
     justifyContent: 'center',
   },
-  title: { ...typography.h1, color: colors.primary, textAlign: 'center' },
+  title: { ...typography.h1, color: colors.primary, textAlign: 'center', letterSpacing: 1 },
   names: { ...typography.bodyLarge, color: colors.gray[300], marginTop: spacing.xs, textAlign: 'center' },
   nameHighlight: { fontFamily: typography.h4.fontFamily, color: colors.white },
+  distance: { ...typography.bodySmall, color: colors.secondary, marginTop: spacing.xs, textAlign: 'center' },
   avatars: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -256,8 +307,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatar: { width: AVATAR, height: AVATAR, borderRadius: AVATAR / 2, borderWidth: 3, backgroundColor: colors.gray[800] },
-  avatarPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  avatarRing: {
+    width: RING,
+    height: RING,
+    borderRadius: RING / 2,
+    borderWidth: 3,
+    backgroundColor: 'rgba(250,250,250,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   contextBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -284,6 +342,16 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   primaryText: { ...typography.label, color: colors.black, fontSize: 16 },
-  secondary: { height: 48, alignItems: 'center', justifyContent: 'center', width: '100%' },
-  secondaryText: { ...typography.label, color: colors.gray[300] },
+  secondary: {
+    height: 50,
+    borderRadius: radius.full,
+    borderWidth: 1.5,
+    borderColor: 'rgba(250,250,250,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  secondaryText: { ...typography.label, color: colors.white, fontSize: 15 },
+  ghost: { height: 44, alignItems: 'center', justifyContent: 'center', width: '100%' },
+  ghostText: { ...typography.label, color: colors.gray[400] },
 });

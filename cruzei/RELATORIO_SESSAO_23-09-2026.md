@@ -358,3 +358,34 @@ Splash → Welcome (CTAs entram ~2s) → Phone (máscara + check) → Code (OTP 
 - Testar tema Day/Dusk (só Night foi visto; troca é por hora local em `useMapTheme`).
 - Crash intermitente do Reanimated (acima).
 - Itens anteriores: FCM, selfie/LGPD, pagamento real, R2, background location, iOS, restringir token Mapbox.
+
+---
+
+## 12. Sessão 24/09/2026 (madrugada) — "Universo social 3D" (doc `NOVO MAPA/NOVO VISUAL DE MAPA.md`)
+
+### 12.1 Avatar Cruzei (identidade digital)
+- **Config** (`AvatarConfig`, `packages/shared-types/src/avatar.ts`): 13 slots de item (corpo, cabelo, rosto, barba, parte de cima/baixo, calçado, cabeça, óculos, acessório, bolsa, pulso, efeito) + 6 de cor. Guardada em `users.avatar_config` (JSONB; migration `20260924000000_avatar_config`).
+- **Catálogo** (`packages/shared-utils/src/avatar/catalog.ts`): ~90 itens/cores com tier `free | premium | event`. `normalizeAvatarConfig`, `isValidAvatarConfig`, `randomAvatarConfig(seed, {gender})` (determinístico: quem não personalizou tem sempre o mesmo avatar), `lockedAvatarSlots`, `avatarKey`.
+- **Geometria** (`apps/mobile/src/avatar/layers.ts`): paths SVG por camada (viewBox 100×140). Uma única fonte: o app desenha com `react-native-svg` (`<CruzeiAvatar mode="bust"|"full">`) e o mapa desenha as MESMAS camadas com canvas/Path2D → identidade idêntica em todo lugar. Preview de todos os itens em `apps/backend/uploads/avatar-preview.html`.
+- **Backend**: `PATCH /me { avatar }` valida tiers (free só free; premium libera premium; event bloqueado) e tamanho; `GET /me`, `/location/nearby`, `/users/:id`, `/matches` devolvem `avatar`; cadastro gera avatar; seed dá avatar + 3 interesses aos fakes.
+- **Telas**: `AvatarCustomizerScreen` (rota `AvatarSetup`; entra no onboarding entre o cadastro e as fotos: `onboardingStep = avatar | photo | null`), card "seu avatar" no Perfil, avatar em Matches, Chat (header), Curtidas (badge), UserCard (chip), MatchModal (dois avatares), PersonRow.
+
+### 12.2 Mapa = universo
+- **Pessoas como personagens** em pé (billboard, âncora no pé), silhueta até a definição chegar (`defineAvatars` manda cada visual UMA vez por WebView, cache por chave), aura no chão (boost dourada / premium+ magenta / efeito do avatar), anel de presença, selo verificado.
+- **Clusters** até zoom 17 (raio 70 px), pill escura "👥 N"; toque aproxima; no zoom máximo abre a lista filtrada pelo grupo (`clusterTap`).
+- **Sheets escuras sobre o mapa** (mapa continua visível): `UserPreviewSheet` (avatar grande, online, "~250 m de você", "Está no Bar do Léo", bio, interesses, ❤️ Curtir / 👋 Acenar ou 🔥 Match / 💬 Conversar, link pro perfil completo) e `PlacePreviewSheet` (👥 N no Cruzei · 🟢 online · 🔥 Em alta / ⚡ Evento, avatares de quem está lá, "Ver pessoas", "Ver no mapa").
+- **Acenar**: `POST /waves` (dedupe 24 h no Redis, socket `wave_received` → toast "👋 Fulano acenou pra você").
+- **Match físico no mapa** (`matchMoment`): lista recolhe, câmera enquadra os dois avatares, arco de luz lima/magenta entre eles, pulsos alternados, a pessoa sai do cluster em destaque, "🔥 CRUZEI! Você e Bia deram match" por ~3,4 s → depois a celebração (modal) com "💬 Conversar · 🗺️ Ver no mapa · Fechar".
+- **Lugares/eventos**: POI `event` com ícone ⚡ magenta e sonar; POI em alta 30 % maior. Seed: "Sunset na Praça".
+- **Descoberta sem spam** (`useDiscoveryHints`): 1 dica por vez, ≥45 s entre elas, dedupe por sessão ("✨ 3 pessoas novas…", "🔥 Bar do Léo tá bombando", "⚡ Evento perto", "👀 4 online a menos de 250 m"). Header: "🔥 1 em alta · 👥 5 perto · ✨ novidades".
+
+### 12.3 Privacidade (doc §2/§12/§14)
+- `/location/nearby`: anônimos **não aparecem**; posição de todo mundo = real + jitter determinístico 25–70 m (salt + id) + arredondamento a 4 casas; `distanceM` só em degraus 50/100/250/500/1 km… (`approxDistanceM`). Mesma régua no app (`formatApproxDistance`) e no contexto do match ("a ~250 m", antes "a 232m").
+- Modo invisível preservado: só eu me vejo (avatar apagado), banner "Você está oculto do mapa".
+
+### 12.4 Validado no Motorola
+Mapa com 9 avatares vetoriais + clusters + evento → sheet do Pedro (curtir/acenar) → lista com avatares e "· Bar do Léo" → match com a Bia: momento no mapa + modal com avatares → "Ver no mapa" repete o momento → perfil → customizador (abas, tiles com prévia real, cores com cadeado, item premium bloqueado abre o Paywall, salvar) → avatar novo no mapa e no perfil → anônimo/visível.
+
+### 12.5 Dev
+- Metro/backend pelo túnel USB: `adb reverse tcp:8081 tcp:8081 && adb reverse tcp:3000 tcp:3000`; `.env` do mobile aponta pra `http://127.0.0.1:3000` (o IP da LAN mudou; o túnel não depende de Wi-Fi). Metro precisa reiniciar ao mudar o `.env`.
+- `prisma generate` pode quebrar após `pnpm install` (falta `@prisma/client/generator-build`): copiar de `node_modules/prisma/prisma-client/generator-build`.

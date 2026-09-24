@@ -91,7 +91,7 @@ type AgeStatus = 'idle' | 'ok' | 'under' | 'invalid';
  * ProfileSetup (rota Register): 5 etapas — nome, nascimento, gênero, intenção, preferências.
  * Fundo escuro com blobs vivos, barra de progresso com spring, transição horizontal entre etapas,
  * chips animados, slider de raio (gesture-handler + Reanimated) e toggle Visível/Anônimo.
- * Ao concluir chama register(); o store marca pendingPhotoOnboarding e o RootNavigator segue pra PhotoUpload.
+ * Ao concluir chama register(); o store marca onboardingStep='avatar' e o RootNavigator segue pra AvatarSetup → PhotoUpload.
  */
 export function ProfileSetupScreen({ route }: Props) {
   const { phone } = route.params;
@@ -201,7 +201,7 @@ export function ProfileSetupScreen({ route }: Props) {
         gender,
         lookingFor,
       });
-      // sucesso → o store marca pendingPhotoOnboarding e o RootNavigator vai pra PhotoUpload.
+      // sucesso → o store marca onboardingStep='avatar' e o RootNavigator vai pra AvatarSetup (depois PhotoUpload).
       setAnonymous(anonymous);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       if (!anonymous) {

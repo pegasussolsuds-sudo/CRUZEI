@@ -2,6 +2,7 @@
 
 import type { Message, Match } from '../match';
 import type { NearbyUser, Hotspot } from '../location';
+import type { AvatarConfig } from '../avatar';
 
 export interface ServerToClientEvents {
   // Presença
@@ -12,6 +13,7 @@ export interface ServerToClientEvents {
 
   // Curtidas / Match
   like_received: (data: { fromUserId: string; isSuper: boolean }) => void;
+  wave_received: (data: { fromUserId: string; name: string; avatar: AvatarConfig | null; at: string }) => void;
   match_created: (data: { match: Match }) => void;
 
   // Chat

@@ -2,7 +2,6 @@ import React, { memo, useCallback } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   RefreshControl,
   StyleSheet,
   Text,
@@ -21,14 +20,15 @@ import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile'
 import type { MatchesStackParamList } from '../../navigation/MatchesStack';
 import { timeAgo, formatChatExpiry } from '@cruzei/shared-utils';
 import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 
 const AVATAR = 56;
 const STAGGER_MS = 55;
 const STAGGER_CAP = 8;
-const KEN_BURNS_MS = 7000;
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Linha do match: stagger na entrada, ken burns lento na foto, dot pulsando se há não lidas
+// Linha do match: stagger na entrada, avatar Cruzei (o mesmo do mapa), dot pulsando se há não lidas
 // ───────────────────────────────────────────────────────────────────────────────
 interface MatchRowProps {
   item: Match;
@@ -58,17 +58,13 @@ const MatchRow = memo(function MatchRow({ item, index, myId, onPress }: MatchRow
         accessibilityHint="abre a conversa"
       >
         <View style={styles.avatarSlot}>
-          <View style={styles.avatarClip}>
-            {item.user.mainPhotoUrl ? (
-              <Pulse maxScale={1.06} cycleMs={KEN_BURNS_MS} minOpacity={1} style={styles.avatarFill}>
-                <Image source={{ uri: item.user.mainPhotoUrl }} style={styles.avatar} accessibilityIgnoresInvertColors />
-              </Pulse>
-            ) : (
-              <View style={[styles.avatar, styles.avatarPlaceholder]}>
-                <Ionicons name="person" size={24} color={colors.gray[400]} />
-              </View>
-            )}
-          </View>
+          <CruzeiAvatar
+            config={resolveAvatar(item.user.avatar, item.user.id)}
+            mode="bust"
+            size={AVATAR}
+            backgroundColor={colors.surfaceAlt}
+            accessibilityLabel={`Avatar de ${item.user.name}`}
+          />
           {hasUnread ? (
             <View style={styles.dotAnchor} pointerEvents="none">
               <Pulse maxScale={2.2} minOpacity={0} cycleMs={1600} style={styles.dotHalo} />
@@ -211,10 +207,6 @@ const styles = StyleSheet.create({
     ...shadows.light,
   },
   avatarSlot: { width: AVATAR, height: AVATAR, marginRight: spacing.md },
-  avatarClip: { width: AVATAR, height: AVATAR, borderRadius: AVATAR / 2, overflow: 'hidden', backgroundColor: colors.gray[100] },
-  avatarFill: { width: AVATAR, height: AVATAR },
-  avatar: { width: AVATAR, height: AVATAR, borderRadius: AVATAR / 2 },
-  avatarPlaceholder: { backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
   dotAnchor: { position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, alignItems: 'center', justifyContent: 'center' },
   dotHalo: { position: 'absolute', width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary },
   dot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary, borderWidth: 2, borderColor: colors.white },

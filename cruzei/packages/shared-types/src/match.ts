@@ -1,3 +1,4 @@
+import type { AvatarConfig } from './avatar';
 // Match + Chat
 
 export type MatchStatus = 'active' | 'expired' | 'unmatched' | 'blocked';
@@ -10,6 +11,7 @@ export interface Match {
     name: string;
     age: number;
     mainPhotoUrl: string | null;
+    avatar?: AvatarConfig | null;
   };
   context: string | null;
   poiName: string | null;

@@ -25,7 +25,10 @@ import { api, toApiError } from '../../services/api';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { formatApproxDistance } from '@cruzei/shared-utils';
 import type { LikeResult, NearbyUser } from '@cruzei/shared-types';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
@@ -33,6 +36,7 @@ const RADIUS_M = 5000;
 const SWIPE_RATIO = 0.35; // soltar além de 35% da largura = ação
 const FLING_VELOCITY = 900; // px/s — um "peteleco" também conta
 const MAX_ROTATION = 12; // graus
+const AVATAR_BADGE = 44; // bust do avatar no canto do card
 
 type DeckAction = 'like' | 'super' | 'pass';
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -42,8 +46,9 @@ export interface SwipeCardHandle {
   swipe: (action: DeckAction) => void;
 }
 
-function formatDistance(m: number): string {
-  return m < 1000 ? `${m} m` : `${(m / 1000).toFixed(1).replace('.', ',')} km`;
+function formatDistance(m: number | null): string {
+  if (m == null || !Number.isFinite(m)) return 'perto';
+  return formatApproxDistance(m);
 }
 
 export function LikesScreen() {
@@ -101,7 +106,15 @@ export function LikesScreen() {
         }
         const res = await likeMutation.mutateAsync({ userId: card.id, isSuper: action === 'super' });
         if (res.isMatch && res.matchId) {
-          setMatch({ matchId: res.matchId, name: card.name, photo: card.mainPhotoUrl, context: res.context ?? null });
+          setMatch({
+            matchId: res.matchId,
+            userId: card.id,
+            name: card.name,
+            photo: card.mainPhotoUrl,
+            avatar: card.avatar ?? null,
+            context: res.context ?? null,
+            distanceM: card.distanceM,
+          });
           qc.invalidateQueries({ queryKey: ['matches'] });
         }
       } catch (err) {
@@ -436,6 +449,16 @@ function CardBody({ card }: { card: NearbyUser }) {
       />
 
       <View style={styles.badges} pointerEvents="none">
+        {/* avatar Cruzei da pessoa — o mesmo que aparece no mapa */}
+        <View style={styles.avatarBadge}>
+          <CruzeiAvatar
+            config={resolveAvatar(card.avatar, card.id)}
+            mode="bust"
+            size={AVATAR_BADGE}
+            backgroundColor={colors.black}
+            accessibilityLabel={`Avatar de ${card.name}`}
+          />
+        </View>
         {card.isBoosted ? (
           <View style={[styles.badge, { backgroundColor: colors.secondary }]}>
             <Ionicons name="flame" size={12} color={colors.white} />
@@ -509,7 +532,16 @@ const styles = StyleSheet.create({
   },
   cardInner: { flex: 1, backgroundColor: colors.gray[100] },
   photoPlaceholder: { backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
-  badges: { position: 'absolute', top: spacing.md, left: spacing.md, right: spacing.md, flexDirection: 'row', gap: spacing.sm },
+  badges: { position: 'absolute', top: spacing.md, left: spacing.md, right: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  avatarBadge: {
+    width: AVATAR_BADGE + 4,
+    height: AVATAR_BADGE + 4,
+    borderRadius: (AVATAR_BADGE + 4) / 2,
+    borderWidth: 2,
+    borderColor: colors.white,
+    backgroundColor: colors.black,
+    ...shadows.medium,
+  },
   badge: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: radius.full, paddingHorizontal: spacing.sm + 2, height: 26 },
   badgeText: { ...typography.caption, textTransform: 'uppercase', letterSpacing: 0.8 },
 

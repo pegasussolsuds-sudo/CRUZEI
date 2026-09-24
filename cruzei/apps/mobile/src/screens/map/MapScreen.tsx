@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, type AppStateStatus, BackHandler, type LayoutChangeEvent, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
-import { useIsFocused, useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation, type NavigationProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import type { MainTabParamList } from '../../navigation/MainTabs';
 import { Ionicons } from '@expo/vector-icons';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { runOnJS, useAnimatedReaction, useSharedValue } from 'react-native-reanimated';
@@ -11,23 +12,27 @@ import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 
 import { api, toApiError } from '../../services/api';
+import { connectSocket } from '../../services/socket';
 import { config } from '../../config';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
+import { useDiscoveryHints } from '../../hooks/useDiscoveryHints';
 import { useAuthStore } from '../../stores/auth';
 import { useMapPerfStore } from '../../stores/mapPerf';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
-import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type MapBottomSheetHandle, type PoiFilter } from '../../components/map/MapBottomSheet';
+import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type GroupFilter, type MapBottomSheetHandle, type PoiFilter } from '../../components/map/MapBottomSheet';
 import { MapHeader, useActiveBoost } from '../../components/map/MapHeader';
-import { HotspotToast, type HotspotBorn } from '../../components/map/HotspotToast';
-import { PersonRow } from '../../components/map/PersonRow';
+import { DiscoveryToast } from '../../components/map/DiscoveryToast';
+import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
+import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
+import { buildAvatarLayers, keyOf, resolveAvatar } from '../../avatar';
 import { buildMapboxHtml } from './mapbox-html';
-import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type CommandName, type PerfTier } from './bridge';
+import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
-import type { NearbyUser, POI } from '@cruzei/shared-types';
+import type { AvatarConfig, NearbyUser, POI } from '@cruzei/shared-types';
 
 const HOT_MIN = 5;
 const MAX_USERS = 300;
@@ -39,6 +44,9 @@ const LOW_FPS_SAMPLES = 3;
 const HEADING_MIN_DELTA = 4;
 const HEADING_THROTTLE_MS = 100;
 const PADDING_THROTTLE_MS = 16;
+const NEAR_M = 250;
+const PLACE_RADIUS_M = 80;
+const MATCH_MOMENT_FALLBACK_MS = 3800;
 // origem http: página http carrega imagens http (fotos de dev na LAN) e https (Mapbox, R2) sem 'mixed content'
 const BASE_URL = 'http://app.cruzei.com.br/';
 
@@ -54,6 +62,11 @@ interface LikeResponse {
   context?: string | null;
 }
 
+interface WaveResponse {
+  ok: boolean;
+  duplicate?: boolean;
+}
+
 interface NearbyData {
   users: NearbyUser[];
   pois: POI[];
@@ -64,9 +77,17 @@ function minTier(a: PerfTier, b: PerfTier): PerfTier {
   return rank[a] <= rank[b] ? a : b;
 }
 
+function addTo(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  const next = new Set(set);
+  next.add(id);
+  return next;
+}
+
 export function MapScreen() {
   const webRef = useRef<WebView>(null);
   const sheetRef = useRef<MapBottomSheetHandle>(null);
+  const userSheetRef = useRef<UserPreviewSheetHandle>(null);
+  const placeSheetRef = useRef<PlacePreviewSheetHandle>(null);
   const qc = useQueryClient();
   const isFocused = useIsFocused();
 
@@ -93,6 +114,9 @@ export function MapScreen() {
     const main = me?.photos?.find((p) => p.isMain) ?? me?.photos?.[0];
     return main?.thumbnailUrl ?? main?.url ?? null;
   }, [me?.photos]);
+  // meu avatar: o mesmo do onboarding/perfil (fallback determinístico enquanto não personalizou)
+  const myAvatar = useMemo(() => resolveAvatar(me?.avatar ?? null, me?.id ?? 'me', me?.gender ?? null), [me?.avatar, me?.id, me?.gender]);
+  const myAvatarKey = keyOf(myAvatar);
 
   // ---------- WebView ----------
   // tier inicial vem do store (sobrevive a remount): define o clamp de DPR e o HTML já nasce no tier certo.
@@ -132,14 +156,41 @@ export function MapScreen() {
     [inject],
   );
 
+  // ---------- definições de avatar (cache por visual, não por pessoa) ----------
+  // O WebView desenha silhueta até receber as camadas da chave; mandamos cada chave UMA vez por vida do WebView.
+  const sentAvatarKeys = useRef(new Set<string>());
+  const knownAvatars = useRef(new Map<string, AvatarConfig>());
+  const defineAvatars = useCallback(
+    (configs: Iterable<AvatarConfig>) => {
+      const defs: AvatarDefs = {};
+      let count = 0;
+      for (const cfg of configs) {
+        const key = keyOf(cfg);
+        knownAvatars.current.set(key, cfg);
+        if (sentAvatarKeys.current.has(key)) continue;
+        sentAvatarKeys.current.add(key);
+        defs[key] = buildAvatarLayers(cfg, { groundShadow: true });
+        count += 1;
+      }
+      if (count > 0 && readyRef.current) inject(cmd.defineAvatars(defs));
+    },
+    [inject],
+  );
+  // depois de um reload do WebView, as chaves precisam ir de novo (o HTML nasceu vazio)
+  const resendAvatars = useCallback(() => {
+    sentAvatarKeys.current.clear();
+    defineAvatars(knownAvatars.current.values());
+  }, [defineAvatars]);
+
   const flushOnReady = useCallback(() => {
+    resendAvatars();
     for (const key of REPLAY_ORDER) {
       const js = stateCmds.current.get(key);
       if (js) inject(js);
     }
     for (const js of oneShots.current) inject(js);
     oneShots.current = [];
-  }, [inject]);
+  }, [inject, resendAvatars]);
 
   const onWebDead = useCallback((why: string) => {
     readyRef.current = false;
@@ -173,15 +224,23 @@ export function MapScreen() {
   const [userCenter, setUserCenter] = useState<{ lat: number; lng: number } | null>(null);
   const queryCenter = userCenter ?? (lat != null && lng != null ? { lat, lng } : null);
   const centerGeohash = queryCenter ? encodeGeohash(queryCenter.lat, queryCenter.lng, 6) : null;
+  // minha célula (~150 m): quando eu ando, as distâncias do servidor são recalculadas a partir de mim
+  const meGeohash = lat != null && lng != null ? encodeGeohash(lat, lng, 7) : null;
 
   // ---------- seleção / filtros / feedback ----------
   const [selected, setSelected] = useState<string | null>(null);
-  const nav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [selectedPoiId, setSelectedPoiId] = useState<number | null>(null);
+  const rootNav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const tabNav = useNavigation<NavigationProp<MainTabParamList>>();
   const [poiFilter, setPoiFilter] = useState<PoiFilter | null>(null);
+  const [groupFilter, setGroupFilter] = useState<GroupFilter | null>(null);
   const [passed, setPassed] = useState<ReadonlySet<string>>(() => new Set());
+  const [likedIds, setLikedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [wavedIds, setWavedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [localMatches, setLocalMatches] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [match, setMatch] = useState<MatchInfo | null>(null);
+  const [moment, setMoment] = useState<{ name: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [hotspot, setHotspot] = useState<HotspotBorn | null>(null);
   const [heading, setHeading] = useState<number | null>(null);
   const [containerH, setContainerH] = useState(0);
   const [sheetIndex, setSheetIndex] = useState(0);
@@ -200,46 +259,68 @@ export function MapScreen() {
   // ---------- nearby ----------
   // pessoas no raio do plano; lugares sempre no raio largo (a restrição do free é sobre pessoas, não hotspots)
   const nearbyQuery = useQuery({
-    queryKey: ['nearby', centerGeohash, radiusM],
+    queryKey: ['nearby', centerGeohash, radiusM, meGeohash],
     enabled: Boolean(queryCenter),
     refetchInterval: active ? NEARBY_REFETCH_MS : false,
     placeholderData: keepPreviousData, // ao mudar de célula, sheet e card não piscam '0 pessoas'
     queryFn: async (): Promise<NearbyData> => {
       const c = queryCenter as { lat: number; lng: number };
       const [u, p] = await Promise.all([
-        api.get<NearbyUser[]>('/location/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: radiusM } }),
+        api.get<NearbyUser[]>('/location/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: radiusM, ...(lat != null && lng != null ? { me_lat: lat, me_lng: lng } : {}) } }),
         api.get<POI[]>('/pois/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: WIDE_RADIUS_M } }),
       ]);
       return { users: u.data, pois: p.data };
     },
   });
 
-  // distância sempre a partir de MIM (o backend calcula a partir do centro, que o usuário arrasta);
-  // os NearbyUser que vão pro HTML já levam a distância recalculada, consistente com o sheet
+  // distância vem do SERVIDOR (calculada da posição real a partir de me_lat/me_lng, já em degraus): as coordenadas
+  // que chegam são borradas, então recalcular aqui só pioraria. null (pessoa desligou 'mostrar distância') = Infinity.
   const { users, pois, distanceById } = useMemo(() => {
     const raw = nearbyQuery.data?.users ?? [];
     const dist = new Map<string, number>();
-    for (const u of raw) {
-      dist.set(u.id, lat != null && lng != null ? distanceMeters(lat, lng, u.latitude, u.longitude) : u.distanceM);
-    }
+    for (const u of raw) dist.set(u.id, u.distanceM ?? Number.POSITIVE_INFINITY);
     const sorted = raw
       .filter((u) => !passed.has(u.id))
-      .map((u) => ({ ...u, distanceM: dist.get(u.id) ?? u.distanceM }))
-      .sort((a, b) => a.distanceM - b.distanceM)
+      .sort((a, b) => (dist.get(a.id) ?? Infinity) - (dist.get(b.id) ?? Infinity))
       .slice(0, MAX_USERS);
     return { users: sorted, pois: nearbyQuery.data?.pois ?? [], distanceById: dist };
-  }, [nearbyQuery.data, lat, lng, passed]);
+  }, [nearbyQuery.data, passed]);
+
+  // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no WebView por chave)
+  const mapUsers = useMemo<MapUser[]>(
+    () =>
+      users.map((u) => {
+        const cfg = resolveAvatar(u.avatar, u.id);
+        return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura };
+      }),
+    [users],
+  );
 
   const selectedUser = useMemo(() => users.find((u) => u.id === selected) ?? null, [users, selected]);
-  // Voltar (Android) com card aberto fecha o card em vez de sair do app
+  const selectedPoi = useMemo(() => pois.find((p) => p.id === selectedPoiId) ?? null, [pois, selectedPoiId]);
+  const selectedMatchId = selectedUser ? (localMatches.get(selectedUser.id) ?? selectedUser.matchId ?? null) : null;
+  const selectedLiked = selectedUser ? likedIds.has(selectedUser.id) || Boolean(selectedUser.likedByMe) : false;
+
+  // pessoas "nesse lugar": check-in no POI ou a menos de ~80 m dele
+  const placePeople = useMemo(() => {
+    if (!selectedPoi) return [];
+    return users.filter((u) => u.poi?.id === selectedPoi.id || distanceMeters(selectedPoi.latitude, selectedPoi.longitude, u.latitude, u.longitude) <= PLACE_RADIUS_M);
+  }, [users, selectedPoi]);
+  const placeDistance = useMemo(
+    () => (selectedPoi && lat != null && lng != null ? distanceMeters(lat, lng, selectedPoi.latitude, selectedPoi.longitude) : null),
+    [selectedPoi, lat, lng],
+  );
+
+  // Voltar (Android) com sheet de pessoa/lugar aberta fecha a sheet em vez de sair do app
   useEffect(() => {
-    if (!selected) return;
+    if (!isFocused || (!selected && selectedPoiId == null)) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       setSelected(null);
+      setSelectedPoiId(null);
       return true;
     });
     return () => sub.remove();
-  }, [selected]);
+  }, [isFocused, selected, selectedPoiId]);
 
   // selecionado sumiu da lista (refetch, corte dos 300, passou) => limpa o anel no mapa também
   useEffect(() => {
@@ -253,6 +334,16 @@ export function MapScreen() {
   poisRef.current = pois;
   const tierRef = useRef(tier);
   tierRef.current = tier;
+
+  // ---------- descoberta (dicas discretas) + indicadores do header ----------
+  const hints = useDiscoveryHints(users, pois, distanceById, active && webReady, `${centerGeohash ?? ''}|${radiusM}`);
+  const hintsRef = useRef(hints);
+  hintsRef.current = hints;
+  const indicators = useMemo(() => {
+    const hot = pois.filter((p) => (p.userCount ?? 0) >= HOT_MIN).length;
+    const near = users.filter((u) => (distanceById.get(u.id) ?? Infinity) <= NEAR_M).length;
+    return { hot, near, fresh: Boolean(hints.hint) };
+  }, [pois, users, distanceById, hints.hint]);
 
   // ---------- heading (só tier high, só em foco, só com o mapa pronto; throttle 100ms) ----------
   useEffect(() => {
@@ -306,6 +397,7 @@ export function MapScreen() {
     } else {
       stateCmds.current.set('reveal', revealJs); // só pro próximo 'ready' (retry/crash): voa pra onde estou AGORA
     }
+    defineAvatars([myAvatar]);
     send(
       cmd.setMe({
         lat,
@@ -316,21 +408,44 @@ export function MapScreen() {
         isAnonymous,
         photoUrl: myPhotoUrl,
         name: me?.name ?? 'você',
+        avatarKey: myAvatarKey,
+        aura: myAvatar.aura,
       }),
       'setMe',
     );
-  }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, me?.name, send]);
+  }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, me?.name, myAvatar, myAvatarKey, defineAvatars, send]);
 
-  // setData quando a lista memoizada muda (dados novos, minha posição pro corte dos 300, passar)
+  // setData quando a lista memoizada muda (dados novos, minha posição pro corte dos 300, passar).
+  // As definições de avatar vão ANTES: quem chega novo já nasce desenhado, sem silhueta.
   const hasData = Boolean(nearbyQuery.data);
   useEffect(() => {
     if (!hasData) return;
-    send(cmd.setData({ users, pois, hotMin: HOT_MIN }), 'setData');
-  }, [hasData, users, pois, send]);
+    defineAvatars(users.map((u) => resolveAvatar(u.avatar, u.id)));
+    send(cmd.setData({ users: mapUsers, pois, hotMin: HOT_MIN }), 'setData');
+    // o WebView descarta as definições de quem saiu do mapa no mesmo setData: espelha aqui pra não acumular
+    const used = new Set(mapUsers.map((u) => u.avatarKey));
+    used.add(myAvatarKey);
+    for (const key of Array.from(sentAvatarKeys.current)) if (!used.has(key)) sentAvatarKeys.current.delete(key);
+    for (const key of Array.from(knownAvatars.current.keys())) if (!used.has(key)) knownAvatars.current.delete(key);
+  }, [hasData, users, mapUsers, pois, myAvatarKey, defineAvatars, send]);
 
   useEffect(() => {
     send(cmd.select(selected), 'select');
   }, [selected, send]);
+
+  // sheet de pessoa e de lugar são exclusivas entre si; abrir uma recolhe a lista
+  useEffect(() => {
+    if (selected) {
+      setSelectedPoiId(null);
+      sheetRef.current?.snapToIndex(0);
+    }
+  }, [selected]);
+  useEffect(() => {
+    if (selectedPoiId != null) {
+      setSelected(null);
+      sheetRef.current?.snapToIndex(0);
+    }
+  }, [selectedPoiId]);
 
   // padding do mapa acompanha o sheet frame a frame (animatedPosition do gorhom), throttle 16ms
   const paddingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -353,13 +468,18 @@ export function MapScreen() {
     if (paddingTimer.current) clearTimeout(paddingTimer.current);
   }, []);
 
+  // com uma sheet de pessoa/lugar aberta, o padding é dela (a lista fica recolhida por baixo)
+  const previewFraction = selectedUser ? USER_SHEET_FRACTION : selectedPoi ? PLACE_SHEET_FRACTION : null;
+  const previewFractionRef = useRef<number | null>(null);
+  previewFractionRef.current = previewFraction;
+
   const sheetPosition = useSharedValue(0);
   const containerHRef = useRef(0);
   containerHRef.current = containerH;
   const onSheetPosition = useCallback(
     (position: number) => {
       const h = containerHRef.current;
-      if (h <= 0) return;
+      if (h <= 0 || previewFractionRef.current != null) return;
       sendPadding(Math.max(0, Math.round(h - position)));
     },
     [sendPadding],
@@ -371,10 +491,52 @@ export function MapScreen() {
     },
     [onSheetPosition],
   );
-  // fallback pro 1º layout (antes do gorhom animar) e pra quando a posição não muda mas a altura muda
+  // fallback pro 1º layout (antes do gorhom animar), pra quando a altura muda e pra troca lista <-> preview
   useEffect(() => {
-    if (containerH > 0) sendPadding(Math.round(containerH * SHEET_SNAP_FRACTIONS[sheetIndex]));
-  }, [containerH, sheetIndex, sendPadding]);
+    if (containerH <= 0) return;
+    sendPadding(Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])));
+  }, [containerH, sheetIndex, previewFraction, sendPadding]);
+
+  // ---------- match: momento no mapa (doc §7) e depois a celebração ----------
+  const pendingMatch = useRef<MatchInfo | null>(null);
+  const matchQueue = useRef<{ userId: string; name: string; info: MatchInfo | null }[]>([]);
+  const momentActive = useRef(false);
+  const momentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const finishMoment = useCallback(() => {
+    if (momentTimer.current) {
+      clearTimeout(momentTimer.current);
+      momentTimer.current = null;
+    }
+    momentActive.current = false;
+    setMoment(null);
+    const next = pendingMatch.current;
+    pendingMatch.current = null;
+    if (next) setMatch(next);
+  }, []);
+  const playMoment = useCallback(
+    (userId: string, name: string, then: MatchInfo | null) => {
+      if (momentActive.current) {
+        // já tem um momento rodando: guarda e toca depois que o modal desse fechar
+        matchQueue.current.push({ userId, name, info: then });
+        return;
+      }
+      momentActive.current = true;
+      pendingMatch.current = then;
+      setSelected(null);
+      setSelectedPoiId(null);
+      // lista recolhida: o momento acontece no mapa, com os dois avatares enquadrados
+      sheetRef.current?.snapToIndex(0);
+      setMoment({ name });
+      send(cmd.matchMoment(userId));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      if (momentTimer.current) clearTimeout(momentTimer.current);
+      momentTimer.current = setTimeout(finishMoment, MATCH_MOMENT_FALLBACK_MS); // se o WebView não responder
+    },
+    [send, finishMoment],
+  );
+  useEffect(() => () => {
+    if (momentTimer.current) clearTimeout(momentTimer.current);
+  }, []);
 
   // ---------- mensagens do WebView ----------
   const onMessage = useCallback(
@@ -413,23 +575,40 @@ export function MapScreen() {
         }
         case 'poiTap': {
           Haptics.selectionAsync().catch(() => {});
-          send(cmd.focusPoi(msg.id));
           const poi = poisRef.current.find((p) => p.id === msg.id);
-          const hasPeople = usersRef.current.some((u) => u.poi?.id === msg.id);
-          if (poi && hasPeople) {
-            setPoiFilter({ id: poi.id, name: poi.name });
+          if (poi) {
+            setSelectedPoiId(poi.id);
+            send(cmd.focusPoi(poi.id));
+          }
+          break;
+        }
+        case 'clusterTap': {
+          // grupo no mesmo ponto: lista só com quem está ali (doc §13)
+          Haptics.selectionAsync().catch(() => {});
+          const ids = new Set(msg.ids);
+          const n = usersRef.current.filter((u) => ids.has(u.id)).length;
+          if (n > 0) {
+            setSelected(null);
+            setSelectedPoiId(null);
+            setPoiFilter(null);
+            setGroupFilter({ ids: msg.ids, label: `${n} ${n === 1 ? 'pessoa' : 'pessoas'} nesse ponto` });
             sheetRef.current?.snapToIndex(1);
           }
           break;
         }
         case 'mapTap': {
           setSelected(null);
+          setSelectedPoiId(null);
           sheetRef.current?.snapToIndex(0);
           break;
         }
         case 'hotspotBorn': {
-          setHotspot({ poiId: msg.poiId, name: msg.name, userCount: msg.userCount });
+          hintsRef.current.onHotspotBorn({ poiId: msg.poiId, name: msg.name, userCount: msg.userCount });
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          break;
+        }
+        case 'matchMomentDone': {
+          finishMoment();
           break;
         }
         case 'perf': {
@@ -463,8 +642,31 @@ export function MapScreen() {
           break;
       }
     },
-    [flushOnReady, onWebDead, remountWeb, send],
+    [flushOnReady, onWebDead, remountWeb, send, finishMoment],
   );
+
+  // ---------- acenos recebidos (socket) ----------
+  useEffect(() => {
+    if (!active) return;
+    // connectSocket resolve quando o socket existir (no 1º mount o App ainda está conectando)
+    let cancelled = false;
+    let off: (() => void) | null = null;
+    const onWave = (p: { fromUserId?: string; name?: string }) => {
+      showToast(`👋 ${p?.name ?? 'Alguém'} acenou pra você`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    };
+    connectSocket()
+      .then((socket) => {
+        if (cancelled || !socket) return;
+        socket.on('wave_received' as never, onWave as never);
+        off = () => socket.off('wave_received' as never, onWave as never);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      off?.();
+    };
+  }, [active, showToast]);
 
   // ---------- ações ----------
   const like = useCallback(
@@ -472,9 +674,24 @@ export function MapScreen() {
       if (u.isAnonymous) return;
       try {
         const res = await api.post<LikeResponse>('/likes', { userId: u.id, isSuper });
+        setLikedIds((prev) => addTo(prev, u.id));
         if (res.data.isMatch && res.data.matchId) {
-          send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: 'match' }), undefined, 'burst');
-          setMatch({ matchId: res.data.matchId, name: u.name, photo: u.mainPhotoUrl, context: res.data.context });
+          const matchId = res.data.matchId;
+          setLocalMatches((prev) => {
+            const next = new Map(prev);
+            next.set(u.id, matchId);
+            return next;
+          });
+          const info: MatchInfo = {
+            matchId,
+            userId: u.id,
+            name: u.name,
+            photo: u.mainPhotoUrl,
+            avatar: u.avatar ?? null,
+            context: res.data.context,
+            distanceM: Number.isFinite(distanceById.get(u.id) ?? Infinity) ? (distanceById.get(u.id) as number) : null,
+          };
+          playMoment(u.id, u.name, info);
         } else {
           send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: isSuper ? 'super' : 'like' }), undefined, 'burst');
           showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
@@ -484,18 +701,30 @@ export function MapScreen() {
         showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
       }
     },
-    [qc, send, showToast],
+    [qc, send, showToast, distanceById, playMoment],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
+
+  const onWave = useCallback(
+    async (u: NearbyUser) => {
+      try {
+        const res = await api.post<WaveResponse>('/waves', { userId: u.id });
+        setWavedIds((prev) => addTo(prev, u.id));
+        send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: 'like' }), undefined, 'burst');
+        showToast(res.data.duplicate ? `Você já acenou pra ${u.name} hoje 👋` : `Você acenou pra ${u.name} 👋`);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      } catch (err) {
+        showToast(toApiError(err).message || 'Não deu pra acenar agora. Tenta de novo?');
+      }
+    },
+    [send, showToast],
+  );
+
   // 'passar' some na hora (filtro local) e vai pro servidor, pra sumir também do deck de Curtidas e não voltar no refetch
   const onPass = useCallback(
     (u: NearbyUser) => {
-      setPassed((prev) => {
-        const next = new Set(prev);
-        next.add(u.id);
-        return next;
-      });
+      setPassed((prev) => addTo(prev, u.id));
       setSelected((cur) => (cur === u.id ? null : cur));
       api
         .post('/passes', { userId: u.id })
@@ -508,8 +737,40 @@ export function MapScreen() {
   );
   const onSelectUser = useCallback((u: NearbyUser) => {
     setSelected(u.id);
-    sheetRef.current?.snapToIndex(0);
   }, []);
+  const onOpenProfile = useCallback(
+    (u: NearbyUser) => {
+      const d = distanceById.get(u.id);
+      rootNav.navigate('UserCard', { userId: u.id, distanceM: d != null && Number.isFinite(d) ? d : null });
+    },
+    [rootNav, distanceById],
+  );
+  const onChat = useCallback(
+    (matchId: string, u: NearbyUser) => {
+      setSelected(null);
+      // initial:false → a lista de matches fica embaixo na pilha e o chat ganha botão de voltar
+      tabNav.navigate('Matches', { screen: 'Chat', initial: false, params: { matchId, name: u.name } } as never);
+    },
+    [tabNav],
+  );
+  // fechou o modal: se outro match ficou na fila, toca o momento dele agora
+  const onMatchClosed = useCallback(() => {
+    setMatch(null);
+    const next = matchQueue.current.shift();
+    if (next) setTimeout(() => playMoment(next.userId, next.name, next.info), 300);
+  }, [playMoment]);
+  const onViewMatchOnMap = useCallback(
+    (info: MatchInfo) => {
+      if (!info.userId) return;
+      const u = usersRef.current.find((x) => x.id === info.userId);
+      if (!u) {
+        showToast(`${info.name} não está mais por perto`);
+        return;
+      }
+      playMoment(u.id, u.name, null);
+    },
+    [playMoment, showToast],
+  );
 
   const onCenter = useCallback(async () => {
     const loc = lat != null && lng != null ? { latitude: lat, longitude: lng } : await locate();
@@ -523,7 +784,7 @@ export function MapScreen() {
       toggleVisibility();
       return;
     }
-    Alert.alert('Quer ver sem aparecer?', 'Em modo anônimo você vê todo mundo, mas não rola match por enquanto.', [
+    Alert.alert('Quer ver sem aparecer?', 'Em modo anônimo você vê todo mundo, mas ninguém te vê no mapa e não rola match por enquanto.', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Ficar anônimo', onPress: toggleVisibility },
     ]);
@@ -551,12 +812,35 @@ export function MapScreen() {
   }, [canAskLocation, locate]);
 
   const onFocusPoi = useCallback((poiId: number) => send(cmd.focusPoi(poiId)), [send]);
-  const hideHotspot = useCallback(() => setHotspot(null), []);
+  const onSeePlacePeople = useCallback((poi: POI) => {
+    setSelectedPoiId(null);
+    setGroupFilter(null);
+    setPoiFilter({ id: poi.id, name: poi.name });
+    sheetRef.current?.snapToIndex(1);
+  }, []);
+  const onGoToPlace = useCallback(
+    (poi: POI) => {
+      setSelectedPoiId(null);
+      send(cmd.focusPoi(poi.id));
+    },
+    [send],
+  );
+  const closeUserSheet = useCallback(() => setSelected(null), []);
+  const closePlaceSheet = useCallback(() => setSelectedPoiId(null), []);
   const clearPoiFilter = useCallback(() => setPoiFilter(null), []);
+  const clearGroupFilter = useCallback(() => setGroupFilter(null), []);
   const onSheetChange = useCallback((index: number) => setSheetIndex(Math.max(0, index)), []);
   const onLayout = useCallback((e: LayoutChangeEvent) => setContainerH(e.nativeEvent.layout.height), []);
 
-  const floatBottom = Math.round(containerH * SHEET_SNAP_FRACTIONS[sheetIndex]) + spacing.sm;
+  // pessoas no filtro por lugar = check-in ou a ~80 m (mesma regra da sheet do lugar)
+  const poiFilterIds = useMemo(() => {
+    if (!poiFilter) return null;
+    const poi = pois.find((p) => p.id === poiFilter.id);
+    if (!poi) return null;
+    return users.filter((u) => u.poi?.id === poi.id || distanceMeters(poi.latitude, poi.longitude, u.latitude, u.longitude) <= PLACE_RADIUS_M).map((u) => u.id);
+  }, [poiFilter, pois, users]);
+
+  const floatBottom = Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])) + spacing.sm;
   const peopleCount = users.length;
   const listLoading = Boolean(queryCenter) && (nearbyQuery.isPending || nearbyQuery.isPlaceholderData);
 
@@ -593,10 +877,20 @@ export function MapScreen() {
         onToggleVisibility={onToggleVisibility}
         onCenter={onCenter}
         boostMinutes={isBoosted && boost ? boost.minutesRemaining : null}
+        indicators={indicators}
       />
 
+      {moment ? (
+        <View style={styles.momentWrap} pointerEvents="none">
+          <FadeInView fromY={-10} fromScale={0.9} style={styles.moment} accessibilityLiveRegion="assertive">
+            <Text style={styles.momentTitle}>🔥 CRUZEI!</Text>
+            <Text style={styles.momentText}>Você e {moment.name} deram match</Text>
+          </FadeInView>
+        </View>
+      ) : null}
+
       <View style={[styles.floating, { bottom: floatBottom }]} pointerEvents="box-none">
-        <HotspotToast hotspot={hotspot} onPress={onFocusPoi} onHide={hideHotspot} />
+        <DiscoveryToast hint={hints.hint} onPress={onFocusPoi} onHide={hints.hide} />
 
         {toast ? (
           <FadeInView fromY={8} style={styles.toast} accessibilityLiveRegion="polite" accessibilityRole="alert">
@@ -640,24 +934,6 @@ export function MapScreen() {
             </Pressable>
           </View>
         ) : null}
-
-        {selectedUser ? (
-          <FadeInView fromY={12} fromScale={0.97} style={styles.card}>
-            <PersonRow
-              user={selectedUser}
-              distanceM={distanceById.get(selectedUser.id) ?? selectedUser.distanceM}
-              onPress={(u) => nav.navigate('UserCard', { userId: u.id, distanceM: distanceById.get(u.id) ?? u.distanceM })}
-              pressHint="Abre o perfil"
-              onLike={onLike}
-              onSuperLike={onSuperLike}
-              onPass={onPass}
-              highlighted
-            />
-            <Pressable onPress={() => setSelected(null)} accessibilityRole="button" accessibilityLabel="Fechar card" style={styles.cardClose} hitSlop={8}>
-              <Ionicons name="close" size={16} color={colors.gray[500]} />
-            </Pressable>
-          </FadeInView>
-        ) : null}
       </View>
 
       <MapBottomSheet
@@ -668,7 +944,10 @@ export function MapScreen() {
         isFree={isFree}
         isLoading={listLoading}
         poiFilter={poiFilter}
+        poiFilterIds={poiFilterIds}
         onClearPoiFilter={clearPoiFilter}
+        groupFilter={groupFilter}
+        onClearGroupFilter={clearGroupFilter}
         onChange={onSheetChange}
         animatedPosition={sheetPosition}
         onSelect={onSelectUser}
@@ -677,13 +956,39 @@ export function MapScreen() {
         onPass={onPass}
       />
 
+      <UserPreviewSheet
+        ref={userSheetRef}
+        user={selectedUser}
+        distanceM={selectedUser ? (distanceById.get(selectedUser.id) ?? null) : null}
+        liked={selectedLiked}
+        waved={selectedUser ? wavedIds.has(selectedUser.id) : false}
+        matchId={selectedMatchId}
+        onLike={onLike}
+        onWave={onWave}
+        onChat={onChat}
+        onOpenProfile={onOpenProfile}
+        onClose={closeUserSheet}
+      />
+
+      <PlacePreviewSheet
+        ref={placeSheetRef}
+        poi={selectedPoi}
+        people={placePeople}
+        distanceM={placeDistance}
+        hotMin={HOT_MIN}
+        onSeePeople={onSeePlacePeople}
+        onSelectPerson={onSelectUser}
+        onGo={onGoToPlace}
+        onClose={closePlaceSheet}
+      />
+
       {!webReady && !mapError ? (
         <View style={styles.loader} pointerEvents="none">
           <ActivityIndicator color={colors.primary} size="large" />
         </View>
       ) : null}
 
-      <MatchModal match={match} onClose={() => setMatch(null)} />
+      <MatchModal match={match} onClose={onMatchClosed} onViewOnMap={onViewMatchOnMap} />
     </View>
   );
 }
@@ -698,7 +1003,9 @@ const styles = StyleSheet.create({
   noticeText: { ...typography.bodySmall, color: colors.white, flex: 1 },
   noticeBtn: { minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.sm },
   noticeAction: { ...typography.label, color: colors.primary },
-  card: { marginHorizontal: spacing.lg, backgroundColor: colors.white, borderRadius: radius.lg, paddingVertical: spacing.xs, ...shadows.strong },
-  cardClose: { position: 'absolute', top: spacing.xs, right: spacing.xs, width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+  momentWrap: { position: 'absolute', top: '22%', left: 0, right: 0, alignItems: 'center' },
+  moment: { alignItems: 'center', paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.xl, backgroundColor: 'rgba(18,18,42,0.92)', borderWidth: 1.5, borderColor: colors.secondary, ...shadows.strong },
+  momentTitle: { ...typography.h1, color: colors.primary, letterSpacing: 2 },
+  momentText: { ...typography.body, color: colors.white, marginTop: 2 },
   loader: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.overlay },
 });

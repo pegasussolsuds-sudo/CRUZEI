@@ -4,6 +4,7 @@
 // O HTML (mapbox-html.ts) implementa exatamente estas assinaturas — não mude um lado sem o outro.
 
 import type { NearbyUser, POI } from '@cruzei/shared-types';
+import type { AvatarLayer } from '../../avatar';
 
 export type MapTheme = 'day' | 'dusk' | 'night';
 export type PerfTier = 'low' | 'mid' | 'high';
@@ -20,10 +21,19 @@ export interface MeState {
   isAnonymous: boolean;
   photoUrl: string | null;
   name: string;
+  /** chave do visual do avatar (defineAvatars) + efeito especial do config */
+  avatarKey: string;
+  aura: string;
 }
 
+/** pessoa como vai pro mapa: NearbyUser + chave do avatar (o HTML busca as camadas em avatarDefs[avatarKey]) */
+export type MapUser = NearbyUser & { avatarKey: string; aura: string };
+
+/** { avatarKey: camadas } — só as chaves que o WebView ainda não conhece */
+export type AvatarDefs = Record<string, AvatarLayer[]>;
+
 export interface MapDataPayload {
-  users: NearbyUser[];
+  users: MapUser[];
   pois: POI[];
   /** mínimo de userCount pra um POI virar hotspot (default 5 no HTML) */
   hotMin?: number;
@@ -59,6 +69,8 @@ export type WebMsg =
   | { type: 'poiTap'; id: number }
   | { type: 'mapTap' }
   | { type: 'hotspotBorn'; poiId: number; name: string; userCount: number }
+  | { type: 'clusterTap'; ids: string[]; lat: number; lng: number }
+  | { type: 'matchMomentDone'; userId: string | null; shown: boolean }
   | { type: 'perf'; fps: number }
   | { type: 'photoBlocked'; url: string };
 
@@ -71,6 +83,8 @@ const WEB_MSG_TYPES: ReadonlySet<string> = new Set<WebMsg['type']>([
   'poiTap',
   'mapTap',
   'hotspotBorn',
+  'clusterTap',
+  'matchMomentDone',
   'perf',
   'photoBlocked',
 ]);
@@ -123,6 +137,13 @@ export function parseWebMsg(raw: string): WebMsg | null {
     case 'hotspotBorn':
       if (!isNum(m.poiId) || !isNum(m.userCount)) return null;
       return { type, poiId: m.poiId, name: typeof m.name === 'string' ? m.name : '', userCount: m.userCount };
+    case 'clusterTap': {
+      if (!Array.isArray(m.ids) || !isNum(m.lat) || !isNum(m.lng)) return null;
+      const ids = (m.ids as unknown[]).filter((v): v is string => typeof v === 'string' && v.length > 0);
+      return ids.length ? { type, ids, lat: m.lat, lng: m.lng } : null;
+    }
+    case 'matchMomentDone':
+      return { type, userId: typeof m.userId === 'string' ? m.userId : null, shown: m.shown === true };
     case 'perf':
       return isNum(m.fps) ? { type, fps: m.fps } : null;
     case 'photoBlocked':
@@ -146,7 +167,9 @@ export type CommandName =
   | 'select'
   | 'focusPoi'
   | 'setPadding'
-  | 'burst';
+  | 'burst'
+  | 'defineAvatars'
+  | 'matchMoment';
 
 function call(fn: CommandName, ...args: unknown[]): string {
   // descarta opcionais finais não informados (zoom/opts) em vez de mandar null pro HTML
@@ -172,6 +195,8 @@ export const cmd = {
   focusPoi: (id: number): string => call('focusPoi', id),
   setPadding: (padding: MapPadding): string => call('setPadding', padding),
   burst: (payload: BurstPayload): string => call('burst', payload),
+  defineAvatars: (defs: AvatarDefs): string => call('defineAvatars', defs),
+  matchMoment: (userId: string): string => call('matchMoment', { userId }),
 } as const;
 
 /**

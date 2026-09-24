@@ -75,6 +75,8 @@ const PERKS: { icon: IoniconName; label: string; hint: string }[] = [
   { icon: 'refresh-outline', label: 'Reverter última curtida', hint: 'Passou sem querer? Volta.' },
   { icon: 'navigate-outline', label: 'Lugares visitados (heat map)', hint: 'Onde você mais cruza gente' },
   { icon: 'star-outline', label: 'Selo verificado prioritário', hint: 'Fila VIP pra verificação' },
+  { icon: 'color-palette-outline', label: 'Itens exclusivos de avatar', hint: 'Auras, cores neon e roupas só pra Premium' },
+  { icon: 'locate-outline', label: 'Destaque no mapa', hint: 'Seu avatar aparece maior em áreas movimentadas' },
 ];
 
 const GRADIENT_PREMIUM = [colors.secondary, colors.accent, colors.primary];

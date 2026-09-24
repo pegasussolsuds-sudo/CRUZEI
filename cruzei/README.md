@@ -80,3 +80,5 @@ pnpm clean              # limpa tudo
 Auth, perfil, mapa, presença (geohash + Redis), matches com contexto, chat 48h.
 
 ✅ **Marco 2 — mapa 3D vivo (Mapbox GL JS, camadas GL, tema Day/Dusk/Night) + redesign premium (Reanimated 3 + Skia + Moti) validados no Motorola (24/09/2026).** Ver §11 do relatório: Splash, Welcome, Phone, Code, ProfileSetup, PhotoUpload, Map (bottom sheet, hotspots, boost), Match, Chat, Premium, Boost e UserCard.
+
+✅ **Marco 3 — universo social (24/09/2026).** Avatar Cruzei vetorial e modular (catálogo com tiers, customizador, mesmo desenho no app e no mapa), pessoas como personagens no mapa com clusters, sheets de pessoa/lugar, acenar, match físico no mapa ("🔥 CRUZEI!"), eventos, dicas de descoberta e privacidade por degraus (posição borrada, distância aproximada, anônimos fora do mapa). Ver §12 do relatório.

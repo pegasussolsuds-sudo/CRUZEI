@@ -23,6 +23,12 @@ export interface PoiFilter {
   name: string;
 }
 
+/** grupo de pessoas num mesmo ponto (toque num cluster no zoom máximo) */
+export interface GroupFilter {
+  ids: string[];
+  label: string;
+}
+
 export interface MapBottomSheetHandle {
   snapToIndex: (index: number) => void;
   collapse: () => void;
@@ -38,7 +44,11 @@ export interface MapBottomSheetProps {
   isLoading: boolean;
   /** filtro por POI (tap num hotspot) */
   poiFilter: PoiFilter | null;
+  /** ids de quem conta como 'nesse lugar' (check-in ou a poucos metros) — o MapScreen calcula */
+  poiFilterIds?: string[] | null;
   onClearPoiFilter: () => void;
+  groupFilter?: GroupFilter | null;
+  onClearGroupFilter?: () => void;
   onChange: (index: number) => void;
   /** posição animada do topo do sheet (gorhom) — o MapScreen usa pra o padding do mapa acompanhar o arraste */
   animatedPosition?: SharedValue<number>;
@@ -61,7 +71,7 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
 ];
 
 export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
-  { users, distanceById, radiusM, isFree, isLoading, poiFilter, onClearPoiFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
+  { users, distanceById, radiusM, isFree, isLoading, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -78,19 +88,28 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     [],
   );
 
-  const distanceOf = useCallback((u: NearbyUser) => distanceById.get(u.id) ?? u.distanceM, [distanceById]);
+  // null (pessoa não mostra distância) vira Infinity: fica por último e a UI mostra 'perto'
+  const distanceOf = useCallback((u: NearbyUser) => distanceById.get(u.id) ?? u.distanceM ?? Number.POSITIVE_INFINITY, [distanceById]);
 
   const filtered = useMemo(() => {
     let list = users;
-    if (poiFilter) list = list.filter((u) => u.poi?.id === poiFilter.id);
+    if (groupFilter) {
+      const ids = new Set(groupFilter.ids);
+      list = list.filter((u) => ids.has(u.id));
+    } else if (poiFilter) {
+      const ids = poiFilterIds ? new Set(poiFilterIds) : null;
+      list = list.filter((u) => (ids ? ids.has(u.id) : u.poi?.id === poiFilter.id));
+    }
     if (filter === 'online') list = list.filter((u) => u.isOnline);
     else if (filter === 'near') list = list.filter((u) => distanceOf(u) <= NEAR_M);
     return list;
-  }, [users, poiFilter, filter, distanceOf]);
+  }, [users, groupFilter, poiFilter, poiFilterIds, filter, distanceOf]);
 
-  const title = poiFilter
-    ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
-    : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}`;
+  const title = groupFilter
+    ? groupFilter.label
+    : poiFilter
+      ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
+      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}`;
 
   const renderItem = useCallback(
     ({ item, index }: { item: NearbyUser; index: number }) => (
@@ -138,7 +157,13 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
           </Pulse>
         ) : null}
       </View>
-      {poiFilter ? (
+      {groupFilter ? (
+        <Pressable onPress={onClearGroupFilter} accessibilityRole="button" accessibilityLabel="Limpar filtro do grupo" style={styles.poiChip}>
+          <Ionicons name="close-circle" size={16} color={colors.secondary} />
+          <Text style={styles.poiChipText}>ver todo mundo por perto</Text>
+        </Pressable>
+      ) : null}
+      {poiFilter && !groupFilter ? (
         <Pressable onPress={onClearPoiFilter} accessibilityRole="button" accessibilityLabel="Limpar filtro do lugar" style={styles.poiChip}>
           <Ionicons name="close-circle" size={16} color={colors.secondary} />
           <Text style={styles.poiChipText}>ver todo mundo por perto</Text>
@@ -166,14 +191,16 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
   );
 
   // empty state com contexto: filtro por lugar / chip ativo dizem POR QUE a lista tá vazia
-  const emptyTitle = poiFilter
+  const emptyTitle = groupFilter
+    ? 'Ninguém nesse ponto agora'
+    : poiFilter
     ? `Ninguém no ${poiFilter.name} agora`
     : filter === 'online'
       ? 'Ninguém online agora'
       : filter === 'near'
         ? `Ninguém a menos de ${NEAR_M} m`
         : 'Ninguém por perto ainda 👀';
-  const emptyText = poiFilter || filter !== 'all' ? 'Tira o filtro pra ver todo mundo' : 'Os hotspots da cidade continuam vivos no mapa';
+  const emptyText = groupFilter || poiFilter || filter !== 'all' ? 'Tira o filtro pra ver todo mundo' : 'Os hotspots da cidade continuam vivos no mapa';
   const empty = !isLoading ? (
     <FadeInView fromY={12} style={styles.empty}>
       <Text style={styles.emptyTitle}>{emptyTitle}</Text>

@@ -37,6 +37,8 @@ import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
 import { useVisibility } from '../../hooks/useVisibility';
 import { FadeInView, Glow, Pulse, ScaleOnPress } from '../../components/animated';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import type { User } from '@cruzei/shared-types';
@@ -61,6 +63,7 @@ const PARALLAX_RANGE = 170;
 const AVATAR = 128;
 const RING = 152;
 const RING_STROKE = 6;
+const CRUZEI_AVATAR = 132; // boneco no card "seu avatar"
 
 const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 
@@ -157,6 +160,8 @@ export function ProfileScreen() {
   const goEdit = () => nav.navigate('EditProfile');
   const goBoost = () => nav.navigate('Boost');
   const goPhotos = () => nav.navigate('PhotoUpload', { fromOnboarding: false });
+  const goAvatar = () => nav.navigate('AvatarSetup', { fromOnboarding: false });
+  const cruzeiAvatar = resolveAvatar(me.avatar, me.id, me.gender);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -262,6 +267,32 @@ export function ProfileScreen() {
           <ScaleOnPress onPress={goPhotos} style={[styles.actionBtn, styles.actionPhotos]} accessibilityRole="button" accessibilityLabel="Gerenciar fotos">
             <Ionicons name="images-outline" size={18} color={colors.black} />
             <Text style={styles.actionPhotosText}>Fotos</Text>
+          </ScaleOnPress>
+        </FadeInView>
+
+        {/* Seu avatar — o boneco que aparece no mapa */}
+        <FadeInView delay={500} fromY={16} style={styles.avatarCard}>
+          <ScaleOnPress
+            onPress={goAvatar}
+            pressedScale={0.98}
+            haptic={false}
+            style={styles.avatarCardInner}
+            accessibilityRole="button"
+            accessibilityLabel="Seu avatar. Toque pra personalizar"
+          >
+            <View style={styles.avatarStage}>
+              <Glow color={colors.primary} spread={22} intensity={0.35} shape="circle" cycleMs={3000}>
+                <CruzeiAvatar config={cruzeiAvatar} mode="full" size={CRUZEI_AVATAR} groundShadow accessibilityLabel="Seu avatar Cruzei" />
+              </Glow>
+            </View>
+            <View style={styles.avatarInfo}>
+              <Text style={styles.avatarTitle}>seu avatar</Text>
+              <Text style={styles.avatarHintText}>É assim que você aparece no mapa pra quem te cruza.</Text>
+              <View style={styles.avatarBtn}>
+                <Ionicons name="color-palette-outline" size={16} color={colors.black} />
+                <Text style={styles.avatarBtnText}>Personalizar</Text>
+              </View>
+            </View>
           </ScaleOnPress>
         </FadeInView>
 
@@ -535,6 +566,25 @@ const styles = StyleSheet.create({
   actionBoostText: { ...typography.label, color: colors.primary },
   actionPhotos: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.gray[200] },
   actionPhotosText: { ...typography.label, color: colors.black },
+
+  avatarCard: { marginBottom: spacing.xl, borderRadius: radius.lg, overflow: 'hidden', backgroundColor: colors.black, ...shadows.medium },
+  avatarCardInner: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, paddingLeft: spacing.lg },
+  avatarStage: { width: CRUZEI_AVATAR, alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.sm },
+  avatarInfo: { flex: 1, gap: spacing.xs },
+  avatarTitle: { ...typography.h3, color: colors.white },
+  avatarHintText: { ...typography.bodySmall, color: colors.gray[400] },
+  avatarBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.xs,
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary,
+  },
+  avatarBtnText: { ...typography.label, color: colors.black },
 
   section: { marginBottom: spacing.xl },
   sectionTitle: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', marginBottom: spacing.sm },

@@ -62,7 +62,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   var API = {};
   // window.cruzei existe desde já: antes do 'ready' os comandos ficam na fila e são reaplicados em ordem.
   window.cruzei = {};
-  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst'].forEach(function (name) {
+  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst', 'defineAvatars', 'matchMoment'].forEach(function (name) {
     window.cruzei[name] = function () {
       var args = Array.prototype.slice.call(arguments);
       if (!ready) { queue.push({ name: name, args: args }); return; }
@@ -311,12 +311,17 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   // ======================================================================
   // 4. Imagens: avatares, POIs, imagens animadas compartilhadas
   // ======================================================================
-  var IMG = { avatar: 64, boost: 96, poi: 44, sonar: 120, ring: 72, aura: 110 };
-  var CAT_EMOJI = { bar:'🍺', restaurant:'🍽️', cafe:'☕', park:'🌳', shopping:'🏬', gym:'🏋️', show:'🎸', event:'🎭', beach:'🏖️', museum:'🏛️', other:'📍' };
+  var IMG = { fig: { w: 60, h: 96 }, figBoost: { w: 80, h: 128 }, poi: 44, sonar: 120, ring: 72, aura: 110 };
+  var FIG_PAD = 18; // px reservados abaixo dos pés (poça de luz da aura); os pés ficam a FIG_PAD-2 px da borda inferior
+  function figOffset(dim) { return dim.h - (2 + 134 * ((dim.h - FIG_PAD) / 140)); }
+  var CAT_EMOJI = { bar:'🍺', restaurant:'🍽️', cafe:'☕', park:'🌳', shopping:'🏬', gym:'🏋️', show:'🎸', event:'⚡', beach:'🏖️', museum:'🏛️', other:'📍' };
   var imgCache = {};        // imageId -> signature
-  var photoCache = {};      // url -> HTMLImageElement | 'blocked'
+  var avatarDefs = {};      // avatarKey -> camadas vetoriais (vêm do RN via defineAvatars; mesma geometria do app)
+  var keyWaiters = {};      // avatarKey -> { userId: true } (quem ainda está com silhueta esperando a definição)
+  var AURA_RGB = { lime: '127,255,0', magenta: '255,20,147', gold: '255,215,0', fest: '255,111,177' };
 
-  function makeCanvas(size) { var c = document.createElement('canvas'); c.width = size * 2; c.height = size * 2; var ctx = c.getContext('2d'); ctx.scale(2, 2); return { c: c, ctx: ctx }; }
+  function makeCanvasWH(w, h) { var c = document.createElement('canvas'); c.width = w * 2; c.height = h * 2; var ctx = c.getContext('2d'); ctx.scale(2, 2); return { c: c, ctx: ctx, w: w, h: h }; }
+  function makeCanvas(size) { return makeCanvasWH(size, size); }
   function imageDataOf(cv) { return cv.ctx.getImageData(0, 0, cv.c.width, cv.c.height); }
   function putImage(id, cv) {
     var data = imageDataOf(cv);
@@ -325,90 +330,105 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       else map.addImage(id, data, { pixelRatio: 2 });
     } catch (e) { warn('image', id, e && e.message); }
   }
-  function initials(name) { return String(name || '?').trim().split(/\\s+/).map(function (p) { return p.charAt(0); }).slice(0, 2).join('').toUpperCase(); }
-  function circleClip(ctx, cx, cy, r) { ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.closePath(); ctx.clip(); }
-
-  // Estado do avatar: cor da borda + extras (docs 17: online lima / visto há pouco dourado / anônimo cinza / premium magenta / verificado / boost)
-  function drawAvatar(cv, size, u, img) {
-    var ctx = cv.ctx, cx = size / 2, cy = size / 2;
-    var boosted = !!u.isBoosted;
-    var r = boosted ? size * 0.30 : size * 0.36;   // deixa margem pra aura/anel
-    var border = u.isAnonymous ? '#A3A3A3' : (isRecent(u.recordedAt, 15) ? '#7FFF00' : '#FFD700');
-    ctx.clearRect(0, 0, size, size);
-    // aura de boost (dourada) / glow premium_plus (magenta)
-    if (boosted) { var g = ctx.createRadialGradient(cx, cy, r, cx, cy, r * 1.6); g.addColorStop(0, 'rgba(255,215,0,0.55)'); g.addColorStop(1, 'rgba(255,215,0,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r * 1.6, 0, Math.PI * 2); ctx.fill(); }
-    else if (u.premiumTier === 'premium_plus') { var g2 = ctx.createRadialGradient(cx, cy, r, cx, cy, r * 1.45); g2.addColorStop(0, 'rgba(255,20,147,0.55)'); g2.addColorStop(1, 'rgba(255,20,147,0)'); ctx.fillStyle = g2; ctx.beginPath(); ctx.arc(cx, cy, r * 1.45, 0, Math.PI * 2); ctx.fill(); }
-    // sombra
-    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2;
-    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-    // borda por estado
-    ctx.fillStyle = border; ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2); ctx.fill();
-    if (u.premiumTier === 'premium' || u.premiumTier === 'premium_plus') { ctx.strokeStyle = '#FF1493'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx, cy, r + 5, 0, Math.PI * 2); ctx.stroke(); }
-    // foto / placeholder
-    ctx.save(); circleClip(ctx, cx, cy, r);
-    if (u.isAnonymous) {
-      ctx.fillStyle = '#A3A3A3'; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
-      ctx.fillStyle = '#FFFFFF'; ctx.font = (r * 1.1) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🕶️', cx, cy + 1);
-    } else if (img) {
-      var s = Math.min(img.naturalWidth || img.width, img.naturalHeight || img.height);
-      var sx = ((img.naturalWidth || img.width) - s) / 2, sy = ((img.naturalHeight || img.height) - s) / 2;
-      ctx.drawImage(img, sx, sy, s, s, cx - r, cy - r, r * 2, r * 2);
-    } else {
-      ctx.fillStyle = '#7FFF00'; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
-      ctx.fillStyle = '#0A0A1A'; ctx.font = '700 ' + (r * 0.85) + 'px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(initials(u.name), cx, cy + 1);
-    }
-    ctx.restore();
-    // verificado: bolinha #008B8B com check
-    if (u.isVerified && !u.isAnonymous) {
-      var bx = cx + r * 0.7, by = cy + r * 0.7, br = r * 0.32;
-      ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(bx, by, br + 1.5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#008B8B'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(bx - br * 0.45, by); ctx.lineTo(bx - br * 0.1, by + br * 0.38); ctx.lineTo(bx + br * 0.5, by - br * 0.4); ctx.stroke();
-    }
-  }
   function isRecent(iso, minutes) { if (!iso) return true; var t = Date.parse(iso); return !isNaN(t) && (Date.now() - t) < minutes * 60000; }
 
-  function avatarSignature(u) { return [u.recordedAt || '', u.isAnonymous ? 1 : 0, u.isBoosted ? 1 : 0, u.mainPhotoUrl || '', u.premiumTier || 'free', u.isVerified ? 1 : 0, u.name || ''].join('|'); }
+  // Desenha as camadas vetoriais (paths SVG) num canvas 2D — Path2D aceita o mesmo 'd' do react-native-svg
+  function drawLayers(ctx, layers, x, y, scale) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+    for (var i = 0; i < layers.length; i++) {
+      var l = layers[i]; var p;
+      try { p = new Path2D(l.d); } catch (e) { continue; }
+      ctx.globalAlpha = (l.o == null) ? 1 : l.o;
+      if (l.f) { ctx.fillStyle = l.f; ctx.fill(p, l.r || 'nonzero'); }
+      if (l.s) { ctx.lineWidth = l.w || 1; ctx.lineCap = l.c || 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = l.s; ctx.stroke(p); }
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+  // Silhueta neutra enquanto a definição do avatar não chegou (nunca fica sem boneco)
+  function drawSilhouette(ctx, x, y, scale) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.fillStyle = '#8A8A96';
+    ctx.beginPath(); ctx.ellipse(50, 135, 26, 5, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+    ctx.fillStyle = '#8A8A96';
+    ctx.beginPath(); ctx.arc(50, 33, 21, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(31, 60, 38, 36); ctx.fillRect(34, 94, 13, 34); ctx.fillRect(53, 94, 13, 34);
+    ctx.fillRect(20, 62, 10, 36); ctx.fillRect(70, 62, 10, 36);
+    ctx.restore();
+  }
+  function figureAura(u) {
+    if (u.isBoosted) return AURA_RGB.gold;
+    if (u.aura && AURA_RGB[u.aura]) return AURA_RGB[u.aura];
+    if (u.premiumTier === 'premium_plus') return AURA_RGB.magenta;
+    return null;
+  }
+  // Figura em pé: poça de luz (aura) no chão, avatar vetorial, anel de presença nos pés, selo verificado
+  function drawFigure(cv, u, layers) {
+    var ctx = cv.ctx, w = cv.w, h = cv.h;
+    ctx.clearRect(0, 0, w, h);
+    var scale = (h - FIG_PAD) / 140;
+    var x = (w - 100 * scale) / 2, y = 2;
+    var footY = y + 134 * scale, cx = w / 2;
+    var aura = figureAura(u);
+    if (aura) {
+      var g = ctx.createRadialGradient(cx, footY - 2, 3, cx, footY - 2, w * 0.5);
+      g.addColorStop(0, 'rgba(' + aura + ',0.65)'); g.addColorStop(1, 'rgba(' + aura + ',0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(cx, footY - 2, w * 0.5, w * 0.24, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (layers) drawLayers(ctx, layers, x, y, scale); else drawSilhouette(ctx, x, y, scale);
+    var ring = isRecent(u.recordedAt, 15) ? '#7FFF00' : '#FFD700';
+    ctx.strokeStyle = ring; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(cx, footY - 3, w * 0.36, w * 0.13, 0, 0, Math.PI * 2); ctx.stroke();
+    if (u.premiumTier === 'premium' || u.premiumTier === 'premium_plus') { ctx.strokeStyle = '#FF1493'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(cx, footY - 3, w * 0.43, w * 0.16, 0, 0, Math.PI * 2); ctx.stroke(); }
+    if (u.isVerified) {
+      var bx = x + 76 * scale, by = y + 18 * scale, br = 5 * scale + 2;
+      ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(bx, by, br + 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#008B8B'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(bx - br * 0.45, by); ctx.lineTo(bx - br * 0.1, by + br * 0.38); ctx.lineTo(bx + br * 0.5, by - br * 0.4); ctx.stroke();
+    }
+  }
 
-  // Garante a imagem do avatar (placeholder imediato; foto quando carregar). Retorna o imageId.
+  function avatarSignature(u) { return [u.avatarKey || '', avatarDefs[u.avatarKey] ? 1 : 0, isRecent(u.recordedAt, 15) ? 1 : 0, u.isBoosted ? 1 : 0, u.premiumTier || 'free', u.isVerified ? 1 : 0, u.aura || ''].join('|'); }
+
+  // Garante a imagem da figura (silhueta imediata; avatar real quando a definição da chave existir). Retorna o imageId.
   function ensureAvatar(u) {
     var id = 'av-' + u.id;
-    var size = u.isBoosted ? IMG.boost : IMG.avatar;
-    var sig = avatarSignature(u) + '|' + size;
+    var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
+    var dims = dim.w + 'x' + dim.h;
+    var sig = avatarSignature(u) + '|' + dims;
     if (imgCache[id] === sig) return id;
-    // tamanho mudou (boost ligou/desligou) → precisa remover pra readicionar com outra dimensão
-    if (imgCache[id] && imgCache[id].split('|').pop() !== String(size)) { try { map.removeImage(id); } catch (e) {} }
+    if (imgCache[id] && imgCache[id].split('|').pop() !== dims) { try { map.removeImage(id); } catch (e) {} }
     imgCache[id] = sig;
-    var cv = makeCanvas(size);
-    var url = (!u.isAnonymous && u.mainPhotoUrl) ? u.mainPhotoUrl : null;
-    var cached = url ? photoCache[url] : null;
-    if (cached && cached !== 'blocked') { drawAvatar(cv, size, u, cached); putImage(id, cv); return id; }
-    drawAvatar(cv, size, u, null); putImage(id, cv);
-    if (url && !cached) {
-      var img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = function () {
-        photoCache[url] = img;
-        if (imgCache[id] !== sig) return;
-        try { var cv2 = makeCanvas(size); drawAvatar(cv2, size, u, img); putImage(id, cv2); }
-        catch (e) { photoCache[url] = 'blocked'; send('photoBlocked', { url: url }); }
-        map.triggerRepaint();
-      };
-      img.onerror = function () { photoCache[url] = 'blocked'; send('photoBlocked', { url: url }); };
-      img.src = url;
-    }
+    var layers = u.avatarKey ? avatarDefs[u.avatarKey] : null;
+    if (u.avatarKey && !layers) { (keyWaiters[u.avatarKey] = keyWaiters[u.avatarKey] || {})[u.id] = true; }
+    var cv = makeCanvasWH(dim.w, dim.h);
+    drawFigure(cv, u, layers);
+    putImage(id, cv);
     return id;
+  }
+  // RN manda { avatarKey: layers[] } só pras chaves que o WebView ainda não conhece (cache por visual, não por pessoa)
+  function defineAvatars(defs) {
+    if (!defs) return;
+    var touched = false;
+    for (var key in defs) {
+      if (!defs[key] || !defs[key].length) continue;
+      avatarDefs[key] = defs[key];
+      var waiting = keyWaiters[key]; delete keyWaiters[key];
+      if (waiting) { for (var uid in waiting) { var wu = state.users[uid]; if (wu) { ensureAvatar(wu); touched = true; } } }
+      if (state.me && state.me.avatarKey === key) { imgCache['me-avatar'] = null; setMe(state.me); touched = true; }
+    }
+    if (touched) map.triggerRepaint();
   }
 
   function ensurePoiImage(p, hot) {
-    var id = hot ? 'poi-hot' : ('poi-' + (p.category || 'other') + (p.isPartner ? '-partner' : ''));
+    var isEvent = p.category === 'event';
+    var id = hot ? 'poi-hot' : (isEvent ? 'poi-event' : ('poi-' + (p.category || 'other') + (p.isPartner ? '-partner' : '')));
     if (imgCache[id]) return id;
     imgCache[id] = '1';
     var size = IMG.poi, cv = makeCanvas(size), ctx = cv.ctx, c = size / 2;
     ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 2;
-    ctx.fillStyle = hot ? '#FF1493' : '#FFD700'; ctx.beginPath(); ctx.arc(c, c, c - 5, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    ctx.fillStyle = (hot || isEvent) ? '#FF1493' : '#FFD700'; ctx.beginPath(); ctx.arc(c, c, c - 5, 0, Math.PI * 2); ctx.fill(); ctx.restore();
     ctx.strokeStyle = (p.isPartner && !hot) ? '#FF1493' : '#FFFFFF'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(c, c, c - 5, 0, Math.PI * 2); ctx.stroke();
     if (hot) { ctx.fillStyle = '#FFFFFF'; ctx.font = '700 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🔥', c, c + 1); }
+    else if (isEvent) { ctx.fillStyle = '#FFFFFF'; ctx.font = '700 17px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('⚡', c, c + 1); }
     else { ctx.font = '19px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(CAT_EMOJI[p.category] || CAT_EMOJI.other, c, c + 1); }
     putImage(id, cv);
     return id;
@@ -491,13 +511,16 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   // ======================================================================
   // feature-state só funciona em paint: a entrada escalonada usa icon-opacity ('a'); icon-size (layout) é fixo por zoom
   var S_ALPHA = ['coalesce', ['feature-state', 'a'], 1];
+  // lugar em alta / evento aparece maior ('zoom' só pode ser raiz do interpolate; o fator entra nas saídas)
+  var POI_SCALE = ['case', ['==', ['get', 'hot'], true], 1.3, ['==', ['get', 'event'], true], 1.15, 1];
   function addCruzeiLayers() {
-    map.addSource('users', { type: 'geojson', data: empty(), cluster: true, clusterMaxZoom: 14, clusterRadius: 40, promoteId: 'id' });
+    map.addSource('users', { type: 'geojson', data: empty(), cluster: true, maxzoom: 22, clusterMaxZoom: 21, clusterRadius: 70, promoteId: 'id' });
     map.addSource('users-boost', { type: 'geojson', data: empty(), promoteId: 'id' });
     map.addSource('pois', { type: 'geojson', data: empty(), promoteId: 'id' });
     map.addSource('me', { type: 'geojson', data: empty() });
     map.addSource('sel', { type: 'geojson', data: empty() });
     map.addSource('fx', { type: 'geojson', data: empty(), promoteId: 'id' });
+    map.addSource('spot', { type: 'geojson', data: empty() }); // pessoa em destaque (momento do match): sai do cluster e fica por cima
 
     animImages.make('sonar-1', IMG.sonar, sonarDrawer(1, 2.4));
     animImages.make('sonar-2', IMG.sonar, sonarDrawer(2, 1.9));
@@ -509,22 +532,22 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
 
     // auras (boost/premium+) por baixo dos avatares
     map.addLayer({ id: 'cz-aura', type: 'symbol', source: 'users', filter: ['all', ['!', ['has', 'point_count']], ['has', 'aura']],
-      layout: { 'icon-image': ['get', 'aura'], 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      layout: { 'icon-image': ['get', 'aura'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map',
                 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 16, 0.9, 18, 1.2] },
       paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-aura-boost', type: 'symbol', source: 'users-boost',
-      layout: { 'icon-image': 'aura-boost', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      layout: { 'icon-image': 'aura-boost', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map',
                 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.8, 16, 1.4, 18, 1.8] },
       paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     // sonar dos hotspots: acima das auras, abaixo dos avatares — anéis grandes pra ler de longe
-    map.addLayer({ id: 'cz-hot-sonar', type: 'symbol', source: 'pois', filter: ['==', ['get', 'hot'], true],
+    map.addLayer({ id: 'cz-hot-sonar', type: 'symbol', source: 'pois', filter: ['any', ['==', ['get', 'hot'], true], ['==', ['get', 'event'], true]],
       layout: { 'icon-image': ['get', 'sonar'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'viewport',
                 'icon-size': ['interpolate', ['linear'], ['zoom'], 13, 1.0, 16, 1.8, 18, 2.4] },
       paint: { 'icon-emissive-strength': 1 } });
     // POIs
     map.addLayer({ id: 'cz-poi', type: 'symbol', source: 'pois',
       layout: { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'center',
-                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.8, 18, 1.0] },
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, ['*', 0.55, POI_SCALE], 15, ['*', 0.8, POI_SCALE], 18, ['*', 1.0, POI_SCALE]] },
       paint: { 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-poi-label', type: 'symbol', source: 'pois', minzoom: 14.5,
       layout: { 'text-field': ['step', ['zoom'], '', 15, ['get', 'label']], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 1.6],
@@ -532,36 +555,44 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.3, 'text-emissive-strength': 1 } });
     // clusters
     map.addLayer({ id: 'cz-cluster', type: 'circle', source: 'users', filter: ['has', 'point_count'],
-      paint: { 'circle-color': '#FF1493', 'circle-radius': ['step', ['get', 'point_count'], 16, 10, 20, 30, 26], 'circle-stroke-color': '#FFFFFF', 'circle-stroke-width': 3, 'circle-emissive-strength': 1 } });
+      paint: { 'circle-color': '#12122A', 'circle-radius': ['step', ['get', 'point_count'], 19, 10, 23, 30, 28], 'circle-stroke-color': '#7FFF00', 'circle-stroke-width': 2.5, 'circle-emissive-strength': 1, 'circle-pitch-alignment': 'viewport' } });
     map.addLayer({ id: 'cz-cluster-count', type: 'symbol', source: 'users', filter: ['has', 'point_count'],
-      layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-font': FONTS, 'text-size': 13, 'text-allow-overlap': true },
-      paint: { 'text-color': '#FFFFFF', 'text-emissive-strength': 1 } });
+      layout: { 'icon-image': 'people-icon', 'icon-size': 0.5, 'icon-offset': [-22, 0], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'viewport',
+                'text-field': ['get', 'point_count_abbreviated'], 'text-font': FONTS, 'text-size': 13, 'text-offset': [0.55, 0], 'text-allow-overlap': true, 'text-ignore-placement': true, 'text-pitch-alignment': 'viewport' },
+      paint: { 'text-color': '#FFFFFF', 'text-emissive-strength': 1, 'icon-emissive-strength': 1 } });
     // pessoas
     var userLayout = function (boost) {
-      return { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'center',
+      return { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom',
+               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': [0, figOffset(boost ? IMG.figBoost : IMG.fig)],
                'icon-size': boost
-                 ? ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.9, 18, 1.15]
-                 : ['interpolate', ['linear'], ['zoom'], 12, 0.42, 15, 0.66, 18, 0.85] };
+                 ? ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.85, 18, 1.1]
+                 : ['interpolate', ['linear'], ['zoom'], 12, 0.42, 15, 0.72, 18, 0.95] };
     };
     map.addLayer({ id: 'cz-users', type: 'symbol', source: 'users', filter: ['!', ['has', 'point_count']], layout: userLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-users-boost', type: 'symbol', source: 'users-boost', layout: userLayout(true), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
-    var labelLayout = { 'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 1.9], 'text-optional': true, 'text-max-width': 8 };
+    var labelLayout = { 'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true, 'text-max-width': 8 };
     map.addLayer({ id: 'cz-users-label', type: 'symbol', source: 'users', minzoom: 15.5, filter: ['!', ['has', 'point_count']], layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-users-boost-label', type: 'symbol', source: 'users-boost', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-emissive-strength': 1 } });
     // seleção
     map.addLayer({ id: 'cz-sel', type: 'symbol', source: 'sel',
-      layout: { 'icon-image': 'sel-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.45, 15, 0.7, 18, 0.9] },
+      layout: { 'icon-image': 'sel-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map', 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.45, 15, 0.7, 18, 0.9] },
       paint: { 'icon-emissive-strength': 1 } });
     // eu
     map.addLayer({ id: 'cz-me-ring', type: 'symbol', source: 'me',
-      layout: { 'icon-image': 'me-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'viewport', 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.7, 16, 1.1, 18, 1.4] },
+      layout: { 'icon-image': 'me-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map', 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.7, 16, 1.1, 18, 1.4] },
       paint: { 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-me-heading', type: 'symbol', source: 'me', filter: ['has', 'heading'],
       layout: { 'icon-image': 'me-cone', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-rotate': ['get', 'heading'], 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'map', 'icon-size': 1 },
       paint: { 'icon-opacity': 0.9, 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-me', type: 'symbol', source: 'me',
-      layout: { 'icon-image': 'me-avatar', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.7, 18, 0.9] },
+      layout: { 'icon-image': 'me-avatar', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'], 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.78, 18, 1.0] },
       paint: { 'icon-emissive-strength': 1 } });
+    // destaque do momento: figura da pessoa por cima de tudo, um pouco maior
+    map.addLayer({ id: 'cz-spot', type: 'symbol', source: 'spot',
+      layout: { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'],
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.9, 18, 1.15],
+                'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 12, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true },
+      paint: { 'icon-emissive-strength': 1, 'text-color': '#0A0A1A', 'text-halo-color': '#7FFF00', 'text-halo-width': 1.4, 'text-emissive-strength': 1 } });
     // efeitos one-shot (curtir / super / match)
     map.addLayer({ id: 'cz-fx-outer', type: 'circle', source: 'fx',
       paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 6, 1, 70], 'circle-color': ['get', 'color2'],
@@ -570,6 +601,11 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 2, 0.5, 34, 1, 40], 'circle-color': ['get', 'color'],
                'circle-opacity': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 0.9, 0.6, 0.35, 1, 0], 'circle-emissive-strength': 1, 'circle-pitch-alignment': 'map' } });
 
+    // ícone 'pessoas' do cluster (duas cabeças, lima)
+    (function () { var size = 32, cv = makeCanvas(size), ctx = cv.ctx; ctx.fillStyle = '#7FFF00';
+      ctx.beginPath(); ctx.arc(11, 11, 5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(22, 12, 4.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(11, 25, 9, 7, 0, Math.PI, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.ellipse(22, 25.5, 7, 6, 0, Math.PI, Math.PI * 2); ctx.fill();
+      putImage('people-icon', cv); })();
     // cone de direção (imagem estática)
     (function () { var size = 72, cv = makeCanvas(size), ctx = cv.ctx, c = size / 2; var g = ctx.createLinearGradient(c, c, c, 2); g.addColorStop(0, 'rgba(127,255,0,0.55)'); g.addColorStop(1, 'rgba(127,255,0,0)');
       ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(c - 22, 2); ctx.lineTo(c + 22, 2); ctx.closePath(); ctx.fill(); putImage('me-cone', cv); })();
@@ -580,9 +616,19 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     map.on('click', 'cz-poi', function (e) { var f = e.features && e.features[0]; if (f && f.properties) { e.preventDefault(); send('poiTap', { id: Number(f.properties.id) }); } });
     map.on('click', 'cz-cluster', function (e) {
       var f = e.features && e.features[0]; if (!f) return; e.preventDefault();
-      map.getSource('users').getClusterExpansionZoom(f.properties.cluster_id, function (err, zoom) {
-        if (err) return; state.programmatic++; map.easeTo({ center: f.geometry.coordinates, zoom: zoom, duration: 600 });
-        map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); });
+      var src = map.getSource('users');
+      src.getClusterExpansionZoom(f.properties.cluster_id, function (err, zoom) {
+        if (err) return;
+        if (zoom > 21 || map.getZoom() >= 20.5) {
+          // todo mundo no mesmo lugar (ex.: dentro do bar): abre o painel com quem está ali
+          src.getClusterLeaves(f.properties.cluster_id, 100, 0, function (err2, leaves) {
+            if (err2 || !leaves) return;
+            send('clusterTap', { ids: leaves.map(function (l) { return String(l.properties.id); }), lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
+          });
+          return;
+        }
+        state.programmatic++; map.easeTo({ center: f.geometry.coordinates, zoom: Math.min(zoom + 0.3, 21.5), duration: 650 });
+        map.once('moveend', function () { endProgrammatic(); });
       });
     });
   }
@@ -642,6 +688,10 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     }
     // remove imagens de quem saiu
     for (var oid in prev) { if (!next[oid]) { try { map.removeImage('av-' + oid); } catch (e) {} delete imgCache['av-' + oid]; } }
+    // definições de avatar só de quem está no mapa (+ eu): sessão longa não acumula visuais de quem já foi embora
+    var usedKeys = {}; for (var uk in next) if (next[uk].avatarKey) usedKeys[next[uk].avatarKey] = true; if (state.me && state.me.avatarKey) usedKeys[state.me.avatarKey] = true;
+    for (var dk in avatarDefs) if (!usedKeys[dk]) delete avatarDefs[dk];
+    for (var wk in keyWaiters) if (!usedKeys[wk]) delete keyWaiters[wk];
     state.users = next;
     map.getSource('users').setData({ type: 'FeatureCollection', features: normal });
     map.getSource('users-boost').setData({ type: 'FeatureCollection', features: boosted });
@@ -662,8 +712,8 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       var hot = count >= state.hotMin;
       var sonar = count >= 20 ? 'sonar-3' : (count >= 10 ? 'sonar-2' : 'sonar-1');
       feats.push({ type: 'Feature', id: poi.id, properties: {
-        id: poi.id, hot: hot, sonar: sonar, img: ensurePoiImage(poi, hot), partner: !!poi.isPartner,
-        label: hot ? (poi.name + '\\n' + count + (count === 1 ? ' pessoa' : ' pessoas')) : poi.name
+        id: poi.id, hot: hot, event: poi.category === 'event', sonar: (poi.category === 'event' && !hot) ? 'sonar-1' : sonar, img: ensurePoiImage(poi, hot), partner: !!poi.isPartner,
+        label: hot ? (poi.name + '\\n' + count + (count === 1 ? ' pessoa' : ' pessoas')) : (poi.category === 'event' ? ('⚡ ' + poi.name) : poi.name)
       }, geometry: { type: 'Point', coordinates: [poi.longitude, poi.latitude] } });
       if (hot) { nextHot[poi.id] = true; if (!isFirst && !state.hotIds[poi.id]) newHot.push({ poiId: poi.id, name: poi.name, userCount: count }); }
     }
@@ -683,31 +733,85 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   function setMe(me) {
     if (!me || typeof me.lat !== 'number' || typeof me.lng !== 'number') return;
     state.me = me;
-    var u = { id: 'me', name: me.name || 'você', mainPhotoUrl: me.photoUrl || null, isAnonymous: !!me.isAnonymous, isBoosted: !!me.isBoosted,
-              premiumTier: me.tier || 'free', isVerified: false, recordedAt: new Date().toISOString() };
-    var sig = avatarSignature(u);
+    var u = { id: 'me', name: me.name || 'você', isAnonymous: !!me.isAnonymous, isBoosted: !!me.isBoosted, premiumTier: me.tier || 'free', isVerified: false,
+              recordedAt: new Date().toISOString(), avatarKey: me.avatarKey || '', aura: me.aura || '' };
+    var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
+    var sig = avatarSignature(u) + '|' + dim.w + 'x' + dim.h + '|' + (u.isAnonymous ? 'anon' : 'vis');
     if (imgCache['me-avatar'] !== sig) {
       imgCache['me-avatar'] = sig;
-      var size = u.isBoosted ? IMG.boost : IMG.avatar, cv = makeCanvas(size);
-      var cached = u.mainPhotoUrl ? photoCache[u.mainPhotoUrl] : null;
-      drawAvatar(cv, size, u, (cached && cached !== 'blocked') ? cached : null);
-      if (me.isAnonymous) { cv.ctx.fillStyle = 'rgba(10,10,26,0.35)'; cv.ctx.beginPath(); cv.ctx.arc(size / 2, size / 2, size * 0.36, 0, Math.PI * 2); cv.ctx.fill(); }
+      var layers = u.avatarKey ? avatarDefs[u.avatarKey] : null;
+      var cv = makeCanvasWH(dim.w, dim.h);
+      drawFigure(cv, u, layers);
+      if (u.isAnonymous) {
+        // modo invisível: só EU me vejo, e meio apagado — lembrete visual do estado
+        cv.ctx.globalCompositeOperation = 'source-atop'; cv.ctx.fillStyle = 'rgba(10,10,26,0.5)'; cv.ctx.fillRect(0, 0, dim.w, dim.h); cv.ctx.globalCompositeOperation = 'source-over';
+      }
       try { if (map.hasImage('me-avatar')) map.removeImage('me-avatar'); } catch (e) {}
       putImage('me-avatar', cv);
-      if (u.mainPhotoUrl && !cached) { var img = new Image(); img.crossOrigin = 'anonymous'; img.onload = function () { photoCache[u.mainPhotoUrl] = img; imgCache['me-avatar'] = null; setMe(state.me); }; img.onerror = function () { photoCache[u.mainPhotoUrl] = 'blocked'; }; img.src = u.mainPhotoUrl; }
     }
-    var props = {};
+    var props = { off: [0, figOffset(dim)] };
     if (typeof me.heading === 'number') props.heading = me.heading;
     map.getSource('me').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: [me.lng, me.lat] } }] });
     if (!state.located) { state.located = true; if (!state.revealed) { /* RN chama reveal(); se não chamar em 1.5s, centraliza */ setTimeout(function () { if (!state.revealed) API.setCenter(me.lat, me.lng, 16); }, 1500); } }
     particles.retarget();
   }
 
+  // ---- momento de match no mapa: os dois avatares enquadrados, arco de luz entre eles, pulsos e explosão no meio ----
+  var momentTimer = null;
+  function clearMoment() {
+    if (momentTimer) { clearTimeout(momentTimer); momentTimer = null; }
+    try { var s = map.getSource('moment'); if (s) s.setData(empty()); } catch (e) {}
+    try { map.getSource('spot').setData(empty()); } catch (e) {}
+    if (!state.selected) { try { map.getSource('sel').setData(empty()); } catch (e) {} }
+  }
+  function matchMoment(m) {
+    if (!m || !state.me) { send('matchMomentDone', { userId: m ? m.userId : null, shown: false }); return; }
+    var u = state.users[m.userId];
+    if (!u) { send('matchMomentDone', { userId: m.userId, shown: false }); return; }
+    clearMoment();
+    var a = [state.me.lng, state.me.lat], b = [u.longitude, u.latitude];
+    if (!map.getSource('moment')) {
+      map.addSource('moment', { type: 'geojson', data: empty() });
+      map.addLayer({ id: 'cz-moment-glow', type: 'line', source: 'moment', layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#FF1493', 'line-width': 16, 'line-blur': 12, 'line-opacity': 0.6, 'line-emissive-strength': 1 } }, 'cz-aura');
+      map.addLayer({ id: 'cz-moment-line', type: 'line', source: 'moment', layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#7FFF00', 'line-width': 3, 'line-opacity': 0.95, 'line-emissive-strength': 1 } }, 'cz-aura');
+    }
+    var mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    var span = Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), 0.0004);
+    var pts = [];
+    for (var i = 0; i <= 28; i++) {
+      var t = i / 28, it = 1 - t;
+      pts.push([it * it * a[0] + 2 * it * t * mid[0] + t * t * b[0], it * it * a[1] + 2 * it * t * (mid[1] + span * 0.45) + t * t * b[1]]);
+    }
+    map.getSource('moment').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pts } }] });
+    state.programmatic++;
+    var bounds = new mapboxgl.LngLatBounds(a, a); bounds.extend(b);
+    var cam = null;
+    try { cam = map.cameraForBounds(bounds, { padding: { top: 120, bottom: 40, left: 60, right: 60 }, maxZoom: 18 }); } catch (e) { cam = null; }
+    if (cam) map.easeTo({ center: cam.center, zoom: cam.zoom, pitch: 55, bearing: map.getBearing(), duration: 900, essential: true });
+    else map.easeTo({ center: mid, zoom: Math.min(map.getZoom(), 17), pitch: 55, duration: 900, essential: true });
+    map.once('moveend', function () { endProgrammatic(); });
+    var seq = [0, 380, 760, 1140, 1520];
+    for (var s = 0; s < seq.length; s++) (function (k) {
+      setTimeout(function () {
+        burst({ lat: a[1], lng: a[0], kind: 'match' });
+        burst({ lat: b[1], lng: b[0], kind: 'match' });
+        if (k === 2) burst({ lat: mid[1], lng: mid[0], kind: 'super' });
+      }, seq[k]);
+    })(s);
+    map.getSource('sel').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: b } }] });
+    // a pessoa sai do cluster e ganha destaque durante o momento
+    map.getSource('spot').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { img: ensureAvatar(u), label: u.name || '', off: [0, figOffset(u.isBoosted ? IMG.figBoost : IMG.fig)] }, geometry: { type: 'Point', coordinates: b } }] });
+    momentTimer = setTimeout(function () { clearMoment(); send('matchMomentDone', { userId: m.userId, shown: true }); }, 3400);
+  }
+
   function select(id) {
     state.selected = id || null;
+    if (!id && momentTimer) return; // o momento do match está usando o anel; clearMoment limpa no fim
     var u = id ? state.users[id] : null;
     map.getSource('sel').setData(u ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [u.longitude, u.latitude] } }] } : empty());
-    if (u) { state.programmatic++; map.easeTo({ center: [u.longitude, u.latitude], duration: 600, offset: [0, -60] }); map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); }); }
+    if (u) { state.programmatic++; map.easeTo({ center: [u.longitude, u.latitude], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); }); }
   }
 
   function reveal(lat, lng) {
@@ -716,7 +820,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     map.jumpTo({ center: [lng, lat], zoom: 13.5, pitch: 0, bearing: 0 });
     state.programmatic++;
     map.flyTo({ center: [lng, lat], zoom: 16, pitch: 58, bearing: -12, duration: 1800, curve: 1.2, essential: true });
-    map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); idleCam.schedule(); });
+    map.once('moveend', function () { endProgrammatic(); idleCam.schedule(); });
   }
 
   function setCenter(lat, lng, zoom, opts) {
@@ -725,19 +829,21 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     map.easeTo({ center: [lng, lat], zoom: (typeof zoom === 'number') ? zoom : map.getZoom(),
       pitch: (typeof opts.pitch === 'number') ? opts.pitch : map.getPitch(), bearing: (typeof opts.bearing === 'number') ? opts.bearing : map.getBearing(),
       duration: (typeof opts.duration === 'number') ? opts.duration : 900, essential: true });
-    map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); });
+    map.once('moveend', function () { endProgrammatic(); });
   }
 
   function focusPoi(id) {
     var p = state.pois[id]; if (!p) return;
     state.programmatic++;
     map.easeTo({ center: [p.longitude, p.latitude], zoom: 17, pitch: 65, bearing: map.getBearing() + 25, duration: 900, essential: true, offset: [0, -40] });
-    map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); });
+    map.once('moveend', function () { endProgrammatic(); });
   }
 
   // setPadding do Mapbox faz jumpTo (cancela flyTo/easeTo em curso) → enquanto uma animação nossa roda, o padding
   // fica pendente e é aplicado no moveend seguinte. Throttle de 16ms fora de animação.
   var padTimer = null, pendingPad = null;
+  // Evented do Mapbox dispara os listeners fixos antes dos once(): o flush precisa acontecer AQUI, no fim de cada animação nossa
+  function endProgrammatic() { state.programmatic = Math.max(0, state.programmatic - 1); if (state.programmatic === 0) flushPadding(); }
   function flushPadding() {
     if (!pendingPad || state.programmatic > 0) return;
     var p = pendingPad; pendingPad = null;
@@ -821,7 +927,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       if (state.tier !== 'high' || !state.active || Date.now() - state.lastGesture < 30000) { schedule(); return; }
       spinning = true; state.programmatic++;
       map.easeTo({ bearing: map.getBearing() + 25, duration: 20000, easing: function (t) { return t; }, essential: false });
-      map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); spinning = false; schedule(); });
+      map.once('moveend', function () { endProgrammatic(); spinning = false; schedule(); });
     }
     function stop() { if (timer) { clearTimeout(timer); timer = null; } if (spinning) { spinning = false; map.stop(); } }
     return { schedule: schedule, stop: stop };
@@ -844,7 +950,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       (function f() { n++; if (n < 90 && performance.now() - start < 1600) requestAnimationFrame(f); else finish(n / ((performance.now() - start) / 1000)); })();
       // rAF pode ficar parado (WebView em background / aba oculta): assume tier médio e segue
       setTimeout(function () { finish(40); }, 2500);
-      map.once('moveend', function () { state.programmatic = Math.max(0, state.programmatic - 1); });
+      map.once('moveend', function () { endProgrammatic(); });
     }
     return { start: start, stop: stop, measure: measure };
   })();
@@ -867,6 +973,8 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   API.focusPoi = focusPoi;
   API.setPadding = setPadding;
   API.burst = burst;
+  API.defineAvatars = defineAvatars;
+  API.matchMoment = matchMoment;
 
   map.on('style.load', function () { send('styleLoaded'); });
 

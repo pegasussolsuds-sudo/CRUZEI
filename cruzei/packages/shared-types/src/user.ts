@@ -1,4 +1,5 @@
 // User — perfil principal
+import type { AvatarConfig } from './avatar';
 
 export type Gender = 'female' | 'male' | 'non_binary' | 'other';
 export type Orientation = 'heterosexual' | 'homosexual' | 'bisexual' | 'pansexual' | 'other';
@@ -52,6 +53,8 @@ export interface User {
   premiumTier: PremiumTier;
   isVerified: boolean;
   profileCompleteness: number;
+  /** avatar Cruzei; null enquanto o usuário não personalizou */
+  avatar: AvatarConfig | null;
   settings: UserSettings;
   stats: UserStats;
   createdAt: string;

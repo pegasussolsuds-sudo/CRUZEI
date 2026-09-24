@@ -43,9 +43,11 @@ export interface MapHeaderProps {
   onToggleVisibility: () => void;
   onCenter: () => void;
   boostMinutes: number | null;
+  /** indicadores discretos do universo (doc §16): lugares em alta, pessoas perto, novidades */
+  indicators?: { hot: number; near: number; fresh: boolean } | null;
 }
 
-export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes }: MapHeaderProps) {
+export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators }: MapHeaderProps) {
   const placeName = usePlaceName(lat, lng);
 
   // crossfade 200ms entre os dois estados do chip (design system: toggle = crossfade + slide curto)
@@ -104,6 +106,26 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
         </ScaleOnPress>
       </View>
 
+      {indicators && (indicators.hot > 0 || indicators.near > 0 || indicators.fresh) ? (
+        <FadeInView fromY={-6} style={styles.indicators} pointerEvents="none">
+          {indicators.hot > 0 ? (
+            <View style={[styles.indicator, styles.indicatorHot]} accessibilityLabel={`${indicators.hot} lugares em alta`}>
+              <Text style={styles.indicatorText}>🔥 {indicators.hot} em alta</Text>
+            </View>
+          ) : null}
+          {indicators.near > 0 ? (
+            <View style={styles.indicator} accessibilityLabel={`${indicators.near} pessoas perto`}>
+              <Text style={styles.indicatorText}>👥 {indicators.near} perto</Text>
+            </View>
+          ) : null}
+          {indicators.fresh ? (
+            <View style={styles.indicator} accessibilityLabel="Novidades por perto">
+              <Text style={styles.indicatorText}>✨ novidades</Text>
+            </View>
+          ) : null}
+        </FadeInView>
+      ) : null}
+
       {boostMinutes != null ? (
         <FadeInView fromY={-8} style={styles.boostBar}>
           <Pulse active maxScale={1.06} style={styles.boostIconWrap}>
@@ -157,6 +179,10 @@ const styles = StyleSheet.create({
   toggleFaceAbs: { position: 'absolute', left: spacing.md, right: spacing.md },
   toggleText: { ...typography.label },
   fab: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', ...shadows.medium },
+  indicators: { marginTop: spacing.xs, marginHorizontal: spacing.lg, flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
+  indicator: { height: 26, paddingHorizontal: spacing.sm, borderRadius: radius.full, backgroundColor: colors.overlayDark, justifyContent: 'center' },
+  indicatorHot: { backgroundColor: 'rgba(255,20,147,0.85)' },
+  indicatorText: { ...typography.caption, color: colors.white },
   boostBar: {
     marginTop: spacing.sm,
     marginHorizontal: spacing.lg,

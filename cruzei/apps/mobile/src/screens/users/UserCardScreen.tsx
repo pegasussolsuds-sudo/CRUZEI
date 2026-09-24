@@ -35,9 +35,11 @@ import { Canvas, Group, Path, Skia, type SkPath } from '@shopify/react-native-sk
 import { api, toApiError } from '../../services/api';
 import { FadeInView, Glow, ScaleOnPress, SlideInView } from '../../components/animated';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
-import type { LikeResult, LookingFor, PremiumTier, SealType, UserSeal } from '@cruzei/shared-types';
-import { timeAgo } from '@cruzei/shared-utils';
+import type { AvatarConfig, LikeResult, LookingFor, PremiumTier, SealType, UserSeal } from '@cruzei/shared-types';
+import { timeAgo, formatApproxDistance } from '@cruzei/shared-utils';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
 // ───────────────────────────── tipos ─────────────────────────────
@@ -64,7 +66,11 @@ interface UserCardData {
   likedByMe: boolean;
   likedMe: boolean;
   match: { id: string; context: string | null } | null;
+  /** avatar Cruzei (null/ausente → determinístico pelo id) */
+  avatar?: AvatarConfig | null;
 }
+
+const AVATAR_CHIP = 52;
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'UserCard'>;
 type Route = RouteProp<RootStackParamList, 'UserCard'>;
@@ -99,9 +105,8 @@ const HEART_SVG =
 const STAR_SVG = 'M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z';
 
 function formatDistance(m: number | null | undefined): string | null {
-  if (m == null) return null;
-  if (m < 1000) return `a ~${Math.max(50, Math.round(m / 50) * 50)} m`;
-  return `a ~${(m / 1000).toFixed(1).replace('.', ',')} km`;
+  if (m == null || !Number.isFinite(m)) return null;
+  return `a ${formatApproxDistance(m)}`; // mesma régua de degraus do resto do app
 }
 
 function seeded(i: number, salt: number): number {
@@ -160,7 +165,8 @@ export function UserCardScreen() {
     return [...user.photos].sort((a, b) => Number(b.isMain) - Number(a.isMain));
   }, [user]);
   const mainPhoto = photos[0]?.url ?? null;
-  const distance = formatDistance(user?.distanceM ?? distanceParam);
+  // o servidor manda null quando a pessoa desligou 'mostrar distância': não cair no valor do mapa
+  const distance = formatDistance(user ? user.distanceM : distanceParam);
   const alreadyMatched = user?.match ?? null;
   const alreadyLiked = user?.likedByMe ?? false;
 
@@ -193,7 +199,15 @@ export function UserCardScreen() {
         qc.invalidateQueries({ queryKey: ['nearby'] });
         if (res.isMatch && res.matchId) {
           qc.invalidateQueries({ queryKey: ['matches'] });
-          setMatch({ matchId: res.matchId, name: user.name, photo: mainPhoto, context: res.context ?? null });
+          setMatch({
+            matchId: res.matchId,
+            userId: user.id,
+            name: user.name,
+            photo: mainPhoto,
+            avatar: user.avatar ?? null,
+            context: res.context ?? null,
+            distanceM: user.distanceM ?? null,
+          });
         } else {
           setTimeout(() => nav.goBack(), 1100);
         }
@@ -201,7 +215,7 @@ export function UserCardScreen() {
         setActionError(toApiError(err).message);
       }
     },
-    [fireBurst, likeMutation, mainPhoto, nav, qc, sent, user],
+    [distanceParam, fireBurst, likeMutation, mainPhoto, nav, qc, sent, user],
   );
 
   const onPass = useCallback(() => {
@@ -279,6 +293,16 @@ export function UserCardScreen() {
               style={StyleSheet.absoluteFill}
             />
             <View style={styles.headerInfo}>
+              {/* avatar Cruzei — o mesmo boneco que aparece no mapa */}
+              <FadeInView delay={40} fromScale={0.7} style={styles.avatarChip}>
+                <CruzeiAvatar
+                  config={resolveAvatar(user.avatar, user.id)}
+                  mode="bust"
+                  size={AVATAR_CHIP}
+                  backgroundColor={colors.black}
+                  accessibilityLabel={`Avatar de ${user.name}`}
+                />
+              </FadeInView>
               <FadeInView delay={80} fromY={12}>
                 <View style={styles.nameRow}>
                   <Text style={styles.name} numberOfLines={1}>
@@ -784,6 +808,17 @@ const styles = StyleSheet.create({
   },
 
   headerInfo: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: spacing.xl + spacing.lg },
+  avatarChip: {
+    alignSelf: 'flex-start',
+    width: AVATAR_CHIP + 6,
+    height: AVATAR_CHIP + 6,
+    borderRadius: (AVATAR_CHIP + 6) / 2,
+    borderWidth: 3,
+    borderColor: colors.white,
+    backgroundColor: colors.black,
+    marginBottom: spacing.sm,
+    ...shadows.medium,
+  },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   name: { fontFamily: fontFamily.display, fontSize: 34, lineHeight: 40, letterSpacing: -0.5, color: colors.white, flexShrink: 1 },
   age: { fontFamily: fontFamily.displayMedium, fontSize: 30, color: colors.gray[200] },

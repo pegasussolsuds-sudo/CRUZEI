@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Animated, {
@@ -31,8 +32,13 @@ import { colors, duration, fontFamily, radius, spacing, spring, typography } fro
 import { formatChatExpiry, timeAgo } from '@cruzei/shared-utils';
 import type { MatchesStackParamList } from '../../navigation/MatchesStack';
 import { FadeInView, Pulse, ScaleOnPress, SlideInView, TypingDots } from '../../components/animated';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 
 type ChatMessage = Message & { pending?: boolean; failed?: boolean };
+type ChatNav = NativeStackNavigationProp<MatchesStackParamList, 'Chat'>;
+
+const HEADER_AVATAR = 32;
 
 const MS_HOUR = 3_600_000;
 const MS_MIN = 60_000;
@@ -165,7 +171,7 @@ function ExpiryBanner({ context, expiresAt, now }: { context: string | null; exp
 // ───────────────────────────────────────────────────────────────────────────────
 export function ChatScreen() {
   const route = useRoute<RouteProp<MatchesStackParamList, 'Chat'>>();
-  const nav = useNavigation();
+  const nav = useNavigation<ChatNav>();
   const qc = useQueryClient();
   const { matchId, name } = route.params;
   const myId = useAuthStore((s) => s.user?.id);
@@ -195,9 +201,30 @@ export function ChatScreen() {
     queryFn: async () => (await api.get<{ templates: string[] }>(`/matches/${matchId}/templates`)).data.templates,
   });
 
+  // Header: avatar da pessoa (bust) + nome. Enquanto o match não carregou, só o nome.
+  const otherId = matchQuery.data?.user.id;
+  const otherAvatar = matchQuery.data?.user.avatar;
   useEffect(() => {
-    nav.setOptions({ title: name });
-  }, [nav, name]);
+    nav.setOptions({
+      title: name,
+      headerTitle: () => (
+        <View style={styles.headerTitle}>
+          {otherId ? (
+            <CruzeiAvatar
+              config={resolveAvatar(otherAvatar, otherId)}
+              mode="bust"
+              size={HEADER_AVATAR}
+              backgroundColor={colors.gray[800]}
+              accessibilityLabel={`Avatar de ${name}`}
+            />
+          ) : null}
+          <Text style={styles.headerName} numberOfLines={1}>
+            {name}
+          </Text>
+        </View>
+      ),
+    });
+  }, [nav, name, otherId, otherAvatar]);
 
   // Relógio do banner: recalcula a cada 30s
   useEffect(() => {
@@ -483,6 +510,9 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   flex: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+
+  headerTitle: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, maxWidth: 240 },
+  headerName: { ...typography.h4, color: colors.white, flexShrink: 1 },
 
   bannerWrap: { alignSelf: 'stretch' },
   banner: {
