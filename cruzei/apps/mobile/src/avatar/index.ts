@@ -5,8 +5,8 @@
 import type { AvatarConfig } from '@cruzei/shared-types';
 import { avatarKey, normalizeAvatarConfig, randomAvatarConfig } from '@cruzei/shared-utils';
 
-export { buildAvatarLayers, AVATAR_VIEWBOX, AVATAR_BUST_VIEWBOX } from './layers';
-export type { AvatarLayer, BuildOptions } from './layers';
+export { buildAvatarLayers, buildAvatarRig, AVATAR_VIEWBOX, AVATAR_BUST_VIEWBOX } from './layers';
+export type { AvatarLayer, AvatarGroup, AvatarRig, BuildOptions } from './layers';
 
 const resolvedCache = new Map<string, AvatarConfig>();
 

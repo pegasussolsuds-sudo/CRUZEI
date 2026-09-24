@@ -389,3 +389,27 @@ Mapa com 9 avatares vetoriais + clusters + evento → sheet do Pedro (curtir/ace
 ### 12.5 Dev
 - Metro/backend pelo túnel USB: `adb reverse tcp:8081 tcp:8081 && adb reverse tcp:3000 tcp:3000`; `.env` do mobile aponta pra `http://127.0.0.1:3000` (o IP da LAN mudou; o túnel não depende de Wi-Fi). Metro precisa reiniciar ao mudar o `.env`.
 - `prisma generate` pode quebrar após `pnpm install` (falta `@prisma/client/generator-build`): copiar de `node_modules/prisma/prisma-client/generator-build`.
+
+---
+
+## 13. Sessão 24/09/2026 (manhã) — avatares vivos (doc `EVOLUÇÃO DO AVATAR/Avatar.md`) + correções da revisão adversarial
+
+### 13.1 Revisão adversarial (workflow: 4 dimensões × 2 céticos por achado) — corrigido
+- **Privacidade**: `/location/nearby` era um oráculo (filtro/ordem pela posição real com centro/raio do cliente) → agora filtra e ordena pela posição BORRADA, raio clampado 300–5000 m, lat/lng validados, `me_lat/me_lng` pra distância a partir de mim; jitter com janela diária (`salt:dia:id`) e pessoas num POI ancoradas no POI (+8–25 m); `showDistance=false` esconde distância e lugar; `GET /users/:id` usa a posição borrada; waves silencioso pra alvos inválidos e só a ≤ 5 km; **ThrottlerGuard** que não existia (`@Throttle` era no-op) registrado (600/min; strict só onde anotado); tiers do avatar respeitam `premiumExpiresAt` e o cancelamento rebaixa; fallback de avatar no servidor + backfill.
+- **App/WebView**: Voltar só com o mapa em foco (engolia o Voltar do UserCard); socket de aceno/curtida via `connectSocket()` (o `getSocket()` era null no 1º mount); fila de matches; distância = a do servidor (o app recalculava da coordenada borrada); dicas de descoberta com rebase por recorte e fila que drena; `endProgrammatic()` aplica o padding pendente no fim de cada animação (o `on(moveend)` roda antes dos `once`); `fitBounds` do momento sem somar o padding do sheet duas vezes; clusters até zoom 21 (o `clusterTap` era código morto); cache de avatares podado a cada setData (RN e WebView em sincronia); aura sem corte na base (margem + `icon-offset`); `select(null)` não apaga o anel durante o momento; contexto do match com distância em degraus.
+
+### 13.2 Avatares vivos (mapa)
+- **Rig**: cada camada do avatar tem grupo (`g`: sombra, corpo, cabeça, braço E/D, perna E/D) e `buildAvatarRig(cfg)` dá os pivôs (quadril, pescoço, ombros, quadris das pernas).
+- **Motor** (`src/screens/map/avatar-anim.ts`, JS injetado no WebView): poses procedurais por estado — **idle** (respiração, cabeça, troca de apoio), **walk/run** (pernas/braços alternados, bob, inclinação), **wave**, **like** (pulinho), **celebrate** (pulos + braços), **match** (braços pra cima balançando), **arrive** (squash na chegada); **blend de 220 ms** entre estados; variação por pessoa (fase, velocidade, energia, escala 0,96–1,04) por hash do id — ninguém é clone. Desenho hierárquico com `DOMMatrix` (cabeça/braços filhos do corpo) e espelhamento quando anda pro oeste.
+- **Figuras**: cada pessoa é uma imagem `StyleImageInterface` (parada custa zero); **LOD** a cada 700 ms anima só as N mais perto do centro dentro da viewport (high 14 / mid 8 / low 4) a 30/20/12 fps; emotes e caminhada ligam a animação sob demanda (`force`).
+- **Movimento**: posição nova → a pessoa **anda** até lá (1,5 m/s, 1,2–9 s, corre acima de 120 m, > 600 m teleporta) numa fonte `movers` atualizada por tick, volta pro cluster ao chegar com **arrive**; eu também ando. `fadeDuration: 0` no mapa (sem rastro de cross-fade).
+- **Emotes** (`cmd.emote(id, kind)`): toque = squash; acenar = meu avatar acena; aceno recebido = quem acenou acena; curtir = a pessoa dá um pulinho; curtida recebida = idem; **match** = os dois de braços pra cima durante o momento.
+- **Perf real**: fps agora = mediana do intervalo entre eventos `render` do Mapbox (rAF contava 60 com o mapa parado); medição inicial só com o mapa ocioso; histerese de tier (sobe pra mid ≥ 26 fps e high ≥ 42; desce de high < 30, de mid < 20; ignora os 12 s de aquecimento). Moto g54: ~40 fps com 3D + glow → tier mid.
+- **Validado no aparelho**: frames diferem (idle), Pedro correu 130 m e clusterizou ao chegar, toque/aceno/curtir/match com poses, tier logado (`[map] ready tier=… fps=…`).
+
+### 13.3 Limitação e decisão técnica
+O brief sugere GLB/Three.js. Não há modelos riggados nem pipeline de assets, e o avatar é vetorial e customizável (~90 itens): fazer skeletal 2.5D em cima das camadas existentes entrega vida com identidade consistente, zero download e custo só em CPU (canvas), sem mexer na arquitetura do mapa. Uma camada Three.js (custom layer) continua possível no futuro para oclusão por prédios/instancing; os estados/rig já são independentes do renderer.
+
+### 13.4 Pendências
+- Push travado na janela "Select an account" do Git Credential Manager (precisa do clique do usuário).
+- Avatar no app (customizador/perfil) ainda estático; "olhar pra quem está perto"; celebrate sem gatilho no app; teste com 100+ pessoas (seed só tem 8).

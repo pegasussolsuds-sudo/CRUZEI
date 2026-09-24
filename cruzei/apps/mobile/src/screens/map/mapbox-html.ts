@@ -10,6 +10,7 @@
 // sequência cifrão+chave de interpolação de template.
 
 import { buildBeforeContentLoadedScript, type InitTier, type MapTheme } from './bridge';
+import { AVATAR_ANIM_JS } from './avatar-anim';
 
 export interface MapHtmlInit {
   theme: MapTheme;
@@ -44,6 +45,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
 <div id="map"></div>
 <canvas id="fx"></canvas>
 <script>
+${AVATAR_ANIM_JS}
 (function () {
   'use strict';
   // ======================================================================
@@ -62,7 +64,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   var API = {};
   // window.cruzei existe desde já: antes do 'ready' os comandos ficam na fila e são reaplicados em ordem.
   window.cruzei = {};
-  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst', 'defineAvatars', 'matchMoment'].forEach(function (name) {
+  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst', 'defineAvatars', 'matchMoment', 'emote'].forEach(function (name) {
     window.cruzei[name] = function () {
       var args = Array.prototype.slice.call(arguments);
       if (!ready) { queue.push({ name: name, args: args }); return; }
@@ -120,6 +122,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   mapboxgl.accessToken = TOKEN;
   var map = new mapboxgl.Map({
     container: 'map',
+    fadeDuration: 0, // sem cross-fade de símbolos: figuras andando (setData por tick) não deixam rastro
     style: 'mapbox://styles/mapbox/streets-v12',
     center: [-48.2772, -18.9186],
     zoom: 15.5,
@@ -259,7 +262,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     setPaint('cz-3d', 'fill-extrusion-flood-light-ground-radius', (high && night) ? 7 : 0);
     setPaint('cz-3d', 'fill-extrusion-ambient-occlusion-intensity', high ? 0.25 : 0);
     particles.setEnabled(high);
-    animImages.setFps(high ? 30 : (state.tier === 'mid' ? 20 : 0));
+    animImages.setFps(high ? 30 : (state.tier === 'mid' ? 20 : 12));
     if (!high) idleCam.stop();
   }
 
@@ -311,12 +314,13 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   // ======================================================================
   // 4. Imagens: avatares, POIs, imagens animadas compartilhadas
   // ======================================================================
-  var IMG = { fig: { w: 60, h: 96 }, figBoost: { w: 80, h: 128 }, poi: 44, sonar: 120, ring: 72, aura: 110 };
-  var FIG_PAD = 18; // px reservados abaixo dos pés (poça de luz da aura); os pés ficam a FIG_PAD-2 px da borda inferior
-  function figOffset(dim) { return dim.h - (2 + 134 * ((dim.h - FIG_PAD) / 140)); }
+  var IMG = { fig: { w: 72, h: 112 }, figBoost: { w: 96, h: 150 }, poi: 44, sonar: 120, ring: 72, aura: 110 };
+  var FIG_TOP = 14, FIG_PAD = 18; // margem em cima (pulos/braços levantados) e embaixo (poça de luz da aura)
+  function figScale(dim) { return (dim.h - FIG_TOP - FIG_PAD) / 140; }
+  function figOffset(dim) { return dim.h - (FIG_TOP + 134 * figScale(dim)); }
   var CAT_EMOJI = { bar:'🍺', restaurant:'🍽️', cafe:'☕', park:'🌳', shopping:'🏬', gym:'🏋️', show:'🎸', event:'⚡', beach:'🏖️', museum:'🏛️', other:'📍' };
-  var imgCache = {};        // imageId -> signature
-  var avatarDefs = {};      // avatarKey -> camadas vetoriais (vêm do RN via defineAvatars; mesma geometria do app)
+  var imgCache = {};        // imageId -> signature (POIs e imagens estáticas compartilhadas)
+  var avatarDefs = {};      // avatarKey -> { l: camadas vetoriais, p: pivôs do rig } (vem do RN via defineAvatars)
   var keyWaiters = {};      // avatarKey -> { userId: true } (quem ainda está com silhueta esperando a definição)
   var AURA_RGB = { lime: '127,255,0', magenta: '255,20,147', gold: '255,215,0', fest: '255,111,177' };
 
@@ -331,10 +335,12 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     } catch (e) { warn('image', id, e && e.message); }
   }
   function isRecent(iso, minutes) { if (!iso) return true; var t = Date.parse(iso); return !isNaN(t) && (Date.now() - t) < minutes * 60000; }
+  function distM(a, b) { var dy = (b[1] - a[1]) * 111320, dx = (b[0] - a[0]) * 111320 * Math.cos(a[1] * Math.PI / 180); return Math.sqrt(dx * dx + dy * dy); }
 
-  // Desenha as camadas vetoriais (paths SVG) num canvas 2D — Path2D aceita o mesmo 'd' do react-native-svg
-  function drawLayers(ctx, layers, x, y, scale) {
+  // Desenha as camadas vetoriais paradas (pose neutra) — Path2D aceita o mesmo 'd' do react-native-svg
+  function drawLayers(ctx, layers, x, y, scale, mirror) {
     ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+    if (mirror) { ctx.translate(100, 0); ctx.scale(-1, 1); }
     for (var i = 0; i < layers.length; i++) {
       var l = layers[i]; var p;
       try { p = new Path2D(l.d); } catch (e) { continue; }
@@ -347,7 +353,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   }
   // Silhueta neutra enquanto a definição do avatar não chegou (nunca fica sem boneco)
   function drawSilhouette(ctx, x, y, scale) {
-    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale); ctx.fillStyle = '#8A8A96';
+    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
     ctx.beginPath(); ctx.ellipse(50, 135, 26, 5, 0, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
     ctx.fillStyle = '#8A8A96';
     ctx.beginPath(); ctx.arc(50, 33, 21, 0, Math.PI * 2); ctx.fill();
@@ -361,12 +367,12 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     if (u.premiumTier === 'premium_plus') return AURA_RGB.magenta;
     return null;
   }
-  // Figura em pé: poça de luz (aura) no chão, avatar vetorial, anel de presença nos pés, selo verificado
-  function drawFigure(cv, u, layers) {
+  // Figura em pé: poça de luz (aura) no chão, avatar vetorial (parado ou com pose), anel de presença, selo verificado
+  function drawFigure(cv, u, def, pose, mirror) {
     var ctx = cv.ctx, w = cv.w, h = cv.h;
     ctx.clearRect(0, 0, w, h);
-    var scale = (h - FIG_PAD) / 140;
-    var x = (w - 100 * scale) / 2, y = 2;
+    var scale = figScale({ w: w, h: h });
+    var x = (w - 100 * scale) / 2, y = FIG_TOP;
     var footY = y + 134 * scale, cx = w / 2;
     var aura = figureAura(u);
     if (aura) {
@@ -374,7 +380,10 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       g.addColorStop(0, 'rgba(' + aura + ',0.65)'); g.addColorStop(1, 'rgba(' + aura + ',0)');
       ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(cx, footY - 2, w * 0.5, w * 0.24, 0, 0, Math.PI * 2); ctx.fill();
     }
-    if (layers) drawLayers(ctx, layers, x, y, scale); else drawSilhouette(ctx, x, y, scale);
+    if (def && def.l) {
+      if (pose) CZ_ANIM.drawPosed(ctx, def.l, def.p, pose, x, y, scale, mirror);
+      else drawLayers(ctx, def.l, x, y, scale, mirror);
+    } else drawSilhouette(ctx, x, y, scale);
     var ring = isRecent(u.recordedAt, 15) ? '#7FFF00' : '#FFD700';
     ctx.strokeStyle = ring; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(cx, footY - 3, w * 0.36, w * 0.13, 0, 0, Math.PI * 2); ctx.stroke();
     if (u.premiumTier === 'premium' || u.premiumTier === 'premium_plus') { ctx.strokeStyle = '#FF1493'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(cx, footY - 3, w * 0.43, w * 0.16, 0, 0, Math.PI * 2); ctx.stroke(); }
@@ -384,40 +393,108 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       ctx.fillStyle = '#008B8B'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(bx - br * 0.45, by); ctx.lineTo(bx - br * 0.1, by + br * 0.38); ctx.lineTo(bx + br * 0.5, by - br * 0.4); ctx.stroke();
     }
+    if (u.isAnonymous) {
+      // modo invisível: só EU me vejo, e meio apagado — lembrete visual do estado
+      ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = 'rgba(10,10,26,0.5)'; ctx.fillRect(0, 0, w, h); ctx.globalCompositeOperation = 'source-over';
+    }
   }
 
-  function avatarSignature(u) { return [u.avatarKey || '', avatarDefs[u.avatarKey] ? 1 : 0, isRecent(u.recordedAt, 15) ? 1 : 0, u.isBoosted ? 1 : 0, u.premiumTier || 'free', u.isVerified ? 1 : 0, u.aura || ''].join('|'); }
+  function avatarSignature(u) { return [u.avatarKey || '', isRecent(u.recordedAt, 15) ? 1 : 0, u.isBoosted ? 1 : 0, u.premiumTier || 'free', u.isVerified ? 1 : 0, u.aura || '', u.isAnonymous ? 1 : 0].join('|'); }
 
-  // Garante a imagem da figura (silhueta imediata; avatar real quando a definição da chave existir). Retorna o imageId.
-  function ensureAvatar(u) {
-    var id = 'av-' + u.id;
-    var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
-    var dims = dim.w + 'x' + dim.h;
-    var sig = avatarSignature(u) + '|' + dims;
-    if (imgCache[id] === sig) return id;
-    if (imgCache[id] && imgCache[id].split('|').pop() !== dims) { try { map.removeImage(id); } catch (e) {} }
-    imgCache[id] = sig;
-    var layers = u.avatarKey ? avatarDefs[u.avatarKey] : null;
-    if (u.avatarKey && !layers) { (keyWaiters[u.avatarKey] = keyWaiters[u.avatarKey] || {})[u.id] = true; }
+  // ======================================================================
+  // 4b. Figuras vivas: uma imagem (StyleImageInterface) por pessoa. Parada custa zero (render() sai cedo);
+  //     as mais perto do centro (LOD) ganham pose por tick; emotes/caminhada ligam a animação sob demanda.
+  // ======================================================================
+  var figs = {}; // id -> fig
+  function figOf(id) {
+    var f = figs[id];
+    if (!f) {
+      f = figs[id] = { id: id, st: 'idle', since: 0, one: null, move: null, pos: null, mirror: false, animated: false, wasLive: false, force: 0,
+        v: { ph: CZ_ANIM.hash01(id, 'ph'), sp: 0.85 + 0.3 * CZ_ANIM.hash01(id, 'sp'), en: 0.9 + 0.2 * CZ_ANIM.hash01(id, 'en') },
+        sz: 0.96 + 0.08 * CZ_ANIM.hash01(id, 'sz'), obj: null, dim: null, sig: '', imgId: '', user: null, lastPose: null, blendFrom: null, blendAt: 0 };
+    }
+    return f;
+  }
+  function figState(f) { if (f.one) return f.one.name; if (f.move) return f.move.run ? 'run' : 'walk'; return 'idle'; }
+  function figIsLive(f, now) { return !!(f.animated || f.one || f.move || f.force > now); }
+  function figPose(f, now) {
+    var st = figState(f);
+    if (st !== f.st || !f.lastPose) {
+      f.blendFrom = f.lastPose; f.blendAt = now; f.st = st;
+      f.since = f.one ? f.one.start : (f.move ? f.move.start : now);
+    }
+    var p = CZ_ANIM.pose(st, (now - f.since) / 1000, f.v);
+    if (f.blendFrom) { var k = (now - f.blendAt) / 220; if (k >= 1) f.blendFrom = null; else p = CZ_ANIM.blend(f.blendFrom, p, k); }
+    f.lastPose = p;
+    return p;
+  }
+  function makeFigImage(f, dim) {
     var cv = makeCanvasWH(dim.w, dim.h);
-    drawFigure(cv, u, layers);
-    putImage(id, cv);
+    return {
+      width: dim.w * 2, height: dim.h * 2, data: new Uint8ClampedArray(dim.w * 2 * dim.h * 2 * 4), dirty: true,
+      onAdd: function () {}, onRemove: function () {},
+      render: function () {
+        if (!this.dirty) return false;
+        this.dirty = false;
+        var u = f.user; if (!u) return false;
+        var now = performance.now();
+        var def = u.avatarKey ? avatarDefs[u.avatarKey] : null;
+        drawFigure(cv, u, def, figIsLive(f, now) ? figPose(f, now) : null, f.mirror);
+        this.data = imageDataOf(cv).data;
+        return true;
+      }
+    };
+  }
+  // Garante a imagem da figura (silhueta imediata; avatar real quando a definição da chave existir). Retorna o imageId.
+  function ensureAvatar(u, imageId) {
+    var id = imageId || ('av-' + u.id);
+    var f = figOf(u.id); f.user = u; f.imgId = id;
+    var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
+    var sig = avatarSignature(u);
+    if (u.avatarKey && !avatarDefs[u.avatarKey]) { (keyWaiters[u.avatarKey] = keyWaiters[u.avatarKey] || {})[u.id] = true; }
+    if (!f.obj || f.dim !== dim) {
+      if (f.obj) { try { map.removeImage(id); } catch (e) {} }
+      f.obj = makeFigImage(f, dim); f.dim = dim; f.sig = sig;
+      try { map.addImage(id, f.obj, { pixelRatio: 2 }); } catch (e) { warn('fig image', id, e && e.message); }
+    } else if (f.sig !== sig) { f.sig = sig; f.obj.dirty = true; }
     return id;
   }
-  // RN manda { avatarKey: layers[] } só pras chaves que o WebView ainda não conhece (cache por visual, não por pessoa)
+  function removeFig(id) {
+    var f = figs[id]; if (!f) return;
+    try { if (f.imgId) map.removeImage(f.imgId); } catch (e) {}
+    delete figs[id];
+  }
+  // RN manda { avatarKey: { l, p } } só pras chaves que o WebView ainda não conhece (cache por visual, não por pessoa)
   function defineAvatars(defs) {
     if (!defs) return;
     var touched = false;
     for (var key in defs) {
-      if (!defs[key] || !defs[key].length) continue;
-      avatarDefs[key] = defs[key];
+      var d = defs[key];
+      if (!d || !d.l || !d.l.length) continue;
+      avatarDefs[key] = d;
       var waiting = keyWaiters[key]; delete keyWaiters[key];
-      if (waiting) { for (var uid in waiting) { var wu = state.users[uid]; if (wu) { ensureAvatar(wu); touched = true; } } }
-      if (state.me && state.me.avatarKey === key) { imgCache['me-avatar'] = null; setMe(state.me); touched = true; }
+      if (waiting) { for (var uid in waiting) { var wf = figs[uid]; if (wf && wf.obj) { wf.obj.dirty = true; touched = true; } } }
     }
     if (touched) map.triggerRepaint();
   }
-
+  // emote: reação curta (wave | like | celebrate | match | arrive); força a figura a animar mesmo fora do LOD
+  function emote(id, kind) {
+    var f = figs[id]; if (!f || !CZ_ANIM.DUR[kind]) return;
+    var now = performance.now();
+    f.one = { name: kind, start: now };
+    f.force = now + CZ_ANIM.DUR[kind] * 1000 + 300;
+    if (f.obj) f.obj.dirty = true;
+    map.triggerRepaint();
+  }
+  // caminhada: da posição atual até to, em tempo proporcional à distância (1,5 m/s; 1,2–9 s). Longe demais = teleporte.
+  function startMove(f, to, now) {
+    if (!f.pos) { f.pos = to; return; }
+    var d = distM(f.pos, to);
+    if (d < 3) { f.pos = to; return; }
+    if (d > 600) { f.mirror = to[0] < f.pos[0]; f.pos = to; f.move = null; return; }
+    f.mirror = to[0] < f.pos[0];
+    f.move = { from: f.pos.slice(), to: to, start: now, dur: Math.min(9000, Math.max(1200, (d / 1.5) * 1000)), run: d > 120 };
+  }
   function ensurePoiImage(p, hot) {
     var isEvent = p.category === 'event';
     var id = hot ? 'poi-hot' : (isEvent ? 'poi-event' : ('poi-' + (p.category || 'other') + (p.isPartner ? '-partner' : '')));
@@ -462,6 +539,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
         lastTick = now;
         phase = (now / 1000) % 1000;
         for (var i = 0; i < list.length; i++) list[i].dirty = true;
+        try { figTick(now); } catch (e) { warn('figTick', e && e.message); }
         map.triggerRepaint();
       }
       rafId = requestAnimationFrame(tick);
@@ -521,6 +599,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     map.addSource('sel', { type: 'geojson', data: empty() });
     map.addSource('fx', { type: 'geojson', data: empty(), promoteId: 'id' });
     map.addSource('spot', { type: 'geojson', data: empty() }); // pessoa em destaque (momento do match): sai do cluster e fica por cima
+    map.addSource('movers', { type: 'geojson', data: empty(), promoteId: 'id' }); // quem está andando (posição interpolada por tick; fora do cluster)
 
     animImages.make('sonar-1', IMG.sonar, sonarDrawer(1, 2.4));
     animImages.make('sonar-2', IMG.sonar, sonarDrawer(2, 1.9));
@@ -561,18 +640,21 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
                 'text-field': ['get', 'point_count_abbreviated'], 'text-font': FONTS, 'text-size': 13, 'text-offset': [0.55, 0], 'text-allow-overlap': true, 'text-ignore-placement': true, 'text-pitch-alignment': 'viewport' },
       paint: { 'text-color': '#FFFFFF', 'text-emissive-strength': 1, 'icon-emissive-strength': 1 } });
     // pessoas
+    // 'off' (pés no ponto) e 'sz' (variação de escala por pessoa) vêm nas propriedades da feature
     var userLayout = function (boost) {
+      var b = boost ? [0.5, 0.85, 1.1] : [0.42, 0.72, 0.95];
       return { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom',
-               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': [0, figOffset(boost ? IMG.figBoost : IMG.fig)],
-               'icon-size': boost
-                 ? ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.85, 18, 1.1]
-                 : ['interpolate', ['linear'], ['zoom'], 12, 0.42, 15, 0.72, 18, 0.95] };
+               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'],
+               'icon-size': ['interpolate', ['linear'], ['zoom'], 12, ['*', b[0], ['get', 'sz']], 15, ['*', b[1], ['get', 'sz']], 18, ['*', b[2], ['get', 'sz']]] };
     };
     map.addLayer({ id: 'cz-users', type: 'symbol', source: 'users', filter: ['!', ['has', 'point_count']], layout: userLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-users-boost', type: 'symbol', source: 'users-boost', layout: userLayout(true), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     var labelLayout = { 'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true, 'text-max-width': 8 };
     map.addLayer({ id: 'cz-users-label', type: 'symbol', source: 'users', minzoom: 15.5, filter: ['!', ['has', 'point_count']], layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-users-boost-label', type: 'symbol', source: 'users-boost', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-emissive-strength': 1 } });
+    // quem está andando (o boost já entra no 'sz')
+    map.addLayer({ id: 'cz-movers', type: 'symbol', source: 'movers', layout: userLayout(false), paint: { 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-movers-label', type: 'symbol', source: 'movers', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-emissive-strength': 1 } });
     // seleção
     map.addLayer({ id: 'cz-sel', type: 'symbol', source: 'sel',
       layout: { 'icon-image': 'sel-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map', 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.45, 15, 0.7, 18, 0.9] },
@@ -611,8 +693,8 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(c - 22, 2); ctx.lineTo(c + 22, 2); ctx.closePath(); ctx.fill(); putImage('me-cone', cv); })();
 
     // interações
-    var tapLayers = ['cz-users', 'cz-users-boost'];
-    tapLayers.forEach(function (id) { map.on('click', id, function (e) { var f = e.features && e.features[0]; if (f && f.properties && f.properties.id) { e.preventDefault(); send('userTap', { id: String(f.properties.id) }); } }); });
+    var tapLayers = ['cz-users', 'cz-users-boost', 'cz-movers'];
+    tapLayers.forEach(function (id) { map.on('click', id, function (e) { var f = e.features && e.features[0]; if (f && f.properties && f.properties.id) { e.preventDefault(); var uid = String(f.properties.id); emote(uid, 'arrive'); send('userTap', { id: uid }); } }); });
     map.on('click', 'cz-poi', function (e) { var f = e.features && e.features[0]; if (f && f.properties) { e.preventDefault(); send('poiTap', { id: Number(f.properties.id) }); } });
     map.on('click', 'cz-cluster', function (e) {
       var f = e.features && e.features[0]; if (!f) return; e.preventDefault();
@@ -664,6 +746,75 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     return { kick: function () { if (!rafId) rafId = requestAnimationFrame(step); } };
   })();
 
+  function featureFor(u, fg, coords, szMul) {
+    var aura = u.isBoosted ? null : (u.premiumTier === 'premium_plus' ? 'aura-plus' : null);
+    var props = { id: u.id, img: fg.imgId, label: (u.isAnonymous ? '' : (u.name || '')), anon: !!u.isAnonymous, off: [0, figOffset(fg.dim || IMG.fig)], sz: fg.sz * (szMul || 1) };
+    if (aura) props.aura = aura;
+    return { type: 'Feature', id: u.id, properties: props, geometry: { type: 'Point', coordinates: coords } };
+  }
+  // monta as 3 fontes de pessoas: paradas (cluster), com boost e andando (posição interpolada)
+  function pushUsers() {
+    var normal = [], boosted = [], movers = [];
+    for (var id in state.users) {
+      var u = state.users[id], fg = figOf(id);
+      if (fg.move) movers.push(featureFor(u, fg, fg.pos, u.isBoosted ? 1.17 : 1));
+      else (u.isBoosted ? boosted : normal).push(featureFor(u, fg, fg.pos || [u.longitude, u.latitude]));
+    }
+    map.getSource('users').setData({ type: 'FeatureCollection', features: normal });
+    map.getSource('users-boost').setData({ type: 'FeatureCollection', features: boosted });
+    map.getSource('movers').setData({ type: 'FeatureCollection', features: movers });
+  }
+  function pushMovers() {
+    var movers = [];
+    for (var id in state.users) { var fg = figs[id]; if (fg && fg.move) movers.push(featureFor(state.users[id], fg, fg.pos, state.users[id].isBoosted ? 1.17 : 1)); }
+    map.getSource('movers').setData({ type: 'FeatureCollection', features: movers });
+  }
+  function pushMe() {
+    var fg = figs['me']; if (!fg || !fg.pos || !state.me) return;
+    var props = { off: [0, figOffset(fg.dim || IMG.fig)] };
+    if (typeof state.me.heading === 'number') props.heading = state.me.heading;
+    map.getSource('me').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: fg.pos } }] });
+  }
+  // tick das figuras: fim de emotes, caminhada (interpolação suave + chegada), quem anima (LOD a cada 700 ms)
+  var figTick = (function () {
+    var lastLod = 0;
+    function finishMove(fg) { fg.pos = fg.move.to; fg.move = null; fg.one = { name: 'arrive', start: performance.now() }; }
+    function updateLod() {
+      var max = state.tier === 'high' ? 14 : (state.tier === 'mid' ? 8 : 4);
+      if (map.getZoom() < 14.5 || !state.active) max = 0;
+      var b = map.getBounds(), c = map.project(map.getCenter()), cand = [];
+      for (var id in figs) {
+        var fg = figs[id]; if (!fg.pos) continue;
+        if (!b.contains(fg.pos)) { fg.animated = false; continue; }
+        var p = map.project(fg.pos); cand.push({ f: fg, d: (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) });
+      }
+      cand.sort(function (p, q) { return p.d - q.d; });
+      for (var i = 0; i < cand.length; i++) cand[i].f.animated = i < max;
+    }
+    return function (now) {
+      var moversDirty = false, usersDirty = false, meDirty = false;
+      for (var id in figs) {
+        var fg = figs[id];
+        if (fg.one && now - fg.one.start > CZ_ANIM.DUR[fg.one.name] * 1000) { fg.one = null; if (fg.obj) fg.obj.dirty = true; }
+        if (fg.move) {
+          var k = (now - fg.move.start) / fg.move.dur;
+          if (k >= 1) { finishMove(fg); if (id === 'me') meDirty = true; else usersDirty = true; }
+          else {
+            var e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+            fg.pos = [fg.move.from[0] + (fg.move.to[0] - fg.move.from[0]) * e, fg.move.from[1] + (fg.move.to[1] - fg.move.from[1]) * e];
+            if (id === 'me') meDirty = true; else moversDirty = true;
+          }
+        }
+        var live = figIsLive(fg, now);
+        if (live) { if (fg.obj) fg.obj.dirty = true; fg.wasLive = true; }
+        else if (fg.wasLive) { fg.wasLive = false; if (fg.obj) fg.obj.dirty = true; } // volta pra pose neutra
+      }
+      if (usersDirty) pushUsers(); else if (moversDirty) pushMovers();
+      if (meDirty) pushMe();
+      if (now - lastLod > 700) { lastLod = now; updateLod(); }
+    };
+  })();
+
   function setData(payload) {
     payload = payload || {};
     var users = (payload.users || []).slice(0, 300);
@@ -672,29 +823,26 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     var now = performance.now();
     var isFirst = !state.hadData;
     var prev = state.users; var next = {};
-    var normal = [], boosted = [];
     var newIds = [];
     for (var i = 0; i < users.length; i++) {
       var u = users[i];
       if (!u || !u.id || typeof u.latitude !== 'number' || typeof u.longitude !== 'number') continue;
       next[u.id] = u;
-      var img = ensureAvatar(u);
-      var aura = u.isBoosted ? null : (u.premiumTier === 'premium_plus' ? 'aura-plus' : null);
-      var props = { id: u.id, img: img, label: (u.isAnonymous ? '' : (u.name || '')), anon: !!u.isAnonymous };
-      if (aura) props.aura = aura;
-      var f = { type: 'Feature', id: u.id, properties: props, geometry: { type: 'Point', coordinates: [u.longitude, u.latitude] } };
-      (u.isBoosted ? boosted : normal).push(f);
+      ensureAvatar(u);
+      var fg = figOf(u.id);
+      var to = [u.longitude, u.latitude];
+      // posição mudou: a pessoa ANDA até lá (não teleporta); na 1ª carga todo mundo já nasce no lugar
+      if (prev[u.id] && !isFirst) startMove(fg, to, now); else { fg.pos = to; fg.move = null; }
       if (!prev[u.id]) newIds.push({ id: u.id, boosted: !!u.isBoosted });
     }
-    // remove imagens de quem saiu
-    for (var oid in prev) { if (!next[oid]) { try { map.removeImage('av-' + oid); } catch (e) {} delete imgCache['av-' + oid]; } }
+    // quem saiu leva a imagem junto
+    for (var oid in prev) { if (!next[oid]) removeFig(oid); }
     // definições de avatar só de quem está no mapa (+ eu): sessão longa não acumula visuais de quem já foi embora
     var usedKeys = {}; for (var uk in next) if (next[uk].avatarKey) usedKeys[next[uk].avatarKey] = true; if (state.me && state.me.avatarKey) usedKeys[state.me.avatarKey] = true;
     for (var dk in avatarDefs) if (!usedKeys[dk]) delete avatarDefs[dk];
     for (var wk in keyWaiters) if (!usedKeys[wk]) delete keyWaiters[wk];
     state.users = next;
-    map.getSource('users').setData({ type: 'FeatureCollection', features: normal });
-    map.getSource('users-boost').setData({ type: 'FeatureCollection', features: boosted });
+    pushUsers();
     // entrada escalonada: novos começam invisíveis/pequenos e "pousam"
     for (var n = 0; n < newIds.length; n++) {
       var src = newIds[n].boosted ? 'users-boost' : 'users';
@@ -735,23 +883,11 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     state.me = me;
     var u = { id: 'me', name: me.name || 'você', isAnonymous: !!me.isAnonymous, isBoosted: !!me.isBoosted, premiumTier: me.tier || 'free', isVerified: false,
               recordedAt: new Date().toISOString(), avatarKey: me.avatarKey || '', aura: me.aura || '' };
-    var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
-    var sig = avatarSignature(u) + '|' + dim.w + 'x' + dim.h + '|' + (u.isAnonymous ? 'anon' : 'vis');
-    if (imgCache['me-avatar'] !== sig) {
-      imgCache['me-avatar'] = sig;
-      var layers = u.avatarKey ? avatarDefs[u.avatarKey] : null;
-      var cv = makeCanvasWH(dim.w, dim.h);
-      drawFigure(cv, u, layers);
-      if (u.isAnonymous) {
-        // modo invisível: só EU me vejo, e meio apagado — lembrete visual do estado
-        cv.ctx.globalCompositeOperation = 'source-atop'; cv.ctx.fillStyle = 'rgba(10,10,26,0.5)'; cv.ctx.fillRect(0, 0, dim.w, dim.h); cv.ctx.globalCompositeOperation = 'source-over';
-      }
-      try { if (map.hasImage('me-avatar')) map.removeImage('me-avatar'); } catch (e) {}
-      putImage('me-avatar', cv);
-    }
-    var props = { off: [0, figOffset(dim)] };
-    if (typeof me.heading === 'number') props.heading = me.heading;
-    map.getSource('me').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: [me.lng, me.lat] } }] });
+    var fg = figOf('me');
+    var to = [me.lng, me.lat];
+    if (fg.pos) startMove(fg, to, performance.now()); else fg.pos = to; // eu também ando no mapa
+    ensureAvatar(u, 'me-avatar');
+    pushMe();
     if (!state.located) { state.located = true; if (!state.revealed) { /* RN chama reveal(); se não chamar em 1.5s, centraliza */ setTimeout(function () { if (!state.revealed) API.setCenter(me.lat, me.lng, 16); }, 1500); } }
     particles.retarget();
   }
@@ -769,6 +905,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
     var u = state.users[m.userId];
     if (!u) { send('matchMomentDone', { userId: m.userId, shown: false }); return; }
     clearMoment();
+    emote('me', 'match'); emote(m.userId, 'match');
     var a = [state.me.lng, state.me.lat], b = [u.longitude, u.latitude];
     if (!map.getSource('moment')) {
       map.addSource('moment', { type: 'geojson', data: empty() });
@@ -937,20 +1074,30 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   // 8. Perf: medição inicial (90 frames num easeTo de 1s) + perf a cada 5s
   // ======================================================================
   var perf = (function () {
-    var frames = 0, t0 = 0, rafId = null, timer = null, running = false;
-    function loop() { rafId = null; if (!running) return; frames++; rafId = requestAnimationFrame(loop); }
-    function start() { if (running) return; running = true; frames = 0; t0 = performance.now(); rafId = requestAnimationFrame(loop);
-      timer = setInterval(function () { var dt = (performance.now() - t0) / 1000; if (dt > 0) send('perf', { fps: Math.round(frames / dt) }); frames = 0; t0 = performance.now(); }, 5000); }
-    function stop() { running = false; if (rafId) cancelAnimationFrame(rafId); rafId = null; if (timer) clearInterval(timer); timer = null; }
+    var stamps = [], timer = null, running = false;
+    function onRender() { stamps.push(performance.now()); if (stamps.length > 900) stamps.shift(); }
+    // fps = mediana do intervalo entre frames renderizados (só conta quando o mapa estava repintando)
+    function estimate() {
+      var iv = [];
+      for (var i = 1; i < stamps.length; i++) { var d = stamps[i] - stamps[i - 1]; if (d > 0 && d < 250) iv.push(d); }
+      stamps = stamps.length ? [stamps[stamps.length - 1]] : [];
+      if (iv.length < 10) return null;
+      iv.sort(function (a, b) { return a - b; });
+      return Math.round(1000 / iv[Math.floor(iv.length / 2)]);
+    }
+    function start() { if (running) return; running = true; stamps = []; map.on('render', onRender);
+      timer = setInterval(function () { var fps = estimate(); if (fps != null) send('perf', { fps: fps }); }, 5000); }
+    function stop() { running = false; map.off('render', onRender); if (timer) clearInterval(timer); timer = null; }
     function measure(cb) {
       var n = 0, start = performance.now(), done = false;
-      function finish(fps) { if (done) return; done = true; cb(fps); }
+      function count() { n++; }
+      function finish(fps) { if (done) return; done = true; map.off('render', count); cb(fps); }
+      map.on('render', count);
       state.programmatic++;
       map.easeTo({ bearing: map.getBearing() + 8, duration: 1000, essential: true });
-      (function f() { n++; if (n < 90 && performance.now() - start < 1600) requestAnimationFrame(f); else finish(n / ((performance.now() - start) / 1000)); })();
-      // rAF pode ficar parado (WebView em background / aba oculta): assume tier médio e segue
+      map.once('moveend', function () { endProgrammatic(); finish(n / ((performance.now() - start) / 1000)); });
+      // WebView em background (rAF parado): assume tier médio e segue
       setTimeout(function () { finish(40); }, 2500);
-      map.once('moveend', function () { endProgrammatic(); });
     }
     return { start: start, stop: stop, measure: measure };
   })();
@@ -974,6 +1121,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
   API.setPadding = setPadding;
   API.burst = burst;
   API.defineAvatars = defineAvatars;
+  API.emote = emote;
   API.matchMoment = matchMoment;
 
   map.on('style.load', function () { send('styleLoaded'); });
@@ -988,14 +1136,18 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
       if (INIT.tier === 'low' || INIT.tier === 'mid' || INIT.tier === 'high') tier = INIT.tier;
       state.tier = tier; applyTierEffects();
       ready = true;
-      send('ready', { tier: tier, webgl2: webgl2, dpr: DPR });
+      send('ready', { tier: tier, webgl2: webgl2, dpr: DPR, fps: state.measuredFps || 0 });
       // reaplica a fila na ordem em que chegou
       var q = queue; queue = [];
       for (var i = 0; i < q.length; i++) { try { API[q[i].name].apply(null, q[i].args); } catch (e) { send('error', { message: q[i].name + ': ' + (e && e.message), fatal: false }); } }
       perf.start();
       idleCam.schedule();
     };
-    perf.measure(function (fps) { finish(fps >= 48 ? 'high' : (fps >= 30 ? 'mid' : 'low')); });
+    // mede só com o mapa ocioso (tiles/prédios carregados): medir durante o load dava 'low' em aparelho de 60 fps
+    var measured = false;
+    var doMeasure = function () { if (measured) return; measured = true; perf.measure(function (fps) { state.measuredFps = Math.round(fps); finish(fps >= 42 ? 'high' : (fps >= 26 ? 'mid' : 'low')); }); };
+    map.once('idle', doMeasure);
+    setTimeout(doMeasure, 6000);
   });
 })();
 </script>

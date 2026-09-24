@@ -10,6 +10,8 @@ import type { InitTier } from '../screens/map/bridge';
 interface MapPerfState {
   tier: InitTier;
   setTier: (tier: InitTier) => void;
+  /** promoção (o aparelho mostrou fps alto por um tempo): sobe um degrau */
+  raiseTier: (tier: InitTier) => void;
 }
 
 const RANK: Record<InitTier, number> = { auto: 3, high: 2, mid: 1, low: 0 };
@@ -18,5 +20,8 @@ export const useMapPerfStore = create<MapPerfState>((set, get) => ({
   tier: 'auto',
   setTier(tier) {
     if (RANK[tier] < RANK[get().tier]) set({ tier });
+  },
+  raiseTier(tier) {
+    if (RANK[tier] > RANK[get().tier]) set({ tier });
   },
 }));

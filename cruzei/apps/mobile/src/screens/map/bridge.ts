@@ -4,7 +4,7 @@
 // O HTML (mapbox-html.ts) implementa exatamente estas assinaturas — não mude um lado sem o outro.
 
 import type { NearbyUser, POI } from '@cruzei/shared-types';
-import type { AvatarLayer } from '../../avatar';
+import type { AvatarLayer, AvatarRig } from '../../avatar';
 
 export type MapTheme = 'day' | 'dusk' | 'night';
 export type PerfTier = 'low' | 'mid' | 'high';
@@ -29,8 +29,11 @@ export interface MeState {
 /** pessoa como vai pro mapa: NearbyUser + chave do avatar (o HTML busca as camadas em avatarDefs[avatarKey]) */
 export type MapUser = NearbyUser & { avatarKey: string; aura: string };
 
-/** { avatarKey: camadas } — só as chaves que o WebView ainda não conhece */
-export type AvatarDefs = Record<string, AvatarLayer[]>;
+/** { avatarKey: { l: camadas, p: pivôs do rig } } — só as chaves que o WebView ainda não conhece */
+export type AvatarDefs = Record<string, { l: AvatarLayer[]; p: AvatarRig }>;
+
+/** reações curtas do avatar no mapa (motor de poses do WebView) */
+export type EmoteKind = 'wave' | 'like' | 'celebrate' | 'match' | 'arrive';
 
 export interface MapDataPayload {
   users: MapUser[];
@@ -61,7 +64,7 @@ export interface BurstPayload {
 // ---------- WebView -> RN ----------
 
 export type WebMsg =
-  | { type: 'ready'; tier: PerfTier; webgl2: boolean; dpr: number }
+  | { type: 'ready'; tier: PerfTier; webgl2: boolean; dpr: number; fps: number }
   | { type: 'styleLoaded' }
   | { type: 'error'; message: string; fatal: boolean }
   | { type: 'moveend'; lat: number; lng: number; zoom: number; userMoved: boolean }
@@ -120,7 +123,7 @@ export function parseWebMsg(raw: string): WebMsg | null {
   switch (type) {
     case 'ready':
       if (!isTier(m.tier)) return null;
-      return { type, tier: m.tier, webgl2: m.webgl2 === true, dpr: isNum(m.dpr) ? m.dpr : 1 };
+      return { type, tier: m.tier, webgl2: m.webgl2 === true, dpr: isNum(m.dpr) ? m.dpr : 1, fps: isNum(m.fps) ? m.fps : 0 };
     case 'styleLoaded':
     case 'mapTap':
       return { type };
@@ -169,7 +172,8 @@ export type CommandName =
   | 'setPadding'
   | 'burst'
   | 'defineAvatars'
-  | 'matchMoment';
+  | 'matchMoment'
+  | 'emote';
 
 function call(fn: CommandName, ...args: unknown[]): string {
   // descarta opcionais finais não informados (zoom/opts) em vez de mandar null pro HTML
@@ -197,6 +201,8 @@ export const cmd = {
   burst: (payload: BurstPayload): string => call('burst', payload),
   defineAvatars: (defs: AvatarDefs): string => call('defineAvatars', defs),
   matchMoment: (userId: string): string => call('matchMoment', { userId }),
+  /** id da pessoa ou 'me' */
+  emote: (id: string, kind: EmoteKind): string => call('emote', id, kind),
 } as const;
 
 /**

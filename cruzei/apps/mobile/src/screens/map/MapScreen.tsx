@@ -27,7 +27,7 @@ import { DiscoveryToast } from '../../components/map/DiscoveryToast';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
-import { buildAvatarLayers, keyOf, resolveAvatar } from '../../avatar';
+import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../avatar';
 import { buildMapboxHtml } from './mapbox-html';
 import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
@@ -39,8 +39,13 @@ const MAX_USERS = 300;
 const FREE_RADIUS_M = 800;
 const WIDE_RADIUS_M = 5000;
 const NEARBY_REFETCH_MS = 45_000;
-const LOW_FPS = 40;
-const LOW_FPS_SAMPLES = 3;
+const LOW_FPS_SAMPLES = 4;
+const HIGH_FPS_SAMPLES = 3;
+// histerese: sobe pra 'mid' com ≥26 fps e pra 'high' com ≥42; desce de 'high' só abaixo de 30 e de 'mid' abaixo de 20
+const PROMOTE_FPS: Record<PerfTier, number> = { low: 0, mid: 26, high: 42 };
+const DEMOTE_FPS: Record<PerfTier, number> = { high: 30, mid: 20, low: 0 };
+// amostras de fps logo após o 'ready' não valem: o mapa ainda está carregando tiles/imagens
+const PERF_WARMUP_MS = 12_000;
 const HEADING_MIN_DELTA = 4;
 const HEADING_THROTTLE_MS = 100;
 const PADDING_THROTTLE_MS = 16;
@@ -55,6 +60,7 @@ const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe'
 // one-shots que vale a pena segurar até o 'ready'; comandos de câmera antes do ready só atropelariam o reveal
 const QUEUEABLE: ReadonlySet<CommandName> = new Set<CommandName>(['burst']);
 const TIER_BELOW: Record<PerfTier, PerfTier | null> = { high: 'mid', mid: 'low', low: null };
+const TIER_ABOVE: Record<PerfTier, PerfTier | null> = { low: 'mid', mid: 'high', high: null };
 
 interface LikeResponse {
   isMatch: boolean;
@@ -169,7 +175,7 @@ export function MapScreen() {
         knownAvatars.current.set(key, cfg);
         if (sentAvatarKeys.current.has(key)) continue;
         sentAvatarKeys.current.add(key);
-        defs[key] = buildAvatarLayers(cfg, { groundShadow: true });
+        defs[key] = { l: buildAvatarLayers(cfg, { groundShadow: true }), p: buildAvatarRig(cfg) };
         count += 1;
       }
       if (count > 0 && readyRef.current) inject(cmd.defineAvatars(defs));
@@ -214,6 +220,8 @@ export function MapScreen() {
   const [forcedTier, setForcedTier] = useState<PerfTier | null>(null);
   const tier = forcedTier ? minTier(measuredTier, forcedTier) : measuredTier;
   const lowFpsCount = useRef(0);
+  const highFpsCount = useRef(0);
+  const readyAt = useRef(0);
 
   // manda o tier EFETIVO (nunca sobe o WebView acima do que ele mediu num reload)
   useEffect(() => {
@@ -334,6 +342,8 @@ export function MapScreen() {
   poisRef.current = pois;
   const tierRef = useRef(tier);
   tierRef.current = tier;
+  const measuredTierRef = useRef(measuredTier);
+  measuredTierRef.current = measuredTier;
 
   // ---------- descoberta (dicas discretas) + indicadores do header ----------
   const hints = useDiscoveryHints(users, pois, distanceById, active && webReady, `${centerGeohash ?? ''}|${radiusM}`);
@@ -548,8 +558,12 @@ export function MapScreen() {
           readyRef.current = true;
           setWebReady(true);
           setMapError(null);
-          setMeasuredTier(msg.tier);
+          // WebView que nasceu com tier forçado (remount em low) não mediu de verdade: mantém o teto anterior
+          if (savedTier === 'auto') setMeasuredTier(msg.tier);
           lowFpsCount.current = 0;
+          highFpsCount.current = 0;
+          readyAt.current = Date.now();
+          if (__DEV__) console.info('[map] ready tier=' + msg.tier + ' fps=' + msg.fps + ' webgl2=' + msg.webgl2 + ' dpr=' + msg.dpr); // eslint-disable-line no-console
           flushOnReady();
           break;
         }
@@ -612,7 +626,25 @@ export function MapScreen() {
           break;
         }
         case 'perf': {
-          if (msg.fps < LOW_FPS) {
+          if (__DEV__) console.info('[map] fps=' + msg.fps + ' tier=' + tierRef.current); // eslint-disable-line no-console
+          if (Date.now() - readyAt.current < PERF_WARMUP_MS) break;
+          const upNext = TIER_ABOVE[tierRef.current];
+          if (upNext && msg.fps >= PROMOTE_FPS[upNext]) {
+            // aparelho folgado: sobe um degrau de cada vez (e libera o teto quando chega no medido)
+            highFpsCount.current += 1;
+            if (highFpsCount.current >= HIGH_FPS_SAMPLES) {
+              highFpsCount.current = 0;
+              const cur = tierRef.current;
+              const up = TIER_ABOVE[cur];
+              if (up) {
+                useMapPerfStore.getState().raiseTier(up);
+                setMeasuredTier(up); // o teto medido no boot era pessimista
+                setForcedTier(null);
+                send(cmd.setTier(up), 'setTier');
+              }
+            }
+          } else highFpsCount.current = 0;
+          if (msg.fps < DEMOTE_FPS[tierRef.current]) {
             lowFpsCount.current += 1;
             if (lowFpsCount.current >= LOW_FPS_SAMPLES) {
               lowFpsCount.current = 0;
@@ -642,7 +674,7 @@ export function MapScreen() {
           break;
       }
     },
-    [flushOnReady, onWebDead, remountWeb, send, finishMoment],
+    [flushOnReady, onWebDead, remountWeb, send, finishMoment, savedTier],
   );
 
   // ---------- acenos recebidos (socket) ----------
@@ -653,20 +685,28 @@ export function MapScreen() {
     let off: (() => void) | null = null;
     const onWave = (p: { fromUserId?: string; name?: string }) => {
       showToast(`👋 ${p?.name ?? 'Alguém'} acenou pra você`);
+      if (p?.fromUserId) send(cmd.emote(p.fromUserId, 'wave')); // quem acenou acena no mapa
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    };
+    const onLikeReceived = (p: { fromUserId?: string }) => {
+      if (p?.fromUserId) send(cmd.emote(p.fromUserId, 'like'));
     };
     connectSocket()
       .then((socket) => {
         if (cancelled || !socket) return;
         socket.on('wave_received' as never, onWave as never);
-        off = () => socket.off('wave_received' as never, onWave as never);
+        socket.on('like_received' as never, onLikeReceived as never);
+        off = () => {
+          socket.off('wave_received' as never, onWave as never);
+          socket.off('like_received' as never, onLikeReceived as never);
+        };
       })
       .catch(() => {});
     return () => {
       cancelled = true;
       off?.();
     };
-  }, [active, showToast]);
+  }, [active, showToast, send]);
 
   // ---------- ações ----------
   const like = useCallback(
@@ -675,6 +715,7 @@ export function MapScreen() {
       try {
         const res = await api.post<LikeResponse>('/likes', { userId: u.id, isSuper });
         setLikedIds((prev) => addTo(prev, u.id));
+        send(cmd.emote(u.id, 'like')); // a pessoa reage no mapa
         if (res.data.isMatch && res.data.matchId) {
           const matchId = res.data.matchId;
           setLocalMatches((prev) => {
@@ -711,6 +752,7 @@ export function MapScreen() {
       try {
         const res = await api.post<WaveResponse>('/waves', { userId: u.id });
         setWavedIds((prev) => addTo(prev, u.id));
+        send(cmd.emote('me', 'wave')); // meu avatar acena no mapa
         send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: 'like' }), undefined, 'burst');
         showToast(res.data.duplicate ? `Você já acenou pra ${u.name} hoje 👋` : `Você acenou pra ${u.name} 👋`);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});

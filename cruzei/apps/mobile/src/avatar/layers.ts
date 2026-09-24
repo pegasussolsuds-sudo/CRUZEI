@@ -9,10 +9,27 @@ import type { AvatarConfig } from '@cruzei/shared-types';
 import { avatarColorHex } from '@cruzei/shared-utils';
 import { arc, capAbove, capBelow, circle, ellipse, line, luminance, poly, quad, rgba, rrect, rrect4, shade } from './geometry';
 
+/** Grupo do esqueleto a que a camada pertence (a animação gira/move o grupo em volta do pivô do rig). */
+export type AvatarGroup = 'shadow' | 'body' | 'head' | 'armL' | 'armR' | 'legL' | 'legR';
+
+/** Pivôs do rig no viewBox 0 0 100 140: [x, y] de cada articulação. */
+export interface AvatarRig {
+  /** quadris: o tronco (e tudo acima) gira/escala a partir daqui */
+  body: [number, number];
+  /** base do pescoço */
+  head: [number, number];
+  armL: [number, number];
+  armR: [number, number];
+  legL: [number, number];
+  legR: [number, number];
+}
+
 /** Camada desenhável (chaves curtas: vai serializada pro WebView do mapa). */
 export interface AvatarLayer {
   /** path SVG */
   d: string;
+  /** grupo do esqueleto */
+  g?: AvatarGroup;
   /** fill (hex/rgba) */
   f?: string;
   /** stroke */
@@ -33,6 +50,22 @@ export const AVATAR_BUST_VIEWBOX = { x: 18, y: 6, w: 64, h: 64 } as const;
 
 const HEAD = { cx: 50, cy: 33, r: 21 } as const;
 const BODY_WIDTH: Record<string, number> = { slim: 38, regular: 44, broad: 50 };
+
+/** Pivôs do rig pra uma config (dependem só da largura do corpo). */
+export function buildAvatarRig(cfg: AvatarConfig): AvatarRig {
+  const w = BODY_WIDTH[cfg.body] ?? BODY_WIDTH.regular;
+  const x0 = 50 - w / 2;
+  const x1 = 50 + w / 2;
+  const legW = w / 2 - 6;
+  return {
+    body: [50, 96],
+    head: [50, 50],
+    armL: [x0 - 5.5, 60],
+    armR: [x1 + 5.5, 60],
+    legL: [x0 + 3 + legW / 2, 92],
+    legR: [50 + 3 + legW / 2, 92],
+  };
+}
 const DARK = '#1F1B2E';
 const WHITE = '#F7F7FA';
 const GOLD = '#FFD700';
@@ -67,17 +100,21 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
   const isDress = cfg.top === 'dress';
   const longSleeve = ['hoodie', 'shirt', 'sweater', 'jacket', 'neon_jacket'].includes(cfg.top);
   const sleeveless = ['tank', 'dress'].includes(cfg.top);
-  const push = (d: string, f?: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, ...extra });
-  const stroke = (d: string, s: string, w2: number, extra?: Partial<AvatarLayer>) => L.push({ d, s, w: w2, c: 'round', ...extra });
+  let cur: AvatarGroup = 'body';
+  const push = (d: string, f?: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, g: cur, ...extra });
+  const stroke = (d: string, s: string, w2: number, extra?: Partial<AvatarLayer>) => L.push({ d, s, w: w2, c: 'round', g: cur, ...extra });
 
   // ---------- sombra no chão ----------
+  cur = 'shadow';
   if (opts.groundShadow) push(ellipse(50, 135, 26, 5), 'rgba(0,0,0,0.28)');
 
   // ---------- cabelo: parte de trás ----------
+  cur = 'head';
   const hairBack = HAIR_BACK[cfg.hair];
   if (hairBack) hairBack(L, hair, hairShade);
 
   // ---------- capuz (atrás da cabeça) ----------
+  cur = 'body';
   if (cfg.top === 'hoodie') push(rrect4(25, 22, 50, 44, [25, 25, 10, 10]), shade(top, -0.1));
 
   // ---------- mochila (corpo, atrás do tronco) ----------
@@ -87,32 +124,32 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
   const bottomKind = isDress ? 'dress' : cfg.bottom;
   if (bottomKind === 'shorts' || bottomKind === 'skirt' || bottomKind === 'dress') {
     // pele das pernas aparece abaixo
-    push(rrect4(legLx + 1.5, 104, legW - 3, 24, [2, 2, 4, 4]), skin);
-    push(rrect4(legRx + 1.5, 104, legW - 3, 24, [2, 2, 4, 4]), skin);
+    cur = 'legL'; push(rrect4(legLx + 1.5, 104, legW - 3, 24, [2, 2, 4, 4]), skin);
+    cur = 'legR'; push(rrect4(legRx + 1.5, 104, legW - 3, 24, [2, 2, 4, 4]), skin);
   }
   if (bottomKind === 'jeans' || bottomKind === 'pants' || bottomKind === 'joggers' || bottomKind === 'cargo') {
-    push(rrect4(legLx, 92, legW, 34, [2, 2, 4, 4]), bottom);
-    push(rrect4(legRx, 92, legW, 34, [2, 2, 4, 4]), bottom);
+    cur = 'legL'; push(rrect4(legLx, 92, legW, 34, [2, 2, 4, 4]), bottom);
+    cur = 'legR'; push(rrect4(legRx, 92, legW, 34, [2, 2, 4, 4]), bottom);
     if (bottomKind === 'jeans') {
-      stroke(line(legLx + legW - 2, 96, legLx + legW - 2, 124), shade(bottom, 0.25), 0.8, { o: 0.7 });
-      stroke(line(legRx + 2, 96, legRx + 2, 124), shade(bottom, 0.25), 0.8, { o: 0.7 });
+      cur = 'legL'; stroke(line(legLx + legW - 2, 96, legLx + legW - 2, 124), shade(bottom, 0.25), 0.8, { o: 0.7 });
+      cur = 'legR'; stroke(line(legRx + 2, 96, legRx + 2, 124), shade(bottom, 0.25), 0.8, { o: 0.7 });
     }
     if (bottomKind === 'joggers') {
-      push(rrect(legLx, 120, legW, 6, 2), shade(bottom, -0.22));
-      push(rrect(legRx, 120, legW, 6, 2), shade(bottom, -0.22));
+      cur = 'legL'; push(rrect(legLx, 120, legW, 6, 2), shade(bottom, -0.22));
+      cur = 'legR'; push(rrect(legRx, 120, legW, 6, 2), shade(bottom, -0.22));
     }
     if (bottomKind === 'cargo') {
-      push(rrect(legLx + 1, 104, legW - 2, 8, 1.5), shade(bottom, -0.18));
-      push(rrect(legRx + 1, 104, legW - 2, 8, 1.5), shade(bottom, -0.18));
+      cur = 'legL'; push(rrect(legLx + 1, 104, legW - 2, 8, 1.5), shade(bottom, -0.18));
+      cur = 'legR'; push(rrect(legRx + 1, 104, legW - 2, 8, 1.5), shade(bottom, -0.18));
     }
   } else if (bottomKind === 'leggings') {
-    push(rrect4(legLx + 1, 92, legW - 2, 34, [2, 2, 3, 3]), bottom);
-    push(rrect4(legRx + 1, 92, legW - 2, 34, [2, 2, 3, 3]), bottom);
+    cur = 'legL'; push(rrect4(legLx + 1, 92, legW - 2, 34, [2, 2, 3, 3]), bottom);
+    cur = 'legR'; push(rrect4(legRx + 1, 92, legW - 2, 34, [2, 2, 3, 3]), bottom);
   } else if (bottomKind === 'shorts') {
-    push(rrect4(legLx, 92, legW, 20, [2, 2, 3, 3]), bottom);
-    push(rrect4(legRx, 92, legW, 20, [2, 2, 3, 3]), bottom);
+    cur = 'legL'; push(rrect4(legLx, 92, legW, 20, [2, 2, 3, 3]), bottom);
+    cur = 'legR'; push(rrect4(legRx, 92, legW, 20, [2, 2, 3, 3]), bottom);
   } else if (bottomKind === 'skirt') {
-    push(poly([[x0 + 2, 92], [x1 - 2, 92], [x1 + 6, 114], [x0 - 6, 114]]), bottom);
+    cur = 'body'; push(poly([[x0 + 2, 92], [x1 - 2, 92], [x1 + 6, 114], [x0 - 6, 114]]), bottom);
   }
 
   // ---------- sapatos ----------
@@ -145,10 +182,13 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
         push(rrect(fx - 4, 125, 8, 2, 1), shade(shoes, luminance(shoes) > 0.6 ? -0.3 : 0.35));
     }
   };
+  cur = 'legL';
   shoeAt(footL);
+  cur = 'legR';
   shoeAt(footR);
 
   // ---------- tronco / parte de cima ----------
+  cur = 'body';
   const torso = (yTop: number, yBot: number, inset = 0) => rrect4(x0 + inset, yTop, w - inset * 2, yBot - yTop, [14, 14, 8, 8]);
   const shortSleeve = (ax: number) => {
     push(rrect4(ax - 5.5, 58, 11, 22, [6, 6, 3, 3]), top);
@@ -227,24 +267,25 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
 
   // ---------- braços ----------
   if (sleeveless) {
-    bareArm(axL);
-    bareArm(axR);
+    cur = 'armL'; bareArm(axL);
+    cur = 'armR'; bareArm(axR);
   } else if (longSleeve) {
-    longSleeveArm(axL);
-    longSleeveArm(axR);
+    cur = 'armL'; longSleeveArm(axL);
+    cur = 'armR'; longSleeveArm(axR);
     if (cfg.top === 'sweater') {
-      push(rrect(axL - 5.5, 94, 11, 5, 2), shade(top, -0.2));
-      push(rrect(axR - 5.5, 94, 11, 5, 2), shade(top, -0.2));
+      cur = 'armL'; push(rrect(axL - 5.5, 94, 11, 5, 2), shade(top, -0.2));
+      cur = 'armR'; push(rrect(axR - 5.5, 94, 11, 5, 2), shade(top, -0.2));
     }
   } else {
-    shortSleeve(axL);
-    shortSleeve(axR);
+    cur = 'armL'; shortSleeve(axL);
+    cur = 'armR'; shortSleeve(axR);
   }
   // mãos
-  push(circle(axL, 101, 5.5), skin);
-  push(circle(axR, 101, 5.5), skin);
+  cur = 'armL'; push(circle(axL, 101, 5.5), skin);
+  cur = 'armR'; push(circle(axR, 101, 5.5), skin);
 
   // ---------- pulso ----------
+  cur = 'armL';
   switch (cfg.wrist) {
     case 'watch':
       push(rrect(axL - 5.5, 92, 11, 6, 2), '#22222E');
@@ -262,6 +303,7 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
   }
 
   // ---------- bolsa (frente) ----------
+  cur = 'body';
   if (cfg.bag === 'backpack') {
     push(rrect(x0 + 3, 56, 6, 36, 3), '#2B2B36');
     push(rrect(x1 - 9, 56, 6, 36, 3), '#2B2B36');
@@ -286,8 +328,10 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
   }
 
   // ---------- pescoço + cabeça ----------
+  cur = 'body';
   push(rrect(45, 48, 10, 12, 3), skin);
   push(ellipse(50, 52, 6.5, 2.4), 'rgba(0,0,0,0.16)');
+  cur = 'head';
   push(circle(HEAD.cx, HEAD.cy, HEAD.r), skin);
   // orelhas
   push(circle(29.5, 35, 4), skin);
@@ -296,6 +340,7 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
   push(circle(70.5, 35, 2), skinShade, { o: 0.6 });
 
   // ---------- barba (antes do rosto: olhos/boca ficam por cima) ----------
+  cur = 'head';
   switch (cfg.facialHair) {
     case 'stubble':
       push(capBelow(50, 33, 21, 39), hair, { o: 0.28 });
@@ -431,8 +476,8 @@ export function buildAvatarLayers(cfg: AvatarConfig, opts: BuildOptions = {}): A
 // ---------------- rosto ----------------
 
 function face(L: AvatarLayer[], kind: string, brow: string, skin: string): void {
-  const push = (d: string, f?: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, ...extra });
-  const stroke = (d: string, s: string, w: number, extra?: Partial<AvatarLayer>) => L.push({ d, s, w, c: 'round', ...extra });
+  const push = (d: string, f?: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, g: 'head', ...extra });
+  const stroke = (d: string, s: string, w: number, extra?: Partial<AvatarLayer>) => L.push({ d, s, w, c: 'round', g: 'head', ...extra });
   const eye = (cx: number) => {
     push(ellipse(cx, 35, 2.6, 3.2), DARK);
     push(circle(cx + 0.9, 33.8, 0.9), WHITE);
@@ -497,7 +542,7 @@ function face(L: AvatarLayer[], kind: string, brow: string, skin: string): void 
 
 type HairFn = (L: AvatarLayer[], color: string, dark: string) => void;
 
-const push = (L: AvatarLayer[], d: string, f: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, ...extra });
+const push = (L: AvatarLayer[], d: string, f: string, extra?: Partial<AvatarLayer>) => L.push({ d, f, g: 'head', ...extra });
 
 /** calota padrão (linha do cabelo em y=22) */
 const cap = (yCut = 22, r = 21.8) => capAbove(50, 33, r, yCut);
