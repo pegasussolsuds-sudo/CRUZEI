@@ -87,7 +87,7 @@ export function ProfileScreen() {
   });
 
   const settings = useMutation({
-    mutationFn: async (patch: { showDistance?: boolean; showAge?: boolean }) => (await api.patch('/me/settings', patch)).data,
+    mutationFn: async (patch: { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean }) => (await api.patch('/me/settings', patch)).data,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['me'] }),
     onError: (err) => Alert.alert('Ops', toApiError(err).message),
   });
@@ -305,6 +305,13 @@ export function ProfileScreen() {
             onToggle={toggleAnonymous}
           />
           <Row icon="navigate-outline" label="Mostrar distância" value={me.settings.showDistance} onToggle={() => settings.mutate({ showDistance: !me.settings.showDistance })} />
+          <Row
+            icon="image-outline"
+            label="Mostrar minha foto no mapa"
+            hint="Desligado: no mapa aparece só o seu avatar"
+            value={me.settings.showPhotoOnMap ?? true}
+            onToggle={() => settings.mutate({ showPhotoOnMap: !(me.settings.showPhotoOnMap ?? true) })}
+          />
           <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={() => settings.mutate({ showAge: !me.settings.showAge })} last />
         </Section>
 

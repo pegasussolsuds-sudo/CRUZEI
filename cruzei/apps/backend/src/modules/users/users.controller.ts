@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import {
   ArrayMaxSize,
   IsArray,
@@ -15,6 +16,23 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 
+/** hosts que podem servir fotos: o próprio backend (host da requisição) + PHOTO_ALLOWED_HOSTS (R2/CDN em prod) */
+function assertPhotoHost(url: string, req: Request): void {
+  let host: string;
+  try {
+    host = new URL(url).host.toLowerCase();
+  } catch {
+    throw new BadRequestException('URL de foto inválida');
+  }
+  const allowed = new Set(
+    [req.get('host') ?? '', ...(process.env.PHOTO_ALLOWED_HOSTS ?? '').split(',')].map((h) => h.trim().toLowerCase()).filter(Boolean),
+  );
+  // dev: o app fala com o backend por 127.0.0.1/localhost/IP da LAN (túnel USB ou Wi-Fi) — mesma porta, hosts equivalentes
+  const port = (req.get('host') ?? '').split(':')[1];
+  if (port) ['127.0.0.1', 'localhost'].forEach((h) => allowed.add(`${h}:${port}`));
+  if (!allowed.has(host)) throw new BadRequestException('Foto precisa estar hospedada pelo Cruzei');
+}
+
 class UpdateMeDto {
   @IsOptional() @IsString() @MaxLength(50) name?: string;
   @IsOptional() @IsString() @MaxLength(500) bio?: string;
@@ -29,6 +47,8 @@ class SettingsDto {
   @IsOptional() @IsEnum(['visible', 'anonymous']) visibilityMode?: 'visible' | 'anonymous';
   @IsOptional() @IsBoolean() showDistance?: boolean;
   @IsOptional() @IsBoolean() showAge?: boolean;
+  /** foto real na bolha de identidade do mapa (OFF = só o avatar aparece no mapa) */
+  @IsOptional() @IsBoolean() showPhotoOnMap?: boolean;
 }
 
 class PauseDto {
@@ -71,7 +91,11 @@ export class UsersController {
   }
 
   @Post('photos')
-  addPhoto(@CurrentUser() user: AuthenticatedUser, @Body() dto: PhotoDto) {
+  addPhoto(@CurrentUser() user: AuthenticatedUser, @Body() dto: PhotoDto, @Req() req: Request) {
+    // a bolha do mapa faz TODO viewer baixar essa URL: só fotos hospedadas por nós (backend em dev, R2/CDN em prod),
+    // senão a URL vira pixel de rastreio / oráculo de quem está perto
+    assertPhotoHost(dto.url, req);
+    if (dto.thumbnailUrl) assertPhotoHost(dto.thumbnailUrl, req);
     return this.svc.addPhoto(user.id, dto.url, dto.thumbnailUrl, dto.isMain);
   }
 

@@ -26,8 +26,11 @@ export interface MeState {
   aura: string;
 }
 
-/** pessoa como vai pro mapa: NearbyUser + chave do avatar (o HTML busca as camadas em avatarDefs[avatarKey]) */
-export type MapUser = NearbyUser & { avatarKey: string; aura: string };
+/**
+ * pessoa como vai pro mapa: NearbyUser + chave do avatar (o HTML busca as camadas em avatarDefs[avatarKey]),
+ * nome curto do rótulo ("Leonardo S.") e a foto (thumbnail) da bolha de identidade — null = só avatar.
+ */
+export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null };
 
 /** { avatarKey: { l: camadas, p: pivôs do rig } } — só as chaves que o WebView ainda não conhece */
 export type AvatarDefs = Record<string, { l: AvatarLayer[]; p: AvatarRig }>;

@@ -80,6 +80,7 @@ export class UsersService {
         visibilityMode: user.visibilityMode,
         showDistance: user.showDistance,
         showAge: user.showAge,
+        showPhotoOnMap: user.showPhotoOnMap,
         isPaused: user.isPaused,
         pausedUntil: user.pausedUntil?.toISOString() ?? null,
       },
@@ -145,7 +146,7 @@ export class UsersService {
 
   async updateSettings(
     userId: string,
-    dto: { visibilityMode?: 'visible' | 'anonymous'; showDistance?: boolean; showAge?: boolean },
+    dto: { visibilityMode?: 'visible' | 'anonymous'; showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean },
   ) {
     await this.prisma.user.update({
       where: { id: userId },

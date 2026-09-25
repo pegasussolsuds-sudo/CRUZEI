@@ -9,18 +9,20 @@ import type { NearbyUser } from '@cruzei/shared-types';
 import { api } from '../../services/api';
 import { resolveAvatar } from '../../avatar';
 import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
+import { IdentityBubble } from '../identity/IdentityBubble';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { presenceLabel } from './PersonRow';
 
-export const USER_SHEET_FRACTION = 0.5;
-const SNAP_POINTS = ['50%'] as const;
+// 56%: a composição foto + avatar (184 px) + chips + ações cabe em telas de ~640 dp sem cortar o "Ver perfil"
+export const USER_SHEET_FRACTION = 0.56;
+const SNAP_POINTS = ['56%'] as const;
 
 interface UserCardLite {
   bio: string | null;
   interests: string[];
-  photos: { url: string; isMain: boolean }[];
+  photos: { url: string; thumbnailUrl?: string | null; isMain: boolean }[];
   placeName?: string | null;
 }
 
@@ -82,6 +84,10 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
   const distance = distanceM != null && Number.isFinite(distanceM) ? `${formatApproxDistance(distanceM)} de você` : 'por perto';
   const place = card.data?.placeName ?? user?.poi?.name ?? null;
   const mainPhoto = card.data?.photos?.find((p) => p.isMain)?.url ?? card.data?.photos?.[0]?.url ?? null;
+  // bolha: thumbnail do mapa; sem ele, o thumb do cartão público (o perfil é público — a preferência vale pro MAPA).
+  // Nunca a foto grande: sem thumbnail fica o busto do avatar.
+  const cardMain = card.data?.photos?.find((p) => p.isMain) ?? card.data?.photos?.[0];
+  const photo = user?.mapPhotoUrl ?? cardMain?.thumbnailUrl ?? null;
   const interests = card.data?.interests?.slice(0, 4) ?? [];
 
   return (
@@ -103,7 +109,20 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
             <View style={styles.top}>
               <FadeInView fromScale={0.9} fromY={10} style={styles.avatarWrap}>
                 <View style={styles.avatarGlow} pointerEvents="none" />
-                <CruzeiAvatar config={avatar} mode="full" size={150} groundShadow accessibilityLabel={`Avatar de ${user.name}`} />
+                <CruzeiAvatar config={avatar} mode="full" size={128} groundShadow accessibilityLabel={`Avatar de ${user.name}`} />
+                {/* a mesma bolha de identidade do mapa: foto = quem está por trás; avatar = como existe no Cruzei */}
+                <IdentityBubble
+                  photoUrl={photo}
+                  avatar={avatar}
+                  size={60}
+                  name={user.name}
+                  accessible={false}
+                  online={user.isOnline}
+                  ring={matchId ? 'match' : user.isBoosted ? 'boost' : user.isOnline ? 'online' : 'default'}
+                  badge={matchId ? 'match' : user.isNew ? 'new' : null}
+                  style={styles.bubble}
+                />
+                <View style={styles.bubbleTail} pointerEvents="none" />
               </FadeInView>
               <View style={styles.info}>
                 <View style={styles.nameLine}>
@@ -208,7 +227,9 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.lg, gap: spacing.md },
   top: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
-  avatarWrap: { width: 116, height: 156, alignItems: 'center', justifyContent: 'flex-end' },
+  avatarWrap: { width: 116, height: 184, alignItems: 'center', justifyContent: 'flex-end' },
+  bubble: { position: 'absolute', top: 0, zIndex: 2 },
+  bubbleTail: { position: 'absolute', top: 58, width: 0, height: 0, borderLeftWidth: 5, borderRightWidth: 5, borderTopWidth: 6, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: 'rgba(250,250,250,0.9)', zIndex: 2 },
   avatarGlow: { position: 'absolute', bottom: 8, width: 110, height: 44, borderRadius: 55, backgroundColor: colors.primary, opacity: 0.16, transform: [{ scaleY: 0.5 }] },
   info: { flex: 1, minWidth: 0, gap: 4, paddingTop: spacing.xs },
   nameLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },

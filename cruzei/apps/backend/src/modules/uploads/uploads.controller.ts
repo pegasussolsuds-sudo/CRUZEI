@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { UPLOAD_DIR, UPLOAD_MAX_BYTES } from './uploads.constants';
+import { makeThumbnail, probeImage } from './thumbnails';
 
 interface UploadedImage {
   filename: string;
@@ -50,10 +51,19 @@ export class UploadsController {
       },
     }),
   )
-  upload(@UploadedFile() file: UploadedImage | undefined, @Req() req: Request) {
+  async upload(@UploadedFile() file: UploadedImage | undefined, @Req() req: Request) {
     if (!file) throw new BadRequestException('Arquivo "file" obrigatório');
     const base = `${req.protocol}://${req.get('host')}`;
+    const filePath = path.join(UPLOAD_DIR, file.filename);
+    // extensão e mimetype vêm do cliente: confere pelo conteúdo (um .html com Content-Type image/jpeg não entra)
+    if ((await probeImage(filePath)) === null) {
+      fs.rmSync(filePath, { force: true });
+      throw new BadRequestException('O arquivo não é uma imagem válida');
+    }
     const url = `${base}/uploads/${file.filename}`;
-    return { url, thumbnailUrl: url, size: file.size, mimeType: file.mimetype };
+    // thumbnail 256x256 pra bolha de identidade do mapa e listas; sem ele (HEIC, sharp ausente) usa a própria foto
+    const thumb = await makeThumbnail(filePath);
+    const thumbnailUrl = thumb ? `${base}/uploads/${thumb}` : url;
+    return { url, thumbnailUrl, size: file.size, mimeType: file.mimetype };
   }
 }

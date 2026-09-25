@@ -411,5 +411,55 @@ Mapa com 9 avatares vetoriais + clusters + evento → sheet do Pedro (curtir/ace
 O brief sugere GLB/Three.js. Não há modelos riggados nem pipeline de assets, e o avatar é vetorial e customizável (~90 itens): fazer skeletal 2.5D em cima das camadas existentes entrega vida com identidade consistente, zero download e custo só em CPU (canvas), sem mexer na arquitetura do mapa. Uma camada Three.js (custom layer) continua possível no futuro para oclusão por prédios/instancing; os estados/rig já são independentes do renderer.
 
 ### 13.4 Pendências
-- Push travado na janela "Select an account" do Git Credential Manager (precisa do clique do usuário).
-- Avatar no app (customizador/perfil) ainda estático; "olhar pra quem está perto"; celebrate sem gatilho no app; teste com 100+ pessoas (seed só tem 8).
+- Push travado na janela "Select an account" do Git Credential Manager (precisa do clique do usuário) → resolvido fixando o usuário do GitHub no `git config` do repo.
+- Avatar no app (customizador/perfil) ainda estático; "olhar pra quem está perto"; celebrate sem gatilho no app; teste com 100+ pessoas (seed só tem 8) → feito na §14 (seed gera até 400).
+
+---
+
+## 14. Sessão 24/09/2026 (tarde/noite) — identidade híbrida no mapa (doc `FOTO AVATAR/Foto avatar.md`)
+
+"Quem eu vejo no mapa é uma pessoa real, representada pelo seu avatar dentro do universo Cruzei": cada pessoa visível virou **foto real circular + nome curto + avatar vivo + estado**, como uma composição só.
+
+### 14.1 O que foi feito
+- **Bolha de identidade no mapa** (`apps/mobile/src/screens/map/identity-bubble.ts`, JS injetado no WebView): módulo `CZ_PHOTO` com loader de thumbnails (cache por URL, fila com prioridade = distância ao centro, 4 downloads simultâneos, timeout 15 s, falha de rede tenta de novo até 3× e CORS bloqueado é definitivo, LRU de 400) e o desenho da bolha (círculo perfeito, sombra suave, rabicho ligando ao personagem, borda por estado, ponto verde de presença, selos ✦ novo / ♥ match).
+- **Composição no mapa** (`mapbox-html.ts`): uma imagem `ph-<id>` (StyleImageInterface 56×62) por pessoa nas camadas `cz-users-photo`, `cz-users-boost-photo`, `cz-movers-photo`, `cz-me-photo` e `cz-spot-photo`, com a **mesma expressão de tamanho da figura** e `icon-offset` calculado a partir do topo da cabeça — foto, nome e avatar escalam e andam juntos (caminhada usa a mesma feature da fonte `movers`). Nome curto embaixo dos pés (texto GL, nítido em qualquer zoom).
+- **LOD por zoom**: < 13 só um ponto pequeno por pessoa ("tem alguém ali"); 13–14 avatar simplificado; ≥ 14 foto (pequena); ≥ 15,5 nome; selecionado = figura e foto maiores (foto +18 %) com crossfade (`spot` + feature-state), anel no chão e nome com halo.
+- **Lazy loading**: a bolha só nasce quando a pessoa entra na viewport (+30 % de margem pra pré-carregar no arrasto) com zoom ≥ 14; fade-in de 300 ms quando o thumb chega; foto quebrada/404 → a bolha fica vazia e o avatar segue sozinho (o mapa nunca quebra).
+- **Estados**: online (ponto verde, ≤ 15 min), em alta/boost (anel dourado + brilho), match (anel magenta + ♥), novo por aqui (✦, conta < 7 dias), selecionado (anel lima + brilho), momento do match (magenta + brilho nos dois). Anônimo nunca tem foto; invisível continua fora do `/nearby`.
+- **Match no mapa**: os dois se viram um pro outro, fotos visíveis com anel magenta, pose de match, arco de luz, bursts, "🔥 CRUZEI!" e retorno ao normal em 3,4 s. Match feito na sessão reflete na bolha/lista na hora (`localMatches` mesclado na lista).
+- **Entrada/saída**: quem chega faz fade + "pop" (squash de chegada); quem sai some com fade de 300 ms (a feature fica na fonte até o fim e as imagens saem depois).
+- **Privacidade**: nova preferência **"Mostrar minha foto no mapa"** (`users.show_photo_on_map`, `PATCH /me/settings`, toggle no Perfil). O `/nearby` só manda `mapPhotoUrl` (thumbnail) com a preferência ligada e quando existe thumbnail de verdade (nunca a foto grande); `mainPhotoUrl` segue pro cartão. Posição continua borrada, distância em degraus, anônimos fora.
+- **Thumbnails**: `sharp` no backend gera `<foto>-t.jpg` 256×256 (cover com recorte "attention", EXIF, fundo escuro pra PNG transparente) no upload; conteúdo do arquivo validado (extensão/mimetype vêm do cliente); `prisma/backfill-thumbs.ts` gera pra fotos antigas e re-hospeda URLs locais (`--rehost`); 404 de foto responde com CORS (sem ruído no console do WebView).
+- **No app**: componente reutilizável `IdentityBubble` (foto circular com anel por estado, ponto de presença, selo; busto do avatar enquanto carrega/se falhar; sem `overflow:hidden`+borda+raio no mesmo View — combinação que derruba o HWUI em Motorola/MediaTek) usado na `UserPreviewSheet` (foto flutuando acima do avatar, como no mapa), `PlacePreviewSheet` ("Quem está por aqui" com fotos quando permitido) e `PersonRow`. Nome curto via `formatMapName` ("Leonardo Silva" → "Leonardo S.", pula partículas, à prova de emoji, máx. 14 chars).
+- **Seed de carga** (`seed-dev.ts <lat> <lng> 120`): 8 fakes nomeados + gente sintética cobrindo a matriz do brief (sem foto, foto 404, foto desligada, nome longo/curto, novo, boost, premium, multidão no evento e aglomeração sem POI). Trava contra produção.
+
+### 14.2 Validado no Motorola (Moto g54)
+77–78 pessoas em 800 m: bolhas com foto e nomes curtos, clusters "👥 27", fotos 404 caindo no avatar, LOD (zoom 12,8 só clusters/pontos; 14,3 fotos pequenas sem nome; 16–17 composição completa), seleção (figura + foto maiores, anel, nome com halo), momento do match com fotos, caminhada com a bolha acompanhando (Wellington 120 m), preferência ligada/desligada refletindo na hora, lista expandida com 78 bolhas sem crash, tema Night. Perf: ~30–35 fps (tier mid) com 77 pessoas; medição inicial cai pra "low" durante a carga e sobe em ~20 s.
+Ferramenta nova: o WebView do app expõe DevTools remoto (`adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>`) — `cdp.js` roda JS no mapa do aparelho (zoom, select, matchMoment) sem mexer no app.
+
+### 14.3 Problemas encontrados e resolvidos
+- **Crash nativo** (SIGSEGV em `libhwui` `drawRRect`, RenderThread) ~15 s após a lista renderizar: View com `overflow:hidden` + borda + raio clipando `Image` com raio próprio. Reestruturado o `IdentityBubble` (Image arredondada no Fresco, anel como View de traço, busto SVG já circular) e o `avatarBtn` da sheet de lugar. Sem novas ocorrências depois disso.
+- `pnpm add` falhava com ENOENT em `*_tmp_*`: Metro e backend em execução seguram arquivos de `node_modules` no Windows — parar os dois antes de instalar.
+- Fotos do seed apontavam pro IP antigo da LAN → `--rehost http://127.0.0.1:3000` (túnel USB) e cache de perfil no Redis limpo.
+- Conta de teste logada era "douglas" sem foto (não a "Fable"): a bolha própria só apareceu depois de dar uma foto pra conta.
+
+### 14.4 Decisões e limitações
+- Foto e figura são imagens separadas na mesma feature (não uma imagem só): permite LOD por zoom sem redesenhar, fade próprio e memória menor (bolha 112×124 px vs figura 144×224 a 2×). Limite prático continua ~300 pessoas por `setData` (atlas de sprites do Mapbox ≈ 4096²).
+- O tamanho de ícone é layout (não anima): a "chegada com scale" virou fade + pop (squash) e a seleção virou crossfade entre a figura normal e a maior.
+- Cluster ao tocar faz zoom até o nível em que as folhas se separam (supercluster reagrupa por tile; separação "gradual" real exigiria animar folhas à mão).
+- Thumbnails/CORS existem no caminho de upload local; em produção (R2/CDN) o bucket precisa de CORS `*` em GET e de um passo de thumbnail (Worker ou o mesmo `sharp` antes de subir).
+- Mapeamento estado→cor existe duas vezes (RN `IdentityBubble` e JS `bubbleStyle`) por serem runtimes diferentes; manter os dois em sincronia ao criar estado novo.
+
+### 14.5 Revisão adversarial (workflow: 4 dimensões × 1 cético por dimensão) — 33 achados confirmados, 8 rejeitados
+Corrigido nesta sessão:
+- **WebView**: pessoa que volta durante o fade de saída ficava invisível (feature-state `a` preso em 0) e, voltando logo depois, nunca ganhava bolha (`leaving` sujo); camadas de quem anda ignoravam o `a` (selecionado andando duplicava ou sumia ao chegar) → `S_ALPHA` nas três camadas de movers e o crossfade escreve nas três fontes; seleção durante o momento do match apagava a outra pessoa → a seleção espera o `clearMoment`; aura (boost/premium+) sumia no destaque → camada `cz-spot-aura`; LRU do cache despejava thumbs em uso → `thumb()` renova; foto que falhou criava bolha transparente (alvo de toque vazio) → sem bolha até a próxima tentativa; toque genérico (`mapTap`) não conhecia as camadas novas → lista única `TAP_LAYERS`; `pushUsers` duplicado a cada `setData` → LOD roda antes do push; definições de avatar de quem está saindo eram podadas no meio do fade.
+- **Backend**: `mapPhotoUrl` caía na foto original sem thumbnail (HEIC) → só thumbnail de verdade; `POST /me/photos` aceitava URL de qualquer host (pixel de rastreio que todo viewer baixaria) → allowlist (host da API + `PHOTO_ALLOWED_HOSTS`); `isOnline` era `true` fixo por 5 h → 15 min como o mapa; thumbnail de PNG transparente saía preto → `flatten`; upload confiava em extensão/mimetype → conteúdo validado com `sharp`; `backfill --rehost` re-hospedava URLs externas e abortava em URL mal codificada; seed sem trava de produção; 404 de `/uploads` só GET/HEAD.
+- **App**: sheet da pessoa estourava o snap de 50 % → 56 % e composição 184 px; match feito na sessão não chegava à bolha/lista → `localMatches` mesclado na lista; rótulo próprio sem `formatMapName`; `IdentityBubble` sempre acessível (nó duplicado/aninhado) → `accessible={false}` onde o pai já descreve e estado no rótulo; `loaded` não amarrado à URL; `formatMapName` com emoji/pontuação (surrogate solto) → inicial por caractere e só letra, com testes (`text.test.ts`).
+- **Brief**: ponto pequeno em zoom < 13; chegada com "pop"; pré-carga 30 % fora da viewport; retry de foto em conexão lenta; foto do selecionado +18 %; os dois se olham no match.
+Rejeitados pelo cético (por já estarem cobertos ou fora do escopo): fallback da sheet pro thumb do cartão (o perfil é público), `loaded` (corrigido mesmo assim), R2 em prod (pendência conhecida), separação gradual do cluster, testes (adicionados), foto maior no selecionado, mini-fotos no POI, 404 catch-all.
+
+### 14.6 Pendências
+- Estados "evento"/"perto" na bolha (precisa da categoria do POI no `/nearby`); mini-fotos de quem está no lugar direto no pin do POI; distância na composição do mapa (decisão: só na sheet/lista, pra não poluir).
+- R2/CDN em produção (upload, thumbnail, CORS) — o stub local continua.
+- Testes automatizados: `formatMapName` ganhou testes unitários; matriz do brief (§23) segue manual via seed.
+- Ajuste fino pendente no aparelho: tier "low" na medição inicial com 100+ pessoas (o remount pelo clamp de DPR acontece uma vez) — considerar adiar a medição até as fotos/figuras carregarem.

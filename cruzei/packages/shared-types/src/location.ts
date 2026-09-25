@@ -26,6 +26,13 @@ export interface NearbyUser {
   name: string; // "anônimo" quando isAnonymous
   age: number | null; // null quando anônimo ou showAge=false
   mainPhotoUrl: string | null;
+  /**
+   * foto (thumbnail) pra bolha de identidade NO MAPA — null quando a pessoa desligou "mostrar minha foto no mapa"
+   * ou não tem foto. O perfil/sheet usa mainPhotoUrl; o mapa usa SÓ este campo.
+   */
+  mapPhotoUrl: string | null;
+  /** conta criada há menos de 7 dias (selo "novo por aqui") */
+  isNew: boolean;
   latitude: number;
   longitude: number;
   /** aproximada (degraus 50/100/250/500 m, 1 km…); null quando a pessoa desligou "mostrar distância" */

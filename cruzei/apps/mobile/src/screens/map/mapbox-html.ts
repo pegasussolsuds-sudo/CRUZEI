@@ -11,6 +11,7 @@
 
 import { buildBeforeContentLoadedScript, type InitTier, type MapTheme } from './bridge';
 import { AVATAR_ANIM_JS } from './avatar-anim';
+import { IDENTITY_BUBBLE_JS } from './identity-bubble';
 
 export interface MapHtmlInit {
   theme: MapTheme;
@@ -46,6 +47,7 @@ export function buildMapboxHtml(token: string, init: MapHtmlInit = { theme: 'day
 <canvas id="fx"></canvas>
 <script>
 ${AVATAR_ANIM_JS}
+${IDENTITY_BUBBLE_JS}
 (function () {
   'use strict';
   // ======================================================================
@@ -111,9 +113,12 @@ ${AVATAR_ANIM_JS}
     lastGesture: 0,
     programmatic: 0,  // > 0 enquanto uma animação de câmera nossa roda
     revealed: false,
-    firstDataAt: 0
+    firstDataAt: 0,
+    momentUserId: null // pessoa em destaque no momento do match (spot)
   };
   var FONTS = ['DIN Pro Medium', 'Arial Unicode MS Regular'];
+  // camadas que contam como 'toque numa pessoa' (figura, bolha, ponto, destaque) — usada nos delegados e no click genérico
+  var TAP_LAYERS = ['cz-users', 'cz-users-photo', 'cz-users-boost', 'cz-users-boost-photo', 'cz-movers', 'cz-movers-photo', 'cz-spot', 'cz-spot-photo', 'cz-users-dot', 'cz-users-boost-dot', 'cz-movers-dot'];
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
 
   // ======================================================================
@@ -152,7 +157,7 @@ ${AVATAR_ANIM_JS}
   });
   map.on('click', function (e) {
     // tap em pessoa/POI é tratado nos handlers de camada; aqui só o tap no mapa vazio
-    var hit = map.queryRenderedFeatures(e.point, { layers: ['cz-users', 'cz-users-boost', 'cz-poi', 'cz-cluster'] });
+    var hit = map.queryRenderedFeatures(e.point, { layers: TAP_LAYERS.concat(['cz-poi', 'cz-cluster']) });
     if (!hit || hit.length === 0) send('mapTap');
   });
   map.on('error', function (e) {
@@ -314,17 +319,25 @@ ${AVATAR_ANIM_JS}
   // ======================================================================
   // 4. Imagens: avatares, POIs, imagens animadas compartilhadas
   // ======================================================================
-  var IMG = { fig: { w: 72, h: 112 }, figBoost: { w: 96, h: 150 }, poi: 44, sonar: 120, ring: 72, aura: 110 };
+  var IMG = { fig: { w: 72, h: 112 }, figBoost: { w: 96, h: 150 }, bubble: { w: 56, h: 62 }, poi: 44, sonar: 120, ring: 72, aura: 110 };
   var FIG_TOP = 14, FIG_PAD = 18; // margem em cima (pulos/braços levantados) e embaixo (poça de luz da aura)
   function figScale(dim) { return (dim.h - FIG_TOP - FIG_PAD) / 140; }
   function figOffset(dim) { return dim.h - (FIG_TOP + 134 * figScale(dim)); }
+  // bolha de identidade: círculo de 42 px dentro de um canvas 56x62 (margem pra sombra/brilho + rabicho até y=53)
+  var BUB = { d: 42, cx: 28, cy: 27, tip: 53 };
+  var PHOTO_MIN_ZOOM = 14; // abaixo disso só o avatar simplificado (LOD §8)
+  var FAR_ZOOM = 13;       // abaixo disso a figura vira um ponto pequeno (LOD §8: longe = "tem alguém ali")
+  // y do topo da cabeça relativo ao pé (negativo, em px da imagem da figura); 4 unidades de folga pra chapéu/cabelo
+  function headTop(dim) { return figOffset(dim) - dim.h + FIG_TOP + 4 * figScale(dim); }
+  // icon-offset da bolha (âncora bottom): a ponta do rabicho fica 2 px acima da cabeça
+  function bubbleOffset(dim) { return headTop(dim) - 2 + (IMG.bubble.h - BUB.tip); }
   var CAT_EMOJI = { bar:'🍺', restaurant:'🍽️', cafe:'☕', park:'🌳', shopping:'🏬', gym:'🏋️', show:'🎸', event:'⚡', beach:'🏖️', museum:'🏛️', other:'📍' };
   var imgCache = {};        // imageId -> signature (POIs e imagens estáticas compartilhadas)
   var avatarDefs = {};      // avatarKey -> { l: camadas vetoriais, p: pivôs do rig } (vem do RN via defineAvatars)
   var keyWaiters = {};      // avatarKey -> { userId: true } (quem ainda está com silhueta esperando a definição)
   var AURA_RGB = { lime: '127,255,0', magenta: '255,20,147', gold: '255,215,0', fest: '255,111,177' };
 
-  function makeCanvasWH(w, h) { var c = document.createElement('canvas'); c.width = w * 2; c.height = h * 2; var ctx = c.getContext('2d'); ctx.scale(2, 2); return { c: c, ctx: ctx, w: w, h: h }; }
+  function makeCanvasWH(w, h) { var c = document.createElement('canvas'); c.width = w * 2; c.height = h * 2; var ctx = c.getContext('2d', { willReadFrequently: true }); ctx.scale(2, 2); return { c: c, ctx: ctx, w: w, h: h }; }
   function makeCanvas(size) { return makeCanvasWH(size, size); }
   function imageDataOf(cv) { return cv.ctx.getImageData(0, 0, cv.c.width, cv.c.height); }
   function putImage(id, cv) {
@@ -411,7 +424,7 @@ ${AVATAR_ANIM_JS}
     if (!f) {
       f = figs[id] = { id: id, st: 'idle', since: 0, one: null, move: null, pos: null, mirror: false, animated: false, wasLive: false, force: 0,
         v: { ph: CZ_ANIM.hash01(id, 'ph'), sp: 0.85 + 0.3 * CZ_ANIM.hash01(id, 'sp'), en: 0.9 + 0.2 * CZ_ANIM.hash01(id, 'en') },
-        sz: 0.96 + 0.08 * CZ_ANIM.hash01(id, 'sz'), obj: null, dim: null, sig: '', imgId: '', user: null, lastPose: null, blendFrom: null, blendAt: 0 };
+        sz: 0.96 + 0.08 * CZ_ANIM.hash01(id, 'sz'), obj: null, dim: null, sig: '', imgId: '', user: null, lastPose: null, blendFrom: null, blendAt: 0, ph: null, leaving: 0, moment: false };
     }
     return f;
   }
@@ -449,6 +462,7 @@ ${AVATAR_ANIM_JS}
   function ensureAvatar(u, imageId) {
     var id = imageId || ('av-' + u.id);
     var f = figOf(u.id); f.user = u; f.imgId = id;
+    syncBubble(f);
     var dim = u.isBoosted ? IMG.figBoost : IMG.fig;
     var sig = avatarSignature(u);
     if (u.avatarKey && !avatarDefs[u.avatarKey]) { (keyWaiters[u.avatarKey] = keyWaiters[u.avatarKey] || {})[u.id] = true; }
@@ -462,8 +476,85 @@ ${AVATAR_ANIM_JS}
   function removeFig(id) {
     var f = figs[id]; if (!f) return;
     try { if (f.imgId) map.removeImage(f.imgId); } catch (e) {}
+    dropBubble(f);
     delete figs[id];
   }
+  // ======================================================================
+  // 4c. Bolha de identidade: foto real (thumb) flutuando acima do avatar. Uma imagem por pessoa, criada só quando ela
+  //     entra na viewport com zoom >= PHOTO_MIN_ZOOM (lazy); transparente até o thumb chegar (fade 300 ms); vazia se a
+  //     foto falhar (o avatar segue sozinho — nunca quebra o mapa). Estilo por estado: online, em alta, match, novo,
+  //     selecionado, momento do match.
+  // ======================================================================
+  function bubbleStyle(u, f) {
+    var o = { d: BUB.d, ring: 'rgba(250,250,250,0.92)', ringW: 2, glow: null, dot: isRecent(u.recordedAt, 15) ? '#7FFF00' : null, badge: null, tail: true };
+    if (u.isBoosted) { o.ring = '#FFD700'; o.glow = 'rgba(255,215,0,0.5)'; }
+    if (u.matchId) { o.ring = '#FF1493'; o.badge = 'match'; }
+    else if (u.isNew) o.badge = 'new';
+    if (f.moment) { o.ring = '#FF1493'; o.glow = 'rgba(255,20,147,0.85)'; o.ringW = 2.5; o.badge = 'match'; }
+    if (state.selected && state.selected === u.id) { o.ring = '#7FFF00'; o.glow = 'rgba(127,255,0,0.75)'; o.ringW = 2.5; }
+    return o;
+  }
+  function bubbleSig(u, f) { var o = bubbleStyle(u, f); return [u.photo || '', o.ring, o.glow || '', o.dot || '', o.badge || '', o.ringW].join('|'); }
+  function makeBubbleImage(f) {
+    var dim = IMG.bubble, cv = makeCanvasWH(dim.w, dim.h);
+    return {
+      width: dim.w * 2, height: dim.h * 2, data: new Uint8ClampedArray(dim.w * 2 * dim.h * 2 * 4), dirty: true,
+      onAdd: function () {}, onRemove: function () {},
+      render: function () {
+        if (!this.dirty) return false;
+        this.dirty = false;
+        var u = f.user, ph = f.ph; if (!u || !ph) return false;
+        cv.ctx.clearRect(0, 0, dim.w, dim.h);
+        var th = CZ_PHOTO.thumb(ph.url);
+        if (th) {
+          var o = bubbleStyle(u, f);
+          o.alpha = ph.since ? Math.min(1, (performance.now() - ph.since) / 300) : 1;
+          CZ_PHOTO.drawBubble(cv.ctx, th, BUB.cx, BUB.cy, o);
+        }
+        this.data = imageDataOf(cv).data;
+        return true;
+      }
+    };
+  }
+  // cria a bolha (se a pessoa tem foto e não está anônima) e pede o thumb com a prioridade dada (menor = antes).
+  // Devolve true quando a feature precisa ser reenviada (bolha nova → propriedade 'ph').
+  function ensureBubble(f, pri) {
+    var u = f.user; if (!u) return false;
+    var url = u.isAnonymous ? null : (u.photo || null);
+    if (!url) { if (f.ph) { dropBubble(f); return true; } return false; }
+    if (f.ph && f.ph.url !== url) dropBubble(f);
+    var ra = CZ_PHOTO.retryAt(url);
+    if (!f.ph && ra > Date.now()) { f.phWait = ra; return false; } // falhou há pouco: sem bolha até a próxima tentativa
+    var created = false;
+    if (!f.ph) {
+      f.ph = { url: url, imgId: 'ph-' + f.id, obj: makeBubbleImage(f), since: 0, fadeUntil: 0, sig: '' };
+      try { map.addImage(f.ph.imgId, f.ph.obj, { pixelRatio: 2 }); } catch (e) { warn('bubble image', f.id, e && e.message); }
+      created = true;
+    }
+    var ph = f.ph;
+    if (CZ_PHOTO.status(url) === 'ok') { if (!ph.since) ph.since = 1; }
+    else {
+      CZ_PHOTO.request(url, pri, function (ok) {
+        if (f.ph !== ph) return; // trocou de foto no meio
+        if (!ok) { f.phWait = CZ_PHOTO.retryAt(url); dropBubble(f); pushUsers(); return; } // falhou: sem bolha (nem alvo de toque vazio)
+        ph.since = performance.now(); ph.fadeUntil = ph.since + 340; ph.obj.dirty = true; map.triggerRepaint();
+      });
+    }
+    var sig = bubbleSig(u, f);
+    if (sig !== ph.sig) { ph.sig = sig; ph.obj.dirty = true; }
+    return created;
+  }
+  // refetch trouxe a pessoa de novo: foto trocou/sumiu → descarta (o LOD recria); estado mudou → redesenha
+  function syncBubble(f) {
+    if (!f.ph) return;
+    var u = f.user, url = u.isAnonymous ? null : (u.photo || null);
+    if (!url || url !== f.ph.url) { dropBubble(f); return; }
+    var sig = bubbleSig(u, f);
+    if (sig !== f.ph.sig) { f.ph.sig = sig; f.ph.obj.dirty = true; }
+  }
+  function refreshBubble(id) { var f = figs[id]; if (f && f.user) syncBubble(f); }
+  function dropBubble(f) { if (!f.ph) return; try { map.removeImage(f.ph.imgId); } catch (e) {} f.ph = null; }
+
   // RN manda { avatarKey: { l, p } } só pras chaves que o WebView ainda não conhece (cache por visual, não por pessoa)
   function defineAvatars(defs) {
     if (!defs) return;
@@ -598,7 +689,7 @@ ${AVATAR_ANIM_JS}
     map.addSource('me', { type: 'geojson', data: empty() });
     map.addSource('sel', { type: 'geojson', data: empty() });
     map.addSource('fx', { type: 'geojson', data: empty(), promoteId: 'id' });
-    map.addSource('spot', { type: 'geojson', data: empty() }); // pessoa em destaque (momento do match): sai do cluster e fica por cima
+    map.addSource('spot', { type: 'geojson', data: empty(), promoteId: 'id' }); // pessoa em destaque (selecionada / momento do match): sai do cluster e fica por cima, maior
     map.addSource('movers', { type: 'geojson', data: empty(), promoteId: 'id' }); // quem está andando (posição interpolada por tick; fora do cluster)
 
     animImages.make('sonar-1', IMG.sonar, sonarDrawer(1, 2.4));
@@ -641,20 +732,34 @@ ${AVATAR_ANIM_JS}
       paint: { 'text-color': '#FFFFFF', 'text-emissive-strength': 1, 'icon-emissive-strength': 1 } });
     // pessoas
     // 'off' (pés no ponto) e 'sz' (variação de escala por pessoa) vêm nas propriedades da feature
+    var SIZE_N = [0.42, 0.72, 0.95], SIZE_B = [0.5, 0.85, 1.1];
+    function sizeExpr(b) { return ['interpolate', ['linear'], ['zoom'], 12, ['*', b[0], ['get', 'sz']], 15, ['*', b[1], ['get', 'sz']], 18, ['*', b[2], ['get', 'sz']]]; }
     var userLayout = function (boost) {
-      var b = boost ? [0.5, 0.85, 1.1] : [0.42, 0.72, 0.95];
       return { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom',
-               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'],
-               'icon-size': ['interpolate', ['linear'], ['zoom'], 12, ['*', b[0], ['get', 'sz']], 15, ['*', b[1], ['get', 'sz']], 18, ['*', b[2], ['get', 'sz']]] };
+               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'], 'icon-size': sizeExpr(boost ? SIZE_B : SIZE_N) };
     };
-    map.addLayer({ id: 'cz-users', type: 'symbol', source: 'users', filter: ['!', ['has', 'point_count']], layout: userLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
-    map.addLayer({ id: 'cz-users-boost', type: 'symbol', source: 'users-boost', layout: userLayout(true), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
-    var labelLayout = { 'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true, 'text-max-width': 8 };
+    // bolha de identidade: mesma escala da figura (o offset 'poff' é em px da figura → composição consistente em todo zoom)
+    var photoLayout = function (boost) {
+      return { 'icon-image': ['get', 'ph'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom',
+               'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'poff'], 'icon-size': sizeExpr(boost ? SIZE_B : SIZE_N) };
+    };
+    // longe (zoom < FAR_ZOOM): só um ponto por pessoa — a figura inteira não lê nesse zoom e vira ruído
+    var dotPaint = { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 2.5, 13, 4], 'circle-color': '#7FFF00', 'circle-stroke-color': '#0A0A1A', 'circle-stroke-width': 1.2, 'circle-opacity': S_ALPHA, 'circle-emissive-strength': 1, 'circle-pitch-alignment': 'map' };
+    map.addLayer({ id: 'cz-users-dot', type: 'circle', source: 'users', maxzoom: FAR_ZOOM, filter: ['!', ['has', 'point_count']], paint: dotPaint });
+    map.addLayer({ id: 'cz-users-boost-dot', type: 'circle', source: 'users-boost', maxzoom: FAR_ZOOM, paint: Object.assign({}, dotPaint, { 'circle-color': '#FFD700' }) });
+    map.addLayer({ id: 'cz-movers-dot', type: 'circle', source: 'movers', maxzoom: FAR_ZOOM, paint: dotPaint });
+    map.addLayer({ id: 'cz-users', type: 'symbol', source: 'users', minzoom: FAR_ZOOM, filter: ['!', ['has', 'point_count']], layout: userLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-users-photo', type: 'symbol', source: 'users', minzoom: PHOTO_MIN_ZOOM, filter: ['all', ['!', ['has', 'point_count']], ['has', 'ph']], layout: photoLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-users-boost', type: 'symbol', source: 'users-boost', minzoom: FAR_ZOOM, layout: userLayout(true), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-users-boost-photo', type: 'symbol', source: 'users-boost', minzoom: PHOTO_MIN_ZOOM, filter: ['has', 'ph'], layout: photoLayout(true), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    // nome curto ("Leonardo S.") embaixo dos pés: texto GL (nítido em qualquer zoom), só a partir de zoom 15.5 (LOD §8)
+    var labelLayout = { 'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 11, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true, 'text-max-width': 8, 'text-letter-spacing': 0.02 };
     map.addLayer({ id: 'cz-users-label', type: 'symbol', source: 'users', minzoom: 15.5, filter: ['!', ['has', 'point_count']], layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
-    map.addLayer({ id: 'cz-users-boost-label', type: 'symbol', source: 'users-boost', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-emissive-strength': 1 } });
-    // quem está andando (o boost já entra no 'sz')
-    map.addLayer({ id: 'cz-movers', type: 'symbol', source: 'movers', layout: userLayout(false), paint: { 'icon-emissive-strength': 1 } });
-    map.addLayer({ id: 'cz-movers-label', type: 'symbol', source: 'movers', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-users-boost-label', type: 'symbol', source: 'users-boost', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
+    // quem está andando (o boost já entra no 'sz'); a bolha anda junto (mesma feature)
+    map.addLayer({ id: 'cz-movers', type: 'symbol', source: 'movers', minzoom: FAR_ZOOM, layout: userLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-movers-photo', type: 'symbol', source: 'movers', minzoom: PHOTO_MIN_ZOOM, filter: ['has', 'ph'], layout: photoLayout(false), paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-movers-label', type: 'symbol', source: 'movers', minzoom: 15, layout: labelLayout, paint: { 'text-color': '#0A0A1A', 'text-halo-color': '#FAFAFA', 'text-halo-width': 1.2, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
     // seleção
     map.addLayer({ id: 'cz-sel', type: 'symbol', source: 'sel',
       layout: { 'icon-image': 'sel-ring', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map', 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.45, 15, 0.7, 18, 0.9] },
@@ -669,12 +774,24 @@ ${AVATAR_ANIM_JS}
     map.addLayer({ id: 'cz-me', type: 'symbol', source: 'me',
       layout: { 'icon-image': 'me-avatar', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'], 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.78, 18, 1.0] },
       paint: { 'icon-emissive-strength': 1 } });
-    // destaque do momento: figura da pessoa por cima de tudo, um pouco maior
+    map.addLayer({ id: 'cz-me-photo', type: 'symbol', source: 'me', minzoom: PHOTO_MIN_ZOOM, filter: ['has', 'ph'],
+      layout: { 'icon-image': ['get', 'ph'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'poff'], 'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.5, 15, 0.78, 18, 1.0] },
+      paint: { 'icon-emissive-strength': 1 } });
+    // destaque (selecionada / momento do match): figura + bolha por cima de tudo, ~20% maiores, com crossfade (feature-state 'a')
+    var SPOT_SIZE = ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.9, 18, 1.15];
+    var SPOT_PHOTO_SIZE = ['interpolate', ['linear'], ['zoom'], 12, 0.65, 15, 1.06, 18, 1.36]; // 1.18x: a foto do selecionado cresce mais que o boneco
+    map.addLayer({ id: 'cz-spot-aura', type: 'symbol', source: 'spot', filter: ['has', 'aura'],
+      layout: { 'icon-image': ['get', 'aura'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map',
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, ['case', ['==', ['get', 'aura'], 'aura-boost'], 0.8, 0.5], 16, ['case', ['==', ['get', 'aura'], 'aura-boost'], 1.4, 0.9], 18, ['case', ['==', ['get', 'aura'], 'aura-boost'], 1.8, 1.2]] },
+      paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     map.addLayer({ id: 'cz-spot', type: 'symbol', source: 'spot',
       layout: { 'icon-image': ['get', 'img'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'off'],
-                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.55, 15, 0.9, 18, 1.15],
-                'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 12, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true },
-      paint: { 'icon-emissive-strength': 1, 'text-color': '#0A0A1A', 'text-halo-color': '#7FFF00', 'text-halo-width': 1.4, 'text-emissive-strength': 1 } });
+                'icon-size': SPOT_SIZE,
+                'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 12, 'text-anchor': 'top', 'text-offset': [0, 0.35], 'text-optional': true, 'text-letter-spacing': 0.02 },
+      paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1, 'text-color': '#0A0A1A', 'text-halo-color': '#7FFF00', 'text-halo-width': 1.4, 'text-opacity': S_ALPHA, 'text-emissive-strength': 1 } });
+    map.addLayer({ id: 'cz-spot-photo', type: 'symbol', source: 'spot', minzoom: 13, filter: ['has', 'ph'],
+      layout: { 'icon-image': ['get', 'ph'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': ['get', 'poff'], 'icon-size': SPOT_PHOTO_SIZE },
+      paint: { 'icon-opacity': S_ALPHA, 'icon-emissive-strength': 1 } });
     // efeitos one-shot (curtir / super / match)
     map.addLayer({ id: 'cz-fx-outer', type: 'circle', source: 'fx',
       paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 6, 1, 70], 'circle-color': ['get', 'color2'],
@@ -693,7 +810,7 @@ ${AVATAR_ANIM_JS}
       ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(c, c); ctx.lineTo(c - 22, 2); ctx.lineTo(c + 22, 2); ctx.closePath(); ctx.fill(); putImage('me-cone', cv); })();
 
     // interações
-    var tapLayers = ['cz-users', 'cz-users-boost', 'cz-movers'];
+    var tapLayers = TAP_LAYERS;
     tapLayers.forEach(function (id) { map.on('click', id, function (e) { var f = e.features && e.features[0]; if (f && f.properties && f.properties.id) { e.preventDefault(); var uid = String(f.properties.id); emote(uid, 'arrive'); send('userTap', { id: uid }); } }); });
     map.on('click', 'cz-poi', function (e) { var f = e.features && e.features[0]; if (f && f.properties) { e.preventDefault(); send('poiTap', { id: Number(f.properties.id) }); } });
     map.on('click', 'cz-cluster', function (e) {
@@ -748,10 +865,13 @@ ${AVATAR_ANIM_JS}
 
   function featureFor(u, fg, coords, szMul) {
     var aura = u.isBoosted ? null : (u.premiumTier === 'premium_plus' ? 'aura-plus' : null);
-    var props = { id: u.id, img: fg.imgId, label: (u.isAnonymous ? '' : (u.name || '')), anon: !!u.isAnonymous, off: [0, figOffset(fg.dim || IMG.fig)], sz: fg.sz * (szMul || 1) };
+    var dim = fg.dim || IMG.fig;
+    var props = { id: u.id, img: fg.imgId, label: (u.isAnonymous ? '' : (u.label || u.name || '')), anon: !!u.isAnonymous, off: [0, figOffset(dim)], sz: fg.sz * (szMul || 1) };
     if (aura) props.aura = aura;
+    if (fg.ph) { props.ph = fg.ph.imgId; props.poff = [0, bubbleOffset(dim)]; }
     return { type: 'Feature', id: u.id, properties: props, geometry: { type: 'Point', coordinates: coords } };
   }
+  var leaving = {}; // id -> user (saiu da lista; fica 300 ms sumindo antes de ser removido)
   // monta as 3 fontes de pessoas: paradas (cluster), com boost e andando (posição interpolada)
   function pushUsers() {
     var normal = [], boosted = [], movers = [];
@@ -760,6 +880,7 @@ ${AVATAR_ANIM_JS}
       if (fg.move) movers.push(featureFor(u, fg, fg.pos, u.isBoosted ? 1.17 : 1));
       else (u.isBoosted ? boosted : normal).push(featureFor(u, fg, fg.pos || [u.longitude, u.latitude]));
     }
+    for (var lid in leaving) { var lf = figs[lid]; if (lf && lf.pos) (leaving[lid].isBoosted ? boosted : normal).push(featureFor(leaving[lid], lf, lf.pos)); }
     map.getSource('users').setData({ type: 'FeatureCollection', features: normal });
     map.getSource('users-boost').setData({ type: 'FeatureCollection', features: boosted });
     map.getSource('movers').setData({ type: 'FeatureCollection', features: movers });
@@ -771,28 +892,44 @@ ${AVATAR_ANIM_JS}
   }
   function pushMe() {
     var fg = figs['me']; if (!fg || !fg.pos || !state.me) return;
-    var props = { off: [0, figOffset(fg.dim || IMG.fig)] };
+    var dim = fg.dim || IMG.fig;
+    var props = { off: [0, figOffset(dim)] };
     if (typeof state.me.heading === 'number') props.heading = state.me.heading;
+    if (fg.ph) { props.ph = fg.ph.imgId; props.poff = [0, bubbleOffset(dim)]; }
     map.getSource('me').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: fg.pos } }] });
   }
-  // tick das figuras: fim de emotes, caminhada (interpolação suave + chegada), quem anima (LOD a cada 700 ms)
+  // tick das figuras: fim de emotes, caminhada (interpolação suave + chegada), quem anima e quem ganha bolha (LOD a cada 700 ms)
   var figTick = (function () {
     var lastLod = 0;
     function finishMove(fg) { fg.pos = fg.move.to; fg.move = null; fg.one = { name: 'arrive', start: performance.now() }; }
-    function updateLod() {
+    function updateLod(skipPush) {
       var max = state.tier === 'high' ? 14 : (state.tier === 'mid' ? 8 : 4);
-      if (map.getZoom() < 14.5 || !state.active) max = 0;
-      var b = map.getBounds(), c = map.project(map.getCenter()), cand = [];
+      var zoom = map.getZoom();
+      if (zoom < 14.5 || !state.active) max = 0;
+      // fotos: só com zoom >= PHOTO_MIN_ZOOM; quem está na tela ou até 30% fora dela pede o thumb (lazy + pré-carga
+      // pro arrasto); mais perto do centro baixa primeiro
+      var wantPhotos = zoom >= PHOTO_MIN_ZOOM && state.active;
+      var el = map.getContainer(), W = el.clientWidth || 1, H = el.clientHeight || 1;
+      var c = { x: W / 2, y: H / 2 }, cand = [], changed = false;
       for (var id in figs) {
         var fg = figs[id]; if (!fg.pos) continue;
-        if (!b.contains(fg.pos)) { fg.animated = false; continue; }
-        var p = map.project(fg.pos); cand.push({ f: fg, d: (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) });
+        var p = map.project(fg.pos);
+        var inView = p.x >= 0 && p.x <= W && p.y >= 0 && p.y <= H;
+        var nearView = p.x >= -W * 0.3 && p.x <= W * 1.3 && p.y >= -H * 0.3 && p.y <= H * 1.3;
+        if (!inView) fg.animated = false;
+        if (!nearView) continue;
+        var d = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y);
+        if (inView) cand.push({ f: fg, d: d });
+        if (wantPhotos && id !== 'me' && !fg.leaving && fg.user && fg.user.photo && !fg.ph && !(fg.phWait > Date.now())) { if (ensureBubble(fg, d)) changed = true; }
       }
       cand.sort(function (p, q) { return p.d - q.d; });
       for (var i = 0; i < cand.length; i++) cand[i].f.animated = i < max;
+      CZ_PHOTO.reprioritize(function (url) { for (var k = 0; k < cand.length; k++) { var cf = cand[k].f; if (cf.ph && cf.ph.url === url) return cand[k].d; } return 1e8; });
+      if (changed && !skipPush) pushUsers();
+      return changed;
     }
-    return function (now) {
-      var moversDirty = false, usersDirty = false, meDirty = false;
+    var tick = function (now) {
+      var moversDirty = false, usersDirty = false, meDirty = false, spotDirty = false;
       for (var id in figs) {
         var fg = figs[id];
         if (fg.one && now - fg.one.start > CZ_ANIM.DUR[fg.one.name] * 1000) { fg.one = null; if (fg.obj) fg.obj.dirty = true; }
@@ -804,15 +941,20 @@ ${AVATAR_ANIM_JS}
             fg.pos = [fg.move.from[0] + (fg.move.to[0] - fg.move.from[0]) * e, fg.move.from[1] + (fg.move.to[1] - fg.move.from[1]) * e];
             if (id === 'me') meDirty = true; else moversDirty = true;
           }
+          if (id === state.selected || id === state.momentUserId) spotDirty = true;
         }
         var live = figIsLive(fg, now);
         if (live) { if (fg.obj) fg.obj.dirty = true; fg.wasLive = true; }
         else if (fg.wasLive) { fg.wasLive = false; if (fg.obj) fg.obj.dirty = true; } // volta pra pose neutra
+        if (fg.ph && fg.ph.fadeUntil && now < fg.ph.fadeUntil) fg.ph.obj.dirty = true; // fade-in da foto
       }
       if (usersDirty) pushUsers(); else if (moversDirty) pushMovers();
       if (meDirty) pushMe();
+      if (spotDirty) pushSpot();
       if (now - lastLod > 700) { lastLod = now; updateLod(); }
     };
+    tick.lod = updateLod;
+    return tick;
   })();
 
   function setData(payload) {
@@ -831,24 +973,51 @@ ${AVATAR_ANIM_JS}
       ensureAvatar(u);
       var fg = figOf(u.id);
       var to = [u.longitude, u.latitude];
+      // voltou enquanto ainda sumia: cancela a saída
+      var wasLeaving = !!leaving[u.id];
+      if (wasLeaving) {
+        delete leaving[u.id];
+        // cancela o fade de saída em curso e garante opacidade cheia (senão 'a' ficava preso em 0)
+        tweens = tweens.filter(function (t) { return !(t.key === 'a' && t.id === u.id && t.to === 0); });
+        ['users', 'users-boost'].forEach(function (src) { try { map.setFeatureState({ source: src, id: u.id }, { a: 1 }); } catch (e) {} });
+      }
+      fg.leaving = 0; // também cobre quem volta entre o fim do fade e a remoção da imagem
       // posição mudou: a pessoa ANDA até lá (não teleporta); na 1ª carga todo mundo já nasce no lugar
-      if (prev[u.id] && !isFirst) startMove(fg, to, now); else { fg.pos = to; fg.move = null; }
-      if (!prev[u.id]) newIds.push({ id: u.id, boosted: !!u.isBoosted });
+      if ((prev[u.id] || wasLeaving) && !isFirst) startMove(fg, to, now); else { fg.pos = to; fg.move = null; }
+      if (!prev[u.id] && !wasLeaving) newIds.push({ id: u.id, boosted: !!u.isBoosted });
     }
-    // quem saiu leva a imagem junto
-    for (var oid in prev) { if (!next[oid]) removeFig(oid); }
+    // quem saiu some com fade (300 ms) e só depois leva a imagem junto; na 1ª carga não há ninguém pra sair
+    for (var oid in prev) {
+      if (next[oid]) continue;
+      var lf = figs[oid];
+      if (!lf || !lf.pos || isFirst) { removeFig(oid); continue; }
+      lf.move = null; lf.one = null; lf.leaving = now; leaving[oid] = prev[oid];
+      if (state.selected === oid) state.selected = null;
+      (function (id, token, src) {
+        tweens.push({ source: src, id: id, key: 'a', from: 1, to: 0, start: now, dur: 300, onDone: function () {
+          var f2 = figs[id]; if (!f2 || f2.leaving !== token) return; // voltou no meio do fade
+          delete leaving[id]; pushUsers();
+          setTimeout(function () { var f3 = figs[id]; if (f3 && f3.leaving === token && !state.users[id] && !leaving[id]) removeFig(id); }, 400);
+        } });
+      })(oid, now, prev[oid].isBoosted ? 'users-boost' : 'users');
+    }
+    stepTweens.kick();
     // definições de avatar só de quem está no mapa (+ eu): sessão longa não acumula visuais de quem já foi embora
     var usedKeys = {}; for (var uk in next) if (next[uk].avatarKey) usedKeys[next[uk].avatarKey] = true; if (state.me && state.me.avatarKey) usedKeys[state.me.avatarKey] = true;
+    for (var lk in leaving) if (leaving[lk].avatarKey) usedKeys[leaving[lk].avatarKey] = true; // quem está sumindo continua desenhado por 300 ms
     for (var dk in avatarDefs) if (!usedKeys[dk]) delete avatarDefs[dk];
     for (var wk in keyWaiters) if (!usedKeys[wk]) delete keyWaiters[wk];
     state.users = next;
+    try { figTick.lod(true); } catch (e) { warn('lod', e && e.message); } // bolhas novas entram já neste pushUsers
     pushUsers();
+    pushSpot();
     // entrada escalonada: novos começam invisíveis/pequenos e "pousam"
     for (var n = 0; n < newIds.length; n++) {
       var src = newIds[n].boosted ? 'users-boost' : 'users';
       try { map.setFeatureState({ source: src, id: newIds[n].id }, { a: 0 }); } catch (e) {}
       var delay = Math.min(600, n * 35);
       tween(src, newIds[n].id, 'a', 0, 1, 260, delay);
+      if (!isFirst && n < 12) (function (id, d) { setTimeout(function () { if (state.users[id]) emote(id, 'arrive'); }, d + 120); })(newIds[n].id, delay);
     }
     // POIs + hotspots
     var feats = [], newHot = [];
@@ -882,22 +1051,61 @@ ${AVATAR_ANIM_JS}
     if (!me || typeof me.lat !== 'number' || typeof me.lng !== 'number') return;
     state.me = me;
     var u = { id: 'me', name: me.name || 'você', isAnonymous: !!me.isAnonymous, isBoosted: !!me.isBoosted, premiumTier: me.tier || 'free', isVerified: false,
-              recordedAt: new Date().toISOString(), avatarKey: me.avatarKey || '', aura: me.aura || '' };
+              recordedAt: new Date().toISOString(), avatarKey: me.avatarKey || '', aura: me.aura || '', photo: me.photoUrl || null, isNew: false, matchId: null };
     var fg = figOf('me');
     var to = [me.lng, me.lat];
     if (fg.pos) startMove(fg, to, performance.now()); else fg.pos = to; // eu também ando no mapa
     ensureAvatar(u, 'me-avatar');
+    ensureBubble(fg, 0); // minha foto sempre (sem gate de zoom)
     pushMe();
     if (!state.located) { state.located = true; if (!state.revealed) { /* RN chama reveal(); se não chamar em 1.5s, centraliza */ setTimeout(function () { if (!state.revealed) API.setCenter(me.lat, me.lng, 16); }, 1500); } }
     particles.retarget();
   }
 
-  // ---- momento de match no mapa: os dois avatares enquadrados, arco de luz entre eles, pulsos e explosão no meio ----
+  // ---- pessoa em destaque (selecionada ou no momento do match): sai do cluster e fica por cima, ~20% maior ----
+  function spotSourceOf(id) { var fg = figs[id], u = state.users[id]; return fg && fg.move ? 'movers' : (u && u.isBoosted ? 'users-boost' : 'users'); }
+  function pushSpot() {
+    var id = state.momentUserId || state.selected;
+    var u = id ? state.users[id] : null, fg = u ? figs[id] : null;
+    if (!u || !fg || !fg.pos) { try { map.getSource('spot').setData(empty()); } catch (e) {} return; }
+    var feat = featureFor(u, fg, fg.pos, u.isBoosted ? 1.17 : 1);
+    if (u.isBoosted) feat.properties.aura = 'aura-boost';
+    map.getSource('spot').setData({ type: 'FeatureCollection', features: [feat] });
+  }
+  // destaque suave: a figura normal apaga enquanto a versão maior (spot) acende — parece que ela "cresce".
+  // A pessoa pode trocar de fonte (users ⇄ movers) no meio: as outras fontes já recebem o estado final na hora.
+  var ALL_USER_SRC = ['users', 'users-boost', 'movers'];
+  function setAlphaElsewhere(id, src, a) { ALL_USER_SRC.forEach(function (o) { if (o !== src) { try { map.setFeatureState({ source: o, id: id }, { a: a }); } catch (e) {} } }); }
+  function spotIn(id) {
+    var fg = figs[id]; if (!fg) return;
+    if (fg.user && fg.user.photo && !fg.ph && !(fg.phWait > Date.now())) ensureBubble(fg, 0); // foto do selecionado tem prioridade máxima
+    pushUsers(); pushSpot();
+    try { map.setFeatureState({ source: 'spot', id: id }, { a: 0 }); } catch (e) {}
+    tween('spot', id, 'a', 0, 1, 220);
+    var src = spotSourceOf(id);
+    tween(src, id, 'a', 1, 0, 220);
+    setAlphaElsewhere(id, src, 0);
+  }
+  function spotOut(id) {
+    var fg = figs[id]; if (!fg || !state.users[id]) { pushSpot(); return; }
+    var src = spotSourceOf(id);
+    tween(src, id, 'a', 0, 1, 200);
+    setAlphaElsewhere(id, src, 1);
+    tweens.push({ source: 'spot', id: id, key: 'a', from: 1, to: 0, start: performance.now(), dur: 200, onDone: function () { pushSpot(); } });
+    stepTweens.kick();
+  }
+
+  // ---- momento de match no mapa: os dois avatares (com fotos) enquadrados, arco de luz entre eles, pulsos e explosão no meio ----
   var momentTimer = null;
   function clearMoment() {
     if (momentTimer) { clearTimeout(momentTimer); momentTimer = null; }
     try { var s = map.getSource('moment'); if (s) s.setData(empty()); } catch (e) {}
-    try { map.getSource('spot').setData(empty()); } catch (e) {}
+    var mid = state.momentUserId; state.momentUserId = null;
+    var fm = figs['me']; if (fm) { fm.moment = false; refreshBubble('me'); }
+    if (mid) { var fu = figs[mid]; if (fu) { fu.moment = false; refreshBubble(mid); } if (state.selected !== mid) spotOut(mid); else pushSpot(); }
+    else pushSpot();
+    // alguém foi selecionado durante o momento: o destaque dela entra agora
+    if (state.selected && state.selected !== mid && state.users[state.selected]) spotIn(state.selected);
     if (!state.selected) { try { map.getSource('sel').setData(empty()); } catch (e) {} }
   }
   function matchMoment(m) {
@@ -905,8 +1113,14 @@ ${AVATAR_ANIM_JS}
     var u = state.users[m.userId];
     if (!u) { send('matchMomentDone', { userId: m.userId, shown: false }); return; }
     clearMoment();
-    emote('me', 'match'); emote(m.userId, 'match');
+    state.momentUserId = m.userId;
+    var fm = figs['me'], fu = figs[m.userId];
+    if (fm) { fm.moment = true; refreshBubble('me'); }
+    if (fu) { fu.moment = true; refreshBubble(m.userId); }
     var a = [state.me.lng, state.me.lat], b = [u.longitude, u.latitude];
+    if (fm) fm.mirror = b[0] < a[0]; if (fu) fu.mirror = a[0] < b[0]; // um de frente pro outro
+    emote('me', 'match'); emote(m.userId, 'match');
+    if (state.selected !== m.userId) spotIn(m.userId); else pushSpot();
     if (!map.getSource('moment')) {
       map.addSource('moment', { type: 'geojson', data: empty() });
       map.addLayer({ id: 'cz-moment-glow', type: 'line', source: 'moment', layout: { 'line-cap': 'round', 'line-join': 'round' },
@@ -925,7 +1139,7 @@ ${AVATAR_ANIM_JS}
     state.programmatic++;
     var bounds = new mapboxgl.LngLatBounds(a, a); bounds.extend(b);
     var cam = null;
-    try { cam = map.cameraForBounds(bounds, { padding: { top: 120, bottom: 40, left: 60, right: 60 }, maxZoom: 18 }); } catch (e) { cam = null; }
+    try { cam = map.cameraForBounds(bounds, { padding: { top: 140, bottom: 40, left: 60, right: 60 }, maxZoom: 18 }); } catch (e) { cam = null; }
     if (cam) map.easeTo({ center: cam.center, zoom: cam.zoom, pitch: 55, bearing: map.getBearing(), duration: 900, essential: true });
     else map.easeTo({ center: mid, zoom: Math.min(map.getZoom(), 17), pitch: 55, duration: 900, essential: true });
     map.once('moveend', function () { endProgrammatic(); });
@@ -938,17 +1152,24 @@ ${AVATAR_ANIM_JS}
       }, seq[k]);
     })(s);
     map.getSource('sel').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: b } }] });
-    // a pessoa sai do cluster e ganha destaque durante o momento
-    map.getSource('spot').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { img: ensureAvatar(u), label: u.name || '', off: [0, figOffset(u.isBoosted ? IMG.figBoost : IMG.fig)] }, geometry: { type: 'Point', coordinates: b } }] });
     momentTimer = setTimeout(function () { clearMoment(); send('matchMomentDone', { userId: m.userId, shown: true }); }, 3400);
   }
 
+  // toque na pessoa: anel no chão, figura + foto crescem (spot), nome ganha destaque, câmera centraliza
   function select(id) {
+    var prevSel = state.selected;
     state.selected = id || null;
-    if (!id && momentTimer) return; // o momento do match está usando o anel; clearMoment limpa no fim
+    var inMoment = !!momentTimer;
+    if (prevSel && prevSel !== state.selected) { refreshBubble(prevSel); if (prevSel !== state.momentUserId && !inMoment) spotOut(prevSel); }
+    if (!id && inMoment) return; // o momento do match está usando o anel; clearMoment limpa no fim
     var u = id ? state.users[id] : null;
     map.getSource('sel').setData(u ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [u.longitude, u.latitude] } }] } : empty());
-    if (u) { state.programmatic++; map.easeTo({ center: [u.longitude, u.latitude], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); }); }
+    if (!u) { if (!state.momentUserId) pushSpot(); return; }
+    refreshBubble(id);
+    // durante o momento do match o spot é da pessoa do match: a seleção entra quando o momento acabar (clearMoment)
+    if (inMoment && id !== state.momentUserId) return;
+    if (id !== state.momentUserId) spotIn(id); else pushSpot();
+    state.programmatic++; map.easeTo({ center: [u.longitude, u.latitude], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); });
   }
 
   function reveal(lat, lng) {
@@ -1125,6 +1346,7 @@ ${AVATAR_ANIM_JS}
   API.matchMoment = matchMoment;
 
   map.on('style.load', function () { send('styleLoaded'); });
+  CZ_PHOTO.onBlocked(function (url) { send('photoBlocked', { url: url }); });
 
   map.once('load', function () {
     loaded = true;

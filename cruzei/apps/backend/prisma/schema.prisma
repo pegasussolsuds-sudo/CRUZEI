@@ -27,6 +27,7 @@ model User {
   pausedUntil           DateTime?             @map("paused_until") @db.Timestamp(6)
   showDistance          Boolean               @default(true) @map("show_distance")
   showAge               Boolean               @default(true) @map("show_age")
+  showPhotoOnMap        Boolean               @default(true) @map("show_photo_on_map")
   isVerified            Boolean               @default(false) @map("is_verified")
   verifiedAt            DateTime?             @map("verified_at") @db.Timestamp(6)
   verificationSelfieUrl String?               @map("verification_selfie_url") @db.VarChar(500)

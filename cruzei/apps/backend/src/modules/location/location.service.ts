@@ -23,6 +23,16 @@ const POS_JITTER_MAX_M = 70;
 const POI_JITTER_MIN_M = 8;
 const POI_JITTER_MAX_M = 25;
 // Quem reporta posição a até 40 m de um POI é considerado "nele" (bbox de 60 m pra busca)
+// selo "novo por aqui" na bolha de identidade do mapa
+const NEW_USER_MS = 7 * 24 * 3_600_000;
+// isOnline: posição atualizada há menos de 15 min (a presença em si dura 5 h)
+const ONLINE_WINDOW_MS = 15 * 60_000;
+
+/** thumbnail pra bolha do mapa: só quando existe um thumb de verdade (diferente da foto original) */
+function mapThumb(photo: { url: string; thumbnailUrl: string | null } | undefined): string | null {
+  if (!photo?.thumbnailUrl || photo.thumbnailUrl === photo.url) return null;
+  return photo.thumbnailUrl;
+}
 const POI_SNAP_M = 40;
 const POI_SEARCH_M = 60;
 // Salt de fallback quando LOCATION_SALT não está configurado (validateEnv avisa no boot)
@@ -229,10 +239,12 @@ export class LocationService {
         birthDate: true,
         showAge: true,
         showDistance: true,
+        showPhotoOnMap: true,
+        createdAt: true,
         premiumTier: true,
         isVerified: true,
         avatarConfig: true,
-        photos: { where: { isMain: true }, select: { url: true } },
+        photos: { where: { isMain: true }, select: { url: true, thumbnailUrl: true } },
       },
     });
     if (users.length === 0) return [];
@@ -280,18 +292,23 @@ export class LocationService {
     const liked = new Set(likes.map((l) => l.likedId));
     const matchByUser = new Map(matches.map((m) => [m.userAId === q.requesterId ? m.userBId : m.userAId, m.id]));
 
+    const newSince = now.getTime() - NEW_USER_MS;
     return inRange.map(({ u, pos, distFromMe, poi, updatedAt }) => ({
       id: u.id,
       name: u.name,
       age: u.showAge ? this.age(u.birthDate) : null,
       mainPhotoUrl: u.photos[0]?.url ?? null,
+      // bolha de identidade no mapa: SÓ o thumbnail (nunca a foto grande — sem thumb, ex. HEIC, fica só o avatar) e só com a preferência ligada
+      mapPhotoUrl: u.showPhotoOnMap ? mapThumb(u.photos[0]) : null,
+      isNew: u.createdAt.getTime() > newSince,
       latitude: pos.lat,
       longitude: pos.lng,
       // distância em degraus (50/100/250/500/1000…) entre quem consulta e a posição borrada; null se a pessoa desligou
       distanceM: u.showDistance ? approxDistanceM(distFromMe) : null,
       recordedAt: updatedAt ? new Date(updatedAt).toISOString() : null,
       isAnonymous: false, // anônimos ficam fora da lista; campo mantido por compatibilidade
-      isOnline: true,
+      // "online" = posição atualizada nos últimos 15 min (mesma régua do ponto verde no mapa); presença dura 5 h
+      isOnline: updatedAt ? Date.now() - Number(updatedAt) < ONLINE_WINDOW_MS : false,
       premiumTier: u.premiumTier,
       isVerified: u.isVerified,
       isBoosted: boosted.has(u.id),

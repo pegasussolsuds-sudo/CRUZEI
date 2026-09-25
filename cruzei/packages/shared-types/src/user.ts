@@ -26,6 +26,8 @@ export interface UserSettings {
   visibilityMode: VisibilityMode;
   showDistance: boolean;
   showAge: boolean;
+  /** foto real na bolha de identidade do mapa; OFF = só o avatar (o perfil continua com fotos) */
+  showPhotoOnMap: boolean;
   isPaused: boolean;
   pausedUntil: string | null;
 }

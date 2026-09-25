@@ -49,6 +49,13 @@ async function bootstrap() {
       },
     }),
   );
+  // foto que não existe mais: 404 limpo (com CORS) em vez de erro de CORS no console do WebView — só GET/HEAD,
+  // o resto segue pro router (POST /v1/uploads/photo não passa por aqui, mas não custa não engolir OPTIONS)
+  app.use('/uploads', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.status(404).end();
+  });
 
   app.enableShutdownHooks();
 

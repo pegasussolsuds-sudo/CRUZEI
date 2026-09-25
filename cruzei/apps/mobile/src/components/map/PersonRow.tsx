@@ -6,7 +6,7 @@ import { formatApproxDistance, timeAgo } from '@cruzei/shared-utils';
 import type { NearbyUser } from '@cruzei/shared-types';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
-import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
+import { IdentityBubble } from '../identity/IdentityBubble';
 import { resolveAvatar } from '../../avatar';
 
 export interface PersonRowProps {
@@ -68,7 +68,7 @@ function PersonRowInner({ user, distanceM, onPress, pressHint = 'Mostra no mapa'
             <Ionicons name="glasses" size={22} color={colors.white} />
           </View>
         ) : (
-          <CruzeiAvatar config={avatar} mode="bust" size={PHOTO} backgroundColor={colors.surfaceAlt} accessibilityLabel={`Avatar de ${user.name}`} />
+          <IdentityBubble photoUrl={user.mapPhotoUrl} avatar={avatar} size={PHOTO} name={user.name} ring="none" badge={user.matchId ? 'match' : user.isNew ? 'new' : null} accessible={false} />
         )}
       </View>
 

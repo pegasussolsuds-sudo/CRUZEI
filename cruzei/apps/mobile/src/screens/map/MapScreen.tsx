@@ -31,7 +31,7 @@ import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../a
 import { buildMapboxHtml } from './mapbox-html';
 import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import { distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
+import { distanceMeters, encodeGeohash, formatMapName } from '@cruzei/shared-utils';
 import type { AvatarConfig, NearbyUser, POI } from '@cruzei/shared-types';
 
 const HOT_MIN = 5;
@@ -120,6 +120,8 @@ export function MapScreen() {
     const main = me?.photos?.find((p) => p.isMain) ?? me?.photos?.[0];
     return main?.thumbnailUrl ?? main?.url ?? null;
   }, [me?.photos]);
+  // minha bolha de identidade no mapa: preferência "mostrar minha foto no mapa" e nunca em modo anônimo (§7)
+  const showMyPhoto = (me?.settings?.showPhotoOnMap ?? true) && !isAnonymous;
   // meu avatar: o mesmo do onboarding/perfil (fallback determinístico enquanto não personalizou)
   const myAvatar = useMemo(() => resolveAvatar(me?.avatar ?? null, me?.id ?? 'me', me?.gender ?? null), [me?.avatar, me?.id, me?.gender]);
   const myAvatarKey = keyOf(myAvatar);
@@ -289,17 +291,23 @@ export function MapScreen() {
     for (const u of raw) dist.set(u.id, u.distanceM ?? Number.POSITIVE_INFINITY);
     const sorted = raw
       .filter((u) => !passed.has(u.id))
+      // match feito nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
+      .map((u) => {
+        const local = localMatches.get(u.id);
+        return local && u.matchId !== local ? { ...u, matchId: local } : u;
+      })
       .sort((a, b) => (dist.get(a.id) ?? Infinity) - (dist.get(b.id) ?? Infinity))
       .slice(0, MAX_USERS);
     return { users: sorted, pois: nearbyQuery.data?.pois ?? [], distanceById: dist };
-  }, [nearbyQuery.data, passed]);
+  }, [nearbyQuery.data, passed, localMatches]);
 
   // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no WebView por chave)
   const mapUsers = useMemo<MapUser[]>(
     () =>
       users.map((u) => {
         const cfg = resolveAvatar(u.avatar, u.id);
-        return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura };
+        // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
+        return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura, label: formatMapName(u.name), photo: u.mapPhotoUrl ?? null };
       }),
     [users],
   );
@@ -416,14 +424,14 @@ export function MapScreen() {
         tier: myTier,
         isBoosted,
         isAnonymous,
-        photoUrl: myPhotoUrl,
-        name: me?.name ?? 'você',
+        photoUrl: showMyPhoto ? myPhotoUrl : null,
+        name: formatMapName(me?.name) || 'você',
         avatarKey: myAvatarKey,
         aura: myAvatar.aura,
       }),
       'setMe',
     );
-  }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, me?.name, myAvatar, myAvatarKey, defineAvatars, send]);
+  }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, showMyPhoto, me?.name, myAvatar, myAvatarKey, defineAvatars, send]);
 
   // setData quando a lista memoizada muda (dados novos, minha posição pro corte dos 300, passar).
   // As definições de avatar vão ANTES: quem chega novo já nasce desenhado, sem silhueta.

@@ -6,7 +6,7 @@ import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile'
 import { formatApproxDistance } from '@cruzei/shared-utils';
 import type { NearbyUser, POI } from '@cruzei/shared-types';
 import { resolveAvatar } from '../../avatar';
-import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
+import { IdentityBubble } from '../identity/IdentityBubble';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
@@ -144,7 +144,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
                       accessibilityLabel={`${u.name}, ver no mapa`}
                       style={[styles.avatarBtn, i > 0 && styles.avatarOverlap]}
                     >
-                      <CruzeiAvatar config={resolveAvatar(u.avatar, u.id)} mode="bust" size={46} backgroundColor="#1E1E3A" />
+                      <IdentityBubble photoUrl={u.mapPhotoUrl} avatar={resolveAvatar(u.avatar, u.id)} size={48} name={u.name} online={u.isOnline} ring={u.isOnline ? 'online' : 'default'} accessible={false} />
                     </Pressable>
                   ))}
                   {extra > 0 ? (
@@ -199,7 +199,8 @@ const styles = StyleSheet.create({
   offer: { ...typography.bodySmall, color: colors.accent },
   sectionLabel: { ...typography.caption, color: colors.gray[400], marginBottom: spacing.xs, textTransform: 'uppercase' },
   avatars: { flexDirection: 'row', alignItems: 'center' },
-  avatarBtn: { width: 52, height: 52, borderRadius: 26, borderWidth: 2, borderColor: BG, overflow: 'hidden', backgroundColor: '#1E1E3A', alignItems: 'center', justifyContent: 'center' },
+  // sem overflow:hidden + borda + raio no mesmo View (crash do HWUI em alguns Androids); a bolha já é circular
+  avatarBtn: { width: 52, height: 52, borderRadius: 26, borderWidth: 2, borderColor: BG, backgroundColor: '#1E1E3A', alignItems: 'center', justifyContent: 'center' },
   avatarOverlap: { marginLeft: -12 },
   more: { backgroundColor: 'rgba(255,255,255,0.12)' },
   moreText: { ...typography.label, color: colors.white },
