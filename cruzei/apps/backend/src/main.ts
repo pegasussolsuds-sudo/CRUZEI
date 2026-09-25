@@ -61,7 +61,7 @@ async function bootstrap() {
 
   const port = config.get<number>('port') ?? 3000;
   await app.listen(port, '0.0.0.0');
-  logger.log(`🚀 Cruzei API rodando em http://localhost:${port}/${config.get('apiPrefix')}`);
+  logger.log(`🚀 Metch API rodando em http://localhost:${port}/${config.get('apiPrefix')}`);
   logger.log(`🖼️  Uploads em ${UPLOAD_DIR}`);
 }
 

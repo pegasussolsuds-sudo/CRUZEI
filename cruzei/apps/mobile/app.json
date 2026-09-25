@@ -1,15 +1,13 @@
 {
   "expo": {
-    "name": "Cruzei",
+    "name": "Metch",
     "slug": "cruzei",
-    "scheme": "cruzei",
+    "scheme": "metch",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
     "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "cover",
       "backgroundColor": "#0A0A1A"
     },
     "assetBundlePatterns": [
@@ -19,10 +17,10 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.cruzei.app",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Cruzei mostra quem esteve no mesmo lugar que você. Sem essa permissão o mapa não funciona.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Cruzei atualiza sua localização em segundo plano pra te mostrar cruzamentos.",
-        "NSCameraUsageDescription": "Cruzei usa a câmera pra foto de perfil e verificação.",
-        "NSPhotoLibraryUsageDescription": "Cruzei precisa da sua galeria pra você adicionar fotos.",
+        "NSLocationWhenInUseUsageDescription": "Metch mostra quem esteve no mesmo lugar que você. Sem essa permissão o mapa não funciona.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Metch atualiza sua localização em segundo plano pra te mostrar cruzamentos.",
+        "NSCameraUsageDescription": "Metch usa a câmera pra foto de perfil e verificação.",
+        "NSPhotoLibraryUsageDescription": "Metch precisa da sua galeria pra você adicionar fotos.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -44,14 +42,14 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Cruzei atualiza sua localização em segundo plano pra te mostrar cruzamentos."
+          "locationAlwaysAndWhenInUsePermission": "Metch atualiza sua localização em segundo plano pra te mostrar cruzamentos."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Cruzei precisa da sua galeria pra você adicionar fotos.",
-          "cameraPermission": "Cruzei usa a câmera pra foto de perfil."
+          "photosPermission": "Metch precisa da sua galeria pra você adicionar fotos.",
+          "cameraPermission": "Metch usa a câmera pra foto de perfil."
         }
       ]
     ],

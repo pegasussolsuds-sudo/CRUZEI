@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { BlobBackground } from '../../components/animated/BlobBackground';
 import { FadeInView, Glow, Pulse, ScaleOnPress, SlideInView, StaggerText } from '../../components/animated';
+import { MetchLogo } from '../../components/brand';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Onboarding'>;
@@ -41,7 +42,8 @@ export function WelcomeScreen() {
 
       <SafeAreaView style={styles.safe}>
         <FadeInView delay={100} fromY={-8} style={styles.header}>
-          <Text style={styles.logo}>cruzei</Text>
+          {/* monograma desenhando + wordmark com brilho periódico — a marca "respira" enquanto o visitante lê */}
+          <MetchLogo layout="row" size={46} shimmer="loop" delay={250} paused={!focused} />
         </FadeInView>
 
         <View style={styles.bottom}>
@@ -56,7 +58,7 @@ export function WelcomeScreen() {
 
           <SlideInView from="up" distance={18} delay={1200} style={{ marginTop: spacing.md }}>
             <Text style={styles.subtitle}>
-              O Cruzei mostra quem esteve no mesmo lugar que você. Match só rola quando o encontro é possível.
+              O Metch mostra quem esteve no mesmo lugar que você. Match só rola quando o encontro é possível.
             </Text>
           </SlideInView>
 
@@ -111,16 +113,6 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.black },
   safe: { flex: 1, justifyContent: 'space-between' },
   header: { paddingTop: spacing.xxl, alignItems: 'center' },
-  logo: {
-    ...typography.display,
-    fontSize: 44,
-    lineHeight: 52,
-    letterSpacing: -2,
-    color: colors.primary,
-    textShadowColor: 'rgba(127,255,0,0.45)',
-    textShadowRadius: 18,
-    textShadowOffset: { width: 0, height: 0 },
-  },
   bottom: { paddingHorizontal: spacing.xl, paddingBottom: spacing.lg },
   headline: {
     ...typography.display,

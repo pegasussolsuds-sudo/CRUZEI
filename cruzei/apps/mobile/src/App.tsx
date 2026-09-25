@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { RootNavigator } from './navigation/RootNavigator';
 import { useAuthStore } from './stores/auth';
+import { useBootStore } from './stores/boot';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket } from './services/socket';
 import { useAppFonts } from './theme/fonts';
@@ -26,6 +27,17 @@ export function App() {
   const fontsReady = useAppFonts();
   const isLoading = useAuthStore((s) => s.isLoading);
   const [splashDone, setSplashDone] = useState(false);
+  const webViewReady = useBootStore((s) => s.webViewReady);
+  // O navegador só monta quando a coreografia da splash termina (montar junto engasga a animação ~1 s).
+  // A WebView do mapa nasce por baixo da splash e a splash só sai quando ela carregou (teto de 4 s) — ver stores/boot.ts.
+  const [shellReady, setShellReady] = useState(false);
+  const [mapWaitOver, setMapWaitOver] = useState(false);
+  useEffect(() => {
+    if (!shellReady) return;
+    const id = setTimeout(() => setMapWaitOver(true), 4000);
+    return () => clearTimeout(id);
+  }, [shellReady]);
+  const splashReady = shellReady && !isLoading && (!isAuthenticated || webViewReady || mapWaitOver);
 
   useEffect(() => {
     hydrate();
@@ -71,9 +83,15 @@ export function App() {
       <QueryClientProvider client={queryClient}>
         <SafeAreaProvider>
           <StatusBar style={isAuthenticated ? 'dark' : 'light'} />
-          <RootNavigator />
-          {/* Splash animada por cima até a sessão hidratar (mín. 2.4s) */}
-          {!splashDone ? <SplashScreen ready={!isLoading} onFinish={() => setSplashDone(true)} /> : null}
+          {shellReady ? <RootNavigator /> : null}
+          {/* Splash animada por cima até a sessão hidratar e o navegador montar (mín. 2.7s) */}
+          {!splashDone ? (
+            <SplashScreen
+              ready={splashReady}
+              onSettled={() => setShellReady(true)}
+              onFinish={() => setSplashDone(true)}
+            />
+          ) : null}
         </SafeAreaProvider>
       </QueryClientProvider>
     </GestureHandlerRootView>

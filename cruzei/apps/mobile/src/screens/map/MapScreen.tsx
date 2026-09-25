@@ -19,6 +19,7 @@ import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
 import { useDiscoveryHints } from '../../hooks/useDiscoveryHints';
 import { useAuthStore } from '../../stores/auth';
+import { useBootStore } from '../../stores/boot';
 import { useMapPerfStore } from '../../stores/mapPerf';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type GroupFilter, type MapBottomSheetHandle, type PoiFilter } from '../../components/map/MapBottomSheet';
@@ -33,6 +34,7 @@ import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
 import type { AvatarConfig, DiscoveryResponse, MapPosition, NearbyUser, POI, ProximityBand } from '@cruzei/shared-types';
+import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
 const MAX_USERS = 300;
@@ -208,6 +210,9 @@ export function MapScreen() {
     setWebReady(false);
     setMapError(why);
   }, []);
+
+  // Chromium inicializado (HTML carregado): a splash pode sair por cima de um mapa já vivo (ver stores/boot.ts)
+  const onWebLoaded = useCallback(() => useBootStore.getState().setWebViewReady(true), []);
 
   const remountWeb = useCallback(() => {
     readyRef.current = false;
@@ -923,6 +928,7 @@ export function MapScreen() {
         onError={() => onWebDead('sem conexão com o mapa')}
         onRenderProcessGone={() => onWebDead('o mapa travou')}
         accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
+        onLoadEnd={onWebLoaded}
       />
 
       <MapHeader
@@ -940,7 +946,7 @@ export function MapScreen() {
       {moment ? (
         <View style={styles.momentWrap} pointerEvents="none">
           <FadeInView fromY={-10} fromScale={0.9} style={styles.moment} accessibilityLiveRegion="assertive">
-            <Text style={styles.momentTitle}>🔥 CRUZEI!</Text>
+            <Text style={styles.momentTitle}>🔥 {BRAND.matchShout}</Text>
             <Text style={styles.momentText}>Você e {moment.name} deram match</Text>
           </FadeInView>
         </View>

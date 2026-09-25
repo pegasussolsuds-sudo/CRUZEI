@@ -473,7 +473,43 @@ Entrega completa (15 itens do §28 do brief) em **`PRIVACIDADE-LOCALIZACAO.md`**
 - **App**: DTO seguro (`NearbyUser` sem lat/lng/distanceM/recordedAt; `mapPosition`, `proximityBand`, `presenceType`, `lastSeen`); WebView só com `mapPosition`; lista/sheets/modal/likes/cartão em faixas; presença sem horário; seletor "Descoberta por proximidade" e tela "Áreas privadas" no Perfil; banner "🏠 Área privada: ninguém te vê aqui"; background location removida.
 - **Testes** (fase 15): `apps/backend/test/privacy-audit.ts` — 10 testes do brief, 17 asserções, **17/17 PASS** contra o backend dev (API sem chaves proibidas, 0 posições visuais coincidindo com a real, cartão só faixa, 404 uniforme, 429 após 20/min e por usuário, 4 posições reais a 30 m → 2 visuais, bloqueio nos dois sentidos, área privada esconde, região esparsa vira `hiddenCount`, centro/raio do cliente ignorados, 2ª atualização < 20 s ignorada, WebSocket sem coordenada, app sem persistência).
 - **Validado no Motorola**: "54 pessoas em 350 m", lista com "perto · Bar do Léo" e "Esteve por aqui", marcadores nas células, 30–59 fps.
-- **Vulnerabilidades restantes e decisões manuais**: §14 e §15 do documento (célula de 150 m dentro dos 350 m é a resolução final; residência automática leva 3 noites; Premium "cidade inteira" passa a valer para lugares, não pessoas — copy do paywall a ajustar; limites por env; throttler em Redis em produção). (precisa da categoria do POI no `/nearby`); mini-fotos de quem está no lugar direto no pin do POI; distância na composição do mapa (decisão: só na sheet/lista, pra não poluir).
-- R2/CDN em produção (upload, thumbnail, CORS) — o stub local continua.
-- Testes automatizados: `formatMapName` ganhou testes unitários; matriz do brief (§23) segue manual via seed.
-- Ajuste fino pendente no aparelho: tier "low" na medição inicial com 100+ pessoas (o remount pelo clamp de DPR acontece uma vez) — considerar adiar a medição até as fotos/figuras carregarem.
+- **Vulnerabilidades restantes e decisões manuais**: §14 e §15 do documento (célula de 150 m dentro dos 350 m é a resolução final; residência automática leva 3 noites; Premium "cidade inteira" passa a valer para lugares, não pessoas — copy do paywall a ajustar; limites por env; throttler em Redis em produção).
+
+---
+
+## 16. Sessão 25/09/2026 (manhã) — nova marca **Metch** (ex-Cruzei) com identidade animada
+
+Pedido do founder: trocar a marca "Cruzei" por "Metch" em tudo que o usuário vê, "bem premium, com animações e profissional". Identificadores técnicos **não** mudaram de propósito (pacote `com.cruzei.app` — trocar desinstalaria o app de quem já tem —, scopes `@cruzei/*`, chaves de storage, pastas do monorepo, origem da WebView `app.cruzei.com.br`).
+
+### 16.1 Identidade
+- **Monograma** (`apps/mobile/src/components/brand/MetchMark.tsx`): um "M" desenhado por **dois traços que sobem pelas laterais e se encontram no centro** (a história da marca: dois caminhos que se cruzam), com **faísca magenta** e onda no ponto de encontro. Skia + Reanimated: trim de path (`start/end`), gradiente lima → lima-clara, halo que respira, faísca com *back-out*, onda que dissipa. Modo interno (desenha ao montar, `onMeet`) e modo externo (`progress`/`sparkProgress` vindos de uma linha do tempo).
+- **Wordmark** (`MetchWordmark.tsx`): "metch" em Space Grotesk Bold convertido em **path letra a letra** (letter-spacing −4,5 %), com gradiente vertical, halo, **revelação por varredura** e **faixa de brilho diagonal** ("shimmer", único ou em loop). Typeface Skia carregado **uma vez** (`brand-font.ts`, pré-carregado em `useAppFonts` com teto de 3 s); fallback pra `<Text>` se falhar.
+- **Logo composto** (`MetchLogo.tsx`): monograma + wordmark em linha ou empilhado; o wordmark começa a aparecer quando os traços se encontram.
+- **Constantes** em `apps/mobile/src/brand.ts` (`BRAND.name/wordmark/matchShout/tagline/supportEmail/version`).
+- **Ícones e splash nativa** gerados por script (`sharp`, mesma geometria do componente): `assets/icon.png` (M preto + faísca magenta sobre lima), `adaptive-icon.png` (primeiro plano transparente — o antigo era lima sobre lima, ícone invisível), mipmaps `ic_launcher`/`_round`/`_foreground` nas 5 densidades, `splash.png`/`splashscreen_image.png` (fundo escuro + monograma).
+
+### 16.2 Splash (`SplashScreen.tsx`)
+Coreografia de 2,3 s em **uma única linha do tempo na UI thread** (`t` linear; tudo é `useDerivedValue` dela): traços se desenham (0,1–1,0 s) → encontro: faísca + onda + 26 partículas + halo acende + toque háptico → wordmark revela (1,06–1,68 s) → brilho atravessa (1,5–2,3 s) → tagline sobe → saída em zoom/fade quando `ready` e ≥ 2,6 s. "Reduzir movimento" vai direto ao estado final.
+
+**Descobertas de boot (importantes pra qualquer animação Skia no arranque):**
+1. O `Canvas` do Skia monta o conteúdo num **efeito passivo** (`useEffect`) e as animações começavam em `useEffect` — no boot a thread JS fica ~2 s ocupada montando o mapa, então a splash ficava congelada e saía antes da fonte existir. Correção: animações iniciam em `useLayoutEffect`, linha do tempo sem callbacks JS, typeface pré-carregado.
+2. **Criar a WebView do mapa (Chromium) trava a thread principal do Android por ~2 s** → congela os canvases Skia mesmo com tudo na UI thread. Correção: o `RootNavigator` só monta quando a coreografia termina (`onSettled`); a WebView nasce por baixo da splash e a **splash só sai quando a WebView carregou** (`useBootStore.webViewReady`, teto de 4 s). A variante "WebView só depois da splash sair" foi testada e descartada: derrubou o driver GL/HWUI do Moto g54 (`glDeleteTextures` em `renderLayerImpl`; `drawRRect` em `OpsTask::tryConcat`, 3 crashes em ~10 aberturas). Além disso, ao terminar a saída a splash **para todas as animações (halo, blobs) antes de desmontar**: os canvases Skia são TextureViews e desmontá-los com mapper rodando, junto com o GL do mapa, é o cenário dos crashes. Sequência final: 5/5 aberturas sem crash.
+3. Blobs de fundo também passaram pra `useLayoutEffect`.
+
+### 16.3 Onde a marca aparece
+Splash, Welcome (`MetchLogo` com brilho em loop), Perfil ("metch 0.1.0 · telefone", e-mail de suporte), Premium ("METCH PREMIUM"), momento do match ("🔥 METCH!" no mapa e "METCH! 🔥" no modal), sheet do lugar ("N pessoas no Metch", "Evento Metch", "Ninguém do Metch por aqui agora"), cadastro ("o Metch é só pra maiores de 18"), áreas privadas, Onboarding (tela legada), `app.json` (nome, scheme `metch`, textos de permissão), `strings.xml` (nome do app), manifest (scheme `metch` + `cruzei` mantido pra links antigos), catálogo do avatar ("Aura Metch Fest", "Lima Metch", "Magenta Metch"), backend (mensagem do upload de foto, log de boot).
+
+### 16.4 Validação no Motorola (25/09, 11:30–12:05)
+- Splash quadro a quadro (screencap no aparelho a ~0,5 s): encontro com partículas e onda, wordmark lima com gradiente e brilho, tagline, saída sem engasgo; fonte da marca presente desde o primeiro quadro.
+- Welcome após logout: monograma desenhando ao lado do wordmark, headline letra a letra; login refeito com o código de dev.
+- Perfil, Premium e mapa com os textos novos; build nativo (`assembleDebug`) instalado: gaveta de apps mostra **"Metch"** com o ícone lima/M preto/faísca magenta.
+- Sequência final de boot: 5/5 aberturas sem crash (os 3 crashes das variantes intermediárias estão em 16.2).
+
+### 16.5 Revisão adversarial (workflow, 21 agentes, 17 achados → 11 confirmados e corrigidos)
+Faixa de brilho estacionada fora das letras (a diagonal tem pegada horizontal H²/(2·band)); pontas do gradiente em branco transparente (o Skia interpola sem pré-multiplicar — preto transparente escurecia); `paused` no logo (Welcome fora de foco não redesenha por frame); splash respeita "reduzir movimento" de verdade (halo, blobs e saída só em fade); rótulo "Seu avatar Metch"; fallback `<Text>` com a mesma caixa do canvas; alinhamento de linha de base no `MetchLogo` pelas métricas da fonte; canvas do monograma com sangria pro halo (não corta o brilho); véu de saída até opacidade 0 (sem corte seco); `splashscreen_image.png` removidas (expo-splash-screen não está instalado — a splash nativa é só a cor, e o brief é a splash em JS). Rejeitados pelo cético: e-mail de suporte (decisão do founder), faísca "ilegível" no ícone, modal de acessibilidade na splash, copy de background no iOS.
+
+### 16.6 Pendências / decisões
+- **E-mail de suporte** virou `suporte@metch.app` (`BRAND.supportEmail`) — confirmar o domínio real da marca.
+- Documentação de produto (`Cruzei APP/*.md`, README do monorepo) ainda fala "Cruzei" no histórico; o README ganhou a nota da marca.
+- iOS: `app.json` já leva o nome; ícones/splash do iOS saem do `expo prebuild` a partir dos assets novos (nunca buildado).
+- Link `cruzei://` continua aceito pelo manifest; `metch://` é o novo scheme.

@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, spacing, typography } from '@cruzei/ui-mobile';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { BRAND } from '../../brand';
 
 const { width } = Dimensions.get('window');
 
@@ -23,14 +24,14 @@ export function OnboardingScreen() {
     >
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
-          <Text style={styles.logo}>cruzei</Text>
+          <Text style={styles.logo}>{BRAND.wordmark}</Text>
           <Text style={styles.tagline}>quem você quase conheceu hoje</Text>
         </View>
 
         <View style={styles.bottom}>
           <Text style={styles.title}>conexões reais{'\n'}de lugares reais</Text>
           <Text style={styles.subtitle}>
-            O Cruzei mostra quem esteve no mesmo lugar que você.
+            O Metch mostra quem esteve no mesmo lugar que você.
             Match só rola quando o encontro é possível.
           </Text>
 

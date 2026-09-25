@@ -110,7 +110,7 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
               <FadeInView fromScale={0.9} fromY={10} style={styles.avatarWrap}>
                 <View style={styles.avatarGlow} pointerEvents="none" />
                 <CruzeiAvatar config={avatar} mode="full" size={128} groundShadow accessibilityLabel={`Avatar de ${user.name}`} />
-                {/* a mesma bolha de identidade do mapa: foto = quem está por trás; avatar = como existe no Cruzei */}
+                {/* a mesma bolha de identidade do mapa: foto = quem está por trás; avatar = como existe no Metch */}
                 <IdentityBubble
                   photoUrl={photo}
                   avatar={avatar}

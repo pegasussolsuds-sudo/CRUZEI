@@ -86,7 +86,7 @@ export function PrivateAreasScreen() {
         ListHeaderComponent={
           <FadeInView fromY={8}>
             <Text style={styles.lead}>Dentro de uma área privada ninguém te descobre por proximidade. Você continua vendo todo mundo.</Text>
-            <Text style={styles.hint}>O Cruzei também aprende sozinho onde você dorme e te esconde perto de casa, sem você precisar cadastrar nada.</Text>
+            <Text style={styles.hint}>O Metch também aprende sozinho onde você dorme e te esconde perto de casa, sem você precisar cadastrar nada.</Text>
 
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Adicionar onde estou agora</Text>

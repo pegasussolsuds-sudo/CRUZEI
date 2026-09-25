@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useLayoutEffect, useMemo } from 'react';
 import { StyleSheet, useWindowDimensions } from 'react-native';
 import { BlurMask, Canvas, Circle, Fill, Group } from '@shopify/react-native-skia';
-import { Easing, cancelAnimation, useDerivedValue, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { Easing, cancelAnimation, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { colors } from '@cruzei/ui-mobile';
 
 export interface BlobBackgroundProps {
@@ -31,15 +31,16 @@ export function BlobBackground({
 }: BlobBackgroundProps) {
   const { width, height } = useWindowDimensions();
   const t = useSharedValue(0);
+  const reduceMotion = useReducedMotion();
 
-  useEffect(() => {
-    if (paused) {
+  useLayoutEffect(() => {
+    if (paused || reduceMotion) {
       cancelAnimation(t);
       return;
     }
     t.value = withRepeat(withTiming(1, { duration: 14_000 / speed, easing: Easing.inOut(Easing.sin) }), -1, true);
     return () => cancelAnimation(t);
-  }, [paused, speed, t]);
+  }, [paused, reduceMotion, speed, t]);
 
   // Trajetórias suaves em "8" — cada blob com fase diferente
   const r = useMemo(() => Math.max(width, height) * 0.42, [width, height]);

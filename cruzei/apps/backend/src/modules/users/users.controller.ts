@@ -32,7 +32,7 @@ function assertPhotoHost(url: string, req: Request): void {
   // dev: o app fala com o backend por 127.0.0.1/localhost/IP da LAN (túnel USB ou Wi-Fi) — mesma porta, hosts equivalentes
   const port = (req.get('host') ?? '').split(':')[1];
   if (port) ['127.0.0.1', 'localhost'].forEach((h) => allowed.add(`${h}:${port}`));
-  if (!allowed.has(host)) throw new BadRequestException('Foto precisa estar hospedada pelo Cruzei');
+  if (!allowed.has(host)) throw new BadRequestException('Foto precisa estar hospedada pelo Metch');
 }
 
 class UpdateMeDto {

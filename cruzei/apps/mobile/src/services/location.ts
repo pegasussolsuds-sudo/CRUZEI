@@ -10,7 +10,7 @@ export type CruzeiLocation = {
   accuracyMeters?: number;
 };
 
-// Só localização em PRIMEIRO PLANO (brief PRIVACIDADE §20): o Cruzei não coleta posição com o app fechado.
+// Só localização em PRIMEIRO PLANO (brief PRIVACIDADE §20): o Metch não coleta posição com o app fechado.
 // A permissão de background foi removida do app.json/manifest de propósito.
 export async function requestPermissions(): Promise<boolean> {
   const { status } = await Location.requestForegroundPermissionsAsync();

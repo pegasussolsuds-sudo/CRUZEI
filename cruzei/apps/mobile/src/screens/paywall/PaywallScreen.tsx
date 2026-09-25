@@ -42,6 +42,7 @@ import {
   SlideInView,
   StaggerText,
 } from '../../components/animated';
+import { BRAND } from '../../brand';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tipos / constantes (lógica preservada)
@@ -111,7 +112,7 @@ function CrownSweep() {
   if (!crownPath) return null;
 
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel="Coroa Cruzei Premium">
+    <View accessible accessibilityRole="image" accessibilityLabel="Coroa Metch Premium">
       <Glow color={colors.accent} spread={18} intensity={0.75} shape="circle" cycleMs={2200}>
         <Canvas style={{ width: CROWN_SIZE, height: CROWN_SIZE }} pointerEvents="none">
           <Group transform={[{ scale }]}>
@@ -410,7 +411,7 @@ export function PaywallScreen() {
               <CrownSweep />
             </FadeInView>
             <FadeInView delay={200} fromY={6}>
-              <Text style={styles.eyebrow}>cruzei premium</Text>
+              <Text style={styles.eyebrow}>{BRAND.wordmark} premium</Text>
             </FadeInView>
             <StaggerText
               text="mais conexões, menos espera"

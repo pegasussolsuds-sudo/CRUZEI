@@ -21,6 +21,7 @@ import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
 import type { MainTabParamList } from '../navigation/MainTabs';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from './animated';
 import { CruzeiAvatar } from './avatar/CruzeiAvatar';
+import { BRAND } from '../brand';
 
 export interface MatchInfo {
   matchId: string;
@@ -58,7 +59,7 @@ export interface MatchModalProps {
 }
 
 /**
- * "CRUZEI! 🔥" — tela de celebração premium: confete, card com flip 3D, coração pulsando
+ * "METCH! 🔥" — tela de celebração premium: confete, card com flip 3D, coração pulsando
  * com glow magenta, os dois avatares com anel neon e o contexto de ONDE vocês se cruzaram.
  * API pública: <MatchModal match={info | null} onClose={...} onViewOnMap={...} />
  */
@@ -167,7 +168,7 @@ function Celebration({
           {/* frente do card */}
           <Animated.View style={[styles.card, frontStyle]}>
             <Animated.Text style={[styles.title, titleStyle]} accessibilityRole="header" allowFontScaling>
-              CRUZEI! 🔥
+              {BRAND.matchShout} 🔥
             </Animated.Text>
             <FadeInView delay={T.names} fromY={8}>
               <Text style={styles.names}>

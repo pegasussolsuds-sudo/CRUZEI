@@ -47,7 +47,7 @@ export interface PlacePreviewSheetProps {
 }
 
 /**
- * Lugar como parte do universo (doc §8/§9): nome, quantas pessoas no Cruzei, quantas online, "em alta",
+ * Lugar como parte do universo (doc §8/§9): nome, quantas pessoas no Metch, quantas online, "em alta",
  * avatares de quem está lá e o atalho pra lista. Eventos aparecem com selo próprio (§10).
  */
 export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePreviewSheetProps>(function PlacePreviewSheet(
@@ -112,7 +112,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
             </View>
 
             <View style={styles.stats}>
-              <Text style={styles.stat}>👥 {count} {count === 1 ? 'pessoa' : 'pessoas'} no Cruzei</Text>
+              <Text style={styles.stat}>👥 {count} {count === 1 ? 'pessoa' : 'pessoas'} no Metch</Text>
               <Text style={styles.stat}>🟢 {online} online agora</Text>
               {hot ? (
                 <Pulse active maxScale={1.05} style={styles.hotPill}>
@@ -121,7 +121,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
               ) : null}
               {isEvent ? (
                 <View style={[styles.hotPill, styles.eventPill]}>
-                  <Text style={styles.hotText}>⚡ Evento Cruzei</Text>
+                  <Text style={styles.hotText}>⚡ Evento Metch</Text>
                 </View>
               ) : null}
             </View>
@@ -155,7 +155,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
                 </View>
               </FadeInView>
             ) : (
-              <Text style={styles.empty}>Ninguém do Cruzei por aqui agora. Passa lá e muda isso 😉</Text>
+              <Text style={styles.empty}>Ninguém do Metch por aqui agora. Passa lá e muda isso 😉</Text>
             )}
 
             <View style={styles.actions}>

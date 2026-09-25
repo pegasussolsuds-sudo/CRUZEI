@@ -45,6 +45,7 @@ import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile'
 import type { User } from '@cruzei/shared-types';
 import type { ProfileStackParamList } from '../../navigation/ProfileStack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { BRAND } from '../../brand';
 
 type ProfileNav = CompositeNavigationProp<
   NativeStackNavigationProp<ProfileStackParamList, 'ProfileHome'>,
@@ -283,7 +284,7 @@ export function ProfileScreen() {
           >
             <View style={styles.avatarStage}>
               <Glow color={colors.primary} spread={22} intensity={0.35} shape="circle" cycleMs={3000}>
-                <CruzeiAvatar config={cruzeiAvatar} mode="full" size={CRUZEI_AVATAR} groundShadow accessibilityLabel="Seu avatar Cruzei" />
+                <CruzeiAvatar config={cruzeiAvatar} mode="full" size={CRUZEI_AVATAR} groundShadow accessibilityLabel={`Seu avatar ${BRAND.name}`} />
               </Glow>
             </View>
             <View style={styles.avatarInfo}>
@@ -338,14 +339,14 @@ export function ProfileScreen() {
             label="Excluir conta"
             danger
             last
-            onPress={() => Alert.alert('Excluir conta', 'Manda um "excluir" pro suporte@cruzei.com.br — a exclusão automática chega no beta.')}
+            onPress={() => Alert.alert('Excluir conta', `Manda um "excluir" pro ${BRAND.supportEmail} — a exclusão automática chega no beta.`)}
           />
         </Section>
 
         <FadeInView delay={700}>
           <View style={{ height: spacing.lg }} />
           <Button title="Sair" variant="ghost" onPress={confirmLogout} fullWidth />
-          <Text style={styles.version}>cruzei 0.1.0 · {me.phone}</Text>
+          <Text style={styles.version}>{BRAND.wordmark} {BRAND.version} · {me.phone}</Text>
         </FadeInView>
       </Animated.ScrollView>
     </SafeAreaView>

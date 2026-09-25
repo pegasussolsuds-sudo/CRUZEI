@@ -153,7 +153,7 @@ export const AURA_ITEMS: AvatarItemDef[] = [
   { id: 'lime', label: 'Aura lima', tier: 'premium' },
   { id: 'magenta', label: 'Aura magenta', tier: 'premium' },
   { id: 'gold', label: 'Aura dourada', tier: 'premium' },
-  { id: 'fest', label: 'Aura Cruzei Fest', tier: 'event' },
+  { id: 'fest', label: 'Aura Metch Fest', tier: 'event' },
 ];
 
 // ---------------- cores ----------------
@@ -206,8 +206,8 @@ export const CLOTH_COLORS: AvatarColorDef[] = [
   { id: 'c_beige', label: 'Bege', hex: '#D9C3A3', tier: 'free' },
   { id: 'c_brown', label: 'Marrom', hex: '#7A4E2D', tier: 'free' },
   { id: 'c_olive', label: 'Oliva', hex: '#6E7A3B', tier: 'free' },
-  { id: 'c_lime', label: 'Lima Cruzei', hex: '#7FFF00', tier: 'premium' },
-  { id: 'c_magenta', label: 'Magenta Cruzei', hex: '#FF1493', tier: 'premium' },
+  { id: 'c_lime', label: 'Lima Metch', hex: '#7FFF00', tier: 'premium' },
+  { id: 'c_magenta', label: 'Magenta Metch', hex: '#FF1493', tier: 'premium' },
   { id: 'c_gold', label: 'Dourado', hex: '#FFD700', tier: 'premium' },
 ];
 

@@ -1,8 +1,8 @@
-# Cruzei — Conexões reais de lugares reais
+# Metch (ex-Cruzei) — Conexões reais de lugares reais
 
 > Quem você quase conheceu hoje.
 
-Monorepo do **Cruzei**, o app de encontros baseado em cruzamentos reais.
+Monorepo do **Metch** (marca nova desde 25/09/2026; o codinome técnico continua `cruzei` — pacote `com.cruzei.app`, scopes `@cruzei/*`), o app de encontros baseado em cruzamentos reais.
 Você vê no mapa quem esteve no mesmo lugar que você — bar, parque, café — e
 só daí surge o match. Chat expira em 48h pra forçar a ação.
 
@@ -86,5 +86,7 @@ Auth, perfil, mapa, presença (geohash + Redis), matches com contexto, chat 48h.
 ✅ **Marco 6 — privacidade de localização (25/09/2026).** O servidor nunca entrega coordenada real, distância ou horário de outra pessoa: descoberta em raio fixo de 350 m com centro na minha presença (o cliente não escolhe centro nem raio), faixas de proximidade, posição visual por célula (~150 m) ou lugar, mínimo de anonimato, descoberta recíproca (Todos / Interesses / Ninguém), áreas privadas + residência automática, intervalo mínimo entre atualizações, rate limit por usuário, histórico grosseiro e curto, WebSocket auditado, background location removida. 17/17 testes de segurança (`apps/backend/test/privacy-audit.ts`). Ver `PRIVACIDADE-LOCALIZACAO.md` e §15 do relatório.
 
 ✅ **Marco 5 — identidade híbrida no mapa (24/09/2026).** Cada pessoa no mapa = foto real circular (bolha de identidade) + nome curto ("Leonardo S.") + avatar vivo + estado (online, em alta, match, novo, selecionado). Thumbnails gerados no upload (`sharp`), preferência "Mostrar minha foto no mapa" (privacidade), LOD por zoom (longe = avatar simplificado; perto = foto + nome + status), lazy loading por viewport com fila por prioridade, seleção com destaque, saída com fade, momento do match com as fotos, mesma bolha nas sheets/listas (`IdentityBubble`). Teste de carga com 120 pessoas no Moto g54. Ver §14 do relatório.
+
+✅ **Marco 7 — marca Metch (25/09/2026).** Identidade animada em Skia: monograma "M" de dois traços que se encontram com faísca magenta, wordmark com gradiente/brilho, splash coreografada numa linha do tempo na UI thread, logo na Welcome, ícones/splash nativos regenerados, textos do app trocados. Ver §16 do relatório.
 
 ✅ **Marco 4 — avatares vivos (24/09/2026).** Rig + motor de poses procedurais (idle, walk/run, wave, like, celebrate, match, arrive) com blend, LOD por proximidade, caminhada interpolada entre posições, emotes ligados às ações sociais e perf medida pelos frames reais do Mapbox. Revisão adversarial aplicada (privacidade do /nearby, throttler, foco do Voltar, socket, padding). Ver §13.

@@ -520,7 +520,7 @@ function AgeHint({ status, age }: { status: AgeStatus; age: number | null }) {
     status === 'ok'
       ? `Fechou: ${age} anos. Tá liberado ✅`
       : status === 'under'
-        ? 'Ainda não rolou: o Cruzei é só pra maiores de 18.'
+        ? 'Ainda não rolou: o Metch é só pra maiores de 18.'
         : status === 'invalid'
           ? 'Essa data não existe. Confere aí?'
           : '';
