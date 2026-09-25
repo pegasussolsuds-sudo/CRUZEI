@@ -6,13 +6,13 @@
 //   - "👀 N pessoas online a menos de 250 m" (quando muita gente perto e online)
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { NearbyUser, POI } from '@cruzei/shared-types';
+import type { NearbyUser, POI, ProximityBand } from '@cruzei/shared-types';
+import { proximityRank } from '@cruzei/shared-utils';
 import type { DiscoveryHint } from '../components/map/DiscoveryToast';
 
 const MIN_GAP_MS = 45_000;
 const NEW_PEOPLE_MIN = 3;
 const NEAR_ONLINE_MIN = 4;
-const NEAR_ONLINE_M = 250;
 
 export interface HotspotBorn {
   poiId: number;
@@ -21,7 +21,7 @@ export interface HotspotBorn {
 }
 
 /** `scopeKey` identifica o recorte (célula do centro + raio): quando muda, o baseline de 'pessoas novas' recomeça — arrastar o mapa não é gente chegando. */
-export function useDiscoveryHints(users: NearbyUser[], pois: POI[], distanceById: ReadonlyMap<string, number>, enabled: boolean, scopeKey: string) {
+export function useDiscoveryHints(users: NearbyUser[], pois: POI[], bandById: ReadonlyMap<string, ProximityBand>, enabled: boolean, scopeKey: string) {
   const [hint, setHint] = useState<DiscoveryHint | null>(null);
   const seenUsers = useRef<Set<string> | null>(null);
   const scopeRef = useRef(scopeKey);
@@ -63,9 +63,10 @@ export function useDiscoveryHints(users: NearbyUser[], pois: POI[], distanceById
       offer({ key: `new-${Date.now()}`, text: `✨ ${fresh} pessoas novas apareceram perto de você`, tone: 'info' });
       return;
     }
-    const nearOnline = users.filter((u) => u.isOnline && (distanceById.get(u.id) ?? u.distanceM ?? Infinity) <= NEAR_ONLINE_M).length;
-    if (nearOnline >= NEAR_ONLINE_MIN) offer({ key: 'near-online', text: `👀 ${nearOnline} pessoas online a menos de ${NEAR_ONLINE_M} m`, tone: 'info' });
-  }, [users, distanceById, enabled, offer, scopeKey]);
+    // 'perto' = faixas bem perto + perto (≤ 250 m); a dica é agregada — nunca 'Fulano está a 80 m'
+    const nearOnline = users.filter((u) => u.isOnline && proximityRank(bandById.get(u.id) ?? u.proximityBand) <= 1).length;
+    if (nearOnline >= NEAR_ONLINE_MIN) offer({ key: 'near-online', text: `👀 ${nearOnline} pessoas online bem perto de você`, tone: 'info' });
+  }, [users, bandById, enabled, offer, scopeKey]);
 
   // eventos que entraram no raio
   useEffect(() => {

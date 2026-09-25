@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { colors, radius, shadows, spacing, typography, fontFamily, duration } from '@cruzei/ui-mobile';
+import type { HiddenReason } from '@cruzei/shared-types';
 import { api } from '../../services/api';
 import { usePlaceName } from '../../hooks/usePlaceName';
 import { FadeInView } from '../animated/FadeInView';
@@ -45,9 +46,17 @@ export interface MapHeaderProps {
   boostMinutes: number | null;
   /** indicadores discretos do universo (doc §16): lugares em alta, pessoas perto, novidades */
   indicators?: { hot: number; near: number; fresh: boolean } | null;
+  /** por que o servidor não está me mostrando pros outros agora (área privada, residência, "ninguém") */
+  hiddenReason?: HiddenReason | null;
 }
 
-export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators }: MapHeaderProps) {
+const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
+  private_area: '🏠 Área privada: ninguém te vê aqui',
+  home: '🏠 Perto de casa: ninguém te vê aqui',
+  nobody: 'Descoberta desligada: ninguém te vê',
+};
+
+export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason }: MapHeaderProps) {
   const placeName = usePlaceName(lat, lng);
 
   // crossfade 200ms entre os dois estados do chip (design system: toggle = crossfade + slide curto)
@@ -133,6 +142,15 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
           </Pulse>
           <Text style={styles.boostText} accessibilityLabel={`Boost ativo, ${boostMinutes} minutos restantes`}>
             Boost ativo: {boostMinutes}min
+          </Text>
+        </FadeInView>
+      ) : null}
+
+      {!isAnonymous && hiddenReason && HIDDEN_TEXT[hiddenReason] ? (
+        <FadeInView fromY={-8} style={styles.banner} accessibilityLiveRegion="polite">
+          <View style={styles.bannerDot} />
+          <Text style={styles.bannerText} numberOfLines={1}>
+            {HIDDEN_TEXT[hiddenReason]}
           </Text>
         </FadeInView>
       ) : null}

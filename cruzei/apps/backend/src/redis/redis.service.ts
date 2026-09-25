@@ -18,8 +18,10 @@ export class RedisService implements OnModuleDestroy {
     geohash: string,
     lat: number,
     lng: number,
-    ttlSeconds = 18_000, // 5h
+    ttlSeconds = 7_200, // 2h
     poi: { id: string; name: string } | null = null,
+    hidden = false,
+    cell = '',
   ): Promise<void> {
     const pipeline = this.client.pipeline();
     pipeline.zadd(`presence:${geohash}`, Date.now(), userId);
@@ -32,6 +34,9 @@ export class RedisService implements OnModuleDestroy {
       // lugar ATUAL (string vazia = em lugar nenhum) — sempre gravado pra não sobrar POI de um update anterior
       poi_id: poi?.id ?? '',
       poi_name: poi?.name ?? '',
+      // área privada / residência: presença existe (a pessoa vê os outros) mas ninguém a descobre
+      hidden: hidden ? '1' : '0',
+      cell,
     });
     pipeline.expire(`user:loc:${userId}`, ttlSeconds);
     await pipeline.exec();

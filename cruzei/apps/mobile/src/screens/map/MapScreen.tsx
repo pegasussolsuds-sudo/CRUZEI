@@ -31,12 +31,14 @@ import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../a
 import { buildMapboxHtml } from './mapbox-html';
 import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import { distanceMeters, encodeGeohash, formatMapName } from '@cruzei/shared-utils';
-import type { AvatarConfig, NearbyUser, POI } from '@cruzei/shared-types';
+import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
+import type { AvatarConfig, DiscoveryResponse, MapPosition, NearbyUser, POI, ProximityBand } from '@cruzei/shared-types';
 
 const HOT_MIN = 5;
 const MAX_USERS = 300;
-const FREE_RADIUS_M = 800;
+// pessoas: raio FIXO de descoberta — o servidor limita a 350 m e usa a MINHA posição como centro (brief PRIVACIDADE);
+// o cliente não escolhe centro nem raio. Lugares (públicos) seguem o centro do mapa num raio largo.
+const PEOPLE_RADIUS_M = 350;
 const WIDE_RADIUS_M = 5000;
 const NEARBY_REFETCH_MS = 45_000;
 const LOW_FPS_SAMPLES = 4;
@@ -49,8 +51,6 @@ const PERF_WARMUP_MS = 12_000;
 const HEADING_MIN_DELTA = 4;
 const HEADING_THROTTLE_MS = 100;
 const PADDING_THROTTLE_MS = 16;
-const NEAR_M = 250;
-const PLACE_RADIUS_M = 80;
 const MATCH_MOMENT_FALLBACK_MS = 3800;
 // origem http: página http carrega imagens http (fotos de dev na LAN) e https (Mapbox, R2) sem 'mixed content'
 const BASE_URL = 'http://app.cruzei.com.br/';
@@ -76,6 +76,9 @@ interface WaveResponse {
 interface NearbyData {
   users: NearbyUser[];
   pois: POI[];
+  /** pessoas por perto que existem mas não aparecem (região esparsa) — só o número */
+  hiddenCount: number;
+  me: DiscoveryResponse['me'] | null;
 }
 
 function minTier(a: PerfTier, b: PerfTier): PerfTier {
@@ -115,7 +118,7 @@ export function MapScreen() {
   const isBoosted = Boolean(boost && boost.minutesRemaining > 0);
   const myTier = me?.premiumTier ?? 'free';
   const isFree = myTier === 'free';
-  const radiusM = !isFree || isBoosted ? WIDE_RADIUS_M : FREE_RADIUS_M;
+  const radiusM = PEOPLE_RADIUS_M;
   const myPhotoUrl = useMemo(() => {
     const main = me?.photos?.find((p) => p.isMain) ?? me?.photos?.[0];
     return main?.thumbnailUrl ?? main?.url ?? null;
@@ -267,28 +270,29 @@ export function MapScreen() {
   }, []);
 
   // ---------- nearby ----------
-  // pessoas no raio do plano; lugares sempre no raio largo (a restrição do free é sobre pessoas, não hotspots)
+  // pessoas: o servidor usa a MINHA posição como centro (não manda centro nem me_lat) e devolve só faixas e posições
+  // visuais anonimizadas; lugares (públicos) seguem o centro do mapa no raio largo
   const nearbyQuery = useQuery({
-    queryKey: ['nearby', centerGeohash, radiusM, meGeohash],
+    queryKey: ['nearby', centerGeohash, meGeohash],
     enabled: Boolean(queryCenter),
     refetchInterval: active ? NEARBY_REFETCH_MS : false,
     placeholderData: keepPreviousData, // ao mudar de célula, sheet e card não piscam '0 pessoas'
     queryFn: async (): Promise<NearbyData> => {
       const c = queryCenter as { lat: number; lng: number };
       const [u, p] = await Promise.all([
-        api.get<NearbyUser[]>('/location/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: radiusM, ...(lat != null && lng != null ? { me_lat: lat, me_lng: lng } : {}) } }),
+        api.get<DiscoveryResponse>('/location/nearby', { params: { radius_meters: PEOPLE_RADIUS_M } }),
         api.get<POI[]>('/pois/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: WIDE_RADIUS_M } }),
       ]);
-      return { users: u.data, pois: p.data };
+      return { users: u.data.users, pois: p.data, hiddenCount: u.data.hiddenCount, me: u.data.me };
     },
   });
 
-  // distância vem do SERVIDOR (calculada da posição real a partir de me_lat/me_lng, já em degraus): as coordenadas
-  // que chegam são borradas, então recalcular aqui só pioraria. null (pessoa desligou 'mostrar distância') = Infinity.
-  const { users, pois, distanceById } = useMemo(() => {
+  // faixa de proximidade vem do SERVIDOR (calculada da posição real de quem consulta contra a posição VISUAL da
+  // pessoa): o app nunca vê metros nem coordenada real de ninguém
+  const { users, pois, bandById, hiddenCount, meDiscovery } = useMemo(() => {
     const raw = nearbyQuery.data?.users ?? [];
-    const dist = new Map<string, number>();
-    for (const u of raw) dist.set(u.id, u.distanceM ?? Number.POSITIVE_INFINITY);
+    const bands = new Map<string, ProximityBand>();
+    for (const u of raw) bands.set(u.id, u.proximityBand);
     const sorted = raw
       .filter((u) => !passed.has(u.id))
       // match feito nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
@@ -296,19 +300,22 @@ export function MapScreen() {
         const local = localMatches.get(u.id);
         return local && u.matchId !== local ? { ...u, matchId: local } : u;
       })
-      .sort((a, b) => (dist.get(a.id) ?? Infinity) - (dist.get(b.id) ?? Infinity))
+      .sort((a, b) => proximityRank(bands.get(a.id)) - proximityRank(bands.get(b.id)))
       .slice(0, MAX_USERS);
-    return { users: sorted, pois: nearbyQuery.data?.pois ?? [], distanceById: dist };
+    return { users: sorted, pois: nearbyQuery.data?.pois ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
   }, [nearbyQuery.data, passed, localMatches]);
 
   // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no WebView por chave)
+  // só quem tem posição VISUAL (o servidor omite o marcador de quem está em região esparsa)
   const mapUsers = useMemo<MapUser[]>(
     () =>
-      users.map((u) => {
-        const cfg = resolveAvatar(u.avatar, u.id);
-        // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
-        return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura, label: formatMapName(u.name), photo: u.mapPhotoUrl ?? null };
-      }),
+      users
+        .filter((u): u is NearbyUser & { mapPosition: MapPosition } => u.mapPosition != null)
+        .map((u) => {
+          const cfg = resolveAvatar(u.avatar, u.id);
+          // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
+          return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura, label: formatMapName(u.name), photo: u.mapPhotoUrl ?? null };
+        }),
     [users],
   );
 
@@ -317,10 +324,10 @@ export function MapScreen() {
   const selectedMatchId = selectedUser ? (localMatches.get(selectedUser.id) ?? selectedUser.matchId ?? null) : null;
   const selectedLiked = selectedUser ? likedIds.has(selectedUser.id) || Boolean(selectedUser.likedByMe) : false;
 
-  // pessoas "nesse lugar": check-in no POI ou a menos de ~80 m dele
+  // pessoas "nesse lugar": só quem o SERVIDOR diz que está lá (presença no lugar; sem cálculo por coordenada aqui)
   const placePeople = useMemo(() => {
     if (!selectedPoi) return [];
-    return users.filter((u) => u.poi?.id === selectedPoi.id || distanceMeters(selectedPoi.latitude, selectedPoi.longitude, u.latitude, u.longitude) <= PLACE_RADIUS_M);
+    return users.filter((u) => u.poi?.id === selectedPoi.id);
   }, [users, selectedPoi]);
   const placeDistance = useMemo(
     () => (selectedPoi && lat != null && lng != null ? distanceMeters(lat, lng, selectedPoi.latitude, selectedPoi.longitude) : null),
@@ -354,14 +361,14 @@ export function MapScreen() {
   measuredTierRef.current = measuredTier;
 
   // ---------- descoberta (dicas discretas) + indicadores do header ----------
-  const hints = useDiscoveryHints(users, pois, distanceById, active && webReady, `${centerGeohash ?? ''}|${radiusM}`);
+  const hints = useDiscoveryHints(users, pois, bandById, active && webReady, `${centerGeohash ?? ''}|${radiusM}`);
   const hintsRef = useRef(hints);
   hintsRef.current = hints;
   const indicators = useMemo(() => {
     const hot = pois.filter((p) => (p.userCount ?? 0) >= HOT_MIN).length;
-    const near = users.filter((u) => (distanceById.get(u.id) ?? Infinity) <= NEAR_M).length;
+    const near = users.filter((u) => proximityRank(bandById.get(u.id)) <= 1).length; // bem perto + perto (≤ 250 m)
     return { hot, near, fresh: Boolean(hints.hint) };
-  }, [pois, users, distanceById, hints.hint]);
+  }, [pois, users, bandById, hints.hint]);
 
   // ---------- heading (só tier high, só em foco, só com o mapa pronto; throttle 100ms) ----------
   useEffect(() => {
@@ -738,11 +745,13 @@ export function MapScreen() {
             photo: u.mainPhotoUrl,
             avatar: u.avatar ?? null,
             context: res.data.context,
-            distanceM: Number.isFinite(distanceById.get(u.id) ?? Infinity) ? (distanceById.get(u.id) as number) : null,
+            band: bandById.get(u.id) ?? null,
           };
           playMoment(u.id, u.name, info);
+        } else if (u.mapPosition) {
+          send(cmd.burst({ lat: u.mapPosition.lat, lng: u.mapPosition.lng, kind: isSuper ? 'super' : 'like' }), undefined, 'burst');
+          showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
         } else {
-          send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: isSuper ? 'super' : 'like' }), undefined, 'burst');
           showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
         }
         qc.invalidateQueries({ queryKey: ['matches'] });
@@ -750,7 +759,7 @@ export function MapScreen() {
         showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
       }
     },
-    [qc, send, showToast, distanceById, playMoment],
+    [qc, send, showToast, bandById, playMoment],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
@@ -761,7 +770,7 @@ export function MapScreen() {
         const res = await api.post<WaveResponse>('/waves', { userId: u.id });
         setWavedIds((prev) => addTo(prev, u.id));
         send(cmd.emote('me', 'wave')); // meu avatar acena no mapa
-        send(cmd.burst({ lat: u.latitude, lng: u.longitude, kind: 'like' }), undefined, 'burst');
+        if (u.mapPosition) send(cmd.burst({ lat: u.mapPosition.lat, lng: u.mapPosition.lng, kind: 'like' }), undefined, 'burst');
         showToast(res.data.duplicate ? `Você já acenou pra ${u.name} hoje 👋` : `Você acenou pra ${u.name} 👋`);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       } catch (err) {
@@ -790,10 +799,9 @@ export function MapScreen() {
   }, []);
   const onOpenProfile = useCallback(
     (u: NearbyUser) => {
-      const d = distanceById.get(u.id);
-      rootNav.navigate('UserCard', { userId: u.id, distanceM: d != null && Number.isFinite(d) ? d : null });
+      rootNav.navigate('UserCard', { userId: u.id, band: bandById.get(u.id) ?? null });
     },
-    [rootNav, distanceById],
+    [rootNav, bandById],
   );
   const onChat = useCallback(
     (matchId: string, u: NearbyUser) => {
@@ -882,13 +890,11 @@ export function MapScreen() {
   const onSheetChange = useCallback((index: number) => setSheetIndex(Math.max(0, index)), []);
   const onLayout = useCallback((e: LayoutChangeEvent) => setContainerH(e.nativeEvent.layout.height), []);
 
-  // pessoas no filtro por lugar = check-in ou a ~80 m (mesma regra da sheet do lugar)
+  // pessoas no filtro por lugar = quem o servidor diz que está no lugar (mesma regra da sheet do lugar)
   const poiFilterIds = useMemo(() => {
     if (!poiFilter) return null;
-    const poi = pois.find((p) => p.id === poiFilter.id);
-    if (!poi) return null;
-    return users.filter((u) => u.poi?.id === poi.id || distanceMeters(poi.latitude, poi.longitude, u.latitude, u.longitude) <= PLACE_RADIUS_M).map((u) => u.id);
-  }, [poiFilter, pois, users]);
+    return users.filter((u) => u.poi?.id === poiFilter.id).map((u) => u.id);
+  }, [poiFilter, users]);
 
   const floatBottom = Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])) + spacing.sm;
   const peopleCount = users.length;
@@ -928,6 +934,7 @@ export function MapScreen() {
         onCenter={onCenter}
         boostMinutes={isBoosted && boost ? boost.minutesRemaining : null}
         indicators={indicators}
+        hiddenReason={meDiscovery && !meDiscovery.discoverable ? meDiscovery.hiddenReason : null}
       />
 
       {moment ? (
@@ -989,7 +996,8 @@ export function MapScreen() {
       <MapBottomSheet
         ref={sheetRef}
         users={users}
-        distanceById={distanceById}
+        bandById={bandById}
+        hiddenCount={hiddenCount}
         radiusM={radiusM}
         isFree={isFree}
         isLoading={listLoading}
@@ -1009,7 +1017,7 @@ export function MapScreen() {
       <UserPreviewSheet
         ref={userSheetRef}
         user={selectedUser}
-        distanceM={selectedUser ? (distanceById.get(selectedUser.id) ?? null) : null}
+        band={selectedUser ? (bandById.get(selectedUser.id) ?? null) : null}
         liked={selectedLiked}
         waved={selectedUser ? wavedIds.has(selectedUser.id) : false}
         matchId={selectedMatchId}

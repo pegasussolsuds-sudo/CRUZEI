@@ -1,4 +1,5 @@
 import { Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { PoisService } from './pois.service';
@@ -28,9 +29,11 @@ export class PoisController {
     return this.svc.get(Number(id));
   }
 
+  /** quem está no lugar: só quem pode ser descoberto por mim e só se eu estiver perto do lugar (ver PoisService) */
   @Get(':id/people')
-  people(@Param('id') id: string) {
-    return this.svc.getPeople(Number(id));
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  people(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.svc.getPeople(user.id, Number(id));
   }
 
   @Post(':id/checkin')

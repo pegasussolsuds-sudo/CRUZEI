@@ -1,12 +1,15 @@
 import { Controller, Get, NotFoundException, Param, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { PrismaService } from '../../database/prisma.service';
 import { LocationService } from '../location/location.service';
 import { avatarOrFallback } from '../../common/avatar';
-import { approxDistanceM, distanceMeters } from '@cruzei/shared-utils';
 
-// Cartão público de outro usuário (tela UserCard). Nunca expõe telefone/e-mail/posição exata.
+// Cartão público de outro usuário (tela UserCard). Nunca expõe telefone/e-mail/posição/distância.
+// Localização de terceiros só como FAIXA de proximidade e lugar, e só enquanto a pessoa é descoberta por quem
+// consulta (mesmas regras do /nearby: raio de 350 m, reciprocidade, bloqueio, área privada). Fora disso: null.
+// Mensagens de "não encontrado" são idênticas em todos os casos → o endpoint não confirma que um id existe.
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class PublicUsersController {
@@ -16,14 +19,16 @@ export class PublicUsersController {
   ) {}
 
   @Get(':id')
+  @Throttle({ default: { ttl: 60_000, limit: 60 } })
   async card(@CurrentUser() me: AuthenticatedUser, @Param('id') id: string) {
-    if (id === me.id) throw new NotFoundException('Use /me pro seu próprio perfil');
+    const notFound = () => new NotFoundException('Usuário não encontrado');
+    if (id === me.id) throw notFound();
 
     const blocked = await this.prisma.block.findFirst({
       where: { OR: [{ blockerId: me.id, blockedId: id }, { blockerId: id, blockedId: me.id }] },
       select: { id: true },
     });
-    if (blocked) throw new NotFoundException('Usuário não encontrado');
+    if (blocked) throw notFound();
 
     const u = await this.prisma.user.findUnique({
       where: { id },
@@ -33,23 +38,17 @@ export class PublicUsersController {
         seals: { where: { isCompleted: true } },
       },
     });
-    if (!u || u.deletedAt || u.isPaused) throw new NotFoundException('Usuário não encontrado');
-    if (u.visibilityMode === 'anonymous') throw new NotFoundException('Essa pessoa está em modo anônimo');
+    if (!u || u.deletedAt || u.isPaused) throw notFound();
+    if (u.visibilityMode === 'anonymous') throw notFound();
 
-    // distância e lugar só se a pessoa deixou ("mostrar distância"). Distância em degraus (50/100/250/500/1000…)
-    // entre a minha presença e a posição BORRADA dela (mesmo helper do /nearby) — nunca a real.
-    let distanceM: number | null = null;
+    // faixa e lugar só se a pessoa deixou ("mostrar distância") E está descoberta por mim agora
+    let proximityBand: 'very_near' | 'near' | 'region' | null = null;
     let placeName: string | null = null;
     if (u.showDistance) {
-      const presences = await this.location.getPresences([me.id, id]);
-      const mine = presences.get(me.id);
-      const theirs = presences.get(id);
-      if (theirs) {
-        placeName = theirs.poi?.name ?? null;
-        if (mine) {
-          const pos = this.location.blurPosition(id, theirs.lat, theirs.lng, theirs.poi);
-          distanceM = approxDistanceM(distanceMeters(mine.lat, mine.lng, pos.lat, pos.lng));
-        }
+      const d = await this.location.discoverability(me.id, id);
+      if (d.ok) {
+        proximityBand = d.band;
+        placeName = d.poi?.name ?? null;
       }
     }
 
@@ -76,7 +75,7 @@ export class PublicUsersController {
       isVerified: u.isVerified,
       premiumTier: u.premiumTier,
       lastActiveAt: u.lastActiveAt.toISOString(),
-      distanceM,
+      proximityBand,
       likedByMe: Boolean(likedByMe),
       likedMe: Boolean(likedMe), // só é revelado pra Premium+ no app (o cliente decide)
       match: match ? { id: match.id, context: match.contextText } : null,

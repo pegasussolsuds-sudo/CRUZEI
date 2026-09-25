@@ -2,8 +2,8 @@ import React, { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
-import { formatApproxDistance, timeAgo } from '@cruzei/shared-utils';
-import type { NearbyUser } from '@cruzei/shared-types';
+import { proximityBandLabel } from '@cruzei/shared-utils';
+import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { IdentityBubble } from '../identity/IdentityBubble';
@@ -11,8 +11,8 @@ import { resolveAvatar } from '../../avatar';
 
 export interface PersonRowProps {
   user: NearbyUser;
-  /** distância a partir de MIM (metros) — sempre exibida aproximada */
-  distanceM: number;
+  /** faixa de proximidade (vem do servidor) — o app nunca mostra metros de outra pessoa */
+  band: ProximityBand | null;
   onPress?: (user: NearbyUser) => void;
   /** dica de acessibilidade do toque (default: 'Mostra no mapa') */
   pressHint?: string;
@@ -23,38 +23,30 @@ export interface PersonRowProps {
   highlighted?: boolean;
 }
 
-/**
- * Distância SEMPRE aproximada (anti-stalking): degraus 50/100/250/500 m, 1 km... (mesma régua do backend).
- * Anônimo mostra só 'perto'.
- */
-export function approxDistanceLabel(distanceM: number, anonymous: boolean): string {
-  if (anonymous || !Number.isFinite(distanceM)) return 'perto';
-  return `a ${formatApproxDistance(distanceM)}`;
+/** 'bem perto' | 'perto' | 'na região' | 'por perto' (brief PRIVACIDADE: nunca metros de outra pessoa) */
+export function proximityLabel(band: ProximityBand | null | undefined, anonymous: boolean): string {
+  if (anonymous) return 'por perto';
+  return proximityBandLabel(band);
 }
 
-/** timeAgo devolve 'agora' | 'há N min' | 'ontem' | '12/03' (>7 dias) — cada forma pede um prefixo diferente. */
-export function presenceLabel(user: NearbyUser): string {
-  if (user.isOnline) return 'Online agora';
-  if (!user.recordedAt) return 'Esteve por aqui';
-  const t = timeAgo(user.recordedAt);
-  if (t === 'agora') return 'Esteve aqui agorinha';
-  if (/^\d{2}\/\d{2}$/.test(t)) return `Esteve em ${t}`;
-  return `Esteve ${t}`;
+/** presença sem horário (privacidade): online agora / esteve aqui há pouco / esteve por aqui */
+export function presenceLabel(user: Pick<NearbyUser, 'isOnline' | 'lastSeen'>): string {
+  if (user.isOnline || user.lastSeen === 'online') return 'Online agora';
+  if (user.lastSeen === 'recent') return 'Esteve aqui há pouco';
+  return 'Esteve por aqui';
 }
 
-/** 'visto há pouco' = últimos 30 min (dourado); offline antigo fica neutro pra borda manter significado. */
-const RECENT_MS = 30 * 60_000;
+/** online = lima; recente = dourado; mais cedo = neutro (a borda mantém significado) */
 function borderColorFor(user: NearbyUser): string {
   if (user.isAnonymous) return colors.gray[400];
   if (user.isOnline) return colors.primary;
-  const recent = Boolean(user.recordedAt) && Date.now() - new Date(user.recordedAt as string).getTime() < RECENT_MS;
-  return recent ? colors.accent : colors.gray[300];
+  return user.lastSeen === 'recent' ? colors.accent : colors.gray[300];
 }
 
-function PersonRowInner({ user, distanceM, onPress, pressHint = 'Mostra no mapa', onLike, onSuperLike, onPass, highlighted = false }: PersonRowProps) {
+function PersonRowInner({ user, band, onPress, pressHint = 'Mostra no mapa', onLike, onSuperLike, onPass, highlighted = false }: PersonRowProps) {
   const avatar = resolveAvatar(user.avatar, user.id);
   const nameAge = user.age ? `${user.name}, ${user.age}` : user.name;
-  const distance = approxDistanceLabel(distanceM, user.isAnonymous);
+  const distance = proximityLabel(band, user.isAnonymous);
   const presence = presenceLabel(user);
   const a11y = `${nameAge}, ${distance}, ${presence}${user.isVerified ? ', verificado' : ''}${user.isBoosted ? ', com boost' : ''}`;
 

@@ -878,7 +878,7 @@ ${IDENTITY_BUBBLE_JS}
     for (var id in state.users) {
       var u = state.users[id], fg = figOf(id);
       if (fg.move) movers.push(featureFor(u, fg, fg.pos, u.isBoosted ? 1.17 : 1));
-      else (u.isBoosted ? boosted : normal).push(featureFor(u, fg, fg.pos || [u.longitude, u.latitude]));
+      else (u.isBoosted ? boosted : normal).push(featureFor(u, fg, fg.pos || [u.mapPosition.lng, u.mapPosition.lat]));
     }
     for (var lid in leaving) { var lf = figs[lid]; if (lf && lf.pos) (leaving[lid].isBoosted ? boosted : normal).push(featureFor(leaving[lid], lf, lf.pos)); }
     map.getSource('users').setData({ type: 'FeatureCollection', features: normal });
@@ -968,11 +968,11 @@ ${IDENTITY_BUBBLE_JS}
     var newIds = [];
     for (var i = 0; i < users.length; i++) {
       var u = users[i];
-      if (!u || !u.id || typeof u.latitude !== 'number' || typeof u.longitude !== 'number') continue;
+      if (!u || !u.id || !u.mapPosition || typeof u.mapPosition.lat !== 'number' || typeof u.mapPosition.lng !== 'number') continue; // só posição VISUAL (o servidor nunca manda a real)
       next[u.id] = u;
       ensureAvatar(u);
       var fg = figOf(u.id);
-      var to = [u.longitude, u.latitude];
+      var to = [u.mapPosition.lng, u.mapPosition.lat];
       // voltou enquanto ainda sumia: cancela a saída
       var wasLeaving = !!leaving[u.id];
       if (wasLeaving) {
@@ -1117,7 +1117,7 @@ ${IDENTITY_BUBBLE_JS}
     var fm = figs['me'], fu = figs[m.userId];
     if (fm) { fm.moment = true; refreshBubble('me'); }
     if (fu) { fu.moment = true; refreshBubble(m.userId); }
-    var a = [state.me.lng, state.me.lat], b = [u.longitude, u.latitude];
+    var a = [state.me.lng, state.me.lat], b = [u.mapPosition.lng, u.mapPosition.lat];
     if (fm) fm.mirror = b[0] < a[0]; if (fu) fu.mirror = a[0] < b[0]; // um de frente pro outro
     emote('me', 'match'); emote(m.userId, 'match');
     if (state.selected !== m.userId) spotIn(m.userId); else pushSpot();
@@ -1163,13 +1163,13 @@ ${IDENTITY_BUBBLE_JS}
     if (prevSel && prevSel !== state.selected) { refreshBubble(prevSel); if (prevSel !== state.momentUserId && !inMoment) spotOut(prevSel); }
     if (!id && inMoment) return; // o momento do match está usando o anel; clearMoment limpa no fim
     var u = id ? state.users[id] : null;
-    map.getSource('sel').setData(u ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [u.longitude, u.latitude] } }] } : empty());
+    map.getSource('sel').setData(u ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [u.mapPosition.lng, u.mapPosition.lat] } }] } : empty());
     if (!u) { if (!state.momentUserId) pushSpot(); return; }
     refreshBubble(id);
     // durante o momento do match o spot é da pessoa do match: a seleção entra quando o momento acabar (clearMoment)
     if (inMoment && id !== state.momentUserId) return;
     if (id !== state.momentUserId) spotIn(id); else pushSpot();
-    state.programmatic++; map.easeTo({ center: [u.longitude, u.latitude], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); });
+    state.programmatic++; map.easeTo({ center: [u.mapPosition.lng, u.mapPosition.lat], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); });
   }
 
   function reveal(lat, lng) {

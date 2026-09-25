@@ -6,6 +6,8 @@ export type Orientation = 'heterosexual' | 'homosexual' | 'bisexual' | 'pansexua
 export type LookingFor = 'relationship' | 'casual' | 'friendship' | 'network' | 'unspecified';
 export type PremiumTier = 'free' | 'premium' | 'premium_plus';
 export type VisibilityMode = 'visible' | 'anonymous';
+/** descoberta por proximidade (recíproca): todos · só interesses compatíveis · ninguém */
+export type DiscoveryMode = 'everyone' | 'compatible' | 'nobody';
 
 export interface UserPhoto {
   id: string;
@@ -28,6 +30,7 @@ export interface UserSettings {
   showAge: boolean;
   /** foto real na bolha de identidade do mapa; OFF = só o avatar (o perfil continua com fotos) */
   showPhotoOnMap: boolean;
+  discoveryMode: DiscoveryMode;
   isPaused: boolean;
   pausedUntil: string | null;
 }

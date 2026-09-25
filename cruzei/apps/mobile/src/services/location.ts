@@ -1,6 +1,8 @@
 import * as Location from 'expo-location';
 import { encodeGeohash } from '@cruzei/shared-utils';
+import type { LocationUpdateResponse } from '@cruzei/shared-types';
 import { api, toApiError } from './api';
+import { useLocationStore } from '../stores/location';
 
 export type CruzeiLocation = {
   latitude: number;
@@ -8,23 +10,11 @@ export type CruzeiLocation = {
   accuracyMeters?: number;
 };
 
-// Só foreground no onboarding. Background (presença com app fechado) é opt-in
-// numa etapa posterior — no Android 10+ o pedido abre a tela de Configurações,
-// o que não pode acontecer no primeiro uso.
+// Só localização em PRIMEIRO PLANO (brief PRIVACIDADE §20): o Cruzei não coleta posição com o app fechado.
+// A permissão de background foi removida do app.json/manifest de propósito.
 export async function requestPermissions(): Promise<boolean> {
   const { status } = await Location.requestForegroundPermissionsAsync();
   return status === 'granted';
-}
-
-export async function requestBackgroundPermission(): Promise<boolean> {
-  try {
-    const fg = await Location.getForegroundPermissionsAsync();
-    if (fg.status !== 'granted') return false;
-    const { status } = await Location.requestBackgroundPermissionsAsync();
-    return status === 'granted';
-  } catch {
-    return false;
-  }
 }
 
 export async function getCurrentLocation(): Promise<CruzeiLocation | null> {
@@ -53,10 +43,12 @@ export async function getCurrentLocation(): Promise<CruzeiLocation | null> {
   }
 }
 
-export async function pushLocation(loc: CruzeiLocation): Promise<{ ok: boolean; geohash?: string }> {
+export async function pushLocation(loc: CruzeiLocation): Promise<{ ok: boolean; geohash?: string; discoverable?: boolean }> {
   try {
-    const res = await api.post('/location/update', loc);
-    return { ok: true, geohash: res.data.geohash };
+    const res = await api.post<LocationUpdateResponse>('/location/update', loc);
+    // o servidor diz se estou descoberto aqui (área privada / residência / "ninguém"): o header avisa
+    useLocationStore.getState().setDiscoverable(res.data.discoverable !== false, res.data.hiddenReason ?? null);
+    return { ok: true, geohash: res.data.geohash, discoverable: res.data.discoverable };
   } catch (err) {
     const e = toApiError(err);
     // eslint-disable-next-line no-console

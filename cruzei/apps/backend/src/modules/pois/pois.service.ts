@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { bboxAround, distanceMeters } from '@cruzei/shared-utils';
+import { avatarOrFallback } from '../../common/avatar';
+import { LocationService } from '../location/location.service';
+import { PRIVACY } from '../location/discovery-privacy';
 
 @Injectable()
 export class PoisService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly location: LocationService,
   ) {}
 
   async nearby(lat: number, lng: number, radiusM: number, categories?: string[]) {
@@ -72,31 +76,38 @@ export class PoisService {
     };
   }
 
-  async getPeople(id: number) {
-    const users = await this.prisma.user.findMany({
+  /**
+   * "Quem está aqui?" — nomes/fotos só de quem pode ser descoberto por quem pergunta (reciprocidade, bloqueio,
+   * área privada) e só se quem pergunta está PERTO do lugar (≤ raio de descoberta) e o lugar tem gente o bastante
+   * (piso de anonimato). Fora disso o lugar mostra só a contagem (também com piso).
+   */
+  async getPeople(requesterId: string, id: number) {
+    const rows = await this.prisma.user.findMany({
       where: {
-        locations: { some: { poiId: BigInt(id), expiresAt: { gt: new Date() } } },
+        locations: { some: { poiId: BigInt(id), expiresAt: { gt: new Date() }, isAnonymous: false } },
         visibilityMode: 'visible',
+        isPaused: false,
+        deletedAt: null,
       },
-      select: {
-        id: true,
-        name: true,
-        birthDate: true,
-        photos: { where: { isMain: true }, select: { url: true } },
-      },
-      take: 50,
+      select: { id: true, name: true, birthDate: true, showAge: true, gender: true, avatarConfig: true, photos: { where: { isMain: true }, select: { url: true, thumbnailUrl: true } } },
+      take: 100,
     });
-    return {
-      users: users.map((u) => ({
+    const count = rows.length >= PRIVACY.MIN_PLACE_K ? rows.length : 0;
+    const allowed = new Set(await this.location.discoverableAtPlace(requesterId, id, rows.map((r) => r.id)));
+    const users = rows
+      .filter((u) => allowed.has(u.id))
+      .slice(0, 50)
+      .map((u) => ({
         id: u.id,
         name: u.name,
-        age: this.age(u.birthDate),
+        age: u.showAge ? this.age(u.birthDate) : null,
         mainPhotoUrl: u.photos[0]?.url ?? null,
+        mapPhotoUrl: u.photos[0]?.thumbnailUrl && u.photos[0].thumbnailUrl !== u.photos[0].url ? u.photos[0].thumbnailUrl : null,
+        avatar: avatarOrFallback(u),
         isVisible: true,
         isAnonymous: false,
-      })),
-      count: users.length,
-    };
+      }));
+    return { users, count };
   }
 
   async checkin(userId: string, poiId: number) {
@@ -135,13 +146,14 @@ export class PoisService {
       .sort((a, b) => b.userCount - a.userCount);
   }
 
+  // contagem pública de um lugar: sem anônimos/ocultos e com piso de anonimato (1 pessoa sozinha não vira "1 pessoa aqui")
   private async countUsersAtPOI(poiId: number): Promise<number> {
     const recent = await this.prisma.location.findMany({
-      where: { poiId: BigInt(poiId), expiresAt: { gt: new Date() } },
+      where: { poiId: BigInt(poiId), expiresAt: { gt: new Date() }, isAnonymous: false },
       distinct: ['userId'],
       select: { userId: true },
     });
-    return recent.length;
+    return recent.length >= PRIVACY.MIN_PLACE_K ? recent.length : 0;
   }
 
   private age(birth: Date): number {

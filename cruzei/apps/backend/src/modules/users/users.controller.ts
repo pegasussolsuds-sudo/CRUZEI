@@ -5,6 +5,8 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsLatitude,
+  IsLongitude,
   IsNumber,
   IsObject,
   IsOptional,
@@ -49,6 +51,15 @@ class SettingsDto {
   @IsOptional() @IsBoolean() showAge?: boolean;
   /** foto real na bolha de identidade do mapa (OFF = só o avatar aparece no mapa) */
   @IsOptional() @IsBoolean() showPhotoOnMap?: boolean;
+  /** descoberta por proximidade (recíproca): everyone | compatible | nobody */
+  @IsOptional() @IsEnum(['everyone', 'compatible', 'nobody']) discoveryMode?: 'everyone' | 'compatible' | 'nobody';
+}
+
+class PrivateAreaDto {
+  @IsString() @MaxLength(40) label!: string;
+  @IsLatitude() latitude!: number;
+  @IsLongitude() longitude!: number;
+  @IsOptional() @IsNumber() radiusM?: number;
 }
 
 class PauseDto {
@@ -88,6 +99,22 @@ export class UsersController {
   @Patch('pause')
   pause(@CurrentUser() user: AuthenticatedUser, @Body() dto: PauseDto) {
     return this.svc.pause(user.id, dto.durationHours);
+  }
+
+  // ---- áreas privadas (casa, trabalho…): dentro delas ninguém me descobre. Só o dono lê/escreve; a coordenada nunca sai. ----
+  @Get('private-areas')
+  privateAreas(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.listPrivateAreas(user.id);
+  }
+
+  @Post('private-areas')
+  addPrivateArea(@CurrentUser() user: AuthenticatedUser, @Body() dto: PrivateAreaDto) {
+    return this.svc.addPrivateArea(user.id, dto);
+  }
+
+  @Delete('private-areas/:id')
+  removePrivateArea(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.svc.removePrivateArea(user.id, id);
   }
 
   @Post('photos')

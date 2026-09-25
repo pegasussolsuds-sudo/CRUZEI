@@ -38,8 +38,8 @@ import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
-import type { AvatarConfig, LikeResult, LookingFor, PremiumTier, SealType, UserSeal } from '@cruzei/shared-types';
-import { timeAgo, formatApproxDistance } from '@cruzei/shared-utils';
+import type { AvatarConfig, LikeResult, LookingFor, PremiumTier, SealType, UserSeal, ProximityBand } from '@cruzei/shared-types';
+import { timeAgo, proximityBandLabel } from '@cruzei/shared-utils';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
 // ───────────────────────────── tipos ─────────────────────────────
@@ -62,7 +62,8 @@ interface UserCardData {
   isVerified: boolean;
   premiumTier: PremiumTier;
   lastActiveAt: string | null;
-  distanceM: number | null;
+  /** faixa de proximidade (só enquanto a pessoa é descoberta por mim) — nunca metros */
+  proximityBand: ProximityBand | null;
   likedByMe: boolean;
   likedMe: boolean;
   match: { id: string; context: string | null } | null;
@@ -104,9 +105,8 @@ const HEART_SVG =
   'M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z';
 const STAR_SVG = 'M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z';
 
-function formatDistance(m: number | null | undefined): string | null {
-  if (m == null || !Number.isFinite(m)) return null;
-  return `a ${formatApproxDistance(m)}`; // mesma régua de degraus do resto do app
+function formatDistance(band: ProximityBand | null | undefined): string | null {
+  return band ? proximityBandLabel(band) : null; // faixa, nunca metros (brief PRIVACIDADE)
 }
 
 function seeded(i: number, salt: number): number {
@@ -119,7 +119,7 @@ function seeded(i: number, salt: number): number {
 export function UserCardScreen() {
   const nav = useNavigation<Nav>();
   const { params } = useRoute<Route>();
-  const { userId, distanceM: distanceParam } = params;
+  const { userId, band: bandParam } = params;
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
@@ -165,8 +165,8 @@ export function UserCardScreen() {
     return [...user.photos].sort((a, b) => Number(b.isMain) - Number(a.isMain));
   }, [user]);
   const mainPhoto = photos[0]?.url ?? null;
-  // o servidor manda null quando a pessoa desligou 'mostrar distância': não cair no valor do mapa
-  const distance = formatDistance(user ? user.distanceM : distanceParam);
+  // null = a pessoa desligou 'mostrar distância' ou não está descoberta por mim agora: não cair no valor do mapa
+  const distance = formatDistance(user ? user.proximityBand : bandParam);
   const alreadyMatched = user?.match ?? null;
   const alreadyLiked = user?.likedByMe ?? false;
 
@@ -206,7 +206,7 @@ export function UserCardScreen() {
             photo: mainPhoto,
             avatar: user.avatar ?? null,
             context: res.context ?? null,
-            distanceM: user.distanceM ?? null,
+            band: user.proximityBand ?? null,
           });
         } else {
           setTimeout(() => nav.goBack(), 1100);
@@ -215,7 +215,7 @@ export function UserCardScreen() {
         setActionError(toApiError(err).message);
       }
     },
-    [distanceParam, fireBurst, likeMutation, mainPhoto, nav, qc, sent, user],
+    [bandParam, fireBurst, likeMutation, mainPhoto, nav, qc, sent, user],
   );
 
   const onPass = useCallback(() => {

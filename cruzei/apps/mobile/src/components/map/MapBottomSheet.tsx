@@ -5,7 +5,8 @@ import BottomSheet, { BottomSheetFlatList, BottomSheetFooter, type BottomSheetFo
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import type { NearbyUser } from '@cruzei/shared-types';
+import { proximityRank } from '@cruzei/shared-utils';
+import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import type { MainTabParamList } from '../../navigation/MainTabs';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
@@ -14,7 +15,8 @@ import { PersonRow } from './PersonRow';
 
 export const SHEET_SNAP_POINTS = ['22%', '68%'] as const;
 export const SHEET_SNAP_FRACTIONS = [0.22, 0.68] as const;
-const NEAR_M = 800;
+// "Perto" = faixas bem perto + perto (≤ 250 m); o app nunca vê metros de outra pessoa
+const NEAR_RANK_MAX = 1;
 
 export type SheetFilter = 'all' | 'online' | 'near';
 
@@ -38,7 +40,9 @@ export interface MapBottomSheetHandle {
 export interface MapBottomSheetProps {
   users: NearbyUser[];
   /** distância de cada pessoa a partir de mim (id -> metros) */
-  distanceById: ReadonlyMap<string, number>;
+  bandById: ReadonlyMap<string, ProximityBand>;
+  /** pessoas por perto que o servidor não mostra (região esparsa) — só o número */
+  hiddenCount?: number;
   radiusM: number;
   isFree: boolean;
   isLoading: boolean;
@@ -71,7 +75,7 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
 ];
 
 export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
-  { users, distanceById, radiusM, isFree, isLoading, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
+  { users, bandById, hiddenCount = 0, radiusM, isFree, isLoading, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -88,8 +92,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     [],
   );
 
-  // null (pessoa não mostra distância) vira Infinity: fica por último e a UI mostra 'perto'
-  const distanceOf = useCallback((u: NearbyUser) => distanceById.get(u.id) ?? u.distanceM ?? Number.POSITIVE_INFINITY, [distanceById]);
+  const rankOf = useCallback((u: NearbyUser) => proximityRank(bandById.get(u.id) ?? u.proximityBand), [bandById]);
 
   const filtered = useMemo(() => {
     let list = users;
@@ -101,23 +104,23 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
       list = list.filter((u) => (ids ? ids.has(u.id) : u.poi?.id === poiFilter.id));
     }
     if (filter === 'online') list = list.filter((u) => u.isOnline);
-    else if (filter === 'near') list = list.filter((u) => distanceOf(u) <= NEAR_M);
+    else if (filter === 'near') list = list.filter((u) => rankOf(u) <= NEAR_RANK_MAX);
     return list;
-  }, [users, groupFilter, poiFilter, poiFilterIds, filter, distanceOf]);
+  }, [users, groupFilter, poiFilter, poiFilterIds, filter, rankOf]);
 
   const title = groupFilter
     ? groupFilter.label
     : poiFilter
       ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
-      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}`;
+      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}`;
 
   const renderItem = useCallback(
     ({ item, index }: { item: NearbyUser; index: number }) => (
       <FadeInView delay={Math.min(index, 8) * 35} fromY={8}>
-        <PersonRow user={item} distanceM={distanceOf(item)} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
+        <PersonRow user={item} band={bandById.get(item.id) ?? item.proximityBand ?? null} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
       </FadeInView>
     ),
-    [distanceOf, onSelect, onLike, onSuperLike, onPass],
+    [bandById, onSelect, onLike, onSuperLike, onPass],
   );
 
   const goPremium = useCallback(() => nav.navigate('Paywall'), [nav]);
@@ -198,7 +201,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     : filter === 'online'
       ? 'Ninguém online agora'
       : filter === 'near'
-        ? `Ninguém a menos de ${NEAR_M} m`
+        ? 'Ninguém bem perto agora'
         : 'Ninguém por perto ainda 👀';
   const emptyText = groupFilter || poiFilter || filter !== 'all' ? 'Tira o filtro pra ver todo mundo' : 'Os hotspots da cidade continuam vivos no mapa';
   const empty = !isLoading ? (

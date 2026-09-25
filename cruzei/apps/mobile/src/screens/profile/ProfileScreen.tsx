@@ -12,6 +12,7 @@ import {
   type StyleProp,
   type TextInputProps,
   type TextStyle,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -87,7 +88,7 @@ export function ProfileScreen() {
   });
 
   const settings = useMutation({
-    mutationFn: async (patch: { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean }) => (await api.patch('/me/settings', patch)).data,
+    mutationFn: async (patch: { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean; discoveryMode?: 'everyone' | 'compatible' | 'nobody' }) => (await api.patch('/me/settings', patch)).data,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['me'] }),
     onError: (err) => Alert.alert('Ops', toApiError(err).message),
   });
@@ -312,7 +313,9 @@ export function ProfileScreen() {
             value={me.settings.showPhotoOnMap ?? true}
             onToggle={() => settings.mutate({ showPhotoOnMap: !(me.settings.showPhotoOnMap ?? true) })}
           />
-          <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={() => settings.mutate({ showAge: !me.settings.showAge })} last />
+          <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={() => settings.mutate({ showAge: !me.settings.showAge })} />
+          <DiscoveryModeRow value={me.settings.discoveryMode ?? 'everyone'} onChange={(discoveryMode) => settings.mutate({ discoveryMode })} />
+          <Link icon="home-outline" label="Áreas privadas" hint="casa, trabalho… ninguém te descobre lá" onPress={() => nav.navigate('PrivateAreas' as never)} last />
         </Section>
 
         <Section title="conta" delay={620}>
@@ -423,6 +426,45 @@ function Stat({ label, value, delay, accent }: { label: string; value: number; d
     <View style={styles.stat}>
       <AnimatedNumber value={value} delay={delay} style={[styles.statValue, accent && { color: colors.secondary }]} />
       <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+const DISCOVERY_OPTIONS: { value: 'everyone' | 'compatible' | 'nobody'; label: string; hint: string }[] = [
+  { value: 'everyone', label: '🟢 Todos', hint: 'quem está perto te descobre (e você descobre)' },
+  { value: 'compatible', label: '🟡 Interesses', hint: 'só quem divide um interesse com você' },
+  { value: 'nobody', label: '🔴 Ninguém', hint: 'você some da descoberta por proximidade' },
+];
+
+/** Descoberta por proximidade (brief PRIVACIDADE §12/§13): recíproca — vale pros dois lados. */
+function DiscoveryModeRow({ value, onChange }: { value: 'everyone' | 'compatible' | 'nobody'; onChange: (v: 'everyone' | 'compatible' | 'nobody') => void }) {
+  const current = DISCOVERY_OPTIONS.find((o) => o.value === value) ?? DISCOVERY_OPTIONS[0];
+  return (
+    <View style={styles.row}>
+      <View style={[styles.rowIcon, value !== 'nobody' && styles.rowIconOn]}>
+        <Ionicons name="radio-outline" size={20} color={colors.black} />
+      </View>
+      <View style={{ flex: 1, gap: 6 }}>
+        <Text style={styles.rowLabel}>Descoberta por proximidade</Text>
+        <Text style={styles.rowHint}>{current.hint}</Text>
+        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+          {DISCOVERY_OPTIONS.map((o) => (
+            <Pressable
+              key={o.value}
+              onPress={() => {
+                lightTap();
+                onChange(o.value);
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: o.value === value }}
+              accessibilityLabel={`${o.label}: ${o.hint}`}
+              style={{ paddingHorizontal: 12, height: 32, borderRadius: 16, justifyContent: 'center', backgroundColor: o.value === value ? colors.black : colors.surfaceAlt }}
+            >
+              <Text style={{ ...typography.caption, color: o.value === value ? colors.primary : colors.black }}>{o.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
     </View>
   );
 }

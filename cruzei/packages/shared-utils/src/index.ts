@@ -6,4 +6,5 @@ export * from './validation/age';
 export * from './format/text';
 export * from './date/time-ago';
 export * from './geo/approx';
+export * from './geo/proximity';
 export * from './avatar';

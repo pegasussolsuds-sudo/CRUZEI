@@ -28,7 +28,7 @@ import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
-import { formatApproxDistance } from '@cruzei/shared-utils';
+import { proximityBandLabel } from '@cruzei/shared-utils';
 import type { LikeResult, NearbyUser } from '@cruzei/shared-types';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
@@ -46,9 +46,9 @@ export interface SwipeCardHandle {
   swipe: (action: DeckAction) => void;
 }
 
-function formatDistance(m: number | null): string {
-  if (m == null || !Number.isFinite(m)) return 'perto';
-  return formatApproxDistance(m);
+// faixa de proximidade (nunca metros de outra pessoa)
+function formatDistance(band: NearbyUser['proximityBand'] | null | undefined): string {
+  return proximityBandLabel(band);
 }
 
 export function LikesScreen() {
@@ -113,7 +113,7 @@ export function LikesScreen() {
             photo: card.mainPhotoUrl,
             avatar: card.avatar ?? null,
             context: res.context ?? null,
-            distanceM: card.distanceM,
+            band: card.proximityBand ?? null,
           });
           qc.invalidateQueries({ queryKey: ['matches'] });
         }
@@ -133,7 +133,7 @@ export function LikesScreen() {
 
   const openCard = useCallback(
     (card: NearbyUser) => {
-      nav.navigate('UserCard', { userId: card.id, distanceM: card.distanceM });
+      nav.navigate('UserCard', { userId: card.id, band: card.proximityBand ?? null });
     },
     [nav],
   );
@@ -391,7 +391,7 @@ const SwipeCard = forwardRef<SwipeCardHandle, SwipeCardProps>(function SwipeCard
         style={[styles.card, cardStyle]}
         accessible
         accessibilityRole="button"
-        accessibilityLabel={`${card.name}${card.age ? `, ${card.age} anos` : ''}, a ${formatDistance(card.distanceM)}`}
+        accessibilityLabel={`${card.name}${card.age ? `, ${card.age} anos` : ''}, a ${formatDistance(card.proximityBand)}`}
         accessibilityHint="Toca pra ver o perfil. Arrasta pra direita pra curtir, pra esquerda pra passar"
       >
         <CardBody card={card} />
@@ -488,7 +488,7 @@ function CardBody({ card }: { card: NearbyUser }) {
         <View style={styles.metaRow}>
           <View style={styles.metaChip}>
             <Ionicons name="location" size={13} color={colors.primary} />
-            <Text style={styles.metaText}>a {formatDistance(card.distanceM)}</Text>
+            <Text style={styles.metaText}>a {formatDistance(card.proximityBand)}</Text>
           </View>
           {card.isOnline ? (
             <View style={styles.metaChip}>

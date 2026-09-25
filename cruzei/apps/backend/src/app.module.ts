@@ -1,7 +1,8 @@
 import { ExecutionContext, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bull';
 
@@ -86,6 +87,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  // rate limit por usuário (hash do token), não por IP: um atacante não zera a cota de quem divide o NAT
+  providers: [{ provide: APP_GUARD, useClass: UserThrottlerGuard }],
 })
 export class AppModule {}

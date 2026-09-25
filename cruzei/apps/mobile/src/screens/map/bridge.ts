@@ -3,7 +3,7 @@
 // WebView -> RN: window.ReactNativeWebView.postMessage(JSON.stringify(msg)).
 // O HTML (mapbox-html.ts) implementa exatamente estas assinaturas — não mude um lado sem o outro.
 
-import type { NearbyUser, POI } from '@cruzei/shared-types';
+import type { MapPosition, NearbyUser, POI } from '@cruzei/shared-types';
 import type { AvatarLayer, AvatarRig } from '../../avatar';
 
 export type MapTheme = 'day' | 'dusk' | 'night';
@@ -30,7 +30,7 @@ export interface MeState {
  * pessoa como vai pro mapa: NearbyUser + chave do avatar (o HTML busca as camadas em avatarDefs[avatarKey]),
  * nome curto do rótulo ("Leonardo S.") e a foto (thumbnail) da bolha de identidade — null = só avatar.
  */
-export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null };
+export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null; mapPosition: MapPosition };
 
 /** { avatarKey: { l: camadas, p: pivôs do rig } } — só as chaves que o WebView ainda não conhece */
 export type AvatarDefs = Record<string, { l: AvatarLayer[]; p: AvatarRig }>;

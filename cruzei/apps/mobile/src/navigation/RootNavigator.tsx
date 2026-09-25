@@ -1,3 +1,4 @@
+import type { ProximityBand } from '@cruzei/shared-types';
 import React from 'react';
 import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -12,6 +13,7 @@ import { PhotoUploadScreen } from '../screens/auth/PhotoUploadScreen';
 import { AvatarCustomizerScreen } from '../screens/avatar/AvatarCustomizerScreen';
 import { UserCardScreen } from '../screens/users/UserCardScreen';
 import { BoostScreen } from '../screens/boost/BoostScreen';
+import { PrivateAreasScreen } from '../screens/profile/PrivateAreasScreen';
 import { MainTabs, type MainTabParamList } from './MainTabs';
 import { colors } from '@cruzei/ui-mobile';
 
@@ -23,7 +25,8 @@ export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList> | undefined; // aceita { screen: 'Paywall' } etc.
   AvatarSetup: { fromOnboarding?: boolean }; // pós-cadastro ou vindo do perfil
   PhotoUpload: { fromOnboarding?: boolean }; // pós-cadastro ou vindo do perfil
-  UserCard: { userId: string; distanceM?: number | null }; // perfil de outra pessoa
+  UserCard: { userId: string; band?: ProximityBand | null }; // perfil de outra pessoa (faixa de proximidade, nunca metros)
+  PrivateAreas: undefined; // áreas privadas (casa/trabalho): onde ninguém me descobre
   Boost: undefined;
 };
 
@@ -96,6 +99,7 @@ export function RootNavigator() {
             ) : null}
             <Stack.Screen name="UserCard" component={UserCardScreen} options={{ ...dark, animation: 'slide_from_bottom' }} />
             <Stack.Screen name="Boost" component={BoostScreen} options={{ ...dark, animation: 'slide_from_bottom' }} />
+            <Stack.Screen name="PrivateAreas" component={PrivateAreasScreen} options={{ ...light, animation: 'slide_from_right' }} />
           </>
         )}
       </Stack.Navigator>

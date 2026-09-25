@@ -4,6 +4,7 @@ import { AVATAR_CONFIG_MAX_BYTES, FREE_TIERS, isValidAvatarConfig, normalizeAvat
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
+import { PRIVACY } from '../location/discovery-privacy';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
 
@@ -146,7 +147,13 @@ export class UsersService {
 
   async updateSettings(
     userId: string,
-    dto: { visibilityMode?: 'visible' | 'anonymous'; showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean },
+    dto: {
+      visibilityMode?: 'visible' | 'anonymous';
+      showDistance?: boolean;
+      showAge?: boolean;
+      showPhotoOnMap?: boolean;
+      discoveryMode?: 'everyone' | 'compatible' | 'nobody';
+    },
   ) {
     await this.prisma.user.update({
       where: { id: userId },
@@ -154,6 +161,31 @@ export class UsersService {
     });
     await this.redis.invalidateProfile(userId);
     return { ok: true, ...dto };
+  }
+
+  // ---- áreas privadas: coordenada precisa do PRÓPRIO usuário; a resposta só devolve rótulo/raio ----
+  async listPrivateAreas(userId: string) {
+    const rows = await this.prisma.privateArea.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } });
+    return rows.map((a) => ({ id: a.id, label: a.label, radiusM: a.radiusM, createdAt: a.createdAt.toISOString() }));
+  }
+
+  async addPrivateArea(userId: string, dto: { label: string; latitude: number; longitude: number; radiusM?: number }) {
+    const count = await this.prisma.privateArea.count({ where: { userId } });
+    if (count >= PRIVACY.PRIVATE_AREAS_MAX) throw new BadRequestException(`No máximo ${PRIVACY.PRIVATE_AREAS_MAX} áreas privadas`);
+    const radiusM = Math.round(
+      Math.min(PRIVACY.PRIVATE_AREA_MAX_RADIUS_M, Math.max(PRIVACY.PRIVATE_AREA_MIN_RADIUS_M, dto.radiusM ?? PRIVACY.PRIVATE_AREA_DEFAULT_RADIUS_M)),
+    );
+    const a = await this.prisma.privateArea.create({
+      data: { userId, label: dto.label.trim() || 'Área privada', latitude: dto.latitude, longitude: dto.longitude, radiusM },
+    });
+    // a presença atual pode já estar dentro da área nova: some do mapa na hora
+    await this.redis.client.hset(`user:loc:${userId}`, { hidden: '1' }).catch(() => {});
+    return { id: a.id, label: a.label, radiusM: a.radiusM, createdAt: a.createdAt.toISOString() };
+  }
+
+  async removePrivateArea(userId: string, id: string) {
+    await this.prisma.privateArea.deleteMany({ where: { id, userId } });
+    return { ok: true };
   }
 
   async pause(userId: string, durationHours: number) {

@@ -1,12 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { distanceMeters } from '@cruzei/shared-utils';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { avatarOrFallback } from '../../common/avatar';
+import { LocationService } from '../location/location.service';
 
 const WAVE_TTL_SECONDS = 86_400; // 1 aceno por par a cada 24h
-const WAVE_MAX_DISTANCE_M = 5000; // só dá pra acenar pra quem está por perto (distância REAL, nunca exposta)
 
 // Aceno: um "oi" leve, sem persistência — dedupe no Redis + evento em tempo real pro alvo.
 @Injectable()
@@ -15,6 +14,7 @@ export class WavesService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly gateway: ChatGateway,
+    private readonly location: LocationService,
   ) {}
 
   async wave(fromId: string, toId: string) {
@@ -44,10 +44,10 @@ export class WavesService {
       return silent;
     }
 
-    // os dois precisam ter presença ativa e estar a <= 5 km um do outro
+    // só dá pra acenar pra quem eu DESCUBRO agora (mesmas regras do /nearby: raio de 350 m, reciprocidade, área privada)
     if (!mine?.lat || !mine?.lng || !theirs?.lat || !theirs?.lng) return silent;
-    const dist = distanceMeters(Number(mine.lat), Number(mine.lng), Number(theirs.lat), Number(theirs.lng));
-    if (!Number.isFinite(dist) || dist > WAVE_MAX_DISTANCE_M) return silent;
+    const d = await this.location.discoverability(fromId, toId);
+    if (!d.ok) return silent;
 
     // NX: só o primeiro aceno do par entra na janela de 24h
     const created = await this.redis.client.set(`wave:${fromId}:${toId}`, '1', 'EX', WAVE_TTL_SECONDS, 'NX');

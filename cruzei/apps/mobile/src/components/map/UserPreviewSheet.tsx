@@ -4,8 +4,8 @@ import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import { formatApproxDistance } from '@cruzei/shared-utils';
-import type { NearbyUser } from '@cruzei/shared-types';
+import { proximityBandLabel } from '@cruzei/shared-utils';
+import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import { api } from '../../services/api';
 import { resolveAvatar } from '../../avatar';
 import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
@@ -32,8 +32,8 @@ export interface UserPreviewSheetHandle {
 
 export interface UserPreviewSheetProps {
   user: NearbyUser | null;
-  /** distância a partir de mim (metros; exibida sempre aproximada) */
-  distanceM: number | null;
+  /** faixa de proximidade (do servidor) — nunca metros */
+  band: ProximityBand | null;
   liked: boolean;
   waved: boolean;
   matchId: string | null;
@@ -50,7 +50,7 @@ export interface UserPreviewSheetProps {
  * sensação de continuidade do mundo. O perfil completo (fotos) fica um toque adiante.
  */
 export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSheetProps>(function UserPreviewSheet(
-  { user, distanceM, liked, waved, matchId, onLike, onWave, onChat, onOpenProfile, onClose },
+  { user, band, liked, waved, matchId, onLike, onWave, onChat, onOpenProfile, onClose },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -81,7 +81,7 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
   );
 
   const nameAge = user ? (user.age ? `${user.name}, ${user.age}` : user.name) : '';
-  const distance = distanceM != null && Number.isFinite(distanceM) ? `${formatApproxDistance(distanceM)} de você` : 'por perto';
+  const distance = band ? `${proximityBandLabel(band)} de você` : 'por perto';
   const place = card.data?.placeName ?? user?.poi?.name ?? null;
   const mainPhoto = card.data?.photos?.find((p) => p.isMain)?.url ?? card.data?.photos?.[0]?.url ?? null;
   // bolha: thumbnail do mapa; sem ele, o thumb do cartão público (o perfil é público — a preferência vale pro MAPA).

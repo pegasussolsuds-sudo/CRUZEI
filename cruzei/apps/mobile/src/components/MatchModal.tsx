@@ -13,8 +13,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NavigationProp } from '@react-navigation/native';
 
-import type { AvatarConfig } from '@cruzei/shared-types';
-import { formatApproxDistance } from '@cruzei/shared-utils';
+import type { AvatarConfig, ProximityBand } from '@cruzei/shared-types';
+import { proximityBandLabel } from '@cruzei/shared-utils';
 import { useAuthStore } from '../stores/auth';
 import { resolveAvatar } from '../avatar';
 import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
@@ -31,8 +31,8 @@ export interface MatchInfo {
   /** id da pessoa: seed do avatar quando ela ainda não personalizou (cai no matchId se faltar) */
   userId?: string;
   avatar?: AvatarConfig | null;
-  /** distância aproximada em metros no momento do match */
-  distanceM?: number | null;
+  /** faixa de proximidade no momento do match (nunca metros) */
+  band?: ProximityBand | null;
 }
 
 // Timeline da celebração (ms) — cada peça entra em cascata depois do flip do card.
@@ -149,7 +149,7 @@ function Celebration({
 
   const onConfettiDone = useCallback(() => setConfetti(false), []);
   const contextText = match.context ?? 'Vocês estiveram perto hoje.';
-  const distanceText = match.distanceM != null ? `Vocês estão a ${formatApproxDistance(match.distanceM)} um do outro.` : null;
+  const distanceText = match.band ? `Vocês estão ${proximityBandLabel(match.band)} um do outro.` : null;
 
   return (
     <View style={styles.root} accessibilityViewIsModal>
