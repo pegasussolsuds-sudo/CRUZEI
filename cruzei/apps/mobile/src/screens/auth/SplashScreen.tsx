@@ -28,6 +28,8 @@ export interface SplashScreenProps {
   onSettled?: () => void;
   /** segura a saída até estar pronto (fontes, sessão) — a splash continua viva enquanto false */
   ready?: boolean;
+  /** já saiu: fica montada, invisível e fora do toque/acessibilidade (evita destruir os canvases Skia) */
+  done?: boolean;
   /** duração mínima em ms antes de sair (default 2600) */
   minDurationMs?: number;
 }
@@ -83,7 +85,7 @@ function inOutQuad(x: number): number {
  * e tudo sai num zoom suave pra tela de baixo. "Reduzir movimento": estado final direto e saída em fade.
  * Uso: <SplashScreen ready={!authLoading} onSettled={mountApp} onFinish={() => setSplashDone(true)} />
  */
-export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs = 2600 }: SplashScreenProps) {
+export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs = 2600, done = false }: SplashScreenProps) {
   const { width, height } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const startedAt = useRef(Date.now());
@@ -247,7 +249,14 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
   const haloR = useDerivedValue(() => interpolate(breath.value, [0, 1], [130, 165]) * (1 + exitScale * exit.value));
 
   return (
-    <Animated.View style={[styles.container, containerStyle]} accessibilityRole="image" accessibilityLabel={BRAND.name}>
+    <Animated.View
+      style={[styles.container, containerStyle]}
+      pointerEvents={stopped || done ? 'none' : 'auto'}
+      accessibilityRole="image"
+      accessibilityLabel={BRAND.name}
+      accessibilityElementsHidden={stopped || done}
+      importantForAccessibility={stopped || done ? 'no-hide-descendants' : 'auto'}
+    >
       <BlobBackground intensity={0.26} speed={1.2} paused={stopped} />
 
       <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">

@@ -28,6 +28,8 @@ const GEOHASH_PRECISION = 5; // ~4.9km x 4.9km — só pra achar candidatos no R
 const NEW_USER_MS = 7 * 24 * 3_600_000;
 // Quem reporta posição a até 40 m de um POI é considerado "nele" (bbox de 60 m pra busca)
 const POI_SNAP_M = 40;
+/** poiId informado pelo app: aceito só se a posição reportada está a <= 150 m do lugar (tolerância de GPS) */
+const POI_CLAIM_M = 150;
 const POI_SEARCH_M = 60;
 // Salt de fallback quando LOCATION_SALT não está configurado (validateEnv avisa no boot)
 const DEV_SALT = 'cruzei-dev-salt';
@@ -169,7 +171,8 @@ export class LocationService {
     const isAnonymous = user?.visibilityMode === 'anonymous';
 
     // lugar atual: o que o app mandou (se existir) ou o POI mais próximo a <= 40 m da posição reportada
-    const poi = payload.poiId != null ? await this.poiById(payload.poiId) : await this.nearestPoi(latitude, longitude);
+    // um poiId inventado (posição a km do lugar) não pode "colocar" alguém num lugar — ver PoisService.vibe
+    const poi = (payload.poiId != null ? await this.poiWithin(payload.poiId, latitude, longitude) : null) ?? (await this.nearestPoi(latitude, longitude));
 
     // residência / área privada (servidor decide; o app só recebe "você está oculto aqui")
     const cell = cellOf(latitude, longitude);
@@ -564,9 +567,11 @@ export class LocationService {
     };
   }
 
-  private async poiById(poiId: number): Promise<{ id: number; name: string } | null> {
-    const p = await this.prisma.pOI.findUnique({ where: { id: BigInt(poiId) }, select: { id: true, name: true } });
-    return p ? { id: Number(p.id), name: p.name } : null;
+  /** o lugar informado pelo app só vale se a posição reportada está a <= POI_CLAIM_M dele */
+  private async poiWithin(poiId: number, lat: number, lng: number): Promise<{ id: number; name: string } | null> {
+    const p = await this.prisma.pOI.findUnique({ where: { id: BigInt(poiId) }, select: { id: true, name: true, latitude: true, longitude: true } });
+    if (!p) return null;
+    return distanceMeters(lat, lng, Number(p.latitude), Number(p.longitude)) <= POI_CLAIM_M ? { id: Number(p.id), name: p.name } : null;
   }
 
   // POI mais próximo a <= 40 m (bbox de 60 m no banco, distância exata em memória)

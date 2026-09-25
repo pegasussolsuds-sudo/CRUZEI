@@ -513,3 +513,54 @@ Faixa de brilho estacionada fora das letras (a diagonal tem pegada horizontal H�
 - Documentação de produto (`Cruzei APP/*.md`, README do monorepo) ainda fala "Cruzei" no histórico; o README ganhou a nota da marca.
 - iOS: `app.json` já leva o nome; ícones/splash do iOS saem do `expo prebuild` a partir dos assets novos (nunca buildado).
 - Link `cruzei://` continua aceito pelo manifest; `metch://` é o novo scheme.
+
+---
+
+## 17. Sessão 25/09/2026 (tarde) — busca "Onde tá a vibe" no topo do mapa
+
+Pedido do founder: um filtro de pesquisa acima da localização pra achar **onde está rolando a vibe** — eventos, lugares com mais gente usando o app — "bem premium, melhore a ideia". Entregue como um sistema de três peças:
+
+### 17.1 Backend — `GET /pois/vibe` (`apps/backend/src/modules/pois/pois.service.ts` → `vibe()`)
+- Lugares num raio (500 m–15 km, padrão 8 km) em volta de um **centro público** (centro do mapa) ou de mim (filtro "perto de mim"); nunca a posição de terceiros.
+- Sinais **ao vivo** por lugar, todos agregados: `peopleNow` (**última linha viva de cada usuário** — quem andou pra outro lugar ou pra casa some na hora; sem anônimos, sem pausados/excluídos/"ninguém", **sem o próprio solicitante**, **piso de anonimato 2** igual ao resto do produto), `trend` (vs. onde cada pessoa estava há 45 min, só quando há gente agora), `lastActive` em **faixa** (online / há pouco / mais cedo — nunca minutos, e só com gente o bastante), `isEvent`/`eventLabel` (categorias `event`/`show`; horário do JSON quando existir, senão "Hoje"). Índices `(poi_id, recorded_at)` e `(poi_id, expires_at)` em `locations` (migração `20260925150000`).
+- **`vibeScore` 0–100** (gente agora em escala log + tendência + evento + atividade recente + parceiro) e **`vibeLevel`** quiet / warming (≥ 2) / hot (≥ 5, o mesmo `HOT_MIN` do pulso no mapa) / peak (≥ 12).
+- Filtros `all | hot | events | people | near`, categorias, texto tolerante a acento ("cafe" acha "Café", "bar" acha pela categoria). O resumo (`peopleAtPlaces`, `hotCount`) é do raio inteiro; o texto só filtra a lista.
+- Rate limit 30/min por usuário; validação de lat/lng e de categoria (400, antes estourava 500); rotas literais antes de `:id` (o `hotspots` antigo caía no `:id`). A mesma semântica de presença passou pra `countUsersAtPOI` e `getPeople` (sheet do lugar). `POST /location/update` só aceita `poiId` se a posição reportada está a ≤ 150 m do lugar.
+- Tipos em `packages/shared-types/src/location.ts` (`VibePlace`, `VibeResponse`, `VibeFilter`, `VibeLevel`).
+
+### 17.2 App — barra + overlay
+- **`VibeSearchBar`** (`components/map/VibeSearchBar.tsx`): pílula de vidro escuro com borda lima acima da linha da localização; sugestões que se revezam ("Onde tá a vibe hoje?", "bares no Centro", "eventos rolando agora"…); selo à direita "🔥 N em alta" ou ponto "ao vivo" pulsando. O chip "em alta" duplicado da linha de indicadores some quando a barra existe.
+- **`VibeOverlay`** (`components/map/VibeOverlay.tsx`): modal por cima do mapa, entra deslizando; busca com debounce; chips ✨ Tudo · 🔥 Em alta · 🎤 Eventos · 👥 Mais gente · 📍 Perto de mim + categorias (🍻 🍔 ☕ 🌳 🎵 🛍️); linha **AO VIVO · N pessoas em lugares · M em alta** (atualiza a cada 45 s); lista ranqueada; estados vazios por filtro ("Nada bombando agora 😴 Os lugares acendem quando têm 2+ pessoas"); seção **"Ir até um lugar"** com bairros, ruas e cidades do **Mapbox Geocoding v6** (proximidade = centro do mapa arredondado a ~1 km, nunca a posição fina).
+- **`VibePlaceRow`**: tile da categoria que acende com o nível (quieto cinza → esquentando lima → em alta/bombando magenta com glow e pulso), nome + selo "🎤 Hoje" em eventos, bairro, distância (`~250 m`), "ativo há N min", **👥 contagem + tendência (▲ +18)** e **medidor de 5 barras** (lima → magenta).
+- **Integração** (`MapScreen`): tocar um lugar fecha a busca, leva a câmera (zoom 16,5, pitch 58) e abre a sheet do lugar na hora (`pickedPoi` como fallback enquanto o `/pois/nearby` re-centraliza; o destaque no WebView chega quando o lugar entra no recorte). Tocar um resultado do Mapbox só leva a câmera (zoom por tipo: cidade 12,5 · bairro 14,5 · rua 16 · endereço 17).
+
+### 17.3 Validação no Motorola (25/09, 13:10–15:25)
+- Barra no topo com sugestão rotativa e "🔥 2 em alta"; overlay com lista (Sunset na Praça 18 ▲+18 bombando, Bar do Léo 5 ▲+5 em alta, demais "quieto"); filtro "Em alta" só com os dois; "praca" acha Sunset na Praça e lista praças do Mapbox; "saraiva" → nenhum lugar do app + bairro Saraiva (Uberlândia) em primeiro pela proximidade; toque no Sunset → câmera + sheet "Evento · hoje · ~250 m · 18 pessoas no Metch · Em alta"; toque em "Saraiva" → mapa vai pro bairro.
+- Depois da revisão: lista com "esteve por aqui" (faixa), toque no lugar destacando o pino só depois do recorte carregar, teclado sem cobrir a lista.
+- Dois bugs de render achados e corrigidos no aparelho: `FadeInView` (baseado em `useAnimatedStyle`) ficava **invisível** dentro das linhas da FlatList e dentro da barra → entradas com **layout animations** (`entering={FadeInDown}`); `ScrollView` horizontal dos chips nasce com `flexGrow: 1` e esticava na vertical → `flexGrow: 0`.
+
+### 17.4 Revisão adversarial (workflow, 29 agentes, 30 achados → 20 confirmados e corrigidos)
+- **Privacidade (alto)**: o piso de anonimato contava o próprio solicitante e `lastActiveMin` (minuto a minuto) virava o relógio de uma pessoa sozinha num lugar (reproduzido ao vivo pelo verificador com duas contas) → solicitante fora das contagens, atividade em faixa, `poiId` do app validado por distância.
+- **Backend (alto)**: contagem "agora" somava toda linha viva (2 h) → uma pessoa aparecia em todos os lugares por onde passou e a tendência nunca ficava negativa → presença = última linha de cada usuário (também na sheet do lugar e na contagem pública); pausados/excluídos/"ninguém" fora; índices por lugar; categoria inválida → 400.
+- **App**: estado vazio falso enquanto a consulta anterior era reaproveitada; spinner infinito sem posição; "perto de mim" caía no centro do mapa sem posição própria; teclado cobria o fim da lista (Modal translúcido não redimensiona); busca anterior piscava ao reabrir; polling com o app em background; barra anunciada como campo de texto; destaque do lugar escolhido enviado antes do `setData` que o contém (nunca acendia) e foco pendente que podia pular a câmera minutos depois; "Ver no mapa" de lugar fora do recorte não fazia nada; cartão do match e padding do mapa presos à altura antiga do header → header medido por `onLayout`.
+- Rejeitados: posição própria na query string (já é assim no `/location/update`), corte de 300 POIs no bbox (14 na cidade), divergência sheet × lista (resolvida junto), seed "por construção", atraso das linhas ao rolar (40 ms × 8).
+
+### 17.5 Estabilidade nativa no boot (investigação, 16:00–16:30)
+Durante a validação apareceram **crashes nativos intermitentes**, todos no boot ou na primeira tela pesada depois dele, com 4 assinaturas: (a) HWUI RenderThread `OpsTask::tryConcat` em `drawRRect` (dentro de `renderLayerImpl` ou no draw normal); (b) HWUI `SkStrikeCache` corrompido (medição/desenho de texto — surge na primeira tela com muito texto); (c) `libreanimated.so` na thread principal, recursão 1 s depois da splash montar (o mesmo crash intermitente já registrado no §11); (d) `libhermes.so` na thread JS no boot. Junto deles, erros `SurfaceTexture … EGLConsumer is not attached to an OpenGL ES context` no instante em que a WebView do mapa é criada.
+
+Experimentos (loop adb: `force-stop` → `am start` → 26 s → ação → contagem de `F DEBUG` no buffer `crash`, dump por run):
+| Cenário | Boots | HWUI | JS (Reanimated/Hermes) |
+|---|---|---|---|
+| Abrir a busca (WebView em camada `hardware`) | 12 | 2 | 1 |
+| Abrir só o Perfil, sem busca (`hardware`) | 8 | 3 | 0 |
+| Idem com a splash mantida montada (sem destruir canvases Skia) | 5 | 2 | 0 |
+| WebView em camada `none`, alternando Perfil e busca | 10 | 1 | 2 |
+
+Conclusões: **não é a busca** (reproduz abrindo o Perfil) e **não é a destruição dos canvases Skia** (reproduz com eles vivos). A corrupção do HWUI nasce na criação da WebView (Chromium desenhando pelo functor GL no mesmo RenderThread, driver Mali/MediaTek do Moto g54). Decisões: WebView com `androidLayerType="none"` (padrão do RN WebView; sem camada FBO do HWUI — menos crashes na amostra, mapa e overlays iguais), overlay e linhas da busca **sem canvases Skia** (gradientes + Reanimated), sugestão da barra sem layout animation. O crash (c)/(d) é anterior à marca e à busca.
+
+**Próximo passo recomendado (sessão própria, build nativo):** subir `@shopify/react-native-skia` 1.2.3 → **1.12.4** (última linha para RN ≤ 0.78; traz `opaque`/SurfaceView e correções de superfície no Android) e `react-native-reanimated` 3.10.1 → 3.16.x; repetir o loop de 10 boots. Se persistir, tirar os canvases Skia do boot (splash em react-native-svg).
+
+### 17.6 Decisões / pendências
+- **Premium**: hoje a busca é igual pra todo mundo (raio 8 km em volta do centro do mapa, que qualquer um arrasta). A decisão pendente do §15 ("cidade inteira" = lugares) cabe aqui: se quiser diferenciar, limitar o raio do free a ~3 km em volta do próprio usuário e liberar 15 km + "Mais gente" na cidade pro Premium.
+- Eventos: sem horário estruturado no banco (`hours` vazio), tudo aparece como "Hoje"; quando eventos tiverem `start/end`, o rótulo já usa.
+- Teclado: `autoFocus` + foco no `onShow` do Modal; o campo nasce focado (o teclado sobe na maioria das aberturas).

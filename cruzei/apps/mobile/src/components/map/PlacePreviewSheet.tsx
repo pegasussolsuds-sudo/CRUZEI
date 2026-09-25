@@ -113,7 +113,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
 
             <View style={styles.stats}>
               <Text style={styles.stat}>👥 {count} {count === 1 ? 'pessoa' : 'pessoas'} no Metch</Text>
-              <Text style={styles.stat}>🟢 {online} online agora</Text>
+              {people.length > 0 || count === 0 ? <Text style={styles.stat}>🟢 {online} online agora</Text> : null}
               {hot ? (
                 <Pulse active maxScale={1.05} style={styles.hotPill}>
                   <Text style={styles.hotText}>🔥 Em alta</Text>
@@ -155,7 +155,11 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
                 </View>
               </FadeInView>
             ) : (
-              <Text style={styles.empty}>Ninguém do Metch por aqui agora. Passa lá e muda isso 😉</Text>
+              <Text style={styles.empty}>
+                {count > 0
+                  ? `${count} ${count === 1 ? 'pessoa' : 'pessoas'} por aqui — chega mais perto pra ver quem: os nomes só aparecem a até 350 m.`
+                  : 'Ninguém do Metch por aqui agora. Passa lá e muda isso 😉'}
+              </Text>
             )}
 
             <View style={styles.actions}>

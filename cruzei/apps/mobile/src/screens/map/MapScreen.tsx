@@ -25,6 +25,8 @@ import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type GroupFilter, type MapBottomSheetHandle, type PoiFilter } from '../../components/map/MapBottomSheet';
 import { MapHeader, useActiveBoost } from '../../components/map/MapHeader';
 import { DiscoveryToast } from '../../components/map/DiscoveryToast';
+import { VibeOverlay } from '../../components/map/VibeOverlay';
+import type { GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
@@ -33,7 +35,7 @@ import { buildMapboxHtml } from './mapbox-html';
 import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
-import type { AvatarConfig, DiscoveryResponse, MapPosition, NearbyUser, POI, ProximityBand } from '@cruzei/shared-types';
+import type { AvatarConfig, DiscoveryResponse, MapPosition, NearbyUser, POI, ProximityBand, VibePlace } from '@cruzei/shared-types';
 import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
@@ -248,6 +250,15 @@ export function MapScreen() {
   // ---------- seleção / filtros / feedback ----------
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedPoiId, setSelectedPoiId] = useState<number | null>(null);
+  // busca "Onde tá a vibe": overlay + lugar escolhido (pode estar fora do recorte atual do /pois/nearby)
+  const [vibeOpen, setVibeOpen] = useState(false);
+  const [pickedPoi, setPickedPoi] = useState<POI | null>(null);
+  const pendingFocus = useRef<number | null>(null);
+  // altura real do header (barra de busca + linha da localização + banners): o mapa e o cartão do match se guiam por ela
+  const [headerH, setHeaderH] = useState(0);
+  const headerHRef = useRef(0);
+  headerHRef.current = headerH;
+  const lastBottomRef = useRef(0);
   const rootNav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const tabNav = useNavigation<NavigationProp<MainTabParamList>>();
   const [poiFilter, setPoiFilter] = useState<PoiFilter | null>(null);
@@ -325,7 +336,15 @@ export function MapScreen() {
   );
 
   const selectedUser = useMemo(() => users.find((u) => u.id === selected) ?? null, [users, selected]);
-  const selectedPoi = useMemo(() => pois.find((p) => p.id === selectedPoiId) ?? null, [pois, selectedPoiId]);
+  const selectedPoi = useMemo(
+    () => pois.find((p) => p.id === selectedPoiId) ?? (pickedPoi && pickedPoi.id === selectedPoiId ? pickedPoi : null),
+    [pois, selectedPoiId, pickedPoi],
+  );
+
+  // fechar a sheet / tocar no mapa / escolher outra coisa cancela o destaque pendente do lugar da busca
+  useEffect(() => {
+    if (selectedPoiId == null) pendingFocus.current = null;
+  }, [selectedPoiId]);
   const selectedMatchId = selectedUser ? (localMatches.get(selectedUser.id) ?? selectedUser.matchId ?? null) : null;
   const selectedLiked = selectedUser ? likedIds.has(selectedUser.id) || Boolean(selectedUser.likedByMe) : false;
 
@@ -452,6 +471,11 @@ export function MapScreen() {
     if (!hasData) return;
     defineAvatars(users.map((u) => resolveAvatar(u.avatar, u.id)));
     send(cmd.setData({ users: mapUsers, pois, hotMin: HOT_MIN }), 'setData');
+    const focusId = pendingFocus.current;
+    if (focusId != null && pois.some((p) => p.id === focusId)) {
+      pendingFocus.current = null;
+      send(cmd.focusPoi(focusId));
+    }
     // o WebView descarta as definições de quem saiu do mapa no mesmo setData: espelha aqui pra não acumular
     const used = new Set(mapUsers.map((u) => u.avatarKey));
     used.add(myAvatarKey);
@@ -485,7 +509,8 @@ export function MapScreen() {
       const fire = () => {
         paddingTimer.current = null;
         lastPaddingAt.current = Date.now();
-        send(cmd.setPadding({ bottom }), 'setPadding');
+        lastBottomRef.current = bottom;
+        send(cmd.setPadding({ top: headerHRef.current, bottom }), 'setPadding');
       };
       const wait = PADDING_THROTTLE_MS - (Date.now() - lastPaddingAt.current);
       if (paddingTimer.current) clearTimeout(paddingTimer.current);
@@ -497,6 +522,9 @@ export function MapScreen() {
   useEffect(() => () => {
     if (paddingTimer.current) clearTimeout(paddingTimer.current);
   }, []);
+  useEffect(() => {
+    if (webReady && headerH > 0) send(cmd.setPadding({ top: headerH, bottom: lastBottomRef.current }), 'setPadding');
+  }, [headerH, webReady, send]);
 
   // com uma sheet de pessoa/lugar aberta, o padding é dela (a lista fica recolhida por baixo)
   const previewFraction = selectedUser ? USER_SHEET_FRACTION : selectedPoi ? PLACE_SHEET_FRACTION : null;
@@ -875,6 +903,43 @@ export function MapScreen() {
   }, [canAskLocation, locate]);
 
   const onFocusPoi = useCallback((poiId: number) => send(cmd.focusPoi(poiId)), [send]);
+  const openVibe = useCallback(() => {
+    Haptics.selectionAsync().catch(() => {});
+    setVibeOpen(true);
+  }, []);
+  const closeVibe = useCallback(() => setVibeOpen(false), []);
+  // lugar escolhido na busca: câmera vai até lá, a sheet do lugar abre na hora e o destaque no mapa vem quando o recorte carregar
+  const onPickVibePlace = useCallback(
+    (place: VibePlace) => {
+      setVibeOpen(false);
+      setSelected(null);
+      setGroupFilter(null);
+      setPoiFilter(null);
+      setPickedPoi(place);
+      setSelectedPoiId(place.id);
+      setUserCenter({ lat: place.latitude, lng: place.longitude });
+      if (poisRef.current.some((p) => p.id === place.id)) {
+        pendingFocus.current = null;
+        send(cmd.focusPoi(place.id));
+      } else {
+        pendingFocus.current = place.id;
+        send(cmd.setCenter(place.latitude, place.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1400 }));
+      }
+    },
+    [send],
+  );
+  // bairro/rua/cidade do Mapbox: só leva a câmera (o recorte de lugares e pessoas re-centraliza sozinho)
+  const onPickGeocode = useCallback(
+    (r: GeocodeResult) => {
+      setVibeOpen(false);
+      setSelected(null);
+      setSelectedPoiId(null);
+      pendingFocus.current = null;
+      setUserCenter({ lat: r.lat, lng: r.lng });
+      send(cmd.setCenter(r.lat, r.lng, r.zoom, { pitch: 50, bearing: 0, duration: 1400 }));
+    },
+    [send],
+  );
   const onSeePlacePeople = useCallback((poi: POI) => {
     setSelectedPoiId(null);
     setGroupFilter(null);
@@ -884,7 +949,14 @@ export function MapScreen() {
   const onGoToPlace = useCallback(
     (poi: POI) => {
       setSelectedPoiId(null);
-      send(cmd.focusPoi(poi.id));
+      pendingFocus.current = null;
+      if (poisRef.current.some((p) => p.id === poi.id)) {
+        send(cmd.focusPoi(poi.id));
+      } else {
+        // lugar escolhido na busca ainda fora do recorte do /pois/nearby: a coordenada é pública e já está em mãos
+        setUserCenter({ lat: poi.latitude, lng: poi.longitude });
+        send(cmd.setCenter(poi.latitude, poi.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1200 }));
+      }
     },
     [send],
   );
@@ -924,7 +996,9 @@ export function MapScreen() {
         style={styles.web}
         containerStyle={styles.web}
         setBuiltInZoomControls={false}
-        androidLayerType="hardware"
+        // "none" = o Chromium desenha direto na janela; em camada "hardware" (FBO do HWUI) o driver GL do Moto g54 corrompia o estado
+        // do HWUI na criação da WebView (crashes em renderLayerImpl / OpsTask::tryConcat / SkStrikeCache)
+        androidLayerType="none"
         onError={() => onWebDead('sem conexão com o mapa')}
         onRenderProcessGone={() => onWebDead('o mapa travou')}
         accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
@@ -941,10 +1015,23 @@ export function MapScreen() {
         boostMinutes={isBoosted && boost ? boost.minutesRemaining : null}
         indicators={indicators}
         hiddenReason={meDiscovery && !meDiscovery.discoverable ? meDiscovery.hiddenReason : null}
+        onOpenVibe={openVibe}
+        paused={!active}
+        onHeaderHeight={setHeaderH}
+      />
+
+      <VibeOverlay
+        visible={vibeOpen}
+        center={queryCenter}
+        myLocation={lat != null && lng != null ? { lat, lng } : null}
+        paused={!active}
+        onClose={closeVibe}
+        onPickPlace={onPickVibePlace}
+        onPickGeocode={onPickGeocode}
       />
 
       {moment ? (
-        <View style={styles.momentWrap} pointerEvents="none">
+        <View style={[styles.momentWrap, { top: Math.max(headerH + spacing.sm, containerH * 0.12) }]} pointerEvents="none">
           <FadeInView fromY={-10} fromScale={0.9} style={styles.moment} accessibilityLiveRegion="assertive">
             <Text style={styles.momentTitle}>🔥 {BRAND.matchShout}</Text>
             <Text style={styles.momentText}>Você e {moment.name} deram match</Text>
@@ -1067,7 +1154,7 @@ const styles = StyleSheet.create({
   noticeText: { ...typography.bodySmall, color: colors.white, flex: 1 },
   noticeBtn: { minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.sm },
   noticeAction: { ...typography.label, color: colors.primary },
-  momentWrap: { position: 'absolute', top: '22%', left: 0, right: 0, alignItems: 'center' },
+  momentWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   moment: { alignItems: 'center', paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.xl, backgroundColor: 'rgba(18,18,42,0.92)', borderWidth: 1.5, borderColor: colors.secondary, ...shadows.strong },
   momentTitle: { ...typography.h1, color: colors.primary, letterSpacing: 2 },
   momentText: { ...typography.body, color: colors.white, marginTop: 2 },

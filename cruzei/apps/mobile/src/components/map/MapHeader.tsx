@@ -11,6 +11,7 @@ import { usePlaceName } from '../../hooks/usePlaceName';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { VibeSearchBar } from './VibeSearchBar';
 
 export interface ActiveBoost {
   id: string;
@@ -48,6 +49,12 @@ export interface MapHeaderProps {
   indicators?: { hot: number; near: number; fresh: boolean } | null;
   /** por que o servidor não está me mostrando pros outros agora (área privada, residência, "ninguém") */
   hiddenReason?: HiddenReason | null;
+  /** abre o overlay "Onde tá a vibe" (busca de lugares por energia ao vivo) */
+  onOpenVibe?: () => void;
+  /** pausa as animações da barra (tela fora de foco) */
+  paused?: boolean;
+  /** altura total do header (muda com banners/boost) — o mapa e o cartão do match se posicionam por ela */
+  onHeaderHeight?: (height: number) => void;
 }
 
 const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
@@ -56,7 +63,7 @@ const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
   nobody: 'Descoberta desligada: ninguém te vê',
 };
 
-export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason }: MapHeaderProps) {
+export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason, onOpenVibe, paused = false, onHeaderHeight }: MapHeaderProps) {
   const placeName = usePlaceName(lat, lng);
 
   // crossfade 200ms entre os dois estados do chip (design system: toggle = crossfade + slide curto)
@@ -79,7 +86,12 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
   }));
 
   return (
-    <SafeAreaView style={styles.wrap} pointerEvents="box-none" edges={['top']}>
+    <SafeAreaView style={styles.wrap} pointerEvents="box-none" edges={['top']} onLayout={onHeaderHeight ? (e) => onHeaderHeight(e.nativeEvent.layout.height) : undefined}>
+      {onOpenVibe ? (
+        <View style={styles.searchWrap} pointerEvents="box-none">
+          <VibeSearchBar onPress={onOpenVibe} hotCount={indicators?.hot ?? 0} paused={paused} />
+        </View>
+      ) : null}
       <View style={styles.row} pointerEvents="box-none">
         {/* é o centro do MAPA (o usuário arrasta), não necessariamente onde ele está */}
         <View style={styles.place} accessibilityRole="header" accessibilityLabel={`Mostrando ${placeName}`}>
@@ -115,9 +127,9 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
         </ScaleOnPress>
       </View>
 
-      {indicators && (indicators.hot > 0 || indicators.near > 0 || indicators.fresh) ? (
+      {indicators && ((indicators.hot > 0 && !onOpenVibe) || indicators.near > 0 || indicators.fresh) ? (
         <FadeInView fromY={-6} style={styles.indicators} pointerEvents="none">
-          {indicators.hot > 0 ? (
+          {indicators.hot > 0 && !onOpenVibe ? (
             <View style={[styles.indicator, styles.indicatorHot]} accessibilityLabel={`${indicators.hot} lugares em alta`}>
               <Text style={styles.indicatorText}>🔥 {indicators.hot} em alta</Text>
             </View>
@@ -178,6 +190,7 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', top: 0, left: 0, right: 0 },
+  searchWrap: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   row: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   place: {
     flex: 1,

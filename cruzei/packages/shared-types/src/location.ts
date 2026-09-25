@@ -100,6 +100,7 @@ export interface POI {
   address: string | null;
   city?: string | null;
   state?: string | null;
+  neighborhood?: string | null;
   rating: number | null;
   totalRatings: number;
   isPartner: boolean;
@@ -114,4 +115,44 @@ export interface PrivateArea {
   label: string;
   radiusM: number;
   createdAt: string;
+}
+
+// ---------- "Onde tá a vibe" (busca de lugares por energia ao vivo) ----------
+
+/** quanta gente do app está no lugar agora: quiet 0 · warming ≥ 2 · hot ≥ 5 · peak ≥ 12 */
+export type VibeLevel = 'quiet' | 'warming' | 'hot' | 'peak';
+
+/** filtros rápidos do overlay de busca */
+export type VibeFilter = 'all' | 'hot' | 'events' | 'people' | 'near';
+
+/**
+ * Lugar com os sinais de "vibe". Contagens são públicas e já vêm com o piso de anonimato do servidor
+ * (< 2 pessoas vira 0); nunca há posição, nome ou horário de uma pessoa específica aqui.
+ */
+export interface VibePlace extends POI {
+  neighborhood: string | null;
+  /** pessoas do app no lugar agora (com piso de anonimato) */
+  peopleNow: number;
+  /** variação vs. a janela de 30–60 min atrás (só quando há gente agora) */
+  trend: number;
+  /** 0–100: gente agora + tendência + evento + atividade recente */
+  vibeScore: number;
+  vibeLevel: VibeLevel;
+  isEvent: boolean;
+  /** "Hoje", "20h–2h"… só pra eventos */
+  eventLabel: string | null;
+  /** última presença em faixa (online / há pouco / mais cedo); null quando não há gente o bastante — nunca minutos */
+  lastActive: LastSeen | null;
+  /** distância do lugar ao centro pedido (centro do mapa ou eu) */
+  distanceM: number;
+}
+
+export interface VibeResponse {
+  places: VibePlace[];
+  /** lugares com gente ≥ hot */
+  hotCount: number;
+  /** soma de pessoas em todos os lugares do raio (antes do filtro) */
+  peopleAtPlaces: number;
+  generatedAt: string;
+  radiusM: number;
 }

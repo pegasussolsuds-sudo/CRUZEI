@@ -141,6 +141,8 @@ model Location {
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, recordedAt(sort: Desc)])
+  @@index([poiId, recordedAt(sort: Desc)])
+  @@index([poiId, expiresAt])
   @@index([geohash])
   @@index([expiresAt])
   @@index([city])
