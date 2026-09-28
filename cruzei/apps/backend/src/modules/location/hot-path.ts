@@ -276,6 +276,8 @@ export function triageForDiscovery<P extends PresenceLite>(
   areaCell: (p: P) => string,
   /** quem está consultando: fica fora de tudo (não se vê e não conta pro próprio piso) */
   excludeId?: string,
+  /** ocultos há instantes (aviso "hide" ainda não refletido nas presenças em cache): tratados como ocultos */
+  hiddenNow?: (id: string, p: P) => boolean,
 ): DiscoveryTriage {
   const inRadius = new Map<string, number>();
   const areaOf = new Map<string, string>();
@@ -286,7 +288,7 @@ export function triageForDiscovery<P extends PresenceLite>(
   const dLat = (radiusM / 111_195) * 1.02;
   const dLng = dLat / Math.max(0.01, Math.cos(((Math.abs(center.lat) + dLat) * Math.PI) / 180));
   for (const [id, p] of presences) {
-    if (p.hidden || id === excludeId) continue;
+    if (p.hidden || id === excludeId || (hiddenNow && hiddenNow(id, p))) continue;
     const area = areaCell(p);
     areaOf.set(id, area);
     if (Math.abs(p.lat - center.lat) > dLat || Math.abs(p.lng - center.lng) > dLng) continue;

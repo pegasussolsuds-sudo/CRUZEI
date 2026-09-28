@@ -203,6 +203,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private readonly poiIndexMemo = new TtlMemo<'all', PoiIndex>(POI_INDEX_TTL_MS, 1);
   /** presenças por célula de presença (geohash-6), com carga única por célula ("single-flight") */
   private readonly cellPresence = new TtlMemo<string, Map<string, Presence>>(CELL_PRESENCE_TTL_MS, 20_000);
+  /** quem acabou de se ocultar (aviso "hide" de qualquer processo): fora da descoberta até as presenças em cache vencerem */
+  private readonly hiddenNow = new ExpiringCache<string, number>(15_000, 100_000);
   /** última carga de cada célula (ids + horário) pra recarga incremental */
   private readonly cellState = new Map<string, { at: number; scores: Map<string, number>; pres: Map<string, Presence> }>();
   /** "Party" (regras de descoberta + interesses) de cada linha de perfil — a linha vive no candidateCache */
@@ -229,6 +231,13 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     try {
       this.invalidations = this.redis.client.duplicate();
       this.invalidations.on('message', (_channel: string, id: string) => {
+        if (id.startsWith('hide:')) {
+          // hide:<id>:<quando> — presença em cache mais VELHA que isso é tratada como oculta; mais nova (a pessoa já
+          // atualizou depois, por exemplo saindo da área) vale o que ela diz
+          const [uid, at] = id.slice(5).split(':');
+          this.hiddenNow.set(uid, Number(at) || Date.now());
+          return;
+        }
         if (id === '*') {
           this.candidateCache.clear();
           this.profileCache.clear();
@@ -366,9 +375,10 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     if (touchActive === 'OK') writes.push(this.redis.client.hset(LAST_ACTIVE_PENDING, userId, String(now)));
+    let presenceWrite: Promise<{ wasHidden: boolean }> | null = null;
     if (visible) {
       writes.push(
-        this.redis.setUserPresence(
+        (presenceWrite = this.redis.setUserPresence(
           userId,
           geohash,
           latitude,
@@ -379,10 +389,13 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
           cell,
           ngeohash.neighbors(cell),
           crowd,
-        ),
+        )),
       );
     }
     await Promise.all(writes);
+    // acabou de entrar numa área privada/casa: todo processo esquece a posição dela NA HORA (as presenças ficam alguns
+    // segundos em cache na descoberta); só na transição, não a cada atualização de quem já está em casa
+    if (hidden && presenceWrite && !(await presenceWrite).wasHidden) await this.redis.publishCandidateInvalidation(`hide:${userId}:${now}`);
 
     // só CONTA (ZCOUNT por célula): antes trazia os ids das 9 células inteiras a cada atualização
     const nearbyUsers = await this.redis.countNearbyPresence([geohash, ...ngeohash.neighbors(geohash)], userId, now - PRIVACY.PRESENCE_TTL_S * 1000);
@@ -556,7 +569,15 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
 
     // triagem ANTES de carregar perfis: só quem está no raio e quem entra nas contagens de anonimato que o raio vai
     // ler (mesmo resultado de contar a região inteira, sem carregar milhares)
-    const triage = triageForDiscovery({ lat: mine.lat, lng: mine.lng }, radiusM, pres, (p) => this.areaOf(p as Presence), requesterId);
+    this.hiddenNow.prune();
+    const hiddenNow =
+      this.hiddenNow.size > 0
+        ? (id: string, p: Presence) => {
+            const at = this.hiddenNow.get(id);
+            return at !== undefined && (p.updatedAt ?? 0) <= at;
+          }
+        : undefined;
+    const triage = triageForDiscovery({ lat: mine.lat, lng: mine.lng }, radiusM, pres, (p) => this.areaOf(p as Presence), requesterId, hiddenNow as ((id: string, p: unknown) => boolean) | undefined);
     if (triage.inRadius.size === 0) return empty(myReason);
 
     const blocked = await this.blockedWith(requesterId);

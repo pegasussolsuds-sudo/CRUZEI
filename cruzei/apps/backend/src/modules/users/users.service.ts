@@ -215,7 +215,7 @@ export class UsersService {
       data: { userId, label: dto.label.trim() || 'Área privada', latitude: dto.latitude, longitude: dto.longitude, radiusM },
     });
     // a presença atual pode já estar dentro da área nova: some do mapa na hora
-    await this.redis.client.hset(`user:loc:${userId}`, { hidden: '1' }).catch(() => {});
+    await this.redis.markPresenceHidden(userId).catch(() => {});
     return { id: a.id, label: a.label, radiusM: a.radiusM, createdAt: a.createdAt.toISOString() };
   }
 

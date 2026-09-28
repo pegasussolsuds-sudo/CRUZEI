@@ -44,8 +44,8 @@ local locKey, presKey = KEYS[1], KEYS[2]
 local uid, gh, lat, lng = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
 local now, ttl = tonumber(ARGV[5]), tonumber(ARGV[6])
 local poiId, poiName, hidden, cell, neighbors = ARGV[7], ARGV[8], ARGV[9], ARGV[10], ARGV[11]
-local prev = redis.call('HMGET', locKey, 'geohash', 'cell', 'cell_since')
-local prevGh, prevCell, prevSince = prev[1], prev[2], prev[3]
+local prev = redis.call('HMGET', locKey, 'geohash', 'cell', 'cell_since', 'hidden')
+local prevGh, prevCell, prevSince, prevHidden = prev[1], prev[2], prev[3], prev[4]
 local stay = false
 if prevCell and cell ~= '' then
   stay = (prevCell == cell) or (string.find(neighbors, ',' .. prevCell .. ',', 1, true) ~= nil)
@@ -73,10 +73,26 @@ if ARGV[12] == '1' and hidden ~= '1' and cell ~= '' and (now - since) >= tonumbe
   redis.call('EXPIRE', cKey, cttl)
   wrote = 1
 end
-return {since, wrote}
+local wasHidden = 0
+if prevHidden == '1' then wasHidden = 1 end
+return {since, wrote, wasHidden}
 `;
 
-type PresenceCommand = (...args: (string | number)[]) => Promise<[number, number]>;
+/**
+ * Esconde a presença AGORA (ex.: área privada nova cobrindo onde a pessoa está): marca oculta e "mexe" no score do
+ * ZSET da célula — a descoberta recarrega as células de forma incremental pelo score, então sem isso a cópia visível
+ * em cache ficaria até a próxima atualização de posição. KEYS[1] = user:loc:<uid>; ARGV = agora (ms), uid.
+ */
+const HIDE_LUA = `
+local locKey = KEYS[1]
+if redis.call("EXISTS", locKey) == 0 then return 0 end
+redis.call("HSET", locKey, "hidden", "1")
+local gh = redis.call("HGET", locKey, "geohash")
+if gh then redis.call("ZADD", "presence:" .. gh, "XX", ARGV[1], ARGV[2]) end
+return 1
+`;
+
+type PresenceCommand = (...args: (string | number)[]) => Promise<[number, number, number]>;
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
@@ -110,9 +126,9 @@ export class RedisService implements OnModuleDestroy {
     cell = '',
     cellNeighbors: string[] = [],
     crowd: CrowdSignal | null = null,
-  ): Promise<{ cellSince: number; crowdWritten: boolean }> {
+  ): Promise<{ cellSince: number; crowdWritten: boolean; wasHidden: boolean }> {
     const now = Date.now();
-    const [since, wrote] = await this.presenceCmd(
+    const [since, wrote, wasHidden] = await this.presenceCmd(
       `user:loc:${userId}`,
       `presence:${geohash}`,
       userId,
@@ -134,7 +150,7 @@ export class RedisService implements OnModuleDestroy {
       crowd?.band ?? 0,
       crowd?.ttlS ?? 0,
     );
-    return { cellSince: Number(since), crowdWritten: Number(wrote) === 1 };
+    return { cellSince: Number(since), crowdWritten: Number(wrote) === 1, wasHidden: Number(wasHidden) === 1 };
   }
 
   async getNearbyUserIds(geohashes: string[]): Promise<string[]> {
@@ -197,6 +213,13 @@ export class RedisService implements OnModuleDestroy {
   async invalidateProfile(userId: string): Promise<void> {
     await this.client.del(`profile:${userId}`);
     await this.publishCandidateInvalidation(userId);
+  }
+
+  /** oculta a presença na hora em todos os processos (hash + score da célula + aviso "hide") */
+  async markPresenceHidden(userId: string): Promise<void> {
+    const now = Date.now();
+    await this.client.eval(HIDE_LUA, 1, `user:loc:${userId}`, now, userId);
+    await this.publishCandidateInvalidation(`hide:${userId}:${now}`);
   }
 
   async publishCandidateInvalidation(userId: string | '*'): Promise<void> {

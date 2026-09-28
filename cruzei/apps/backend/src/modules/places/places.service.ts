@@ -117,6 +117,7 @@ export class PlacesService {
     const center = { lat: c.latitude, lng: c.longitude };
 
     let venues: MapboxPlace[] | null;
+    let complete = true;
     const stub = process.env.NODE_ENV !== 'production' ? (process.env.MAPBOX_STUB ?? '').trim() : '';
     if (stub) {
       try {
@@ -132,13 +133,17 @@ export class PlacesService {
       if (used === CELL_CATEGORIES.length) await this.redis.client.expire(budgetKey, 2 * 86_400);
       if (used > CROWD.MAPBOX_DAILY_CAP) return null;
       const bbox = [box.lngMin, box.latMin, box.lngMax, box.latMax].map((n) => n.toFixed(5)).join(',');
-      const lists = await Promise.all(CELL_CATEGORIES.map((cat) => this.categoryBrowse(cat, center, bbox)));
+      // uma categoria por vez: em rajada o Search Box responde 429 (o detector não tem pressa)
+      const lists: (MapboxPlace[] | null)[] = [];
+      for (const cat of CELL_CATEGORIES) lists.push(await this.categoryBrowse(cat, center, bbox));
       if (lists.every((l) => l === null)) return null;
+      complete = lists.every((l) => l !== null);
       const byId = new Map<string, MapboxPlace>();
       for (const l of lists) for (const p of l ?? []) if (inside(p)) byId.set(p.id, p);
       venues = [...byId.values()];
     }
-    await this.redis.client.set(key, JSON.stringify(venues), 'EX', CELL_TTL_SECONDS);
+    // resultado incompleto (alguma categoria falhou) vale pouco: a próxima rodada tenta de novo
+    await this.redis.client.set(key, JSON.stringify(venues), 'EX', complete ? CELL_TTL_SECONDS : EMPTY_TTL_SECONDS);
     // cada lugar achado também pode ser sugerido/confirmado depois (mesmo cache da busca)
     await this.remember(venues);
     return venues;

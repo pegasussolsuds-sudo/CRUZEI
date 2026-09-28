@@ -141,6 +141,10 @@ describe('hot-path', () => {
       expect([...t.inRadius.keys()].sort()).toEqual(['perto', 'perto-no-lugar']);
       expect(t.needed.sort()).toEqual(['mesma-area-fora-do-raio', 'no-lugar', 'perto', 'perto-no-lugar']);
       expect(t.areaOf.has('oculto')).toBe(false);
+      // quem acabou de se ocultar (aviso 'hide') sai de tudo mesmo com a presença em cache dizendo visível
+      const t3 = triageForDiscovery(center, 350, presences, area, undefined, (id) => id === 'perto');
+      expect(t3.inRadius.has('perto')).toBe(false);
+      expect(t3.needed).not.toContain('perto');
       // quem consulta fica fora de tudo
       const t2 = triageForDiscovery(center, 350, presences, area, 'perto');
       expect(t2.inRadius.has('perto')).toBe(false);
