@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 import type { ClientToServerEvents, ServerToClientEvents } from '@cruzei/shared-types';
 import { config } from '../config';
-import { getToken, refreshAccessToken } from './api';
+import { getToken, refreshAccessToken, reportAccountBlocked } from './api';
 
 type CruzeiSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -72,6 +72,11 @@ export async function connectSocket(): Promise<CruzeiSocket | null> {
   s.on('connect_error', (err) => {
     // eslint-disable-next-line no-console
     console.info('🔴 socket error:', err.message);
+    // conta suspensa/banida: o servidor manda o motivo em err.data — não tenta reconectar
+    if (reportAccountBlocked((err as Error & { data?: unknown }).data)) {
+      s.disconnect();
+      return;
+    }
     // recusa no middleware do servidor também desliga o loop de reconexão
     if (!s.active) void recover(s);
   });

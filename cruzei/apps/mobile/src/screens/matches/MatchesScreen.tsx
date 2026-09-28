@@ -1,4 +1,4 @@
-import React, { memo, useCallback } from 'react';
+import React, { memo, useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -25,6 +25,7 @@ import { LiveDot } from '../../components/animated/LiveDot';
 import { PressScale } from '../../components/animated/PressScale';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
+import { SafetySheet } from '../../components/safety/SafetySheet';
 
 const AVATAR = 56;
 const MATCHES_LIMIT = 100; // servidor aceita até 200; chats duram 48h, então a lista ativa é curta
@@ -36,9 +37,10 @@ interface MatchRowProps {
   item: Match;
   myId: string | undefined;
   onPress: (item: Match) => void;
+  onLongPress: (item: Match) => void;
 }
 
-const MatchRow = memo(function MatchRow({ item, myId, onPress }: MatchRowProps) {
+const MatchRow = memo(function MatchRow({ item, myId, onPress, onLongPress }: MatchRowProps) {
   const hasUnread = (item.unreadCount ?? 0) > 0;
   const mine = item.lastMessage?.senderId === myId;
   const preview = item.lastMessage
@@ -54,11 +56,15 @@ const MatchRow = memo(function MatchRow({ item, myId, onPress }: MatchRowProps) 
       <PressScale
         haptic={false}
         onPress={() => onPress(item)}
+        onLongPress={() => onLongPress(item)}
+        delayLongPress={350}
         pressedScale={0.98}
         style={styles.row}
         accessibilityRole="button"
         accessibilityLabel={a11y}
-        accessibilityHint="abre a conversa"
+        accessibilityHint="abre a conversa; toque longo pra denunciar, bloquear ou desfazer o match"
+        accessibilityActions={[{ name: 'longpress', label: 'Denunciar, bloquear ou desfazer o match' }]}
+        onAccessibilityAction={(e) => (e.nativeEvent.actionName === 'longpress' ? onLongPress(item) : undefined)}
       >
         <View style={styles.avatarSlot}>
           <CruzeiAvatar
@@ -121,9 +127,13 @@ export function MatchesScreen() {
     [nav],
   );
 
+  // toque longo numa conversa: denunciar, bloquear ou desfazer o match sem abrir o chat
+  const [safetyFor, setSafetyFor] = useState<Match | null>(null);
+  const openSafety = useCallback((item: Match) => setSafetyFor(item), []);
+
   const renderItem = useCallback(
-    ({ item }: { item: Match }) => <MatchRow item={item} myId={myId} onPress={openChat} />,
-    [myId, openChat],
+    ({ item }: { item: Match }) => <MatchRow item={item} myId={myId} onPress={openChat} onLongPress={openSafety} />,
+    [myId, openChat, openSafety],
   );
 
   if (query.isLoading) {
@@ -183,6 +193,13 @@ export function MatchesScreen() {
           </View>
         }
         renderItem={renderItem}
+      />
+      <SafetySheet
+        visible={safetyFor !== null}
+        onClose={() => setSafetyFor(null)}
+        target={safetyFor ? { id: safetyFor.user.id, name: safetyFor.user.name } : null}
+        matchId={safetyFor?.id ?? null}
+        source="matches"
       />
     </SafeAreaView>
   );

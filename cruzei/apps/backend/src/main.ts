@@ -3,7 +3,7 @@ import './config/load-env';
 import 'reflect-metadata';
 import cluster from 'node:cluster';
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import * as express from 'express';
@@ -25,7 +25,8 @@ async function bootstrap() {
   const worker = clusterWorkerIndex();
   const logger = new Logger(worker ? `Bootstrap#${worker}` : 'Bootstrap');
 
-  app.setGlobalPrefix(config.get<string>('apiPrefix') ?? 'v1');
+  // /legal/:slug fica fora do prefixo: é a URL pública da política/termos (ficha das lojas, links fora do app)
+  app.setGlobalPrefix(config.get<string>('apiPrefix') ?? 'v1', { exclude: [{ path: 'legal/:slug', method: RequestMethod.GET }] });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

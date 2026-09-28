@@ -33,13 +33,15 @@ export class PublicUsersController {
     const u = await this.prisma.user.findUnique({
       where: { id },
       include: {
-        photos: { orderBy: { orderIndex: 'asc' } },
+        // só fotos aprovadas pela moderação (em análise e recusadas não aparecem pra ninguém além do dono)
+        photos: { where: { status: 'approved' }, orderBy: { orderIndex: 'asc' } },
         userInterests: { include: { interest: true } },
         seals: { where: { isCompleted: true } },
       },
     });
     const paused = u?.isPaused && (!u.pausedUntil || u.pausedUntil > new Date()); // pausa vencida não conta
-    if (!u || u.deletedAt || paused) throw notFound();
+    // suspensa, banida ou fora da descoberta pela moderação: some do cartão também
+    if (!u || u.deletedAt || paused || u.accountStatus !== 'active' || u.reviewHoldAt) throw notFound();
     if (u.visibilityMode === 'anonymous') throw notFound();
 
     // faixa e lugar só se a pessoa deixou ("mostrar distância") E está descoberta por mim agora

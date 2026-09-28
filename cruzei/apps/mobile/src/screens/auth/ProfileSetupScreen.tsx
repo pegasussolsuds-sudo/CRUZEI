@@ -38,6 +38,8 @@ import { useAuthStore } from '../../stores/auth';
 import { useLocationStore } from '../../stores/location';
 import { api, toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { TermsCheck } from '../../components/legal/TermsCheck';
+import { LEGAL_VERSION } from '@cruzei/shared-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Conteúdo
@@ -86,7 +88,7 @@ type AgeStatus = 'idle' | 'ok' | 'under' | 'invalid';
  * chips animados, slider de raio (gesture-handler + Reanimated) e toggle Visível/Anônimo.
  * Ao concluir chama register(); o store marca onboardingStep='avatar' e o RootNavigator segue pra AvatarSetup → PhotoUpload.
  */
-export function ProfileSetupScreen({ route }: Props) {
+export function ProfileSetupScreen({ route, navigation }: Props) {
   const { phone } = route.params;
   const register = useAuthStore((s) => s.register);
   const setAnonymous = useLocationStore((s) => s.setAnonymous);
@@ -98,6 +100,7 @@ export function ProfileSetupScreen({ route }: Props) {
   const [gender, setGender] = useState<string | null>(null);
   const [lookingFor, setLookingFor] = useState<string | null>(null);
   const [anonymous, setAnonymousLocal] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,7 +119,7 @@ export function ProfileSetupScreen({ route }: Props) {
           ? Boolean(gender)
           : step === 3
             ? Boolean(lookingFor)
-            : true;
+            : termsAccepted;
 
   // ── transição horizontal entre etapas ──────────────────────────────────────
   const slideX = useSharedValue(0);
@@ -180,7 +183,7 @@ export function ProfileSetupScreen({ route }: Props) {
   }, [canNext, goTo, step]);
 
   const onFinish = useCallback(async () => {
-    if (!parsedDate || !gender || !lookingFor || loading) return;
+    if (!parsedDate || !gender || !lookingFor || !termsAccepted || loading) return;
     setError(null);
     setLoading(true);
     try {
@@ -190,6 +193,7 @@ export function ProfileSetupScreen({ route }: Props) {
         birthDate: toIsoDate(parsedDate),
         gender,
         lookingFor,
+        termsVersion: LEGAL_VERSION,
       });
       // sucesso → o store marca onboardingStep='avatar' e o RootNavigator vai pra AvatarSetup (depois PhotoUpload).
       setAnonymous(anonymous);
@@ -213,7 +217,7 @@ export function ProfileSetupScreen({ route }: Props) {
       );
       setLoading(false);
     }
-  }, [anonymous, gender, loading, lookingFor, name, parsedDate, phone, register, setAnonymous]);
+  }, [anonymous, gender, loading, lookingFor, name, parsedDate, phone, register, setAnonymous, termsAccepted]);
 
   const current = STEPS[step];
   const isLast = step === LAST_STEP;
@@ -313,6 +317,8 @@ export function ProfileSetupScreen({ route }: Props) {
               {step === 4 ? (
                 <FadeInView delay={80} fromY={10} style={styles.visibilityBlock}>
                   <VisibilityToggle anonymous={anonymous} onChange={setAnonymousLocal} />
+                  <View style={{ height: spacing.lg }} />
+                  <TermsCheck checked={termsAccepted} onChange={setTermsAccepted} onOpen={(slug) => navigation.navigate('Legal', { slug })} dark />
                 </FadeInView>
               ) : null}
 

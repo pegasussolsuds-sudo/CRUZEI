@@ -9,6 +9,8 @@ interface RegisterInput {
   gender: string;
   orientation?: string;
   lookingFor?: string;
+  /** versão dos Termos/Política aceita na última etapa do cadastro */
+  termsVersion: string;
 }
 
 /** etapa pendente do pós-cadastro: avatar → foto → null (mapa) */

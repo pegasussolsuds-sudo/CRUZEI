@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { SmsService } from './sms.service';
+import { AccountStateService } from '../account/account-state.service';
 import { isAtLeast18, normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
 import { v4 as uuid } from 'uuid';
 
@@ -20,6 +21,7 @@ export class AuthService {
     private readonly cfg: ConfigService,
     private readonly sms: SmsService,
     private readonly redis: RedisService,
+    private readonly accounts: AccountStateService,
   ) {}
 
   async requestCode(phone: string) {
@@ -54,6 +56,8 @@ export class AuthService {
     gender: string;
     orientation?: string;
     lookingFor?: string;
+    /** versão dos Termos/Política que o app mostrou e a pessoa aceitou */
+    termsVersion: string;
   }) {
     const phone = normalizePhoneBR(payload.phone);
     if (!phone) throw new UnauthorizedException('Telefone inválido');
@@ -81,18 +85,22 @@ export class AuthService {
         avatarConfig: randomAvatarConfig(id, { gender: payload.gender as 'female' | 'male' | 'non_binary' | 'other' }) as never,
         // completude inicial: nome (10) + intenção definida (5) — resto vem de fotos/bio/interesses
         profileCompleteness: 10 + (payload.lookingFor && payload.lookingFor !== 'unspecified' ? 5 : 0),
+        termsVersion: payload.termsVersion,
+        termsAcceptedAt: new Date(),
       },
     });
     return this.issueTokens(user.id, phone);
   }
 
   async refresh(refreshToken: string) {
+    let payload: JwtPayload;
     try {
-      const payload = this.jwt.verify(refreshToken, { secret: this.cfg.get('jwt.secret') }) as JwtPayload;
-      return this.issueTokens(payload.sub, payload.phone);
+      payload = this.jwt.verify(refreshToken, { secret: this.cfg.get('jwt.secret') }) as JwtPayload;
     } catch {
       throw new UnauthorizedException('Refresh token inválido');
     }
+    // fora do try: conta banida/suspensa responde 403 com o motivo (não "token inválido")
+    return this.issueTokens(payload.sub, payload.phone);
   }
 
   async logout(userId: string): Promise<void> {
@@ -101,7 +109,9 @@ export class AuthService {
 
   private async issueTokens(userId: string, phone?: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new UnauthorizedException('Usuário não encontrado');
+    if (!user || user.deletedAt) throw new UnauthorizedException('Usuário não encontrado');
+    // banida/suspensa não ganha token novo (login e refresh): 403 com o motivo, que o app mostra
+    await this.accounts.assertActive(userId);
 
     const payload: JwtPayload = { sub: userId, phone: phone ?? user.phone ?? undefined };
     const accessTtl = this.cfg.get<number>('jwt.accessTtl') ?? 900;

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AppState, View } from 'react-native';
+import { Alert, AppState, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -11,12 +11,21 @@ import { useAuthStore } from './stores/auth';
 import { useBootStore } from './stores/boot';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket, ensureSocketAlive } from './services/socket';
+import { setAccountBlockedHandler } from './services/api';
+import { asAccountBlocked, useAccountBlockStore } from './stores/accountBlock';
 import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
 configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
+
+// 403 de conta suspensa/banida (API, refresh ou socket) → o app inteiro vira a tela de aviso
+setAccountBlockedHandler((data) => {
+  const b = asAccountBlocked(data);
+  if (b) useAccountBlockStore.getState().setBlocked(b);
+  return Boolean(b);
+});
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,6 +86,24 @@ export function App() {
       });
       socket.on('like_received', () => {
         queryClient.invalidateQueries({ queryKey: ['me'] });
+      });
+      // bloqueio, match desfeito ou moderação: a conversa some da lista na hora (o chat aberto fecha sozinho)
+      socket.on('match_closed', () => {
+        queryClient.invalidateQueries({ queryKey: ['matches'] });
+      });
+      socket.on('account_blocked', (data) => {
+        const b = asAccountBlocked(data);
+        if (b) useAccountBlockStore.getState().setBlocked(b);
+      });
+      socket.on('account_notice', ({ message }) => {
+        Alert.alert('Aviso da moderação', message);
+      });
+      socket.on('photo_moderated', ({ status, reason }) => {
+        queryClient.invalidateQueries({ queryKey: ['me'] });
+        useAuthStore.getState().refreshMe().catch(() => undefined);
+        if (status === 'rejected') {
+          Alert.alert('Foto recusada', `${reason ?? 'Uma foto sua não segue as regras do Metch'}. Ela não aparece pra ninguém; dá pra trocar no seu perfil.`);
+        }
       });
     })();
     return () => {

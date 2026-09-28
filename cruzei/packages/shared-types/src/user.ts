@@ -1,5 +1,6 @@
 // User — perfil principal
 import type { AvatarConfig } from './avatar';
+import type { PhotoStatus, UserRole } from './moderation';
 
 export type Gender = 'female' | 'male' | 'non_binary' | 'other';
 export type Orientation = 'heterosexual' | 'homosexual' | 'bisexual' | 'pansexual' | 'other';
@@ -15,6 +16,9 @@ export interface UserPhoto {
   thumbnailUrl: string | null;
   orderIndex: number;
   isMain: boolean;
+  /** só no /me: pending = em análise (ninguém mais vê), rejected = recusada pela moderação */
+  status?: PhotoStatus;
+  rejectReason?: string | null;
 }
 
 export interface UserSeal {
@@ -64,6 +68,9 @@ export interface User {
   stats: UserStats;
   createdAt: string;
   lastActiveAt: string;
+  role?: UserRole;
+  /** versão dos Termos/Política que a pessoa aceitou × a vigente (diferente → pedir novo aceite) */
+  legal?: { acceptedVersion: string | null; currentVersion: string };
 }
 
 export type SealType =

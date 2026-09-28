@@ -402,6 +402,13 @@ function PhotoTile({
               <Ionicons name="star" size={12} color={colors.black} />
             </View>
           ) : null}
+          {photo.status === 'pending' || photo.status === 'rejected' ? (
+            // em análise: só você vê até a moderação aprovar · recusada: não aparece pra ninguém
+            <View style={[styles.tileStatus, photo.status === 'rejected' && styles.tileStatusRejected]}>
+              <Ionicons name={photo.status === 'pending' ? 'time-outline' : 'close-circle'} size={12} color={colors.white} />
+              <Text style={styles.tileStatusText}>{photo.status === 'pending' ? 'em análise' : 'recusada'}</Text>
+            </View>
+          ) : null}
         </View>
       </Animated.View>
     </GestureDetector>
@@ -644,7 +651,13 @@ export function PhotoUploadScreen() {
   const onTilePress = useCallback(
     (photo: UserPhoto) => {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-      Alert.alert('Essa foto', photo.isMain ? 'É a sua principal ⭐' : 'O que fazemos com ela?', [
+      const note =
+        photo.status === 'pending'
+          ? 'Está em análise: só você vê até a moderação aprovar (costuma levar poucos minutos).'
+          : photo.status === 'rejected'
+            ? `Recusada pela moderação${photo.rejectReason ? ` (${photo.rejectReason})` : ''}: não aparece pra ninguém. Remova e mande outra.`
+            : null;
+      Alert.alert('Essa foto', [photo.isMain ? 'É a sua principal ⭐' : 'O que fazemos com ela?', note].filter(Boolean).join('\n\n'), [
         ...(!photo.isMain ? [{ text: 'Usar como principal', onPress: () => mainMutation.mutate(photo.id) }] : []),
         {
           text: 'Remover',
@@ -992,6 +1005,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  tileStatus: {
+    position: 'absolute',
+    left: spacing.xs,
+    right: spacing.xs,
+    bottom: spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 3,
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(10,10,26,0.72)',
+  },
+  tileStatusRejected: { backgroundColor: 'rgba(255,59,48,0.9)' },
+  tileStatusText: { fontSize: 11, fontWeight: '700', color: colors.white },
 
   emptyWrap: { position: 'absolute' },
   emptyPerspective: { flex: 1 },

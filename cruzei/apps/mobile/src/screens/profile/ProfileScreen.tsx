@@ -359,6 +359,14 @@ export function ProfileScreen() {
           <Link icon="home-outline" label="Áreas privadas" hint="casa, trabalho… ninguém te descobre lá" onPress={() => nav.navigate('PrivateAreas' as never)} last />
         </Section>
 
+        <Section title="segurança" delay={580}>
+          <Link icon="help-buoy-outline" label="Ajuda e segurança" hint="suporte e termos" onPress={() => nav.navigate('Help' as never)} />
+          <Link icon="ban-outline" label="Pessoas bloqueadas" onPress={() => nav.navigate('BlockedUsers' as never)} last={me.role !== 'moderator' && me.role !== 'admin'} />
+          {me.role === 'moderator' || me.role === 'admin' ? (
+            <Link icon="shield-half-outline" label="Moderação" hint="denúncias e fotos em análise" onPress={() => nav.navigate('Moderation' as never)} last />
+          ) : null}
+        </Section>
+
         <Section title="conta" delay={620}>
           <Link
             icon="shield-checkmark-outline"

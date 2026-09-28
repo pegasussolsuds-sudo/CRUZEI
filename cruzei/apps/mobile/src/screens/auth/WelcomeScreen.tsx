@@ -101,7 +101,17 @@ export function WelcomeScreen() {
           </FadeInView>
 
           <FadeInView delay={2500}>
-            <Text style={styles.legal}>Ao continuar você aceita os Termos e a Política de Privacidade (LGPD).</Text>
+            <Text style={styles.legal}>
+              Só pra maiores de 18. Leia os{' '}
+              <Text style={styles.legalLink} onPress={() => nav.navigate('Legal', { slug: 'termos' })} accessibilityRole="link">
+                Termos de Uso
+              </Text>{' '}
+              e a{' '}
+              <Text style={styles.legalLink} onPress={() => nav.navigate('Legal', { slug: 'privacidade' })} accessibilityRole="link">
+                Política de privacidade
+              </Text>
+              ; o aceite é pedido no fim do cadastro.
+            </Text>
           </FadeInView>
         </View>
       </SafeAreaView>
@@ -145,4 +155,5 @@ const styles = StyleSheet.create({
   },
   secondaryText: { ...typography.label, color: colors.white },
   legal: { ...typography.caption, color: colors.gray[500], textAlign: 'center', marginTop: spacing.md },
+  legalLink: { color: colors.gray[300], textDecorationLine: 'underline' },
 });

@@ -3,6 +3,7 @@
 import type { Message, Match } from '../match';
 import type { NearbyUser, Hotspot } from '../location';
 import type { AvatarConfig } from '../avatar';
+import type { AccountBlockedError, PhotoStatus } from '../moderation';
 
 export interface ServerToClientEvents {
   // Presença
@@ -22,6 +23,17 @@ export interface ServerToClientEvents {
   message_read: (data: { matchId: string; messageIds: string[]; readAt: string }) => void;
   typing_indicator: (data: { matchId: string; userId: string; isTyping: boolean }) => void;
   chat_expiring: (data: { matchId: string; expiresAt: string; hoursRemaining: number }) => void;
+
+  /** match acabou (bloqueio, desfeito, banimento): some da lista e o chat aberto fecha */
+  match_closed: (data: { matchId: string }) => void;
+
+  // Moderação
+  /** a conta foi suspensa/banida agora (o socket cai logo depois) */
+  account_blocked: (data: AccountBlockedError) => void;
+  /** advertência da moderação */
+  account_notice: (data: { kind: 'warning'; message: string }) => void;
+  /** uma foto minha foi aprovada/recusada */
+  photo_moderated: (data: { photoId: string; status: PhotoStatus; reason: string | null }) => void;
 
   // Online status
   user_online: (data: { userId: string }) => void;

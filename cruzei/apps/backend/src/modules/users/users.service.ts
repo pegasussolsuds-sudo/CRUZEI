@@ -5,12 +5,16 @@ import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
 import { PRIVACY } from '../location/discovery-privacy';
+import { LEGAL_VERSION } from '@cruzei/shared-types';
+import { PhotoModerationService } from '../moderation/photo-moderation.service';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
 
 /** modo anônimo no plano grátis: 24 h por vez (sorted set userId → vencimento em ms; o cron devolve ao visível) */
 export const ANON_FREE_KEY = 'anon:free:until';
 export const ANON_FREE_HOURS = 24;
+/** mesmo teto do app (PhotoUploadScreen): o servidor é quem garante */
+export const MAX_PHOTOS = 6;
 
 /**
  * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
@@ -27,6 +31,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly photoModeration: PhotoModerationService,
   ) {}
 
   async me(userId: string) {
@@ -82,6 +87,9 @@ export class UsersService {
         thumbnailUrl: p.thumbnailUrl,
         orderIndex: p.orderIndex,
         isMain: p.isMain,
+        // em análise / recusada: só o dono vê (e o app avisa)
+        status: p.status,
+        rejectReason: p.rejectReason,
       })),
       interests: user.userInterests.map((ui) => ui.interest.name),
       seals: user.seals.map((s) => ({
@@ -110,6 +118,8 @@ export class UsersService {
       },
       createdAt: user.createdAt.toISOString(),
       lastActiveAt: user.lastActiveAt.toISOString(),
+      role: user.role,
+      legal: { acceptedVersion: user.termsVersion, currentVersion: LEGAL_VERSION },
     };
 
     // cache não passa do fim da pausa/assinatura, senão o app vê estado vencido por até 1h
@@ -253,6 +263,7 @@ export class UsersService {
     if (makeMain) {
       await this.prisma.photo.updateMany({ where: { userId }, data: { isMain: false } });
     }
+    if (count >= MAX_PHOTOS) throw new BadRequestException(`Máximo de ${MAX_PHOTOS} fotos`);
     const photo = await this.prisma.photo.create({
       data: {
         userId,
@@ -260,8 +271,11 @@ export class UsersService {
         thumbnailUrl: thumbnailUrl ?? url,
         isMain: makeMain,
         orderIndex: count,
+        // com a moderação ligada a foto nasce "em análise": ninguém além do dono vê até ser aprovada
+        status: this.photoModeration.initialStatus(),
       },
     });
+    this.photoModeration.enqueue(photo.id);
     await this.refreshCompleteness(userId);
     return {
       id: photo.id,
@@ -269,7 +283,17 @@ export class UsersService {
       thumbnailUrl: photo.thumbnailUrl,
       orderIndex: photo.orderIndex,
       isMain: photo.isMain,
+      status: photo.status,
+      rejectReason: photo.rejectReason,
     };
+  }
+
+  /** aceite dos Termos/Política (cadastro antigo ou versão nova): grava a versão e a data */
+  async acceptTerms(userId: string, version: string) {
+    if (version !== LEGAL_VERSION) throw new BadRequestException({ error: 'terms_outdated', message: 'Os termos mudaram: abra de novo pra ver a versão atual' });
+    await this.prisma.user.update({ where: { id: userId }, data: { termsVersion: version, termsAcceptedAt: new Date() } });
+    await this.redis.invalidateProfile(userId);
+    return { acceptedVersion: version, currentVersion: LEGAL_VERSION };
   }
 
   async deletePhoto(userId: string, photoId: string) {

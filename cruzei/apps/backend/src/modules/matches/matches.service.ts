@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
@@ -15,7 +16,13 @@ const USER_CARD_SELECT = {
   gender: true, // seed do avatar de fallback
   birthDate: true,
   avatarConfig: true,
-  photos: { where: { isMain: true }, select: { url: true } },
+  // outras pessoas só veem foto aprovada pela moderação (a principal, senão a primeira aprovada)
+  photos: {
+    where: { status: 'approved' },
+    orderBy: [{ isMain: 'desc' }, { orderIndex: 'asc' }] as Prisma.PhotoOrderByWithRelationInput[],
+    take: 1,
+    select: { url: true },
+  },
 } as const;
 
 @Injectable()
@@ -33,9 +40,10 @@ export class MatchesService {
 
     const target = await this.prisma.user.findUnique({
       where: { id: likedId },
-      select: { id: true, deletedAt: true, visibilityMode: true },
+      select: { id: true, deletedAt: true, visibilityMode: true, accountStatus: true, reviewHoldAt: true },
     });
-    if (!target || target.deletedAt) throw new NotFoundException('Usuário não encontrado');
+    // suspensa, banida ou fora da descoberta pela moderação: some pra todo mundo, curtida inclusive
+    if (!target || target.deletedAt || target.accountStatus !== 'active' || target.reviewHoldAt) throw new NotFoundException('Usuário não encontrado');
     if (target.visibilityMode === 'anonymous') {
       throw new BadRequestException('Essa pessoa está em modo anônimo — só dá match quando ela se revelar');
     }
@@ -175,6 +183,8 @@ export class MatchesService {
     if (m.userAId !== userId && m.userBId !== userId) {
       throw new ForbiddenException('Sem acesso');
     }
+    // bloqueado/desfeito: a conversa acabou — nada de continuar vendo foto, bio e nome atualizados do outro
+    if (m.status === 'blocked' || m.status === 'unmatched') throw new NotFoundException('Match não encontrado');
     const other = m.userAId === userId ? m.userB : m.userA;
     return {
       id: m.id,
@@ -190,10 +200,14 @@ export class MatchesService {
 
   async unmatch(matchId: string, userId: string) {
     await this.getMatch(matchId, userId); // valida ownership
-    await this.prisma.match.update({
+    const m = await this.prisma.match.update({
       where: { id: matchId },
       data: { status: 'unmatched' } as never,
+      select: { userAId: true, userBId: true },
     });
+    // os dois lados tiram da lista e fecham o chat na hora
+    this.gateway.closeMatch(matchId, [m.userAId, m.userBId]);
+    await Promise.all([this.redis.invalidateProfile(m.userAId), this.redis.invalidateProfile(m.userBId)]);
     return { ok: true };
   }
 

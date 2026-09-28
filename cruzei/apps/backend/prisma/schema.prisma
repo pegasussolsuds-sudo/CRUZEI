@@ -39,6 +39,14 @@ model User {
   createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamp(6)
   lastActiveAt          DateTime              @default(now()) @map("last_active_at") @db.Timestamp(6)
+  role                  UserRole              @default(user)
+  accountStatus         AccountStatus         @default(active) @map("account_status")
+  suspendedUntil        DateTime?             @map("suspended_until") @db.Timestamp(6)
+  moderationReason      String?               @map("moderation_reason") @db.VarChar(255)
+  reviewHoldAt          DateTime?             @map("review_hold_at") @db.Timestamp(6)
+  termsVersion          String?               @map("terms_version") @db.VarChar(20)
+  termsAcceptedAt       DateTime?             @map("terms_accepted_at") @db.Timestamp(6)
+  moderationActionsMade ModerationAction[]    @relation("Moderator")
   auditLogs             AuditLog[]
   blocksReceived        Block[]               @relation("Blocked")
   blocksMade            Block[]               @relation("Blocker")
@@ -95,6 +103,11 @@ model Photo {
   isMain         Boolean     @default(false) @map("is_main")
   source         PhotoSource @default(user_upload)
   isFaceVerified Boolean     @default(false) @map("is_face_verified")
+  status         PhotoStatus @default(approved)
+  moderationLabels Json?     @map("moderation_labels")
+  reviewedAt     DateTime?   @map("reviewed_at") @db.Timestamp(6)
+  reviewedBy     String?     @map("reviewed_by") @db.Uuid
+  rejectReason   String?     @map("reject_reason") @db.VarChar(100)
   createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
   user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -316,6 +329,8 @@ model Report {
   reviewedBy   String?      @map("reviewed_by") @db.Uuid
   reviewedAt   DateTime?    @map("reviewed_at") @db.Timestamp(6)
   actionTaken  String?      @map("action_taken") @db.VarChar(255)
+  priority     Int          @default(0) @db.SmallInt
+  context      Json?
   createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
   reported     User         @relation("Reported", fields: [reportedId], references: [id], onDelete: Cascade)
   reporter     User?        @relation("Reporter", fields: [reporterId], references: [id])
@@ -495,6 +510,24 @@ enum SealType {
   cultural
 }
 
+enum UserRole {
+  user
+  moderator
+  admin
+}
+
+enum AccountStatus {
+  active
+  suspended
+  banned
+}
+
+enum PhotoStatus {
+  pending
+  approved
+  rejected
+}
+
 enum ReportStatus {
   pending
   reviewing
@@ -514,4 +547,34 @@ enum POICategory {
   beach
   museum
   other
+}
+
+/// decisões de moderação (humanas e automáticas); sem FK no alvo pra sobreviver à exclusão da conta
+model ModerationAction {
+  id           BigInt   @id @default(autoincrement())
+  moderatorId  String?  @map("moderator_id") @db.Uuid
+  targetUserId String   @map("target_user_id") @db.Uuid
+  action       String   @db.VarChar(40)
+  reportId     String?  @map("report_id") @db.Uuid
+  photoId      String?  @map("photo_id") @db.Uuid
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+  moderator    User?    @relation("Moderator", fields: [moderatorId], references: [id], onDelete: SetNull)
+
+  @@index([targetUserId, createdAt(sort: Desc)], map: "idx_modact_target")
+  @@map("moderation_actions")
+}
+
+/// registros de acesso (Marco Civil, art. 15): data, hora, IP e porta por 6 meses; sem FK pelo mesmo motivo
+model AccessLog {
+  id        BigInt   @id @default(autoincrement())
+  userId    String   @map("user_id") @db.Uuid
+  event     String   @db.VarChar(20)
+  ip        String?  @db.VarChar(45)
+  port      Int?
+  userAgent String?  @map("user_agent") @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(6)
+
+  @@index([userId, createdAt(sort: Desc)], map: "idx_access_logs_user")
+  @@map("access_logs")
 }

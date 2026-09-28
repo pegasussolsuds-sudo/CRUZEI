@@ -8,3 +8,4 @@ export * from './date/time-ago';
 export * from './geo/approx';
 export * from './geo/proximity';
 export * from './avatar';
+export * from './format/mini-markdown';

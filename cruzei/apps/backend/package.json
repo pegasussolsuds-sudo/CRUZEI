@@ -21,6 +21,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@aws-sdk/client-rekognition": "3.1142.0",
     "@nestjs/bull": "10.2.1",
     "@nestjs/common": "10.4.22",
     "@nestjs/config": "3.2.3",

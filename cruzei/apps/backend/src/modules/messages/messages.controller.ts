@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import { IsArray, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { assertPhotoHost } from '../../common/photo-host';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { MessagesService } from './messages.service';
@@ -10,8 +12,8 @@ class SendMessageDto {
 }
 
 class SendMediaDto {
-  @IsString() type!: 'photo_temp' | 'audio' | 'gif';
-  @IsString() mediaUrl!: string;
+  @IsIn(['photo_temp', 'audio', 'gif']) type!: 'photo_temp' | 'audio' | 'gif';
+  @IsString() @MaxLength(500) mediaUrl!: string;
   @IsString() clientId!: string;
 }
 
@@ -48,7 +50,10 @@ export class MessagesController {
     @CurrentUser() user: AuthenticatedUser,
     @Param('matchId') matchId: string,
     @Body() dto: SendMediaDto,
+    @Req() req: Request,
   ) {
+    // mídia só hospedada pelo Metch (URL de fora vira pixel de rastreio do outro lado)
+    assertPhotoHost(dto.mediaUrl, req);
     return this.svc.sendMedia(matchId, user.id, dto.type, dto.mediaUrl, dto.clientId);
   }
 

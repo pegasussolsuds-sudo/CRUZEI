@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import {
   ArrayMaxSize,
@@ -18,22 +18,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 
-/** hosts que podem servir fotos: o próprio backend (host da requisição) + PHOTO_ALLOWED_HOSTS (R2/CDN em prod) */
-function assertPhotoHost(url: string, req: Request): void {
-  let host: string;
-  try {
-    host = new URL(url).host.toLowerCase();
-  } catch {
-    throw new BadRequestException('URL de foto inválida');
-  }
-  const allowed = new Set(
-    [req.get('host') ?? '', ...(process.env.PHOTO_ALLOWED_HOSTS ?? '').split(',')].map((h) => h.trim().toLowerCase()).filter(Boolean),
-  );
-  // dev: o app fala com o backend por 127.0.0.1/localhost/IP da LAN (túnel USB ou Wi-Fi) — mesma porta, hosts equivalentes
-  const port = (req.get('host') ?? '').split(':')[1];
-  if (port) ['127.0.0.1', 'localhost'].forEach((h) => allowed.add(`${h}:${port}`));
-  if (!allowed.has(host)) throw new BadRequestException('Foto precisa estar hospedada pelo Metch');
-}
+import { assertPhotoHost } from '../../common/photo-host';
 
 class UpdateMeDto {
   @IsOptional() @IsString() @MaxLength(50) name?: string;
@@ -74,6 +59,10 @@ class PhotoDto {
 
 class ReorderDto {
   @IsArray() photoIds!: string[];
+}
+
+class TermsDto {
+  @IsString() @MaxLength(20) version!: string;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -126,6 +115,12 @@ export class UsersController {
   @Delete('private-areas/:id')
   removePrivateArea(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.svc.removePrivateArea(user.id, id);
+  }
+
+  // aceite dos Termos de Uso + Política de privacidade (versão nova ou conta criada antes do aceite existir)
+  @Post('terms')
+  acceptTerms(@CurrentUser() user: AuthenticatedUser, @Body() dto: TermsDto) {
+    return this.svc.acceptTerms(user.id, dto.version);
   }
 
   @Post('photos')

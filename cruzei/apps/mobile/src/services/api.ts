@@ -8,6 +8,17 @@ const REFRESH_KEY = 'cruzei.refresh';
 let inMemoryToken: string | null | undefined; // undefined = ainda não lido do SecureStore
 let refreshing: Promise<string | null> | null = null;
 let onUnauthorized: (() => void) | null = null;
+let onAccountBlocked: ((data: unknown) => boolean) | null = null;
+
+/** 403 de conta suspensa/banida (qualquer rota, inclusive login/refresh): o store decide se é bloqueio de conta */
+export function setAccountBlockedHandler(fn: ((data: unknown) => boolean) | null) {
+  onAccountBlocked = fn;
+}
+
+/** o socket também recebe o bloqueio (connect_error / account_blocked): mesmo destino */
+export function reportAccountBlocked(data: unknown): boolean {
+  return onAccountBlocked?.(data) ?? false;
+}
 
 // Chamado pelo auth store: quando o refresh falha, derruba a sessão na UI.
 export function setUnauthorizedHandler(fn: (() => void) | null) {
@@ -76,6 +87,9 @@ api.interceptors.response.use(
     const original = err.config as RetryConfig | undefined;
     const isAuthRoute = original?.url?.includes('/auth/') ?? false;
 
+    // conta suspensa/banida: a tela de aviso assume (não adianta renovar token)
+    if (err.response?.status === 403 && onAccountBlocked?.(err.response.data)) return Promise.reject(err);
+
     if (err.response?.status === 401 && original && !original._retry && !isAuthRoute) {
       original._retry = true;
       let newToken: string | null;
@@ -112,6 +126,7 @@ export async function refreshAccessToken(): Promise<string | null> {
         return res.data.token as string;
       } catch (e) {
         const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+        if (status === 403 && axios.isAxiosError(e)) onAccountBlocked?.(e.response?.data);
         // 400/401/403 = servidor recusou o refresh token de fato
         if (status === 400 || status === 401 || status === 403) return null;
         throw e;

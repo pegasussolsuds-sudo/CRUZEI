@@ -892,7 +892,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * só quem pode aparecer: visível, não pausado, não excluído. Um parâmetro só (= ANY(array)): o IN do Prisma mandava
+   * só quem pode aparecer: visível, não pausado, não excluído, não suspenso/banido nem fora da descoberta pela
+   * moderação (review_hold_at). Um parâmetro só (= ANY(array)): o IN do Prisma mandava
    * milhares de parâmetros por consulta e o Postgres gastava mais planejando do que lendo.
    */
   private async loadFlagsFromDb(ids: string[]): Promise<CandidateFlags[]> {
@@ -900,7 +901,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       SELECT id::text AS id, visibility_mode::text AS "visibilityMode", is_paused AS "isPaused", deleted_at AS "deletedAt",
              discovery_mode::text AS "discoveryMode", show_age AS "showAge", show_photo_on_map AS "showPhotoOnMap"
         FROM users
-       WHERE id = ANY(${ids}::uuid[]) AND deleted_at IS NULL AND is_paused = false AND visibility_mode = 'visible'`;
+       WHERE id = ANY(${ids}::uuid[]) AND deleted_at IS NULL AND is_paused = false AND visibility_mode = 'visible'
+         AND account_status = 'active' AND review_hold_at IS NULL`;
   }
 
   private async loadProfilesFromDb(ids: string[]): Promise<CandidateProfile[]> {
@@ -909,7 +911,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     >`
       SELECT u.id::text AS id, u.name, u.gender::text AS gender, u.birth_date AS "birthDate", u.created_at AS "createdAt",
              u.premium_tier::text AS "premiumTier", u.is_verified AS "isVerified", u.avatar_config AS "avatarConfig",
-             (SELECT json_build_object('url', p.url, 'thumbnailUrl', p.thumbnail_url) FROM photos p WHERE p.user_id = u.id AND p.is_main LIMIT 1) AS photo,
+             (SELECT json_build_object('url', p.url, 'thumbnailUrl', p.thumbnail_url) FROM photos p
+               WHERE p.user_id = u.id AND p.status = 'approved' ORDER BY p.is_main DESC, p.order_index LIMIT 1) AS photo,
              (SELECT array_agg(ui.interest_id::int) FROM user_interests ui WHERE ui.user_id = u.id) AS interests
         FROM users u
        WHERE u.id = ANY(${ids}::uuid[]) AND u.deleted_at IS NULL`;

@@ -35,6 +35,7 @@ import { Canvas, Group, Path, Skia, type SkPath } from '@shopify/react-native-sk
 import { api, toApiError } from '../../services/api';
 import { FadeInView, Glow, ScaleOnPress, SlideInView } from '../../components/animated';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
+import { SafetySheet } from '../../components/safety/SafetySheet';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
@@ -130,6 +131,7 @@ export function UserCardScreen() {
   const [burst, setBurst] = useState<{ kind: BurstKind; x: number; y: number; key: number } | null>(null);
   const [sent, setSent] = useState<'like' | 'super' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [safetyOpen, setSafetyOpen] = useState(false);
   const likeBtnRef = useRef<View>(null);
   const superBtnRef = useRef<View>(null);
 
@@ -441,6 +443,23 @@ export function UserCardScreen() {
       </Animated.ScrollView>
 
       <BackButton top={insets.top} onPress={() => nav.goBack()} />
+      <ScaleOnPress
+        onPress={() => setSafetyOpen(true)}
+        style={[styles.back, styles.more, { top: insets.top + spacing.sm }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Denunciar ou bloquear ${user.name}`}
+      >
+        <Ionicons name="ellipsis-horizontal" size={22} color={colors.white} />
+      </ScaleOnPress>
+      <SafetySheet
+        visible={safetyOpen}
+        onClose={() => setSafetyOpen(false)}
+        target={{ id: user.id, name: user.name }}
+        matchId={alreadyMatched?.id ?? null}
+        source="profile"
+        // bloqueou/desfez/denunciou-e-bloqueou: a pessoa sumiu, o cartão não faz mais sentido
+        onDone={(outcome) => (outcome === 'reported' ? undefined : nav.goBack())}
+      />
 
       {/* ── rodapé fixo ── */}
       <View pointerEvents="box-none" style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
@@ -837,6 +856,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 20,
   },
+
+  more: { left: undefined, right: spacing.lg },
 
   headerInfo: { position: 'absolute', left: spacing.lg, right: spacing.lg, bottom: spacing.xl + spacing.lg },
   avatarChip: {

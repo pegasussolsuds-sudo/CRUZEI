@@ -296,7 +296,11 @@ export class PoisService {
     const here = ((await this.placeSnapshot()).now.get(String(id)) ?? []).slice(0, 100);
     const rows = await this.prisma.user.findMany({
       where: { id: { in: here.map((r) => r.userId) } },
-      select: { id: true, name: true, birthDate: true, showAge: true, gender: true, avatarConfig: true, photos: { where: { isMain: true }, select: { url: true, thumbnailUrl: true } } },
+      select: {
+        id: true, name: true, birthDate: true, showAge: true, gender: true, avatarConfig: true,
+        // só foto aprovada pela moderação
+        photos: { where: { status: 'approved' }, orderBy: [{ isMain: 'desc' }, { orderIndex: 'asc' }], take: 1, select: { url: true, thumbnailUrl: true } },
+      },
       take: 100,
     });
     const count = rows.length >= PRIVACY.MIN_PLACE_K ? rows.length : 0;

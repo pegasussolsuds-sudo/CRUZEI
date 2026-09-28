@@ -32,6 +32,9 @@ import { SubscriptionsModule } from './modules/subscriptions/subscriptions.modul
 import { BoostsModule } from './modules/boosts/boosts.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { UploadsModule } from './modules/uploads/uploads.module';
+import { AccountModule } from './modules/account/account.module';
+import { ModerationModule } from './modules/moderation/moderation.module';
+import { LegalModule } from './modules/legal/legal.module';
 
 import { HealthController } from './health/health.controller';
 
@@ -79,6 +82,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
 
     DatabaseModule,
     RedisModule,
+    AccountModule,
     RealtimeModule,
 
     AuthModule,
@@ -98,6 +102,8 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     BoostsModule,
     WebhooksModule,
     UploadsModule,
+    ModerationModule,
+    LegalModule,
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.

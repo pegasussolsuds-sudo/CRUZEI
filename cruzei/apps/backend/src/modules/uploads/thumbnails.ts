@@ -51,6 +51,23 @@ function loadSharp(): SharpFactory | null {
   return sharpFactory;
 }
 
+/**
+ * JPEG de até `maxSide` px (EXIF girado e descartado) pra mandar à análise automática de fotos: a Rekognition aceita
+ * só JPEG/PNG de até 5 MB. null sem sharp ou com arquivo ilegível.
+ */
+export async function jpegForAnalysis(input: string | Buffer, maxSide = 1600): Promise<Buffer | null> {
+  const sharp = loadSharp() as unknown as ((i: string | Buffer) => {
+    rotate: () => { resize: (w: number, h: number, o: object) => { jpeg: (o: object) => { toBuffer: () => Promise<Buffer> } } };
+  }) | null;
+  if (!sharp) return null;
+  try {
+    return await sharp(input).rotate().resize(maxSide, maxSide, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+  } catch (err) {
+    logger.warn(`foto ilegível pra análise: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 /** Nome do arquivo de thumbnail de uma foto (`abc.jpg` → `abc-t.jpg`). */
 export function thumbNameFor(filename: string): string {
   const ext = path.extname(filename);

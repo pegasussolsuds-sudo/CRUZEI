@@ -1,34 +1,61 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../redis/redis.service';
+import { ChatGateway } from '../../realtime/chat.gateway';
 
 @Injectable()
 export class BlocksService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+    private readonly gateway: ChatGateway,
+  ) {}
 
   async block(blockerId: string, blockedId: string, reason?: string) {
     if (blockerId === blockedId) throw new BadRequestException('Não pode bloquear você mesmo');
+    const exists = await this.prisma.user.findUnique({ where: { id: blockedId }, select: { id: true } });
+    if (!exists) throw new NotFoundException('Usuário não encontrado');
     const b = await this.prisma.block.upsert({
       where: { blockerId_blockedId: { blockerId, blockedId } },
-      update: { reason },
-      create: { blockerId, blockedId, reason },
+      update: { reason: reason?.slice(0, 255) },
+      create: { blockerId, blockedId, reason: reason?.slice(0, 255) },
     });
-    // bloqueou → o match ativo entre os dois (se houver) fecha na hora
-    await this.prisma.match.updateMany({
+    // bloqueou → o match entre os dois (ativo ou vencido) fecha na hora: sai da lista, do chat e da sala do socket
+    const match = await this.prisma.match.findFirst({
       where: {
-        status: 'active',
+        status: { in: ['active', 'expired'] },
         OR: [
           { userAId: blockerId, userBId: blockedId },
           { userAId: blockedId, userBId: blockerId },
         ],
       },
-      data: { status: 'blocked' } as never,
+      select: { id: true },
     });
+    if (match) {
+      await this.prisma.match.update({ where: { id: match.id }, data: { status: 'blocked' } });
+      this.gateway.closeMatch(match.id, [blockerId, blockedId]);
+    }
+    await Promise.all([this.redis.invalidateProfile(blockerId), this.redis.invalidateProfile(blockedId)]);
     // linhas do Prisma têm BigInt (id): nunca devolver cru — o JSON.stringify estoura em 500
     return { id: String(b.id), blockedId: b.blockedId, reason: b.reason ?? null, createdAt: b.createdAt.toISOString() };
   }
 
   async unblock(blockerId: string, blockedId: string) {
     await this.prisma.block.deleteMany({ where: { blockerId, blockedId } });
+    // sem bloqueio nenhum entre os dois, o match fechado pelo bloqueio vira "desfeito": podem dar match de novo
+    const still = await this.prisma.block.findFirst({ where: { blockerId: blockedId, blockedId: blockerId }, select: { id: true } });
+    if (!still) {
+      await this.prisma.match.updateMany({
+        where: {
+          status: 'blocked',
+          OR: [
+            { userAId: blockerId, userBId: blockedId },
+            { userAId: blockedId, userBId: blockerId },
+          ],
+        },
+        data: { status: 'unmatched' },
+      });
+    }
     return { ok: true };
   }
 
@@ -38,7 +65,11 @@ export class BlocksService {
       orderBy: { createdAt: 'desc' },
       include: {
         blocked: {
-          select: { id: true, name: true, photos: { where: { isMain: true }, select: { url: true } } },
+          select: {
+            id: true,
+            name: true,
+            photos: { where: { status: 'approved' }, orderBy: [{ isMain: 'desc' }, { orderIndex: 'asc' }], take: 1, select: { url: true } },
+          },
         },
       },
     });

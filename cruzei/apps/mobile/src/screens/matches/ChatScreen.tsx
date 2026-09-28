@@ -1,6 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -35,6 +36,7 @@ import type { MatchesStackParamList } from '../../navigation/MatchesStack';
 import { FadeInView, Pulse, ScaleOnPress, SlideInView, TypingDots } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
+import { SafetySheet } from '../../components/safety/SafetySheet';
 
 type ChatMessage = Message & { pending?: boolean; failed?: boolean };
 type ChatNav = NativeStackNavigationProp<MatchesStackParamList, 'Chat'>;
@@ -200,6 +202,7 @@ export function ChatScreen() {
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [safetyOpen, setSafetyOpen] = useState(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** ids/clientIds já exibidos — só o que NÃO está aqui entra animado */
@@ -242,8 +245,40 @@ export function ChatScreen() {
           </Text>
         </View>
       ),
+      headerRight: () =>
+        otherId ? (
+          <Pressable onPress={() => setSafetyOpen(true)} hitSlop={12} accessibilityRole="button" accessibilityLabel={`Denunciar ou bloquear ${name}`}>
+            <Ionicons name="ellipsis-vertical" size={20} color={colors.white} />
+          </Pressable>
+        ) : null,
     });
   }, [nav, name, otherId, otherAvatar]);
+
+  // match fechado (bloqueio, desfeito, moderação) com o chat aberto: sai da conversa
+  const closedRef = useRef(false);
+  const leaveClosed = useCallback(
+    (message: string) => {
+      if (closedRef.current) return;
+      closedRef.current = true;
+      qc.invalidateQueries({ queryKey: ['matches'] });
+      Alert.alert('Conversa encerrada', message, [{ text: 'Ok', onPress: () => nav.goBack() }], { cancelable: false });
+    },
+    [nav, qc],
+  );
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    const onClosed = (d: { matchId: string }) => {
+      if (d.matchId === matchId && !safetyOpen) leaveClosed('Essa conversa não está mais disponível.');
+    };
+    socket.on('match_closed', onClosed);
+    return () => {
+      socket.off('match_closed', onClosed);
+    };
+  }, [leaveClosed, matchId, safetyOpen]);
+  useEffect(() => {
+    if (matchQuery.isError && toApiError(matchQuery.error).status === 404) leaveClosed('Essa conversa não está mais disponível.');
+  }, [matchQuery.isError, matchQuery.error, leaveClosed]);
 
   // Relógio do banner: recalcula a cada 30s
   useEffect(() => {
@@ -548,6 +583,20 @@ export function ChatScreen() {
           </View>
         )}
       </KeyboardAvoidingView>
+      {otherId ? (
+        <SafetySheet
+          visible={safetyOpen}
+          onClose={() => setSafetyOpen(false)}
+          target={{ id: otherId, name }}
+          matchId={matchId}
+          source="chat"
+          onDone={(outcome) => {
+            if (outcome === 'reported') return;
+            closedRef.current = true; // quem fechou fui eu: sem o alerta de "conversa encerrada"
+            nav.goBack();
+          }}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }

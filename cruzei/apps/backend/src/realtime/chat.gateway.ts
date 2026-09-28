@@ -17,6 +17,7 @@ import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { processesSharingResources } from '../config/runtime';
 import type { JwtPayload } from '../modules/auth/auth.service';
+import { AccountStateService } from '../modules/account/account-state.service';
 
 // Gateway único de tempo real: chat, match e presença.
 // Cada usuário entra na room "user:<id>"; cada chat aberto entra em "match:<id>".
@@ -32,6 +33,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly cfg: ConfigService,
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly accounts: AccountStateService,
   ) {}
 
   // JWT validado no handshake (middleware): token vencido/ausente vira connect_error 'unauthorized' e o socket
@@ -48,13 +50,25 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       const fromHeader = (client.handshake.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
       const raw = fromAuth || fromHeader;
       if (!raw) return next(new Error('unauthorized'));
+      let payload: JwtPayload;
       try {
-        const payload = this.jwt.verify(raw, { secret: this.cfg.get<string>('jwt.secret') }) as JwtPayload;
-        client.data.userId = payload.sub;
-        next();
+        payload = this.jwt.verify(raw, { secret: this.cfg.get<string>('jwt.secret') }) as JwtPayload;
       } catch {
-        next(new Error('unauthorized'));
+        return next(new Error('unauthorized'));
       }
+      // conta banida/suspensa/excluída não conecta: o erro leva o código (account_banned…) e o motivo pro app
+      this.accounts
+        .blockedReason(payload.sub)
+        .then((blocked) => {
+          if (!blocked) {
+            client.data.userId = payload.sub;
+            return next();
+          }
+          const err = new Error(blocked.error) as Error & { data?: unknown };
+          err.data = blocked;
+          next(err);
+        })
+        .catch(() => next(new Error('unavailable')));
     });
   }
 
@@ -99,7 +113,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   @SubscribeMessage('typing')
   typing(@ConnectedSocket() client: Socket, @MessageBody() body: { matchId: string; isTyping: boolean }) {
-    if (!body?.matchId) return;
+    // só quem entrou na sala (join_match confere a participação) avisa que está digitando
+    if (!body?.matchId || !client.rooms.has(`match:${body.matchId}`)) return;
     client.to(`match:${body.matchId}`).emit('typing_indicator', {
       matchId: body.matchId,
       userId: client.data.userId,
@@ -126,11 +141,26 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     this.server?.to(`match:${matchId}`).emit(event, payload);
   }
 
+  /** match fechado (bloqueio, desfeito, banimento): tira os sockets da sala e avisa os dois lados */
+  closeMatch(matchId: string, userIds: string[]) {
+    this.server?.in(`match:${matchId}`).socketsLeave(`match:${matchId}`);
+    this.emitToUsers(userIds, 'match_closed', { matchId });
+  }
+
+  /** conta banida/suspensa: derruba as conexões em todos os processos (o adaptador Redis repassa) */
+  disconnectUser(userId: string, reason: unknown) {
+    const room = this.server?.in(`user:${userId}`);
+    if (!room) return;
+    this.server.to(`user:${userId}`).emit('account_blocked', reason);
+    setTimeout(() => room.disconnectSockets(true), 300);
+  }
+
   private async isParticipant(matchId: string, userId: string): Promise<boolean> {
     const m = await this.prisma.match.findUnique({
       where: { id: matchId },
-      select: { userAId: true, userBId: true },
+      select: { userAId: true, userBId: true, status: true },
     });
-    return Boolean(m && (m.userAId === userId || m.userBId === userId));
+    // bloqueado/desfeito não volta pra sala (nem pro "digitando")
+    return Boolean(m && (m.userAId === userId || m.userBId === userId) && (m.status === 'active' || m.status === 'expired'));
   }
 }

@@ -87,7 +87,13 @@ export class MessagesService {
     mediaUrl: string,
     clientId?: string,
   ) {
+    // mídia no chat ainda não passa pela moderação de fotos (e o app não tem essa função): desligada até ter
+    if (process.env.CHAT_MEDIA_ENABLED !== 'true') {
+      throw new ForbiddenException({ error: 'media_disabled', message: 'Envio de mídia no chat ainda não está disponível' });
+    }
     const match = await this.assertParticipant(matchId, userId);
+    // mesma regra do texto: bloqueado/desfeito/vencido não recebe mais nada
+    if (match.status !== 'active') throw new BadRequestException('Match não está ativo');
     if (new Date() > match.chatExpiresAt) throw new BadRequestException('Chat expirado');
 
     const expiresAt = type === 'photo_temp' ? new Date(Date.now() + 10_000) : null;

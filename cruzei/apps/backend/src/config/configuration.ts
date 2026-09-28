@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
-import { IsEnum, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
+import { IsEnum, IsIn, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
+import { missingLegalEnv } from '../modules/legal/legal.service';
+import { photoModerationMode } from '../modules/moderation/photo-rules';
 
 enum NodeEnv {
   Development = 'development',
@@ -36,6 +38,11 @@ class EnvVars {
   @IsString()
   @IsOptional()
   LOCATION_SALT?: string;
+
+  // moderação de fotos: off (só dev) | manual (fila humana) | rekognition (AWS + fila humana pro que não é claro)
+  @IsIn(['off', 'manual', 'rekognition'])
+  @IsOptional()
+  PHOTO_MODERATION?: string;
 }
 
 export function validateEnv(config: Record<string, unknown>) {
@@ -45,6 +52,14 @@ export function validateEnv(config: Record<string, unknown>) {
   const errors = validateSync(validatedConfig, { skipMissingProperties: false });
   if (errors.length > 0) {
     throw new Error(`Config inválida: ${errors.toString()}`);
+  }
+  if (validatedConfig.NODE_ENV === NodeEnv.Production) {
+    // produção falha fechada: sem moderação de fotos ou sem os dados da empresa nos Termos/Política, não sobe
+    const problems: string[] = [];
+    if (photoModerationMode(config as NodeJS.ProcessEnv) === 'off') problems.push('PHOTO_MODERATION=off (use manual ou rekognition)');
+    const legal = missingLegalEnv(config as NodeJS.ProcessEnv);
+    if (legal.length) problems.push(`dados legais ausentes: ${legal.join(', ')}`);
+    if (problems.length) throw new Error(`Config de produção insegura: ${problems.join('; ')}`);
   }
   if (!validatedConfig.LOCATION_SALT) {
     new Logger('Config').warn(

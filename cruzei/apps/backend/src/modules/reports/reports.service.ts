@@ -1,27 +1,99 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { PrismaService } from '../../database/prisma.service';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
+import { REPORT_REASONS, type ReportPayload, type ReportReason, type ReportResult } from '@cruzei/shared-types';
+import { PrismaService } from '../../database/prisma.service';
+import { BlocksService } from '../blocks/blocks.service';
+import { ModerationService } from '../moderation/moderation.service';
 
-const ALLOWED_REASONS = ['harassment', 'fake', 'spam', 'inappropriate', 'other'] as const;
+/** ordem da fila: exploração infantil primeiro, depois menor de idade/ameaça, depois assédio/conteúdo impróprio */
+export const REPORT_PRIORITY: Record<ReportReason, number> = {
+  child_safety: 3,
+  underage: 2,
+  threat: 2,
+  harassment: 1,
+  inappropriate: 1,
+  scam: 1,
+  fake: 0,
+  spam: 0,
+  other: 0,
+};
+
+/** pessoas diferentes denunciando em 7 dias → sai da descoberta até a revisão */
+export const HOLD_DISTINCT_REPORTERS = 3;
+const SOURCES = new Set(['profile', 'chat', 'matches', 'map', 'likes']);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ReportsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly blocks: BlocksService,
+    private readonly moderation: ModerationService,
+  ) {}
 
-  async create(reporterId: string, targetId: string, payload: { reason: string; description?: string; evidenceUrls?: string[] }) {
+  async create(reporterId: string, p: Omit<ReportPayload, 'userId'> & { targetId: string }): Promise<ReportResult> {
+    const { targetId } = p;
     if (reporterId === targetId) throw new BadRequestException('Não pode denunciar você mesmo');
-    if (!ALLOWED_REASONS.includes(payload.reason as never)) {
-      throw new BadRequestException('Motivo inválido');
-    }
-    return this.prisma.report.create({
-      data: {
-        id: uuid(),
-        reporterId,
-        reportedId: targetId,
-        reason: payload.reason,
-        description: payload.description,
-        evidenceUrls: payload.evidenceUrls as never,
-      },
+    if (!REPORT_REASONS.includes(p.reason)) throw new BadRequestException('Motivo inválido');
+    const target = await this.prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
+    if (!target) throw new NotFoundException('Usuário não encontrado');
+
+    const priority = REPORT_PRIORITY[p.reason];
+    const context = sanitizeContext(p.context);
+    const description = p.description?.trim() || null;
+
+    // mesma pessoa denunciando de novo em 24 h: soma à denúncia pendente (fila sem duplicata, prioridade maior vence)
+    const recent = await this.prisma.report.findFirst({
+      where: { reporterId, reportedId: targetId, status: 'pending', createdAt: { gt: new Date(Date.now() - 86_400_000) } },
+      orderBy: { createdAt: 'desc' },
     });
+    let id: string;
+    if (recent) {
+      const upgrade = priority > recent.priority;
+      await this.prisma.report.update({
+        where: { id: recent.id },
+        data: {
+          ...(upgrade ? { reason: p.reason, priority } : {}),
+          description: [recent.description, description && description !== recent.description ? description : null].filter(Boolean).join('\n—\n').slice(0, 2000) || null,
+          ...(context && !recent.context ? { context } : {}),
+        },
+      });
+      id = recent.id;
+    } else {
+      id = uuid();
+      await this.prisma.report.create({
+        data: { id, reporterId, reportedId: targetId, reason: p.reason, description, priority, ...(context ? { context } : {}) },
+      });
+    }
+
+    let blocked = false;
+    if (p.block) {
+      await this.blocks.block(reporterId, targetId, `denúncia: ${p.reason}`);
+      blocked = true;
+    }
+
+    // exploração infantil: sai da descoberta NA HORA; várias pessoas diferentes em 7 dias: idem
+    if (p.reason === 'child_safety') {
+      await this.moderation.holdForReview(targetId, 'denúncia de exploração ou abuso infantil');
+    } else {
+      const reporters = await this.prisma.report.findMany({
+        where: { reportedId: targetId, createdAt: { gt: new Date(Date.now() - 7 * 86_400_000) }, reporterId: { not: null } },
+        distinct: ['reporterId'],
+        select: { reporterId: true },
+      });
+      if (reporters.length >= HOLD_DISTINCT_REPORTERS) {
+        await this.moderation.holdForReview(targetId, `${reporters.length} pessoas denunciaram em 7 dias`);
+      }
+    }
+    return { id, merged: Boolean(recent), blocked };
   }
+}
+
+function sanitizeContext(c: ReportPayload['context'] | undefined): ReportPayload['context'] | null {
+  if (!c || typeof c !== 'object' || !SOURCES.has(c.source)) return null;
+  const out: NonNullable<ReportPayload['context']> = { source: c.source };
+  if (typeof c.matchId === 'string' && UUID.test(c.matchId)) out.matchId = c.matchId;
+  if (typeof c.messageId === 'string' && UUID.test(c.messageId)) out.messageId = c.messageId;
+  if (typeof c.photoId === 'string' && UUID.test(c.photoId)) out.photoId = c.photoId;
+  return out;
 }
