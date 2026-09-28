@@ -60,8 +60,10 @@ export async function pushLocation(loc: CruzeiLocation): Promise<{ ok: boolean; 
 export async function startForegroundTracking(
   onUpdate: (loc: CruzeiLocation) => void,
 ): Promise<Location.LocationSubscription | null> {
-  const hasPerm = await requestPermissions();
-  if (!hasPerm) return null;
+  // só confere: no Android, pedir (mesmo já concedida) abre a tela de permissão do sistema, o app pausa e volta,
+  // o rastreamento religa e pede de novo — um laço infinito de pausa/retomada. Quem pede é o locate().
+  const perm = await Location.getForegroundPermissionsAsync();
+  if (!perm.granted) return null;
   return Location.watchPositionAsync(
     {
       accuracy: Location.Accuracy.Balanced,

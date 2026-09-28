@@ -58,6 +58,17 @@ export interface MapPadding {
   right?: number;
 }
 
+/** pino de lugar da cidade escolhido na busca (bar, balada…): fica no mapa até sair */
+export interface PinPayload {
+  id: string;
+  lat: number;
+  lng: number;
+  name: string;
+  emoji: string;
+  /** noite ganha pino rosa; o resto, verde */
+  nightlife: boolean;
+}
+
 export interface BurstPayload {
   lat: number;
   lng: number;
@@ -78,7 +89,8 @@ export type WebMsg =
   | { type: 'clusterTap'; ids: string[]; lat: number; lng: number }
   | { type: 'matchMomentDone'; userId: string | null; shown: boolean }
   | { type: 'perf'; fps: number }
-  | { type: 'photoBlocked'; url: string };
+  | { type: 'photoBlocked'; url: string }
+  | { type: 'pinTap'; id: string };
 
 const WEB_MSG_TYPES: ReadonlySet<string> = new Set<WebMsg['type']>([
   'ready',
@@ -93,6 +105,7 @@ const WEB_MSG_TYPES: ReadonlySet<string> = new Set<WebMsg['type']>([
   'matchMomentDone',
   'perf',
   'photoBlocked',
+  'pinTap',
 ]);
 
 const PERF_TIERS: ReadonlySet<string> = new Set<PerfTier>(['low', 'mid', 'high']);
@@ -154,6 +167,8 @@ export function parseWebMsg(raw: string): WebMsg | null {
       return isNum(m.fps) ? { type, fps: m.fps } : null;
     case 'photoBlocked':
       return typeof m.url === 'string' ? { type, url: m.url } : null;
+    case 'pinTap':
+      return typeof m.id === 'string' && m.id.length > 0 ? { type, id: m.id } : null;
     default:
       return null;
   }
@@ -176,7 +191,8 @@ export type CommandName =
   | 'burst'
   | 'defineAvatars'
   | 'matchMoment'
-  | 'emote';
+  | 'emote'
+  | 'setPin';
 
 function call(fn: CommandName, ...args: unknown[]): string {
   // descarta opcionais finais não informados (zoom/opts) em vez de mandar null pro HTML
@@ -206,6 +222,8 @@ export const cmd = {
   matchMoment: (userId: string): string => call('matchMoment', { userId }),
   /** id da pessoa ou 'me' */
   emote: (id: string, kind: EmoteKind): string => call('emote', id, kind),
+  /** crava (ou tira, com null) o pino do lugar escolhido; fly = câmera voa até lá com o pino caindo */
+  setPin: (pin: PinPayload | null, fly = false): string => call('setPin', pin, fly),
 } as const;
 
 /**

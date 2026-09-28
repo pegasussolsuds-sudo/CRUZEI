@@ -66,7 +66,7 @@ ${IDENTITY_BUBBLE_JS}
   var API = {};
   // window.cruzei existe desde já: antes do 'ready' os comandos ficam na fila e são reaplicados em ordem.
   window.cruzei = {};
-  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst', 'defineAvatars', 'matchMoment', 'emote'].forEach(function (name) {
+  ['setTheme', 'setTier', 'setActive', 'setMe', 'setCenter', 'reveal', 'setData', 'select', 'focusPoi', 'setPadding', 'burst', 'defineAvatars', 'matchMoment', 'emote', 'setPin'].forEach(function (name) {
     window.cruzei[name] = function () {
       var args = Array.prototype.slice.call(arguments);
       if (!ready) { queue.push({ name: name, args: args }); return; }
@@ -157,7 +157,7 @@ ${IDENTITY_BUBBLE_JS}
   });
   map.on('click', function (e) {
     // tap em pessoa/POI é tratado nos handlers de camada; aqui só o tap no mapa vazio
-    var hit = map.queryRenderedFeatures(e.point, { layers: TAP_LAYERS.concat(['cz-poi', 'cz-cluster']) });
+    var hit = map.queryRenderedFeatures(e.point, { layers: TAP_LAYERS.concat(['cz-poi', 'cz-cluster', 'cz-pin']) });
     if (!hit || hit.length === 0) send('mapTap');
   });
   map.on('error', function (e) {
@@ -800,6 +800,23 @@ ${IDENTITY_BUBBLE_JS}
       paint: { 'circle-radius': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 2, 0.5, 34, 1, 40], 'circle-color': ['get', 'color'],
                'circle-opacity': ['interpolate', ['linear'], ['coalesce', ['feature-state', 'p'], 0], 0, 0.9, 0.6, 0.35, 1, 0], 'circle-emissive-strength': 1, 'circle-pitch-alignment': 'map' } });
 
+    // pino do lugar da cidade escolhido na busca (bar, balada…): onda no chão + gota com ícone + nome embaixo
+    map.addSource('pin', { type: 'geojson', data: empty() });
+    animImages.make('pin-pulse-n', IMG.sonar, pinPulseDrawer('255,20,147'));
+    animImages.make('pin-pulse-d', IMG.sonar, pinPulseDrawer('127,255,0'));
+    map.addLayer({ id: 'cz-pin-pulse', type: 'symbol', source: 'pin',
+      layout: { 'icon-image': ['get', 'pulse'], 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-pitch-alignment': 'map',
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.6, 16, 1.2, 18, 1.8] },
+      paint: { 'icon-emissive-strength': 1, 'icon-opacity': 0 } });
+    map.addLayer({ id: 'cz-pin', type: 'symbol', source: 'pin',
+      layout: { 'icon-image': 'cz-pin-img', 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+                'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport',
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 12, 0.7, 16, 0.95, 18, 1.1],
+                'text-field': ['get', 'label'], 'text-font': FONTS, 'text-size': 13, 'text-anchor': 'top', 'text-offset': [0, 0.5],
+                'text-max-width': 12, 'text-allow-overlap': true, 'text-ignore-placement': true },
+      paint: { 'icon-emissive-strength': 1, 'text-emissive-strength': 1, 'icon-opacity': 0, 'text-opacity': 0,
+               'text-color': '#FFFFFF', 'text-halo-color': ['case', ['==', ['get', 'night'], true], '#B0105F', '#2F6300'], 'text-halo-width': 2.2 } });
+
     // ícone 'pessoas' do cluster (duas cabeças, lima)
     (function () { var size = 32, cv = makeCanvas(size), ctx = cv.ctx; ctx.fillStyle = '#7FFF00';
       ctx.beginPath(); ctx.arc(11, 11, 5, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(22, 12, 4.2, 0, Math.PI * 2); ctx.fill();
@@ -812,6 +829,7 @@ ${IDENTITY_BUBBLE_JS}
     // interações
     var tapLayers = TAP_LAYERS;
     tapLayers.forEach(function (id) { map.on('click', id, function (e) { var f = e.features && e.features[0]; if (f && f.properties && f.properties.id) { e.preventDefault(); var uid = String(f.properties.id); emote(uid, 'arrive'); send('userTap', { id: uid }); } }); });
+    map.on('click', 'cz-pin', function (e) { var f = e.features && e.features[0]; if (f && f.properties) { e.preventDefault(); send('pinTap', { id: String(f.properties.id) }); } });
     map.on('click', 'cz-poi', function (e) { var f = e.features && e.features[0]; if (f && f.properties) { e.preventDefault(); send('poiTap', { id: Number(f.properties.id) }); } });
     map.on('click', 'cz-cluster', function (e) {
       var f = e.features && e.features[0]; if (!f) return; e.preventDefault();
@@ -827,7 +845,7 @@ ${IDENTITY_BUBBLE_JS}
           return;
         }
         state.programmatic++; map.easeTo({ center: f.geometry.coordinates, zoom: Math.min(zoom + 0.3, 21.5), duration: 650 });
-        map.once('moveend', function () { endProgrammatic(); });
+        afterMove();
       });
     });
   }
@@ -1169,7 +1187,7 @@ ${IDENTITY_BUBBLE_JS}
     // durante o momento do match o spot é da pessoa do match: a seleção entra quando o momento acabar (clearMoment)
     if (inMoment && id !== state.momentUserId) return;
     if (id !== state.momentUserId) spotIn(id); else pushSpot();
-    state.programmatic++; map.easeTo({ center: [u.mapPosition.lng, u.mapPosition.lat], duration: 600, offset: [0, -60] }); map.once('moveend', function () { endProgrammatic(); });
+    state.programmatic++; map.easeTo({ center: [u.mapPosition.lng, u.mapPosition.lat], duration: 600, offset: [0, -60] }); afterMove();
   }
 
   function reveal(lat, lng) {
@@ -1202,6 +1220,12 @@ ${IDENTITY_BUBBLE_JS}
   var padTimer = null, pendingPad = null;
   // Evented do Mapbox dispara os listeners fixos antes dos once(): o flush precisa acontecer AQUI, no fim de cada animação nossa
   function endProgrammatic() { state.programmatic = Math.max(0, state.programmatic - 1); if (state.programmatic === 0) flushPadding(); }
+  // Com prefers-reduced-motion o Mapbox zera a duration (sem essential) e dispara 'moveend' DENTRO do easeTo:
+  // registrar o once() depois perderia o evento e deixaria state.programmatic preso (padding do sheet parado).
+  function afterMove(onEnd) {
+    if (map.isMoving()) map.once('moveend', function () { endProgrammatic(); if (onEnd) onEnd(); });
+    else { endProgrammatic(); if (onEnd) onEnd(); }
+  }
   function flushPadding() {
     if (!pendingPad || state.programmatic > 0) return;
     var p = pendingPad; pendingPad = null;
@@ -1232,6 +1256,82 @@ ${IDENTITY_BUBBLE_JS}
       src.setData(d);
     } });
     stepTweens.kick();
+  }
+
+  // ---- pino do lugar escolhido na busca ----
+  function pinPulseDrawer(rgb) {
+    return function (ctx, size, phase) {
+      var c = size / 2, maxR = c - 2;
+      for (var i = 0; i < 2; i++) {
+        var t = ((phase / 2.2) + i / 2) % 1;
+        ctx.beginPath(); ctx.arc(c, c, 8 + (maxR - 8) * t, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(' + rgb + ',' + (0.8 * (1 - t)).toFixed(3) + ')'; ctx.lineWidth = 3.5; ctx.stroke();
+      }
+      var g = ctx.createRadialGradient(c, c, 0, c, c, 26); g.addColorStop(0, 'rgba(' + rgb + ',0.45)'); g.addColorStop(1, 'rgba(' + rgb + ',0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(c, c, 26, 0, Math.PI * 2); ctx.fill();
+    };
+  }
+  function drawPinImage(pin) {
+    var w = 60, h = 80, cv = makeCanvasWH(w, h), ctx = cv.ctx, cx = w / 2, r = 24, cy = r + 4;
+    var night = !!pin.nightlife;
+    var c1 = night ? '#FF1493' : '#5FD400', c2 = night ? '#FF7AC3' : '#B8FF6A';
+    ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.beginPath(); ctx.ellipse(cx, h - 4, 9, 3.2, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 3;
+    var g = ctx.createLinearGradient(0, 4, 0, h - 6); g.addColorStop(0, c2); g.addColorStop(1, c1);
+    ctx.fillStyle = g; ctx.beginPath();
+    ctx.moveTo(cx, h - 6);
+    ctx.bezierCurveTo(cx - 6, h - 20, cx - r, cy + r * 0.55, cx - r, cy);
+    ctx.arc(cx, cy, r, Math.PI, 0, false);
+    ctx.bezierCurveTo(cx + r, cy + r * 0.55, cx + 6, h - 20, cx, h - 6);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(cx, cy, r - 6, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '21px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(pin.emoji || '📍', cx, cy + 1);
+    putImage('cz-pin-img', cv);
+  }
+  var pinAnim = null;
+  function bounceOut(t) { var n = 7.5625, d = 2.75; if (t < 1 / d) return n * t * t; if (t < 2 / d) { t -= 1.5 / d; return n * t * t + 0.75; } if (t < 2.5 / d) { t -= 2.25 / d; return n * t * t + 0.9375; } t -= 2.625 / d; return n * t * t + 0.984375; }
+  function setPinLook(dy, alpha) {
+    setPaint('cz-pin', 'icon-translate', [0, dy]);
+    setPaint('cz-pin', 'icon-opacity', alpha);
+    setPaint('cz-pin', 'text-opacity', dy > -8 ? alpha : 0);
+    setPaint('cz-pin-pulse', 'icon-opacity', dy > -2 ? alpha : 0);
+  }
+  function animatePin(drop) {
+    if (pinAnim) { cancelAnimationFrame(pinAnim); pinAnim = null; }
+    var reduce = false; try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+    if (!drop || reduce) { setPinLook(0, 1); return; }
+    var start = performance.now(), dur = 750;
+    var step = function (now) {
+      var t = Math.min(1, (now - start) / dur);
+      setPinLook(-70 * (1 - bounceOut(t)), Math.min(1, t * 4));
+      pinAnim = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    pinAnim = requestAnimationFrame(step);
+  }
+  function setPin(pin, fly) {
+    var src = map.getSource('pin'); if (!src) return;
+    if (!pin || typeof pin.lat !== 'number' || typeof pin.lng !== 'number' || !isFinite(pin.lat) || !isFinite(pin.lng)) {
+      state.pin = null;
+      if (pinAnim) { cancelAnimationFrame(pinAnim); pinAnim = null; }
+      setPinLook(-70, 0);
+      src.setData(empty());
+      return;
+    }
+    state.pin = pin;
+    drawPinImage(pin);
+    src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: { id: String(pin.id), label: String(pin.name || '').slice(0, 42), pulse: pin.nightlife ? 'pin-pulse-n' : 'pin-pulse-d', night: !!pin.nightlife }, geometry: { type: 'Point', coordinates: [pin.lng, pin.lat] } }] });
+    if (!fly) { animatePin(false); return; }
+    setPinLook(-70, 0);
+    idleCam.stop();
+    state.programmatic++;
+    map.flyTo({ center: [pin.lng, pin.lat], zoom: Math.max(16.8, Math.min(17.5, map.getZoom() + 1)), pitch: 60, bearing: map.getBearing() - 18, duration: 1700, curve: 1.35, essential: true, offset: [0, -30] });
+    afterMove(function () {
+      if (state.pin !== pin) return;
+      animatePin(true);
+      setTimeout(function () { if (state.pin === pin) burst({ lat: pin.lat, lng: pin.lng, kind: pin.nightlife ? 'match' : 'like' }); }, 380);
+      idleCam.schedule();
+    });
   }
 
   // partículas ambientes (canvas 2D, ≤ 24 pontos, só tier high): vagalumes de dia, faíscas rosa/dourado à noite
@@ -1279,13 +1379,15 @@ ${IDENTITY_BUBBLE_JS}
   // idle-cam: rotação curta (25° em 20s) só em tier high, ativo, sem gesto há 30s
   var idleCam = (function () {
     var timer = null, spinning = false;
-    function schedule() { stop(); if (state.tier !== 'high' || !state.active) return; timer = setTimeout(spin, 30000); }
+    // com 'Remover animações' o giro viraria um salto de 25° a cada 30s: não roda
+    function reducedMotion() { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } }
+    function schedule() { stop(); if (state.tier !== 'high' || !state.active || reducedMotion()) return; timer = setTimeout(spin, 30000); }
     function spin() {
       timer = null;
       if (state.tier !== 'high' || !state.active || Date.now() - state.lastGesture < 30000) { schedule(); return; }
       spinning = true; state.programmatic++;
       map.easeTo({ bearing: map.getBearing() + 25, duration: 20000, easing: function (t) { return t; }, essential: false });
-      map.once('moveend', function () { endProgrammatic(); spinning = false; schedule(); });
+      afterMove(function () { spinning = false; schedule(); });
     }
     function stop() { if (timer) { clearTimeout(timer); timer = null; } if (spinning) { spinning = false; map.stop(); } }
     return { schedule: schedule, stop: stop };
@@ -1344,6 +1446,7 @@ ${IDENTITY_BUBBLE_JS}
   API.defineAvatars = defineAvatars;
   API.emote = emote;
   API.matchMoment = matchMoment;
+  API.setPin = setPin;
 
   map.on('style.load', function () { send('styleLoaded'); });
   CZ_PHOTO.onBlocked(function (url) { send('photoBlocked', { url: url }); });

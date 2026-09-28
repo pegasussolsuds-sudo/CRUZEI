@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, { Easing, interpolateColor, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,7 +25,7 @@ export interface ActiveBoost {
  * `polling=false` pausa o intervalo (tela fora de foco / app em background — o app não liga focusManager ao AppState).
  */
 export function useActiveBoost(enabled = true, polling = true) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['boosts', 'active'],
     enabled,
     refetchInterval: polling ? 60_000 : false,
@@ -35,6 +35,13 @@ export function useActiveBoost(enabled = true, polling = true) {
       return res.data ? res.data : null;
     },
   });
+  // voltou pro foco/primeiro plano: busca na hora (o refetchInterval só reagenda, não dispara)
+  const wasPolling = useRef(polling);
+  useEffect(() => {
+    if (enabled && polling && !wasPolling.current && Date.now() - query.dataUpdatedAt > 15_000) void query.refetch({ cancelRefetch: false });
+    wasPolling.current = polling;
+  }, [enabled, polling]); // eslint-disable-line react-hooks/exhaustive-deps
+  return query;
 }
 
 export interface MapHeaderProps {
@@ -61,6 +68,8 @@ const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
   private_area: '🏠 Área privada: ninguém te vê aqui',
   home: '🏠 Perto de casa: ninguém te vê aqui',
   nobody: 'Descoberta desligada: ninguém te vê',
+  paused: '⏸️ Perfil pausado: ninguém te vê no mapa',
+  no_presence: '📍 Atualizando sua posição…',
 };
 
 export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason, onOpenVibe, paused = false, onHeaderHeight }: MapHeaderProps) {

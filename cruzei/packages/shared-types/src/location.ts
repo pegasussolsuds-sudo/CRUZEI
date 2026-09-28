@@ -156,3 +156,72 @@ export interface VibeResponse {
   generatedAt: string;
   radiusM: number;
 }
+
+// ---------- "Busca por lugar" (Mapbox Search Box) ----------
+// Bares, baladas, restaurantes e outros lugares reais da cidade, buscados no servidor (GET /places/search) na
+// Mapbox Search Box API. Não trazem dados do app (gente agora, tendência): a lista unificada sabe que
+// `source === 'mapbox'` é um lugar da cidade e renderiza sem medidor de vibe.
+
+/** chips de categoria do overlay (🍻 Bares, 🍔 Comer…); o servidor traduz cada um em categorias do Mapbox */
+export const PLACE_CATEGORY_KEYS = ['bar', 'restaurant', 'cafe', 'park', 'shopping', 'show', 'beach', 'museum'] as const;
+export type PlaceCategoryKey = (typeof PLACE_CATEGORY_KEYS)[number];
+
+/** tipo fino do lugar, pra rótulo e ícone ("balada", "pub", "casa de show"…) */
+export const PLACE_KINDS = [
+  'nightclub',
+  'pub',
+  'bar',
+  'cocktail',
+  'brewery',
+  'lounge',
+  'music',
+  'theatre',
+  'events',
+  'nightlife',
+  'cafe',
+  'fastfood',
+  'restaurant',
+  'park',
+  'mall',
+  'museum',
+  'gallery',
+  'beach',
+  'cinema',
+  'stadium',
+  'campus',
+  'landmark',
+  'entertainment',
+  'other',
+] as const;
+export type PlaceKind = (typeof PLACE_KINDS)[number];
+
+/** lugar da cidade vindo da busca (Mapbox Search Box) */
+export interface MapboxPlace {
+  /** id estável `mbx:<mapbox_id>` */
+  id: string;
+  /** nome público (ex.: "Zenaide Bar") */
+  name: string;
+  /** chip do app em que o lugar cai; null quando não cai em nenhum */
+  category: PlaceCategoryKey | null;
+  /** tipo fino pra rótulo e ícone */
+  kind: PlaceKind;
+  /** noite (balada, bar, pub, casa de show): a UI destaca */
+  nightlife: boolean;
+  address: string | null;
+  neighborhood: string | null;
+  city: string | null;
+  state: string | null;
+  latitude: number;
+  longitude: number;
+  /** distância (m) ao centro pedido (centro do mapa ou posição do usuário) */
+  distanceM: number;
+  /** discriminador na lista unificada (lugar do app x lugar da cidade) */
+  source: 'mapbox';
+}
+
+export interface PlaceSearchResponse {
+  places: MapboxPlace[];
+  /** texto buscado (eco) */
+  q: string;
+  generatedAt: string;
+}

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { distanceMeters } from '@cruzei/shared-utils';
 import { config } from '../config';
 
 const FORWARD_URL = 'https://api.mapbox.com/search/geocode/v6/forward';
@@ -63,6 +64,20 @@ export function parseForward(features: ForwardFeature[]): GeocodeResult[] {
   return out;
 }
 
+/** rua, número e bairro só valem perto do mapa (a "Rua Livertino" de Goiás não é o que quem está em Uberlândia procura) */
+const LOCAL_ONLY: ReadonlySet<GeocodeType> = new Set<GeocodeType>(['street', 'address', 'neighborhood']);
+const LOCAL_MAX_M = 80_000;
+
+/** cidades valem de qualquer lugar; rua/bairro longe some; o que está perto vem primeiro */
+export function preferLocal(results: GeocodeResult[], center: { lat: number; lng: number } | null): GeocodeResult[] {
+  if (!center) return results;
+  const withDist = results.map((r, i) => ({ r, i, d: distanceMeters(center.lat, center.lng, r.lat, r.lng) }));
+  return withDist
+    .filter((x) => !(LOCAL_ONLY.has(x.r.type) && x.d > LOCAL_MAX_M))
+    .sort((a, b) => Number(a.d > LOCAL_MAX_M) - Number(b.d > LOCAL_MAX_M) || a.i - b.i)
+    .map((x) => x.r);
+}
+
 /**
  * Busca de lugares/bairros/ruas no Mapbox (Geocoding v6) pra "ir até lá" no mapa.
  * Só dispara com ≥ 3 caracteres e token configurado; o texto deve chegar com debounce.
@@ -90,7 +105,7 @@ export function useGeocodeSearch(q: string, proximity: { lat: number; lng: numbe
           access_token: config.mapboxToken,
         },
       });
-      return parseForward(res.data.features ?? []);
+      return preferLocal(parseForward(res.data.features ?? []), proximity);
     },
   });
 }

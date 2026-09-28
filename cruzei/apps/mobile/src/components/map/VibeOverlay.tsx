@@ -6,13 +6,16 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
-import type { VibeFilter, VibePlace } from '@cruzei/shared-types';
+import type { MapboxPlace, PlaceCategoryKey, VibeFilter, VibePlace } from '@cruzei/shared-types';
 import { useVibe, vibeOrigin } from '../../hooks/useVibe';
 import { useGeocodeSearch, type GeocodeResult } from '../../hooks/useGeocodeSearch';
+import { shouldSearchPlaces, usePlaceSearch } from '../../hooks/usePlaceSearch';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { VibePlaceRow } from './VibePlaceRow';
+import { MapboxPlaceRow } from './MapboxPlaceRow';
+import { BRAND } from '../../brand';
 
 export interface VibeOverlayProps {
   visible: boolean;
@@ -23,7 +26,8 @@ export interface VibeOverlayProps {
   /** app em background / tela fora de foco: para a atualização periódica */
   paused?: boolean;
   onClose: () => void;
-  onPickPlace: (place: VibePlace) => void;
+  /** POI do app (Cruzei) ou do Mapbox Search Box — o tipo discrimina a fonte */
+  onPickPlace: (place: VibePlace | MapboxPlace) => void;
   onPickGeocode: (result: GeocodeResult) => void;
 }
 
@@ -35,7 +39,7 @@ const FILTERS: { key: VibeFilter; label: string }[] = [
   { key: 'near', label: '📍 Perto de mim' },
 ];
 
-const CATEGORIES: { key: string; label: string }[] = [
+const CATEGORIES: { key: PlaceCategoryKey; label: string }[] = [
   { key: 'bar', label: '🍻 Bares' },
   { key: 'restaurant', label: '🍔 Comer' },
   { key: 'cafe', label: '☕ Cafés' },
@@ -96,7 +100,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
   const [mounted, setMounted] = useState(visible);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<VibeFilter>('all');
-  const [category, setCategory] = useState<string | null>(null);
+  const [category, setCategory] = useState<PlaceCategoryKey | null>(null);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const debouncedRaw = useDebounced(query, 350);
@@ -139,17 +143,36 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
   const origin = vibeOrigin(filter, center, myLocation);
   const vibe = useVibe({ center, myLocation, filter, q: debounced, category, enabled: active, polling: !paused });
   const geo = useGeocodeSearch(debounced, center, active);
-  const places = origin ? (vibe.data?.places ?? []) : [];
+  // busca genérica do Mapbox (bares/baladas etc.) só roda com texto (>=2) OU chip de categoria ligado
+  const wantPlaces = shouldSearchPlaces(debounced, category);
+  const places = usePlaceSearch({ q: debounced, category, mapCenter: center, myLocation, enabled: active && wantPlaces });
+  const vibePlaces = origin ? (vibe.data?.places ?? []) : [];
+  const mapboxPlaces = wantPlaces ? (places.data?.places ?? []) : [];
+  // dedupe simples: POI do Mapbox a < 30 m de um POI do app some (o app ganha, porque tem "vibe")
+  const dedupMapbox: typeof mapboxPlaces = useMemo(() => {
+    if (mapboxPlaces.length === 0 || vibePlaces.length === 0) return mapboxPlaces;
+    return mapboxPlaces.filter((m) => {
+      for (const v of vibePlaces) {
+        const dLat = (v.latitude - m.latitude) * 111_000;
+        const meanLat = ((v.latitude + m.latitude) / 2) * (Math.PI / 180);
+        const dLng = (v.longitude - m.longitude) * 111_000 * Math.cos(meanLat);
+        if (dLat * dLat + dLng * dLng < 30 * 30) return false;
+      }
+      return true;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapboxPlaces, vibePlaces]);
   const geoResults = geo.data ?? [];
-  const showGeo = debounced.trim().length >= 3;
+  // bairros e ruas: com lugar encontrado, a seção só aparece se tiver resultado (sem "nenhuma rua" como ruído)
+  const showGeo = debounced.trim().length >= 3 && (geoResults.length > 0 || dedupMapbox.length === 0);
   // dados "emprestados" da consulta anterior enquanto a nova carrega: mostra carregando, nunca um vazio falso
-  const loading = Boolean(origin) && (vibe.isPending || vibe.isPlaceholderData);
+  const loading = Boolean(origin) && (vibe.isPending || vibe.isPlaceholderData || (wantPlaces && places.isPending));
 
   const pickFilter = useCallback((f: VibeFilter) => {
     Haptics.selectionAsync().catch(() => {});
     setFilter(f);
   }, []);
-  const pickCategory = useCallback((c: string) => {
+  const pickCategory = useCallback((c: PlaceCategoryKey) => {
     Haptics.selectionAsync().catch(() => {});
     setCategory((cur) => (cur === c ? null : c));
   }, []);
@@ -163,12 +186,53 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
     return parts.length > 0 ? parts.join(' · ') : 'a cidade tá quieta agora';
   }, [vibe.data, origin]);
 
-  const renderPlace = useCallback(({ item, index }: { item: VibePlace; index: number }) => <VibePlaceRow place={item} index={index} onPress={onPickPlace} />, [onPickPlace]);
-  const keyExtractor = useCallback((p: VibePlace) => String(p.id), []);
+  // lista unificada: POIs do Cruzei (com "vibe") + POIs do Mapbox (genéricos), separados por cabeçalho de seção
+  type Row =
+    | { kind: 'cruzei'; place: VibePlace }
+    | { kind: 'mapbox'; place: MapboxPlace }
+    | { kind: 'section'; key: string; title: string };
+  const items: Row[] = useMemo(() => {
+    const list: Row[] = [];
+    if (vibePlaces.length > 0) {
+      list.push({ kind: 'section', key: 'cruzei', title: `Ao vivo no ${BRAND.name} · ${vibePlaces.length}` });
+      for (const p of vibePlaces) list.push({ kind: 'cruzei', place: p });
+    }
+    if (dedupMapbox.length > 0) {
+      list.push({ kind: 'section', key: 'mapbox', title: `${debounced.trim() || category ? 'Na cidade' : 'Por perto'} · ${dedupMapbox.length}` });
+      for (const p of dedupMapbox) list.push({ kind: 'mapbox', place: p });
+    }
+    return list;
+  }, [vibePlaces, dedupMapbox, debounced, category]);
+
+  const renderItem = useCallback(
+    ({ item, index }: { item: Row; index: number }) => {
+      if (item.kind === 'section') {
+        return (
+          <Text style={styles.sectionTitleList} accessibilityRole="header">
+            {item.title}
+          </Text>
+        );
+      }
+      // re-index só dentro da própria seção pra animação em cascata não pular
+      const idx = index;
+      if (item.kind === 'cruzei') return <VibePlaceRow place={item.place} index={idx} onPress={onPickPlace} />;
+      return <MapboxPlaceRow place={item.place} index={idx} onPress={onPickPlace} />;
+    },
+    [onPickPlace],
+  );
+  const keyExtractor = useCallback((r: Row) => (r.kind === 'section' ? `sec:${r.key}` : `${r.kind}:${String(r.kind === 'cruzei' ? r.place.id : r.place.id)}`), []);
 
   if (!mounted) return null;
 
-  const emptyText = !origin ? (filter === 'near' ? EMPTY_TEXT.near : NO_ORIGIN_TEXT) : debounced ? `Nada com "${debounced}" nos lugares do app.` : EMPTY_TEXT[filter];
+  const emptyText = !origin
+    ? filter === 'near'
+      ? EMPTY_TEXT.near
+      : NO_ORIGIN_TEXT
+    : places.isError && wantPlaces
+      ? 'A busca de lugares falhou. Confere a internet e tenta de novo.'
+      : debounced
+        ? `Não achei "${debounced}" por aqui. Confere o nome ou arrasta o mapa pra outra região.`
+        : EMPTY_TEXT[filter];
 
   return (
     <Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={onClose} onShow={() => inputRef.current?.focus()}>
@@ -191,14 +255,14 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                 onChangeText={setQuery}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
-                placeholder="Lugar, bairro, rua ou evento…"
+                placeholder="Bar, balada, bairro ou rua…"
                 placeholderTextColor={colors.gray[500]}
                 returnKeyType="search"
                 autoFocus
                 autoCorrect={false}
                 autoCapitalize="none"
                 style={styles.input}
-                accessibilityLabel="Buscar lugar, bairro, rua ou evento"
+                accessibilityLabel="Buscar bar, balada, bairro ou rua"
               />
               {query.length > 0 ? (
                 <ScaleOnPress onPress={() => setQuery('')} haptic={false} accessibilityRole="button" accessibilityLabel="Limpar busca" style={styles.clearBtn}>
@@ -260,9 +324,9 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
           </View>
 
           <FlatList
-            data={places}
+            data={items}
             keyExtractor={keyExtractor}
-            renderItem={renderPlace}
+            renderItem={renderItem}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             contentContainerStyle={[styles.list, ...(keyboardH > 0 ? [{ paddingBottom: keyboardH + spacing.lg }] : [])]}
@@ -283,11 +347,11 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
             ListFooterComponent={
               showGeo ? (
                 <View style={styles.geoSection}>
-                  <Text style={styles.sectionTitle}>Ir até um lugar</Text>
+                  <Text style={styles.sectionTitle}>Bairros e ruas</Text>
                   {geo.isPending && geoResults.length === 0 ? (
                     <ActivityIndicator color={colors.gray[400]} style={{ marginTop: spacing.sm }} />
                   ) : geoResults.length === 0 ? (
-                    <Text style={styles.geoEmpty}>{geo.isError ? 'A busca de endereços falhou. Tenta de novo.' : `Nenhum bairro, rua ou lugar chamado "${debounced}".`}</Text>
+                    <Text style={styles.geoEmpty}>{geo.isError ? 'A busca de endereços falhou. Tenta de novo.' : `Nenhum bairro ou rua chamado "${debounced}".`}</Text>
                   ) : (
                     geoResults.map((r, i) => (
                       <FadeInView key={r.id} delay={i * 40} fromY={8} durationMs={220}>
@@ -317,7 +381,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                   )}
                 </View>
               ) : vibe.data && origin ? (
-                <Text style={styles.footerHint}>Digita um bairro ou uma rua pra levar o mapa até lá.</Text>
+                <Text style={styles.footerHint}>Busca um bar, uma balada, um bairro ou uma rua. Ex.: "hub", "zenaide", "balada".</Text>
               ) : null
             }
           />
@@ -375,6 +439,7 @@ const styles = StyleSheet.create({
   emptyText: { ...typography.body, color: colors.gray[300], textAlign: 'center' },
   geoSection: { marginTop: spacing.lg, gap: spacing.sm },
   sectionTitle: { ...typography.label, color: colors.gray[400], textTransform: 'uppercase', letterSpacing: 1, marginBottom: spacing.xs },
+  sectionTitleList: { ...typography.label, color: colors.gray[300], textTransform: 'uppercase', letterSpacing: 1, marginTop: spacing.md, marginBottom: spacing.xs },
   geoEmpty: { ...typography.bodySmall, color: colors.gray[500] },
   geoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: radius.lg, backgroundColor: 'rgba(250,250,250,0.04)' },
   geoIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(127,255,0,0.1)', alignItems: 'center', justifyContent: 'center' },

@@ -15,6 +15,8 @@ import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
 import { config } from '../../config';
 import { useMyLocation } from '../../hooks/useMyLocation';
+import { pushLocation } from '../../services/location';
+import { useLocationStore } from '../../stores/location';
 import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
 import { useDiscoveryHints } from '../../hooks/useDiscoveryHints';
@@ -26,16 +28,18 @@ import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type GroupFilter, type MapBottomS
 import { MapHeader, useActiveBoost } from '../../components/map/MapHeader';
 import { DiscoveryToast } from '../../components/map/DiscoveryToast';
 import { VibeOverlay } from '../../components/map/VibeOverlay';
+import { VenueCard } from '../../components/map/VenueCard';
+import { placeKindMeta } from '../../components/map/placeKinds';
 import type { GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
 import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../avatar';
 import { buildMapboxHtml } from './mapbox-html';
-import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type MapUser, type PerfTier } from './bridge';
+import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type InitTier, type MapUser, type PerfTier, type PinPayload } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
-import type { AvatarConfig, DiscoveryResponse, MapPosition, NearbyUser, POI, ProximityBand, VibePlace } from '@cruzei/shared-types';
+import type { AvatarConfig, DiscoveryResponse, MapPosition, MapboxPlace, NearbyUser, POI, ProximityBand, VibePlace } from '@cruzei/shared-types';
 import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
@@ -60,7 +64,7 @@ const MATCH_MOMENT_FALLBACK_MS = 3800;
 const BASE_URL = 'http://app.cruzei.com.br/';
 
 // ordem de reaplicação do estado após um 'ready' (reload/crash do WebView)
-const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe', 'reveal', 'setData', 'select', 'setPadding'];
+const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe', 'reveal', 'setData', 'select', 'setPadding', 'setPin'];
 // one-shots que vale a pena segurar até o 'ready'; comandos de câmera antes do ready só atropelariam o reveal
 const QUEUEABLE: ReadonlySet<CommandName> = new Set<CommandName>(['burst']);
 const TIER_BELOW: Record<PerfTier, PerfTier | null> = { high: 'mid', mid: 'low', low: null };
@@ -114,12 +118,23 @@ export function MapScreen() {
 
   // ---------- dados próprios ----------
   const me = useAuthStore((s) => s.user);
-  const { lat, lng, status: locStatus, locate } = useMyLocation();
+  // tracking: posição acompanhada + presença renovada só enquanto o mapa está em foco e o app em primeiro plano
+  const { lat, lng, status: locStatus, locate, refresh: refreshLocation } = useMyLocation(true, active);
   const { isAnonymous, toggle: toggleVisibility, isPending: togglePending } = useVisibility();
   const { theme } = useMapTheme();
   const boostQuery = useActiveBoost(Boolean(me), active);
   const boost = boostQuery.data ?? null;
-  const isBoosted = Boolean(boost && boost.minutesRemaining > 0);
+  // boost vale até expiresAt (não pelo snapshot de minutos): some na hora certa mesmo sem novo poll
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || !boost) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [active, boost]);
+  const boostMsLeft = boost ? Date.parse(boost.expiresAt) - nowMs : 0;
+  const isBoosted = boostMsLeft > 0;
+  const boostMinutes = isBoosted ? Math.ceil(boostMsLeft / 60_000) : null;
   const myTier = me?.premiumTier ?? 'free';
   const isFree = myTier === 'free';
   const radiusM = PEOPLE_RADIUS_M;
@@ -136,10 +151,14 @@ export function MapScreen() {
   // ---------- WebView ----------
   // tier inicial vem do store (sobrevive a remount): define o clamp de DPR e o HTML já nasce no tier certo.
   // `webKey` remonta o WebView (retry / renderer morto) — reload() não ressuscita um renderer morto no Android.
-  const savedTier = useMapPerfStore((s) => s.tier);
+  // tier e tema do HTML são lidos só na (re)montagem: promoção de tier ou troca de tema ao vivo NÃO recarregam a página
+  // (vão por setTier/setTheme); trocar a string do `source` faria o WebView recarregar o mapa inteiro em silêncio.
+  const [htmlTier, setHtmlTier] = useState<InitTier>(() => useMapPerfStore.getState().tier);
   const [webKey, setWebKey] = useState(0);
-  const html = useMemo(() => buildMapboxHtml(config.mapboxToken, { theme, tier: savedTier }), [savedTier]); // eslint-disable-line react-hooks/exhaustive-deps -- tema só na 1ª carga; depois vai por setTheme
-  const beforeScript = useMemo(() => buildBeforeContentLoadedScript(savedTier), [savedTier]);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const html = useMemo(() => buildMapboxHtml(config.mapboxToken, { theme: themeRef.current, tier: htmlTier }), [htmlTier, webKey]); // eslint-disable-line react-hooks/exhaustive-deps -- tema lido do ref só na (re)montagem
+  const beforeScript = useMemo(() => buildBeforeContentLoadedScript(htmlTier), [htmlTier]);
 
   const readyRef = useRef(false);
   const stateCmds = useRef(new Map<CommandName, string>());
@@ -219,6 +238,7 @@ export function MapScreen() {
   const remountWeb = useCallback(() => {
     readyRef.current = false;
     setWebReady(false);
+    setHtmlTier(useMapPerfStore.getState().tier); // rebaixamento pra 'low' já gravado no store: a página nova nasce nele
     setWebKey((k) => k + 1); // o próximo 'ready' faz o replay do estado (REPLAY_ORDER)
   }, []);
 
@@ -253,6 +273,9 @@ export function MapScreen() {
   // busca "Onde tá a vibe": overlay + lugar escolhido (pode estar fora do recorte atual do /pois/nearby)
   const [vibeOpen, setVibeOpen] = useState(false);
   const [pickedPoi, setPickedPoi] = useState<POI | null>(null);
+  // lugar da cidade (bar, balada…) escolhido na busca: pino no mapa até fechar; o card some com toque no mapa e volta tocando no pino
+  const [venue, setVenue] = useState<MapboxPlace | null>(null);
+  const [venueCardOpen, setVenueCardOpen] = useState(false);
   const pendingFocus = useRef<number | null>(null);
   // altura real do header (barra de busca + linha da localização + banners): o mapa e o cartão do match se guiam por ela
   const [headerH, setHeaderH] = useState(0);
@@ -321,6 +344,26 @@ export function MapScreen() {
     return { users: sorted, pois: nearbyQuery.data?.pois ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
   }, [nearbyQuery.data, passed, localMatches]);
 
+  // servidor sem minha presença (TTL venceu / push falhou): republica uma vez por transição, em vez de ficar invisível
+  const repushedRef = useRef(false);
+  const noPresence = Boolean(meDiscovery && !meDiscovery.discoverable && meDiscovery.hiddenReason === 'no_presence');
+  const refetchNearby = nearbyQuery.refetch;
+  useEffect(() => {
+    if (!noPresence) {
+      repushedRef.current = false;
+      return;
+    }
+    if (repushedRef.current || !active) return;
+    const cur = useLocationStore.getState();
+    if (cur.lat == null || cur.lng == null) return;
+    repushedRef.current = true;
+    pushLocation({ latitude: cur.lat, longitude: cur.lng })
+      .then((r) => {
+        if (r.ok) refetchNearby();
+      })
+      .catch(() => {});
+  }, [noPresence, active, lat, lng, refetchNearby]);
+
   // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no WebView por chave)
   // só quem tem posição VISUAL (o servidor omite o marcador de quem está em região esparsa)
   const mapUsers = useMemo<MapUser[]>(
@@ -358,16 +401,24 @@ export function MapScreen() {
     [selectedPoi, lat, lng],
   );
 
-  // Voltar (Android) com sheet de pessoa/lugar aberta fecha a sheet em vez de sair do app
+  // Voltar (Android): fecha sheet de pessoa/lugar -> recolhe a lista expandida -> limpa filtro de grupo/lugar, em vez de sair do app
   useEffect(() => {
-    if (!isFocused || (!selected && selectedPoiId == null)) return;
+    const overlayOpen = Boolean(selected) || selectedPoiId != null || sheetIndex > 0 || groupFilter != null || poiFilter != null;
+    if (!isFocused || !overlayOpen) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      setSelected(null);
-      setSelectedPoiId(null);
+      if (selected || selectedPoiId != null) {
+        setSelected(null);
+        setSelectedPoiId(null);
+      } else if (sheetIndex > 0) {
+        sheetRef.current?.snapToIndex(0);
+      } else {
+        setGroupFilter(null);
+        setPoiFilter(null);
+      }
       return true;
     });
     return () => sub.remove();
-  }, [isFocused, selected, selectedPoiId]);
+  }, [isFocused, selected, selectedPoiId, sheetIndex, groupFilter, poiFilter]);
 
   // selecionado sumiu da lista (refetch, corte dos 300, passou) => limpa o anel no mapa também
   useEffect(() => {
@@ -427,10 +478,11 @@ export function MapScreen() {
 
   // ---------- comandos de estado (idempotentes; reaplicados no próximo 'ready') ----------
   useEffect(() => {
-    // antes do ready o HTML já nasce no tema (init.theme): reaplicar sem animação, senão faz um crossfade de 800ms
-    // pro MESMO tema no meio do reveal
-    send(cmd.setTheme(theme, readyRef.current), 'setTheme');
-  }, [theme, send]);
+    // replay após (re)montagem sem animação: o HTML já nasce no tema atual (init.theme lido na montagem)
+    stateCmds.current.set('setTheme', cmd.setTheme(theme, false));
+    // mudança ao vivo (17h/19h/6h ou override): crossfade
+    if (readyRef.current) inject(cmd.setTheme(theme, true));
+  }, [theme, inject]);
 
   useEffect(() => {
     send(cmd.setActive(active), 'setActive');
@@ -560,6 +612,8 @@ export function MapScreen() {
   const matchQueue = useRef<{ userId: string; name: string; info: MatchInfo | null }[]>([]);
   const momentActive = useRef(false);
   const momentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playMomentRef = useRef<(userId: string, name: string, then: MatchInfo | null) => void>(() => {});
   const finishMoment = useCallback(() => {
     if (momentTimer.current) {
       clearTimeout(momentTimer.current);
@@ -569,13 +623,19 @@ export function MapScreen() {
     setMoment(null);
     const next = pendingMatch.current;
     pendingMatch.current = null;
-    if (next) setMatch(next);
+    if (next) {
+      setMatch(next); // o modal esvazia a fila no onMatchClosed
+      return;
+    }
+    // momento sem modal (ex.: 'Ver no mapa'): se um match chegou no meio, toca agora em vez de perder
+    const queued = matchQueue.current.shift();
+    if (queued) queueTimer.current = setTimeout(() => playMomentRef.current(queued.userId, queued.name, queued.info), 300);
   }, []);
   const playMoment = useCallback(
     (userId: string, name: string, then: MatchInfo | null) => {
       if (momentActive.current) {
-        // já tem um momento rodando: guarda e toca depois que o modal desse fechar
-        matchQueue.current.push({ userId, name, info: then });
+        // já tem um momento rodando: guarda e toca depois que ele (ou o modal dele) terminar; sem repetir a pessoa
+        if (!matchQueue.current.some((q) => q.userId === userId)) matchQueue.current.push({ userId, name, info: then });
         return;
       }
       momentActive.current = true;
@@ -592,8 +652,11 @@ export function MapScreen() {
     },
     [send, finishMoment],
   );
+  playMomentRef.current = playMoment;
   useEffect(() => () => {
     if (momentTimer.current) clearTimeout(momentTimer.current);
+    if (queueTimer.current) clearTimeout(queueTimer.current);
+    matchQueue.current = [];
   }, []);
 
   // ---------- mensagens do WebView ----------
@@ -607,7 +670,7 @@ export function MapScreen() {
           setWebReady(true);
           setMapError(null);
           // WebView que nasceu com tier forçado (remount em low) não mediu de verdade: mantém o teto anterior
-          if (savedTier === 'auto') setMeasuredTier(msg.tier);
+          if (htmlTier === 'auto') setMeasuredTier(msg.tier);
           lowFpsCount.current = 0;
           highFpsCount.current = 0;
           readyAt.current = Date.now();
@@ -658,9 +721,17 @@ export function MapScreen() {
           }
           break;
         }
+        case 'pinTap': {
+          Haptics.selectionAsync().catch(() => {});
+          setSelected(null);
+          setSelectedPoiId(null);
+          setVenueCardOpen(true);
+          break;
+        }
         case 'mapTap': {
           setSelected(null);
           setSelectedPoiId(null);
+          setVenueCardOpen(false);
           sheetRef.current?.snapToIndex(0);
           break;
         }
@@ -722,7 +793,7 @@ export function MapScreen() {
           break;
       }
     },
-    [flushOnReady, onWebDead, remountWeb, send, finishMoment, savedTier],
+    [flushOnReady, onWebDead, remountWeb, send, finishMoment, htmlTier],
   );
 
   // ---------- acenos recebidos (socket) ----------
@@ -757,9 +828,21 @@ export function MapScreen() {
   }, [active, showToast, send]);
 
   // ---------- ações ----------
+  const likingRef = useRef(new Set<string>());
   const like = useCallback(
     async (u: NearbyUser, isSuper = false) => {
       if (u.isAnonymous) return;
+      // já curtiu / já deu match: o servidor devolveria o like antigo e o app celebraria de novo (ou fingiria "enviada")
+      if (u.matchId || localMatches.has(u.id)) {
+        showToast(`Vocês já deram match com ${u.name} 🔥`);
+        return;
+      }
+      if (u.likedByMe || likedIds.has(u.id)) {
+        showToast(`Você já curtiu ${u.name} 💚`);
+        return;
+      }
+      if (likingRef.current.has(u.id)) return; // toque duplo: um POST só
+      likingRef.current.add(u.id);
       try {
         const res = await api.post<LikeResponse>('/likes', { userId: u.id, isSuper });
         setLikedIds((prev) => addTo(prev, u.id));
@@ -790,9 +873,11 @@ export function MapScreen() {
         qc.invalidateQueries({ queryKey: ['matches'] });
       } catch (err) {
         showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
+      } finally {
+        likingRef.current.delete(u.id);
       }
     },
-    [qc, send, showToast, bandById, playMoment],
+    [qc, send, showToast, bandById, playMoment, likedIds, localMatches],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
@@ -864,26 +949,34 @@ export function MapScreen() {
   );
 
   const onCenter = useCallback(async () => {
-    const loc = lat != null && lng != null ? { latitude: lat, longitude: lng } : await locate();
+    const cached = lat != null && lng != null ? { latitude: lat, longitude: lng } : null;
+    // com posição em mãos centraliza na hora e renova o GPS por trás, sem status 'loading' (piscaria o heading/banner)
+    if (cached) void refreshLocation();
+    const loc = cached ?? (await locate());
     if (!loc) return;
     setUserCenter(null);
     send(cmd.setCenter(loc.latitude, loc.longitude, 16, { pitch: 58, bearing: -12, duration: 1100 }));
-  }, [lat, lng, locate, send]);
+  }, [lat, lng, locate, refreshLocation, send]);
 
   const onToggleVisibility = useCallback(() => {
     if (isAnonymous) {
       toggleVisibility();
       return;
     }
-    Alert.alert('Quer ver sem aparecer?', 'Em modo anônimo você vê todo mundo, mas ninguém te vê no mapa e não rola match por enquanto.', [
+    Alert.alert(
+      'Quer ver sem aparecer?',
+      `Em modo anônimo você vê todo mundo, mas ninguém te vê no mapa e não rola match por enquanto.${isFree ? ' No plano grátis vale por 24 h; no Premium é sem limite.' : ''}`,
+      [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Ficar anônimo', onPress: toggleVisibility },
-    ]);
-  }, [isAnonymous, toggleVisibility]);
+      ],
+    );
+  }, [isAnonymous, isFree, toggleVisibility]);
 
-  // permissão negada com "não perguntar de novo": o único caminho é a tela de ajustes
+  // permissão negada com "não perguntar de novo": o único caminho é a tela de ajustes. Re-checa a cada volta pro app;
+  // se o usuário liberou nos ajustes, o useMyLocation re-localiza sozinho (e o banner some)
   useEffect(() => {
-    if (locStatus !== 'denied') return;
+    if (locStatus !== 'denied' || !appActive) return;
     let cancelled = false;
     Location.getForegroundPermissionsAsync()
       .then((perm) => {
@@ -893,7 +986,7 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [locStatus]);
+  }, [locStatus, appActive]);
   const onAllowLocation = useCallback(async () => {
     if (!canAskLocation) {
       Linking.openSettings().catch(() => {});
@@ -903,6 +996,23 @@ export function MapScreen() {
   }, [canAskLocation, locate]);
 
   const onFocusPoi = useCallback((poiId: number) => send(cmd.focusPoi(poiId)), [send]);
+  const showVenue = useCallback(
+    (m: MapboxPlace) => {
+      const pin: PinPayload = { id: m.id, lat: m.latitude, lng: m.longitude, name: m.name, emoji: placeKindMeta(m.kind).emoji, nightlife: m.nightlife };
+      setVenue(m);
+      setVenueCardOpen(true);
+      // replay (reload do WebView) recoloca o pino sem voar de novo; agora, voa com o pino caindo
+      stateCmds.current.set('setPin', cmd.setPin(pin, false));
+      if (readyRef.current) inject(cmd.setPin(pin, true));
+    },
+    [inject],
+  );
+  const clearVenue = useCallback(() => {
+    setVenue(null);
+    setVenueCardOpen(false);
+    stateCmds.current.delete('setPin');
+    if (readyRef.current) inject(cmd.setPin(null));
+  }, [inject]);
   const openVibe = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
     setVibeOpen(true);
@@ -910,23 +1020,36 @@ export function MapScreen() {
   const closeVibe = useCallback(() => setVibeOpen(false), []);
   // lugar escolhido na busca: câmera vai até lá, a sheet do lugar abre na hora e o destaque no mapa vem quando o recorte carregar
   const onPickVibePlace = useCallback(
-    (place: VibePlace) => {
+    (place: VibePlace | MapboxPlace) => {
       setVibeOpen(false);
       setSelected(null);
       setGroupFilter(null);
       setPoiFilter(null);
-      setPickedPoi(place);
-      setSelectedPoiId(place.id);
-      setUserCenter({ lat: place.latitude, lng: place.longitude });
-      if (poisRef.current.some((p) => p.id === place.id)) {
+      // POI do Cruzei tem `id` numérico e existe no `poisRef` (vem do /pois/nearby); Mapbox tem `source: 'mapbox'`
+      const v: VibePlace | null = 'source' in place ? null : place;
+      if (!v) {
+        const m = place as MapboxPlace; // sem v = lugar da cidade (tem source)
+        setPickedPoi(null);
+        setSelectedPoiId(null);
         pendingFocus.current = null;
-        send(cmd.focusPoi(place.id));
+        setUserCenter({ lat: m.latitude, lng: m.longitude });
+        // lugar da cidade: a câmera voa até lá e o pino cai no ponto, com o nome
+        showVenue(m);
+        return;
+      }
+      if (venue) clearVenue();
+      setPickedPoi(v);
+      setSelectedPoiId(v.id);
+      setUserCenter({ lat: v.latitude, lng: v.longitude });
+      if (poisRef.current.some((p) => p.id === v.id)) {
+        pendingFocus.current = null;
+        send(cmd.focusPoi(v.id));
       } else {
-        pendingFocus.current = place.id;
-        send(cmd.setCenter(place.latitude, place.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1400 }));
+        pendingFocus.current = v.id;
+        send(cmd.setCenter(v.latitude, v.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1400 }));
       }
     },
-    [send],
+    [send, showVenue, clearVenue, venue],
   );
   // bairro/rua/cidade do Mapbox: só leva a câmera (o recorte de lugares e pessoas re-centraliza sozinho)
   const onPickGeocode = useCallback(
@@ -1012,7 +1135,7 @@ export function MapScreen() {
         togglePending={togglePending}
         onToggleVisibility={onToggleVisibility}
         onCenter={onCenter}
-        boostMinutes={isBoosted && boost ? boost.minutesRemaining : null}
+        boostMinutes={boostMinutes}
         indicators={indicators}
         hiddenReason={meDiscovery && !meDiscovery.discoverable ? meDiscovery.hiddenReason : null}
         onOpenVibe={openVibe}
@@ -1040,6 +1163,10 @@ export function MapScreen() {
       ) : null}
 
       <View style={[styles.floating, { bottom: floatBottom }]} pointerEvents="box-none">
+        {venue && venueCardOpen && !vibeOpen && !selected && selectedPoiId == null ? (
+          <VenueCard key={venue.id} place={venue} me={lat != null && lng != null ? { lat, lng } : null} onClose={clearVenue} />
+        ) : null}
+
         <DiscoveryToast hint={hints.hint} onPress={onFocusPoi} onHide={hints.hide} />
 
         {toast ? (
