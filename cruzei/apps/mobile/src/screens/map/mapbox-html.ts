@@ -186,6 +186,8 @@ ${IDENTITY_BUBBLE_JS}
   function classifyLayer(l) {
     var id = l.id || '';
     var sl = l['source-layer'] || '';
+    // camadas do Metch (cz-*) têm cor própria: o tema do mapa base não mexe nelas (o número do grupo ficava escuro no círculo escuro)
+    if (id.indexOf('cz-') === 0) return null;
     if (l.type === 'background') return 'bg';
     if (l.type === 'fill' && sl === 'water') return 'water';
     if (l.type === 'fill' && /park|grass|pitch|garden|wood|scrub|cemetery|national/.test(id)) return 'park';
@@ -243,7 +245,7 @@ ${IDENTITY_BUBBLE_JS}
     ['cz-users-label', 'cz-users-boost-label', 'cz-poi-label'].forEach(function (id) { setPaint(id, 'text-halo-color', P.halo); });
     setPaint('cz-users-label', 'text-color', P.text); setPaint('cz-users-boost-label', 'text-color', P.text);
     setPaint('cz-poi-label', 'text-color', ['case', ['==', ['get', 'hot'], true], '#FF1493', P.text]);
-    setPaint('cz-cluster-count', 'text-color', P.text);
+    // cz-cluster-count fica branco em qualquer tema: o círculo do grupo é sempre escuro (#12122A)
     // fog / céu
     try {
       map.setFog({ 'color': P.fog[0], 'high-color': P.fog[1], 'space-color': P.fog[2], 'horizon-blend': name === 'day' ? 0.08 : 0.16, 'star-intensity': P.star, 'range': [0.8, 8] });
@@ -326,6 +328,11 @@ ${IDENTITY_BUBBLE_JS}
   // bolha de identidade: círculo de 42 px dentro de um canvas 56x62 (margem pra sombra/brilho + rabicho até y=53)
   var BUB = { d: 42, cx: 28, cy: 27, tip: 53 };
   var PHOTO_MIN_ZOOM = 14; // abaixo disso só o avatar simplificado (LOD §8)
+  // Teto de figuras PRÓPRIAS (canvas 144×224 → textura por pessoa): numa multidão de 300 isso eram ~39 MB de textura
+  // no WebView e o Moto g54 caía no RenderThread (libhwui OpsTask::tryConcat). Os mais perto ganham figura própria;
+  // o resto usa UMA silhueta compartilhada (a mesma que aparece enquanto o avatar carrega).
+  var FIG_CAP = { high: 90, mid: 60, low: 40 };
+  var GENERIC_FIG = "fig-generic";
   var FAR_ZOOM = 13;       // abaixo disso a figura vira um ponto pequeno (LOD §8: longe = "tem alguém ali")
   // y do topo da cabeça relativo ao pé (negativo, em px da imagem da figura); 4 unidades de folga pra chapéu/cabelo
   function headTop(dim) { return figOffset(dim) - dim.h + FIG_TOP + 4 * figScale(dim); }
@@ -473,9 +480,42 @@ ${IDENTITY_BUBBLE_JS}
     } else if (f.sig !== sig) { f.sig = sig; f.obj.dirty = true; }
     return id;
   }
+  function ensureGenericFig() {
+    if (map.hasImage(GENERIC_FIG)) return;
+    var cv = makeCanvasWH(IMG.fig.w, IMG.fig.h);
+    drawFigure(cv, {}, null, null, false);
+    try { map.addImage(GENERIC_FIG, { width: cv.c.width, height: cv.c.height, data: imageDataOf(cv).data }, { pixelRatio: 2 }); } catch (e) { warn('generic fig', e && e.message); }
+  }
+  // pessoa fora do teto: solta a figura própria (e a bolha de foto) e aponta pra silhueta compartilhada
+  function useGenericFig(u) {
+    ensureGenericFig();
+    var f = figOf(u.id); f.user = u;
+    if (f.obj) { try { map.removeImage(f.imgId); } catch (e) {} f.obj = null; }
+    dropBubble(f);
+    f.imgId = GENERIC_FIG; f.dim = IMG.fig; f.sig = null;
+    return GENERIC_FIG;
+  }
+  // quem ganha figura própria: selecionado/momento do match/boost/match sempre; depois os mais perto de mim (ou do centro)
+  function ownFigureSet(users) {
+    var cap = FIG_CAP[state.tier] || FIG_CAP.mid;
+    if (users.length <= cap) return null;
+    var ref = state.me && typeof state.me.lat === 'number' ? { lat: state.me.lat, lng: state.me.lng } : map.getCenter();
+    var k = Math.cos(ref.lat * Math.PI / 180);
+    var ranked = [];
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i]; if (!u || !u.mapPosition) continue;
+      var pin = u.id === state.selected || u.id === state.momentUserId || u.isBoosted || !!u.matchId;
+      var dx = (u.mapPosition.lng - ref.lng) * k, dy = u.mapPosition.lat - ref.lat;
+      ranked.push({ id: u.id, d: pin ? -1 : dx * dx + dy * dy });
+    }
+    ranked.sort(function (a, b) { return a.d - b.d; });
+    var out = {};
+    for (var j = 0; j < ranked.length && j < cap; j++) out[ranked[j].id] = true;
+    return out;
+  }
   function removeFig(id) {
     var f = figs[id]; if (!f) return;
-    try { if (f.imgId) map.removeImage(f.imgId); } catch (e) {}
+    try { if (f.imgId && f.imgId !== GENERIC_FIG) map.removeImage(f.imgId); } catch (e) {}
     dropBubble(f);
     delete figs[id];
   }
@@ -938,7 +978,7 @@ ${IDENTITY_BUBBLE_JS}
         if (!nearView) continue;
         var d = (p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y);
         if (inView) cand.push({ f: fg, d: d });
-        if (wantPhotos && id !== 'me' && !fg.leaving && fg.user && fg.user.photo && !fg.ph && !(fg.phWait > Date.now())) { if (ensureBubble(fg, d)) changed = true; }
+        if (wantPhotos && id !== 'me' && fg.obj && !fg.leaving && fg.user && fg.user.photo && !fg.ph && !(fg.phWait > Date.now())) { if (ensureBubble(fg, d)) changed = true; }
       }
       cand.sort(function (p, q) { return p.d - q.d; });
       for (var i = 0; i < cand.length; i++) cand[i].f.animated = i < max;
@@ -984,11 +1024,12 @@ ${IDENTITY_BUBBLE_JS}
     var isFirst = !state.hadData;
     var prev = state.users; var next = {};
     var newIds = [];
+    var own = ownFigureSet(users);
     for (var i = 0; i < users.length; i++) {
       var u = users[i];
       if (!u || !u.id || !u.mapPosition || typeof u.mapPosition.lat !== 'number' || typeof u.mapPosition.lng !== 'number') continue; // só posição VISUAL (o servidor nunca manda a real)
       next[u.id] = u;
-      ensureAvatar(u);
+      if (!own || own[u.id]) ensureAvatar(u); else useGenericFig(u);
       var fg = figOf(u.id);
       var to = [u.mapPosition.lng, u.mapPosition.lat];
       // voltou enquanto ainda sumia: cancela a saída
@@ -1132,6 +1173,7 @@ ${IDENTITY_BUBBLE_JS}
     if (!u) { send('matchMomentDone', { userId: m.userId, shown: false }); return; }
     clearMoment();
     state.momentUserId = m.userId;
+    if (figs[m.userId] && !figs[m.userId].obj) { ensureAvatar(u); pushUsers(); }
     var fm = figs['me'], fu = figs[m.userId];
     if (fm) { fm.moment = true; refreshBubble('me'); }
     if (fu) { fu.moment = true; refreshBubble(m.userId); }
@@ -1181,6 +1223,7 @@ ${IDENTITY_BUBBLE_JS}
     if (prevSel && prevSel !== state.selected) { refreshBubble(prevSel); if (prevSel !== state.momentUserId && !inMoment) spotOut(prevSel); }
     if (!id && inMoment) return; // o momento do match está usando o anel; clearMoment limpa no fim
     var u = id ? state.users[id] : null;
+    if (u && figs[id] && !figs[id].obj) { ensureAvatar(u); pushUsers(); } // estava na silhueta compartilhada: ganha a própria
     map.getSource('sel').setData(u ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [u.mapPosition.lng, u.mapPosition.lat] } }] } : empty());
     if (!u) { if (!state.momentUserId) pushSpot(); return; }
     refreshBubble(id);

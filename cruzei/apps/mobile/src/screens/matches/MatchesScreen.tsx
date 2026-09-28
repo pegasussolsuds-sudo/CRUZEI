@@ -14,31 +14,31 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 
 import { api } from '../../services/api';
+import { matchesPollMs } from '../../services/socket';
 import { useAuthStore } from '../../stores/auth';
 import type { Match } from '@cruzei/shared-types';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import type { MatchesStackParamList } from '../../navigation/MatchesStack';
 import { timeAgo, formatChatExpiry } from '@cruzei/shared-utils';
-import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
+import { FadeInView, Pulse } from '../../components/animated';
+import { LiveDot } from '../../components/animated/LiveDot';
+import { PressScale } from '../../components/animated/PressScale';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 
 const AVATAR = 56;
-const STAGGER_MS = 55;
-const STAGGER_CAP = 8;
 const MATCHES_LIMIT = 100; // servidor aceita até 200; chats duram 48h, então a lista ativa é curta
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Linha do match: stagger na entrada, avatar Cruzei (o mesmo do mapa), dot pulsando se há não lidas
+// Linha do match: avatar Cruzei (o mesmo do mapa), dot pulsando se há não lidas
 // ───────────────────────────────────────────────────────────────────────────────
 interface MatchRowProps {
   item: Match;
-  index: number;
   myId: string | undefined;
   onPress: (item: Match) => void;
 }
 
-const MatchRow = memo(function MatchRow({ item, index, myId, onPress }: MatchRowProps) {
+const MatchRow = memo(function MatchRow({ item, myId, onPress }: MatchRowProps) {
   const hasUnread = (item.unreadCount ?? 0) > 0;
   const mine = item.lastMessage?.senderId === myId;
   const preview = item.lastMessage
@@ -48,9 +48,11 @@ const MatchRow = memo(function MatchRow({ item, index, myId, onPress }: MatchRow
     hasUnread ? `. ${item.unreadCount} não lida${item.unreadCount > 1 ? 's' : ''}` : ''
   }`;
 
+  // linha SEM Reanimated (PressScale / LiveDot): com conversa chegando a toda hora a lista re-renderiza e remonta
+  // linhas o tempo todo — um mapper do Reanimated por linha derrubava o app no Moto g54 (worklets::ShareableArray)
   return (
-    <FadeInView delay={Math.min(index, STAGGER_CAP) * STAGGER_MS} fromY={14} fromScale={0.98}>
-      <ScaleOnPress
+      <PressScale
+        haptic={false}
         onPress={() => onPress(item)}
         pressedScale={0.98}
         style={styles.row}
@@ -68,10 +70,7 @@ const MatchRow = memo(function MatchRow({ item, index, myId, onPress }: MatchRow
           />
           {hasUnread ? (
             <View style={styles.dotAnchor} pointerEvents="none">
-              <Pulse maxScale={2.2} minOpacity={0} cycleMs={1600} style={styles.dotHalo} />
-              <Pulse maxScale={1.15} minOpacity={0.85} cycleMs={1600}>
-                <View style={styles.dot} />
-              </Pulse>
+              <LiveDot halo size={12} borderColor={colors.white} />
             </View>
           ) : null}
         </View>
@@ -94,14 +93,11 @@ const MatchRow = memo(function MatchRow({ item, index, myId, onPress }: MatchRow
         </View>
 
         {hasUnread ? (
-          <FadeInView fromScale={0.6} delay={200 + Math.min(index, STAGGER_CAP) * STAGGER_MS}>
-            <View style={styles.badge} accessible={false}>
-              <Text style={styles.badgeText}>{item.unreadCount}</Text>
-            </View>
-          </FadeInView>
+          <View style={styles.badge} accessible={false}>
+            <Text style={styles.badgeText}>{item.unreadCount}</Text>
+          </View>
         ) : null}
-      </ScaleOnPress>
-    </FadeInView>
+      </PressScale>
   );
 });
 
@@ -117,7 +113,7 @@ export function MatchesScreen() {
   const query = useQuery({
     queryKey: ['matches', { limit: MATCHES_LIMIT }],
     queryFn: async () => (await api.get<Match[]>('/matches', { params: { limit: MATCHES_LIMIT } })).data,
-    refetchInterval: 30_000,
+    refetchInterval: matchesPollMs,
   });
 
   const openChat = useCallback(
@@ -126,7 +122,7 @@ export function MatchesScreen() {
   );
 
   const renderItem = useCallback(
-    ({ item, index }: { item: Match; index: number }) => <MatchRow item={item} index={index} myId={myId} onPress={openChat} />,
+    ({ item }: { item: Match }) => <MatchRow item={item} myId={myId} onPress={openChat} />,
     [myId, openChat],
   );
 
@@ -211,8 +207,6 @@ const styles = StyleSheet.create({
   },
   avatarSlot: { width: AVATAR, height: AVATAR, marginRight: spacing.md },
   dotAnchor: { position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, alignItems: 'center', justifyContent: 'center' },
-  dotHalo: { position: 'absolute', width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary },
-  dot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary, borderWidth: 2, borderColor: colors.white },
 
   rowContent: { flex: 1 },
   rowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.sm },

@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,8 +10,17 @@ import { IdentityBubble } from '../identity/IdentityBubble';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { PressScale } from '../animated/PressScale';
+import { reportPlace, type PlaceReportReason } from '../../hooks/usePlaceContrib';
 
 export const PLACE_SHEET_FRACTION = 0.42;
+
+const REPORT_REASONS: { key: PlaceReportReason; label: string }[] = [
+  { key: 'not_public', label: 'Não é lugar público' },
+  { key: 'residence', label: 'É uma casa' },
+  { key: 'closed', label: 'Fechou' },
+  { key: 'wrong_place', label: 'Lugar errado' },
+];
 const SNAP_POINTS = ['42%'] as const;
 const MAX_AVATARS = 6;
 
@@ -76,6 +85,18 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
   const hot = count >= hotMin;
   const shown = people.slice(0, MAX_AVATARS);
   const extra = people.length - shown.length;
+  // lugar que a galera pôs no mapa (multidão/pedidos/confirmações): selo + "Reportar"
+  const discovered = poi?.source === 'mapbox';
+  const [reportState, setReportState] = useState<'idle' | 'choosing' | 'sent'>('idle');
+  useEffect(() => setReportState('idle'), [poi?.id]);
+  const sendReport = useCallback(
+    (reason: PlaceReportReason) => {
+      if (!poi) return;
+      setReportState('sent');
+      reportPlace(poi.id, reason).catch(() => {});
+    },
+    [poi],
+  );
 
   return (
     <BottomSheet
@@ -122,6 +143,11 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
               {isEvent ? (
                 <View style={[styles.hotPill, styles.eventPill]}>
                   <Text style={styles.hotText}>⚡ Evento Metch</Text>
+                </View>
+              ) : null}
+              {discovered ? (
+                <View style={[styles.hotPill, styles.discoveredPill]} accessibilityLabel="Lugar descoberto pela galera do Metch">
+                  <Text style={[styles.hotText, styles.discoveredText]}>✨ Descoberto pela galera</Text>
                 </View>
               ) : null}
             </View>
@@ -172,6 +198,24 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
                 <Text style={styles.actionGhostText}>🗺️ Ver no mapa</Text>
               </ScaleOnPress>
             </View>
+
+            {discovered ? (
+              reportState === 'sent' ? (
+                <Text style={styles.reportDone}>Valeu! A gente confere esse lugar 👍</Text>
+              ) : reportState === 'choosing' ? (
+                <View style={styles.reasons}>
+                  {REPORT_REASONS.map((r) => (
+                    <PressScale key={r.key} onPress={() => sendReport(r.key)} accessibilityRole="button" accessibilityLabel={r.label} style={styles.reason}>
+                      <Text style={styles.reasonText}>{r.label}</Text>
+                    </PressScale>
+                  ))}
+                </View>
+              ) : (
+                <PressScale onPress={() => setReportState('choosing')} haptic={false} accessibilityRole="button" accessibilityLabel="Reportar este lugar" style={styles.reportBtn} hitSlop={6}>
+                  <Text style={styles.reportText}>⚑ Reportar</Text>
+                </PressScale>
+              )
+            ) : null}
           </View>
         ) : null}
       </BottomSheetView>
@@ -199,6 +243,14 @@ const styles = StyleSheet.create({
   stat: { ...typography.bodySmall, color: colors.white },
   hotPill: { paddingHorizontal: spacing.md, height: 28, borderRadius: radius.full, backgroundColor: colors.secondary, alignItems: 'center', justifyContent: 'center' },
   eventPill: { backgroundColor: '#5A1E8A' },
+  discoveredPill: { backgroundColor: 'rgba(127,255,0,0.14)', borderWidth: 1, borderColor: 'rgba(127,255,0,0.5)' },
+  discoveredText: { color: colors.primary },
+  reportBtn: { alignSelf: 'center', paddingVertical: 4, paddingHorizontal: spacing.md },
+  reportText: { ...typography.caption, color: colors.gray[400] },
+  reportDone: { ...typography.caption, color: colors.gray[300], textAlign: 'center' },
+  reasons: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, justifyContent: 'center' },
+  reason: { paddingHorizontal: spacing.md, minHeight: 36, borderRadius: radius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
+  reasonText: { ...typography.caption, color: colors.white },
   hotText: { ...typography.caption, color: colors.white },
   offer: { ...typography.bodySmall, color: colors.accent },
   sectionLabel: { ...typography.caption, color: colors.gray[400], marginBottom: spacing.xs, textTransform: 'uppercase' },

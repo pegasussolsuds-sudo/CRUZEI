@@ -4,7 +4,8 @@ import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, formatApproxDistance } from '@cruzei/shared-utils';
-import type { MapboxPlace } from '@cruzei/shared-types';
+import type { MapboxPlace, PlaceSuggestResponse } from '@cruzei/shared-types';
+import { usePlaceSuggest } from '../../hooks/usePlaceContrib';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PressScale } from '../animated/PressScale';
 import { placeKindMeta } from './placeKinds';
@@ -14,6 +15,10 @@ export interface VenueCardProps {
   /** minha posição, pra "a X de você" */
   me: { lat: number; lng: number } | null;
   onClose: () => void;
+  /** resposta do "Pôr no Metch": ativo → o app foca no lugar; pendente → agradece */
+  onSuggested?: (res: PlaceSuggestResponse) => void;
+  /** mensagem curta (toast) quando o pedido não deu certo */
+  onMessage?: (text: string) => void;
 }
 
 /** abre o app de navegação do aparelho (o usuário escolhe qual) no lugar */
@@ -35,7 +40,12 @@ async function openDirections(place: MapboxPlace): Promise<void> {
  * Card do lugar da cidade escolhido na busca (o pino já está no mapa): tipo, endereço, distância,
  * "Como chegar" e "Mandar" pra chamar alguém. Fechar tira o pino.
  */
-export const VenueCard = memo(function VenueCard({ place, me, onClose }: VenueCardProps) {
+const NOOP = () => {};
+
+/** até aqui de mim o botão vira "Tô aqui" (o servidor decide de verdade pela minha presença) */
+const ONSITE_M = 150;
+
+export const VenueCard = memo(function VenueCard({ place, me, onClose, onSuggested = NOOP, onMessage = NOOP }: VenueCardProps) {
   const reduceMotion = useReducedMotion();
   const meta = placeKindMeta(place.kind);
   const dist = me ? distanceMeters(me.lat, me.lng, place.latitude, place.longitude) : null;
@@ -44,6 +54,10 @@ export const VenueCard = memo(function VenueCard({ place, me, onClose }: VenueCa
   const go = useCallback(() => {
     openDirections(place).catch(() => {});
   }, [place]);
+  const { state: suggestState, suggest } = usePlaceSuggest(place.id, onSuggested, onMessage);
+  // lugar 'outro' (saúde, loja, escritório…) não entra no mapa: nem mostra o botão
+  const canSuggest = place.kind !== 'other';
+  const onsite = dist != null && dist <= ONSITE_M;
   const share = useCallback(() => {
     const line = [place.name, place.address].filter(Boolean).join(' — ');
     Share.share({ message: `Bora? ${line}` }).catch(() => {});
@@ -93,6 +107,23 @@ export const VenueCard = memo(function VenueCard({ place, me, onClose }: VenueCa
           <Text style={[styles.goText, ...(place.nightlife ? [styles.goTextNight] : [])]}>Como chegar</Text>
         </ScaleOnPress>
       </View>
+
+      {canSuggest ? (
+        <PressScale
+          onPress={suggest}
+          disabled={suggestState !== 'idle'}
+          accessibilityRole='button'
+          accessibilityState={{ disabled: suggestState !== 'idle' }}
+          accessibilityLabel={suggestState === 'sent' ? 'Pedido enviado' : `Pôr ${place.name} no mapa do Metch`}
+          accessibilityHint='Quando mais gente confirmar, o lugar aparece no mapa pra todo mundo'
+          style={[styles.contrib, ...(suggestState === 'sent' ? [styles.contribSent] : [])]}
+        >
+          <Text style={styles.contribEmoji}>{suggestState === 'sent' ? '✨' : onsite ? '✋' : '📌'}</Text>
+          <Text style={[styles.contribText, ...(suggestState === 'sent' ? [styles.contribTextSent] : [])]} numberOfLines={1}>
+            {suggestState === 'sent' ? 'Pedido enviado — valeu!' : suggestState === 'sending' ? 'Enviando…' : onsite ? 'Tô aqui — pôr no Metch' : 'Pôr no Metch'}
+          </Text>
+        </PressScale>
+      ) : null}
     </Animated.View>
   );
 });
@@ -128,6 +159,22 @@ const styles = StyleSheet.create({
   address: { ...typography.caption, color: colors.gray[400] },
   close: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(250,250,250,0.08)', alignItems: 'center', justifyContent: 'center' },
   actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  contrib: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    height: 40,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(127,255,0,0.55)',
+    backgroundColor: 'rgba(127,255,0,0.08)',
+  },
+  contribSent: { borderStyle: 'solid', borderColor: 'rgba(250,250,250,0.15)', backgroundColor: 'rgba(250,250,250,0.05)' },
+  contribEmoji: { fontSize: 16 },
+  contribText: { fontFamily: fontFamily.bodyBold, fontSize: 14, color: colors.primary },
+  contribTextSent: { color: colors.gray[300] },
   distBox: { flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 'auto' },
   distText: { fontFamily: fontFamily.display, fontSize: 14, color: colors.gray[200] },
   ghostBtn: {

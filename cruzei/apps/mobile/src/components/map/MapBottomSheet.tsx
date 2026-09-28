@@ -9,7 +9,7 @@ import { proximityRank } from '@cruzei/shared-utils';
 import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import type { MainTabParamList } from '../../navigation/MainTabs';
 import { FadeInView } from '../animated/FadeInView';
-import { Pulse } from '../animated/Pulse';
+import { LiveDot } from '../animated/LiveDot';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PersonRow } from './PersonRow';
 
@@ -115,10 +115,9 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
       : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}`;
 
   const renderItem = useCallback(
-    ({ item, index }: { item: NearbyUser; index: number }) => (
-      <FadeInView delay={Math.min(index, 8) * 35} fromY={8}>
-        <PersonRow user={item} band={bandById.get(item.id) ?? item.proximityBand ?? null} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
-      </FadeInView>
+    // sem animação de entrada por linha: com multidão em volta a lista troca dezenas de linhas a cada atualização
+    ({ item }: { item: NearbyUser }) => (
+      <PersonRow user={item} band={bandById.get(item.id) ?? item.proximityBand ?? null} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
     ),
     [bandById, onSelect, onLike, onSuperLike, onPass],
   );
@@ -155,9 +154,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
           👥 {title}
         </Text>
         {isLoading ? (
-          <Pulse active maxScale={1.15} minOpacity={0.5} style={styles.loadingDot}>
-            <View style={styles.loadingDotInner} />
-          </Pulse>
+          <LiveDot size={8} style={styles.loadingDot} />
         ) : null}
       </View>
       {groupFilter ? (
@@ -252,7 +249,6 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   title: { ...typography.h3, color: colors.black, flexShrink: 1 },
   loadingDot: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center' },
-  loadingDotInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
   poiChip: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, alignSelf: 'flex-start', minHeight: 44 },
   poiChipText: { ...typography.caption, color: colors.secondary },
   chips: { flexDirection: 'row', gap: spacing.sm },

@@ -4,8 +4,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { proximityBandLabel } from '@cruzei/shared-utils';
 import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
-import { Pulse } from '../animated/Pulse';
-import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { LiveDot } from '../animated/LiveDot';
+import { PressScale } from '../animated/PressScale';
 import { IdentityBubble } from '../identity/IdentityBubble';
 import { resolveAvatar } from '../../avatar';
 
@@ -51,6 +51,7 @@ function PersonRowInner({ user, band, onPress, pressHint = 'Mostra no mapa', onL
   const a11y = `${nameAge}, ${distance}, ${presence}${user.isVerified ? ', verificado' : ''}${user.isBoosted ? ', com boost' : ''}`;
 
   return (
+    // Nada de Reanimated por linha (PressScale / LiveDot): a lista remonta linhas a cada atualização da multidão.
     // raiz NÃO acessível: senão iOS agrupa e os botões Curtir/Super/Passar somem do VoiceOver (e o TalkBack lê em dobro).
     // O nó acessível é o bloco de info (nome/distância/presença); os botões são irmãos alcançáveis.
     <Pressable onPress={onPress ? () => onPress(user) : undefined} accessible={false} style={[styles.row, highlighted && styles.rowHighlighted]}>
@@ -95,9 +96,7 @@ function PersonRowInner({ user, band, onPress, pressHint = 'Mostra no mapa', onL
         </Text>
         <View style={styles.statusLine}>
           {user.isOnline ? (
-            <Pulse active maxScale={1.2} style={styles.dotWrap}>
-              <View style={styles.dot} />
-            </Pulse>
+            <LiveDot size={8} style={styles.dotWrap} />
           ) : (
             <Ionicons name="time-outline" size={12} color={colors.gray[500]} style={styles.dotWrap} />
           )}
@@ -114,34 +113,32 @@ function PersonRowInner({ user, band, onPress, pressHint = 'Mostra no mapa', onL
           </Text>
         ) : (
           <>
-            <ScaleOnPress
+            <PressScale
               onPress={() => onLike(user)}
               accessibilityRole="button"
               accessibilityLabel={`Curtir ${user.name}`}
               style={[styles.actionBtn, styles.likeBtn]}
-              glowColor={colors.primary}
             >
               <Ionicons name="heart" size={20} color={colors.black} />
-            </ScaleOnPress>
-            <ScaleOnPress
+            </PressScale>
+            <PressScale
               onPress={() => onSuperLike(user)}
               accessibilityRole="button"
               accessibilityLabel={`Super curtir ${user.name}`}
               style={[styles.actionBtn, styles.superBtn]}
-              glowColor={colors.accent}
             >
               <Ionicons name="star" size={18} color={colors.black} />
-            </ScaleOnPress>
+            </PressScale>
           </>
         )}
-        <ScaleOnPress
+        <PressScale
           onPress={() => onPass(user)}
           accessibilityRole="button"
           accessibilityLabel={`Passar ${user.name}`}
           style={[styles.actionBtn, styles.passBtn]}
         >
           <Ionicons name="close" size={20} color={colors.danger} />
-        </ScaleOnPress>
+        </PressScale>
       </View>
     </Pressable>
   );
@@ -171,7 +168,6 @@ const styles = StyleSheet.create({
   meta: { ...typography.bodySmall, color: colors.gray[600], marginTop: 2 },
   statusLine: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   dotWrap: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center', marginRight: spacing.xs },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
   status: { ...typography.caption, color: colors.gray[500] },
   statusOnline: { color: colors.gray[700] },
   actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },

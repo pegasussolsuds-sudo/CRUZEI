@@ -29,6 +29,8 @@ import { MapHeader, useActiveBoost } from '../../components/map/MapHeader';
 import { DiscoveryToast } from '../../components/map/DiscoveryToast';
 import { VibeOverlay } from '../../components/map/VibeOverlay';
 import { VenueCard } from '../../components/map/VenueCard';
+import { NamePlaceCard, type PlacePromptAnswer } from '../../components/map/NamePlaceCard';
+import { votePlace } from '../../hooks/usePlaceContrib';
 import { placeKindMeta } from '../../components/map/placeKinds';
 import type { GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
@@ -39,7 +41,7 @@ import { buildMapboxHtml } from './mapbox-html';
 import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type InitTier, type MapUser, type PerfTier, type PinPayload } from './bridge';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
-import type { AvatarConfig, DiscoveryResponse, MapPosition, MapboxPlace, NearbyUser, POI, ProximityBand, VibePlace } from '@cruzei/shared-types';
+import type { AvatarConfig, DiscoveryResponse, MapPosition, MapboxPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
 import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
@@ -1011,6 +1013,45 @@ export function MapScreen() {
     stateCmds.current.delete('setPin');
     if (readyRef.current) inject(cmd.setPin(null));
   }, [inject]);
+  // '📌 Pôr no Metch': já está no mapa → a câmera vai até o lugar; pendente → agradece (aparece quando mais gente confirmar)
+  const onVenueSuggested = useCallback(
+    (res: PlaceSuggestResponse) => {
+      if (res.status === 'active' && res.poi) {
+        const poi = res.poi;
+        clearVenue();
+        qc.invalidateQueries({ queryKey: ['nearby', 'pois'] });
+        qc.invalidateQueries({ queryKey: ['vibe'] });
+        pendingFocus.current = poi.id;
+        setUserCenter({ lat: poi.latitude, lng: poi.longitude });
+        send(cmd.setCenter(poi.latitude, poi.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1200 }));
+        showToast('Já tá no mapa ✨');
+        return;
+      }
+      showToast('Valeu! Quando mais gente confirmar, aparece no mapa ✨');
+    },
+    [clearVenue, qc, send, showToast],
+  );
+
+  // '✨ Tá rolando algo aqui?': o servidor manda no máximo 1 vez a cada 6 h; o app guarda até a pessoa responder
+  const [placePrompt, setPlacePrompt] = useState<PlacePrompt | null>(null);
+  const incomingPrompt = nearbyQuery.data?.me?.placePrompt ?? null;
+  useEffect(() => {
+    if (incomingPrompt && incomingPrompt.options.length > 0) setPlacePrompt(incomingPrompt);
+  }, [incomingPrompt]);
+  const answerPlacePrompt = useCallback(
+    (a: PlacePromptAnswer) => {
+      const current = placePrompt;
+      setPlacePrompt(null);
+      if (!current || a.kind === 'dismiss') return;
+      if (a.kind === 'confirm') {
+        votePlace(a.candidateId, 'confirm').then((ok) => showToast(ok ? `Valeu! ${a.name} logo aparece no mapa ✨` : 'Não deu agora. Tenta de novo já já'));
+        return;
+      }
+      Promise.all(current.options.map((o) => votePlace(o.candidateId, 'deny'))).then(() => showToast('Anotado 👍'));
+    },
+    [placePrompt, showToast],
+  );
+
   const openVibe = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
     setVibeOpen(true);
@@ -1162,7 +1203,16 @@ export function MapScreen() {
 
       <View style={[styles.floating, { bottom: floatBottom }]} pointerEvents="box-none">
         {venue && venueCardOpen && !vibeOpen && !selected && selectedPoiId == null ? (
-          <VenueCard key={venue.id} place={venue} me={lat != null && lng != null ? { lat, lng } : null} onClose={clearVenue} />
+          <VenueCard
+            key={venue.id}
+            place={venue}
+            me={lat != null && lng != null ? { lat, lng } : null}
+            onClose={clearVenue}
+            onSuggested={onVenueSuggested}
+            onMessage={showToast}
+          />
+        ) : placePrompt && !vibeOpen && !selected && selectedPoiId == null ? (
+          <NamePlaceCard prompt={placePrompt} onAnswer={answerPlacePrompt} />
         ) : null}
 
         <DiscoveryToast hint={hints.hint} onPress={onFocusPoi} onHide={hints.hide} />

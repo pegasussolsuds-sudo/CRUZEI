@@ -64,6 +64,10 @@ export function App() {
     (async () => {
       const socket = await connectSocket();
       if (!socket || !active) return;
+      // (re)conectou: o que chegou enquanto o socket estava fora não virou evento — atualiza a lista uma vez
+      socket.on('connect', () => {
+        queryClient.invalidateQueries({ queryKey: ['matches'] });
+      });
       socket.on('match_created', () => {
         queryClient.invalidateQueries({ queryKey: ['matches'] });
         queryClient.invalidateQueries({ queryKey: ['me'] });

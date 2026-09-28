@@ -11,6 +11,7 @@ import { PaywallScreen } from '../screens/paywall/PaywallScreen';
 import { MatchesStack, type MatchesStackParamList } from './MatchesStack';
 import { ProfileStack, type ProfileStackParamList } from './ProfileStack';
 import { api } from '../services/api';
+import { matchesPollMs } from '../services/socket';
 import { colors } from '@cruzei/ui-mobile';
 import type { Match } from '@cruzei/shared-types';
 
@@ -31,7 +32,7 @@ export function MainTabs() {
   const matches = useQuery({
     queryKey: ['matches', { limit: 100 }],
     queryFn: async () => (await api.get<Match[]>('/matches', { params: { limit: 100 } })).data,
-    refetchInterval: 30_000,
+    refetchInterval: matchesPollMs,
   });
   const unread = (matches.data ?? []).reduce((n, m) => n + (m.unreadCount ?? 0), 0);
 
