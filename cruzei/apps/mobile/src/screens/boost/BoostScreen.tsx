@@ -405,11 +405,7 @@ function BoostGauge({ progress, size, children }: BoostGaugeProps) {
   const stroke = 10;
   const c = size / 2;
   const r = c - stroke;
-  const circle = useMemo(() => {
-    const p = Skia.Path.Make();
-    p.addCircle(c, c, r);
-    return p;
-  }, [c, r]);
+  const circle = useMemo(() => Skia.PathBuilder.Make().addCircle(c, c, r).build(), [c, r]);
 
   const end = useDerivedValue(() => Math.max(0.002, Math.min(1, progress.value)));
   const tipX = useDerivedValue(() => c + Math.cos(-Math.PI / 2 + end.value * Math.PI * 2) * r);
@@ -573,7 +569,7 @@ export function BoostScreen() {
 
   const goBack = () => {
     if (nav.canGoBack()) nav.goBack();
-    else nav.navigate('Main');
+    else nav.popTo('Main');
   };
 
   const price = formatBRL(BOOST_PRICE_CENTS);
@@ -652,7 +648,7 @@ export function BoostScreen() {
               </SlideInView>
 
               <ScaleOnPress
-                onPress={() => nav.navigate('Main')}
+                onPress={() => nav.popTo('Main')}
                 style={styles.secondaryBtn}
                 accessibilityRole="button"
                 accessibilityLabel="Ver o mapa"
@@ -826,7 +822,7 @@ const styles = StyleSheet.create({
   footer: { paddingHorizontal: spacing.xl, paddingTop: spacing.sm, paddingBottom: spacing.md },
   ctaWrap: { alignItems: 'stretch', justifyContent: 'center' },
   ctaHalo: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: radius.full,
     backgroundColor: colors.accent,
     shadowColor: colors.accent,

@@ -230,10 +230,12 @@ export function UserCardScreen() {
 
   const openChat = useCallback(() => {
     if (!user || !alreadyMatched) return;
-    nav.navigate('Main', {
-      screen: 'Matches',
-      params: { screen: 'Chat', initial: false, params: { matchId: alreadyMatched.id, name: user.name } },
-    } as never);
+    // v7: navigate não volta mais pra tela que já está na pilha — { pop: true } volta pro Main em vez de empilhar outro
+    nav.navigate(
+      'Main',
+      { screen: 'Matches', params: { screen: 'Chat', initial: false, params: { matchId: alreadyMatched.id, name: user.name } } } as never,
+      { pop: true },
+    );
   }, [alreadyMatched, nav, user]);
 
   // ── estados de carregamento/erro ──

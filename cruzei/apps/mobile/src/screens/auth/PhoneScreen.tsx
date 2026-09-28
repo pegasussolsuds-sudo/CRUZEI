@@ -153,7 +153,7 @@ export function PhoneScreen() {
       <BlobBackground intensity={0.25} paused={!focused} />
 
       <SafeAreaView style={styles.safe}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kb}>
+        <KeyboardAvoidingView behavior="padding" style={styles.kb}>
           <FadeInView delay={60} fromX={-8} style={styles.topBar}>
             <Pressable
               onPress={() => nav.goBack()}

@@ -74,7 +74,12 @@ export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
   const openChat = () => {
     onClose();
     // initial:false → MatchesList fica embaixo na pilha e o chat ganha botão de voltar
-    nav.navigate('Matches', { screen: 'Chat', initial: false, params: { matchId: match.matchId, name: match.name } } as never);
+    // pelo Main (raiz): funciona tanto do mapa (aba) quanto do cartão (pilha raiz); pop volta pro Main em vez de empilhar
+    (nav as unknown as { navigate: (name: string, params: object, options: { pop: boolean }) => void }).navigate(
+      'Main',
+      { screen: 'Matches', params: { screen: 'Chat', initial: false, params: { matchId: match.matchId, name: match.name } } },
+      { pop: true },
+    );
   };
 
   const viewOnMap = onViewOnMap
@@ -268,7 +273,7 @@ function AvatarRing({ config, ring, label }: { config: AvatarConfig; ring: strin
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.black },
-  veil: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,26,0.5)' },
+  veil: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(10,10,26,0.5)' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   cardWrap: { width: '100%', maxWidth: 420 },
   card: {
@@ -282,7 +287,7 @@ const styles = StyleSheet.create({
     backfaceVisibility: 'hidden',
   },
   cardBack: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: colors.secondary,
     borderColor: 'rgba(250,250,250,0.25)',
     justifyContent: 'center',

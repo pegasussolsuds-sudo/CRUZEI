@@ -5,19 +5,17 @@ import {
   Image,
   KeyboardAvoidingView,
   Linking,
-  Platform,
   StyleSheet,
   Text,
   TextInput,
   View,
-  type NativeSyntheticEvent,
   type StyleProp,
-  type TextInputFocusEventData,
   type TextInputProps,
   type ViewStyle,
 } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, {
@@ -55,6 +53,7 @@ const INPUT_FOCUS_BG = '#FDFFF7';
 
 export function EditProfileScreen() {
   const nav = useNavigation();
+  const headerHeight = useHeaderHeight();
   const qc = useQueryClient();
   const setUser = useAuthStore((s) => s.setUser);
 
@@ -211,7 +210,8 @@ export function EditProfileScreen() {
   const canSave = name.trim().length >= 2 && !saved;
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+    // edge-to-edge (Android 15+): a janela não encolhe com o teclado — padding nas duas plataformas, descontando o header
+    <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }} keyboardVerticalOffset={headerHeight}>
       <Animated.ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <FadeInView fromY={8}>
           <Text style={styles.label}>
@@ -342,14 +342,14 @@ function FocusInput({ style, onFocus, onBlur, multiline, ...rest }: FocusInputPr
   }));
 
   const handleFocus = useCallback(
-    (e: NativeSyntheticEvent<TextInputFocusEventData>) => {
+    (e: Parameters<NonNullable<TextInputProps['onFocus']>>[0]) => {
       focus.value = withTiming(1, { duration: duration.base });
       onFocus?.(e);
     },
     [focus, onFocus],
   );
   const handleBlur = useCallback(
-    (e: NativeSyntheticEvent<TextInputFocusEventData>) => {
+    (e: Parameters<NonNullable<TextInputProps['onBlur']>>[0]) => {
       focus.value = withTiming(0, { duration: duration.fast });
       onBlur?.(e);
     },

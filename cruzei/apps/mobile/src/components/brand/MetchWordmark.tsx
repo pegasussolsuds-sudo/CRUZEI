@@ -107,13 +107,15 @@ export function MetchWordmark({
     const widths = font.getGlyphWidths(ids);
     const m = font.getMetrics();
     const baseline = pad - m.ascent; // ascent é negativo
-    const path = Skia.Path.Make();
+    // Skia 2.6: SkPath é imutável — monta no PathBuilder e congela com build()
+    const builder = Skia.PathBuilder.Make();
     let x = pad;
     chars.forEach((ch, i) => {
       const glyph = Skia.Path.MakeFromText(ch, x, baseline, font);
-      if (glyph) path.addPath(glyph);
+      if (glyph) builder.addPath(glyph);
       x += (widths[i] ?? 0) + ls;
     });
+    const path = builder.build();
     const textW = x - pad - ls;
     return {
       path,

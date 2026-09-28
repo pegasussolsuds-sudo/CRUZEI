@@ -293,7 +293,7 @@ function StepHeader({ title, onBack }: { title: string; onBack: () => void }) {
 }
 
 const styles = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10,10,26,0.55)' },
+  backdrop: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(10,10,26,0.55)' },
   anchor: { flex: 1, justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: colors.background,

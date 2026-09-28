@@ -50,7 +50,7 @@ export function AnimatedGradient({
   });
 
   return (
-    <Canvas style={[{ width, height }, StyleSheet.absoluteFillObject, style]} pointerEvents="none">
+    <Canvas style={[{ width, height }, StyleSheet.absoluteFill, style]} pointerEvents="none">
       <Rect x={0} y={0} width={width} height={height}>
         <LinearGradient start={start} end={end} colors={colorsList} />
       </Rect>

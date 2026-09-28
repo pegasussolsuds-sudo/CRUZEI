@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -209,7 +209,7 @@ export function CodeScreen() {
       <BlobBackground intensity={0.25} paused={!focused} />
 
       <SafeAreaView style={styles.safe}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kb}>
+        <KeyboardAvoidingView behavior="padding" style={styles.kb}>
           <FadeInView delay={60} fromX={-8} style={styles.topBar}>
             <Pressable
               onPress={() => nav.goBack()}

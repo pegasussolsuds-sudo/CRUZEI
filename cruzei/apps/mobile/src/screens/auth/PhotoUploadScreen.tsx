@@ -196,7 +196,7 @@ function MainPreview({ photo, paused }: MainPreviewProps) {
       <NeonFrame width={PREVIEW_W} height={PREVIEW_H} r={TILE_RADIUS} color={colors.secondary} paused={paused} />
       <View style={styles.previewCard}>
         {photo ? (
-          <FadeInView key={photo.url} fromScale={0.92} durationMs={260} style={StyleSheet.absoluteFillObject}>
+          <FadeInView key={photo.url} fromScale={0.92} durationMs={260} style={StyleSheet.absoluteFill}>
             <Image source={{ uri: photo.thumbnailUrl ?? photo.url }} style={StyleSheet.absoluteFill} resizeMode="cover" />
           </FadeInView>
         ) : (

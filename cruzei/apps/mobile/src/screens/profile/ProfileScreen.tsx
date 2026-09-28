@@ -426,9 +426,7 @@ function CompletenessRing({ percent, children }: { percent: number; children: Re
 
   const inset = RING_STROKE / 2;
   const path = useMemo(() => {
-    const p = Skia.Path.Make();
-    p.addArc(rect(inset, inset, RING - RING_STROKE, RING - RING_STROKE), -90, 359.9);
-    return p;
+    return Skia.PathBuilder.Make().addArc(rect(inset, inset, RING - RING_STROKE, RING - RING_STROKE), -90, 359.9).build();
   }, [inset]);
 
   const c = RING / 2;
@@ -640,7 +638,7 @@ const styles = StyleSheet.create({
 
   header: { alignItems: 'center', marginBottom: spacing.lg },
   ringWrap: { width: RING, height: RING, alignItems: 'center', justifyContent: 'center' },
-  ringCanvas: { ...StyleSheet.absoluteFillObject, width: RING, height: RING },
+  ringCanvas: { ...StyleSheet.absoluteFill, width: RING, height: RING },
   avatar: { width: AVATAR, height: AVATAR, borderRadius: AVATAR / 2, backgroundColor: colors.gray[100] },
   avatarPlaceholder: { alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderStyle: 'dashed', borderColor: colors.gray[300] },
   avatarHint: { ...typography.bodySmall, color: colors.gray[500], marginTop: 4 },

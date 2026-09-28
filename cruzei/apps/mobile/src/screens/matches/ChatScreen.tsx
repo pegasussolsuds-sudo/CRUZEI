@@ -4,7 +4,6 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -13,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
+import { useHeaderHeight } from '@react-navigation/elements';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -203,6 +203,7 @@ export function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [safetyOpen, setSafetyOpen] = useState(false);
+  const headerHeight = useHeaderHeight();
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** ids/clientIds já exibidos — só o que NÃO está aqui entra animado */
@@ -480,12 +481,14 @@ export function ChatScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.safe} edges={['bottom']}>
+    // sem borda de baixo: a barra de abas já fica embaixo e cuida da barra de navegação do Android (edge-to-edge)
+    <SafeAreaView style={styles.safe} edges={[]}>
       {matchQuery.data ? (
         <ExpiryBanner context={matchQuery.data.context} expiresAt={matchQuery.data.chatExpiresAt} now={now} />
       ) : null}
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex} keyboardVerticalOffset={90}>
+      {/* Android 15+/targetSdk 36 é edge-to-edge: a janela não encolhe mais com o teclado, então o padding vale nas duas plataformas */}
+      <KeyboardAvoidingView behavior="padding" style={styles.flex} keyboardVerticalOffset={headerHeight}>
         {historyQuery.isLoading ? (
           <View style={styles.center}>
             <ActivityIndicator color={colors.primary} />

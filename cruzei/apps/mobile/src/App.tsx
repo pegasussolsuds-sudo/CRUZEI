@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RootNavigator } from './navigation/RootNavigator';
 import { useAuthStore } from './stores/auth';
 import { useBootStore } from './stores/boot';
+import { useMapPerfStore } from './stores/mapPerf';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket, ensureSocketAlive } from './services/socket';
 import { setAccountBlockedHandler } from './services/api';
@@ -19,6 +20,9 @@ import { SplashScreen } from './screens/auth/SplashScreen';
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
 configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
+
+// tier de performance do mapa lembrado da última abertura: lido já no boot, antes do mapa montar (sob a splash)
+useMapPerfStore.getState().hydrate();
 
 // 403 de conta suspensa/banida (API, refresh ou socket) → o app inteiro vira a tela de aviso
 setAccountBlockedHandler((data) => {

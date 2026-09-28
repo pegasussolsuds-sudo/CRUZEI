@@ -17,7 +17,7 @@ import { presenceLabel } from './PersonRow';
 
 // 56%: a composição foto + avatar (184 px) + chips + ações cabe em telas de ~640 dp sem cortar o "Ver perfil"
 export const USER_SHEET_FRACTION = 0.56;
-const SNAP_POINTS = ['56%'] as const;
+const SNAP_POINTS: string[] = ['56%'];
 
 interface UserCardLite {
   bio: string | null;

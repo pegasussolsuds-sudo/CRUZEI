@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Metch",
-    "slug": "cruzei",
+    "slug": "metch",
     "scheme": "metch",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -15,41 +15,71 @@
     ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.cruzei.app",
+      "bundleIdentifier": "app.metch",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Metch mostra quem esteve no mesmo lugar que você. Sem essa permissão o mapa não funciona.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Metch atualiza sua localização em segundo plano pra te mostrar cruzamentos.",
-        "NSCameraUsageDescription": "Metch usa a câmera pra foto de perfil e verificação.",
-        "NSPhotoLibraryUsageDescription": "Metch precisa da sua galeria pra você adicionar fotos.",
+        "NSLocationWhenInUseUsageDescription": "O Metch usa sua localização enquanto o app está aberto pra mostrar quem está perto. Ninguém vê sua posição exata.",
+        "NSCameraUsageDescription": "O Metch usa a câmera pra você tirar uma foto de perfil.",
+        "NSPhotoLibraryUsageDescription": "O Metch acessa as fotos que você escolher pra colocar no perfil.",
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
-      "package": "com.cruzei.app",
+      "package": "app.metch",
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "POST_NOTIFICATIONS"
+        "CAMERA"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#7FFF00"
-      }
+      },
+      "versionCode": 1,
+      "blockedPermissions": [
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+      ]
     },
     "plugins": [
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Metch atualiza sua localização em segundo plano pra te mostrar cruzamentos."
+          "locationWhenInUsePermission": "O Metch usa sua localização enquanto o app está aberto pra mostrar quem está perto. Ninguém vê sua posição exata.",
+          "isAndroidBackgroundLocationEnabled": false,
+          "isIosBackgroundLocationEnabled": false
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Metch precisa da sua galeria pra você adicionar fotos.",
-          "cameraPermission": "Metch usa a câmera pra foto de perfil."
+          "photosPermission": "O Metch acessa as fotos que você escolher pra colocar no perfil.",
+          "cameraPermission": "O Metch usa a câmera pra você tirar uma foto de perfil.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0A0A1A",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 140,
+          "resizeMode": "contain"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
         }
       ]
     ],
@@ -57,6 +87,7 @@
       "apiBaseUrl": "http://192.168.1.8:3000/v1",
       "wsUrl": "ws://192.168.1.8:3000",
       "mapboxToken": ""
-    }
+    },
+    "backgroundColor": "#0A0A1A"
   }
 }

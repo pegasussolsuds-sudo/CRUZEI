@@ -229,15 +229,15 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
     const items = g.items;
     // eslint-disable-next-line react-hooks/rules-of-hooks
     const path = useDerivedValue(() => {
-      const out = Skia.Path.Make();
+      const out = Skia.PathBuilder.Make();
       const b = burst.value;
-      if (b < 0.02) return out;
+      if (b < 0.02) return out.build();
       for (let i = 0; i < items.length; i++) {
         const q = items[i];
         const e = outCubic(seg(b, q.delay, 1 - q.delay));
         out.addCircle(ox.value + Math.cos(q.angle) * q.dist * e, oy.value + Math.sin(q.angle) * q.dist * e + 34 * e * e, q.size * (1 - e * 0.6));
       }
-      return out;
+      return out.build();
     });
     return { path, color: g.color };
   });
@@ -282,7 +282,7 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
 }
 
 const styles = StyleSheet.create({
-  container: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.black },
+  container: { ...StyleSheet.absoluteFill, backgroundColor: colors.black },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', marginTop: -24 },
   // o canvas do wordmark tem margem interna pro halo; puxa pra perto do monograma e da tagline
   word: { marginTop: -22 },

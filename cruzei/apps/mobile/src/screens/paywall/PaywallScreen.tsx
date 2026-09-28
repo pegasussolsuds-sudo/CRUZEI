@@ -534,7 +534,7 @@ export function PaywallScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.black },
-  veil: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(10, 10, 26, 0.84)' },
+  veil: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(10, 10, 26, 0.84)' },
   safe: { flex: 1 },
   scroll: { padding: spacing.lg, paddingTop: spacing.xl, paddingBottom: spacing.xxxl },
 

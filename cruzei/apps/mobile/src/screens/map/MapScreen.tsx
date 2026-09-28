@@ -771,9 +771,9 @@ export function MapScreen() {
               if (next) {
                 setForcedTier(next);
                 if (next === 'low') {
-                  // o clamp de DPR 1.5 só vale num load novo: guarda no store e remonta uma vez
+                  // NÃO remonta o WebView: recriar o Chromium no meio do uso derrubava o app (HWUI tryConcat) no Moto.
+                  // Aqui só os efeitos caem (setTier via forcedTier); o clamp de DPR vale na próxima abertura (persistido).
                   useMapPerfStore.getState().setTier('low');
-                  remountWeb();
                 }
               }
             }
@@ -1321,7 +1321,7 @@ export function MapScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black },
-  web: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.black },
+  web: { ...StyleSheet.absoluteFill, backgroundColor: colors.black },
   floating: { position: 'absolute', left: 0, right: 0, gap: spacing.sm },
   toast: { alignSelf: 'center', backgroundColor: colors.black, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minHeight: 36, justifyContent: 'center' },
   toastText: { ...typography.bodySmall, color: colors.white },
@@ -1333,5 +1333,5 @@ const styles = StyleSheet.create({
   moment: { alignItems: 'center', paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.xl, backgroundColor: 'rgba(18,18,42,0.92)', borderWidth: 1.5, borderColor: colors.secondary, ...shadows.strong },
   momentTitle: { ...typography.h1, color: colors.primary, letterSpacing: 2 },
   momentText: { ...typography.body, color: colors.white, marginTop: 2 },
-  loader: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.overlay },
+  loader: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.overlay },
 });

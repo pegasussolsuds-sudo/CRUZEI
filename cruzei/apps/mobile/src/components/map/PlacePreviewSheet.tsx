@@ -21,7 +21,7 @@ const REPORT_REASONS: { key: PlaceReportReason; label: string }[] = [
   { key: 'closed', label: 'Fechou' },
   { key: 'wrong_place', label: 'Lugar errado' },
 ];
-const SNAP_POINTS = ['42%'] as const;
+const SNAP_POINTS: string[] = ['42%'];
 const MAX_AVATARS = 6;
 
 export const CATEGORY_LABEL: Record<string, { emoji: string; label: string }> = {

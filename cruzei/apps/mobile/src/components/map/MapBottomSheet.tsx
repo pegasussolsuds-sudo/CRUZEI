@@ -13,7 +13,7 @@ import { LiveDot } from '../animated/LiveDot';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PersonRow } from './PersonRow';
 
-export const SHEET_SNAP_POINTS = ['22%', '68%'] as const;
+export const SHEET_SNAP_POINTS: string[] = ['22%', '68%'];
 export const SHEET_SNAP_FRACTIONS = [0.22, 0.68] as const;
 // "Perto" = faixas bem perto + perto (≤ 250 m); o app nunca vê metros de outra pessoa
 const NEAR_RANK_MAX = 1;

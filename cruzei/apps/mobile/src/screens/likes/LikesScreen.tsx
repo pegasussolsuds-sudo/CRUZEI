@@ -557,7 +557,7 @@ const styles = StyleSheet.create({
 
   deck: { flex: 1, margin: spacing.lg, marginBottom: spacing.sm },
   card: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     borderRadius: radius.xl,
     backgroundColor: colors.white,
     overflow: 'hidden',

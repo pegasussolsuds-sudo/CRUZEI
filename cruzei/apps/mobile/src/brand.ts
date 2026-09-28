@@ -1,6 +1,6 @@
 // Marca do produto — única fonte de verdade pro nome que aparece na interface.
-// Identificadores técnicos (pacote com.cruzei.app, scopes @cruzei/*, chaves de storage) NÃO mudam
-// junto com a marca: trocar o applicationId desinstalaria o app de quem já tem.
+// ID nas lojas: app.metch (Android e iOS, decidido em 28/09/2026, antes da 1ª publicação). Scopes @cruzei/*, chaves de
+// storage e pastas continuam "cruzei" (codinome técnico).
 
 export const BRAND = {
   /** nome próprio, como aparece em frases ("O Metch mostra…") */

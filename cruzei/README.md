@@ -2,13 +2,13 @@
 
 > Quem você quase conheceu hoje.
 
-Monorepo do **Metch** (marca nova desde 25/09/2026; o codinome técnico continua `cruzei` — pacote `com.cruzei.app`, scopes `@cruzei/*`), o app de encontros baseado em cruzamentos reais.
+Monorepo do **Metch** (marca nova desde 25/09/2026; o codinome técnico continua `cruzei` — ID nas lojas `app.metch` desde 28/09/2026; scopes `@cruzei/*`), o app de encontros baseado em cruzamentos reais.
 Você vê no mapa quem esteve no mesmo lugar que você — bar, parque, café — e
 só daí surge o match. Chat expira em 48h pra forçar a ação.
 
 ## Stack
 
-- **Mobile:** React Native 0.74 + Expo Modules, TypeScript, Zustand, TanStack Query, Mapbox GL, Socket.io
+- **Mobile:** React Native 0.86 + Expo SDK 57 (arquitetura nova), React 19, TypeScript, Zustand, TanStack Query, Mapbox GL, Socket.io
 - **Backend:** NestJS 10 + Prisma 5 + PostgreSQL 15 (PostGIS) + Redis 7 + Socket.io
 - **Packages compartilhados:** shared-types, shared-utils, eslint-config, tsconfig, ui-mobile (Storybook)
 - **Infra:** pnpm workspaces + Turborepo, Docker Compose pra dev local

@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Keyboard,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -233,7 +232,7 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
       />
 
       <SafeAreaView style={styles.safe} edges={['bottom']}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
+        <KeyboardAvoidingView behavior="padding" style={styles.flex}>
           <ScrollView
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
