@@ -5,20 +5,22 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { formatApproxDistance } from '@cruzei/shared-utils';
 import type { MapboxPlace } from '@cruzei/shared-types';
-import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { PressScale } from '../animated/PressScale';
 import { placeKindMeta } from './placeKinds';
 
 export interface MapboxPlaceRowProps {
   place: MapboxPlace;
   index: number;
   onPress: (place: MapboxPlace) => void;
+  /** anima a entrada (só na abertura da busca; digitando, as linhas entram sem animação) */
+  animate?: boolean;
 }
 
 /**
  * Linha de lugar da cidade (Mapbox Search Box): bar, balada, restaurante… Não tem "gente agora" (não é dado do app),
  * então o destaque é o tipo do lugar: noite ganha selo rosa. Tocar leva a câmera e crava o pino no mapa.
  */
-export const MapboxPlaceRow = memo(function MapboxPlaceRow({ place, index, onPress }: MapboxPlaceRowProps) {
+export const MapboxPlaceRow = memo(function MapboxPlaceRow({ place, index, onPress, animate = true }: MapboxPlaceRowProps) {
   const reduceMotion = useReducedMotion();
   const meta = placeKindMeta(place.kind);
   const where = place.neighborhood ?? place.city;
@@ -27,8 +29,8 @@ export const MapboxPlaceRow = memo(function MapboxPlaceRow({ place, index, onPre
     .join(', ');
 
   return (
-    <Animated.View entering={reduceMotion ? undefined : FadeInDown.delay(Math.min(index, 8) * 40).duration(220)}>
-      <ScaleOnPress onPress={() => onPress(place)} accessibilityRole="button" accessibilityLabel={a11y} style={styles.row}>
+    <Animated.View entering={reduceMotion || !animate ? undefined : FadeInDown.delay(Math.min(index, 8) * 40).duration(220)}>
+      <PressScale onPress={() => onPress(place)} accessibilityRole="button" accessibilityLabel={a11y} style={styles.row}>
         <View style={[styles.tile, ...(place.nightlife ? [styles.tileNight] : [])]}>
           <Text style={styles.tileEmoji}>{meta.emoji}</Text>
         </View>
@@ -56,7 +58,7 @@ export const MapboxPlaceRow = memo(function MapboxPlaceRow({ place, index, onPre
           <Text style={styles.dist}>{formatApproxDistance(place.distanceM)}</Text>
           <Ionicons name="location" size={14} color={place.nightlife ? colors.secondary : colors.gray[500]} />
         </View>
-      </ScaleOnPress>
+      </PressScale>
     </Animated.View>
   );
 });

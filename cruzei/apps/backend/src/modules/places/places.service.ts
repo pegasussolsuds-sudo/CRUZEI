@@ -6,10 +6,11 @@ import {
   SOCIAL_CATEGORIES,
   VIBE_CATEGORIES,
   haversineMeters,
-  intentCategories,
+  intentOf,
+  nameScore,
   rankByDistance,
   rankPlaces,
-  spellingVariant,
+  spellingVariants,
   toPlace,
   type SearchBoxFeature,
 } from './places.ranking';
@@ -24,7 +25,7 @@ const EMPTY_TTL_SECONDS = 10 * 60;
 const BBOX_DEG = 0.35;
 /** o que passar disso só entra quando a região não tem nada com esse nome */
 const LOCAL_MAX_M = 60_000;
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v6';
 
 export interface PlacesSearchArgs {
   q: string;
@@ -81,30 +82,42 @@ export class PlacesService {
       return rankByDistance(lists.map((l) => l ?? []), limit);
     }
 
-    // 2) texto: noite/comer (+ lugares de encontro) na região, mais a grafia alternativa ("live" → "Liv Pub")
+    // 2) palavra de rolê ("balada", "bar", "shopping"…): os daquele tipo mais perto, mais os que têm a palavra no nome
+    //    e são do mesmo tipo (antes a busca por texto misturava bar e restaurante em "shopping")
+    const intent = category ? null : intentOf(q);
+    if (intent) {
+      const [browse, text] = await Promise.all([
+        Promise.all(intent.categories.map((c) => this.categoryBrowse(c, cell))),
+        this.forward(q, intent.categories, cell, true, 10),
+      ]);
+      if (browse.every((l) => l === null) && text === null) return null;
+      const accept = (p: MapboxPlace) => intent.kinds.includes(p.kind);
+      const named = (text ?? []).filter((p) => accept(p) && nameScore(p.name, q, null) >= 65);
+      return rankByDistance([...browse.map((l) => (l ?? []).filter(accept)), named], limit);
+    }
+
+    // 3) texto: noite/comer (+ lugares de encontro) na região, mais as grafias alternativas ("live" → "Liv Pub")
     const vibeCats = category ? CHIP_TO_MAPBOX[category] : [...VIBE_CATEGORIES];
-    const variant = spellingVariant(q);
+    const variants = spellingVariants(q);
     const calls: Promise<MapboxPlace[] | null>[] = [this.forward(q, vibeCats, cell, true, 10)];
     if (!category) calls.push(this.forward(q, [...SOCIAL_CATEGORIES], cell, true, 5));
-    if (variant) calls.push(this.forward(variant, vibeCats, cell, true, 6));
-    // "balada", "bar", "comer"…: também os lugares daquela categoria mais perto
-    const intent = category ? null : intentCategories(q);
-    if (intent) for (const c of intent) calls.push(this.categoryBrowse(c, cell));
+    for (const v of variants) calls.push(this.forward(v, vibeCats, cell, true, 6));
     const lists = await Promise.all(calls);
     if (lists.every((l) => l === null)) return null;
-    if (intent) return rankByDistance(lists.map((l) => l ?? []), limit);
 
     let merged = rankPlaces(
       lists.map((l) => (l ?? []).filter((p) => p.distanceM <= LOCAL_MAX_M)),
       q,
-      variant,
+      variants,
       limit,
     );
 
-    // 3) nada na região: procura no Brasil todo (ex.: "Zenaide Bar Campinas" vendo o mapa de Uberlândia)
-    if (merged.length === 0) {
+    // 4) nada na região: procura no Brasil todo (ex.: "Zenaide Bar Campinas" vendo o mapa de Uberlândia)
+    //    Só entra o que tem todas as palavras digitadas no nome: no meio da digitação ("aideu") o Brasil todo devolvia
+    //    "Aide e Buga" a 600 km.
+    if (merged.length === 0 && q.length >= 4) {
       const wide = await this.forward(q, vibeCats, cell, false, limit);
-      if (wide) merged = rankPlaces([wide], q, variant, limit);
+      if (wide) merged = rankPlaces([wide.filter((p) => nameScore(p.name, q, null) >= 75)], q, variants, limit);
     }
     return merged;
   }

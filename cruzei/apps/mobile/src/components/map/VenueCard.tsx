@@ -1,11 +1,12 @@
 import React, { memo, useCallback } from 'react';
 import { Linking, Platform, Share, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeInDown, useReducedMotion } from 'react-native-reanimated';
+import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, formatApproxDistance } from '@cruzei/shared-utils';
 import type { MapboxPlace } from '@cruzei/shared-types';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { PressScale } from '../animated/PressScale';
 import { placeKindMeta } from './placeKinds';
 
 export interface VenueCardProps {
@@ -50,7 +51,7 @@ export const VenueCard = memo(function VenueCard({ place, me, onClose }: VenueCa
 
   return (
     <Animated.View
-      entering={reduceMotion ? undefined : FadeInDown.duration(220)}
+      entering={reduceMotion ? undefined : SlideInDown.duration(260)}
       style={[styles.card, ...(place.nightlife ? [styles.cardNight] : [])]}
       accessibilityLiveRegion="polite"
     >
@@ -71,9 +72,9 @@ export const VenueCard = memo(function VenueCard({ place, me, onClose }: VenueCa
             </Text>
           ) : null}
         </View>
-        <ScaleOnPress onPress={onClose} haptic={false} accessibilityRole="button" accessibilityLabel="Tirar o lugar do mapa" style={styles.close} hitSlop={8}>
+        <PressScale onPress={onClose} haptic={false} accessibilityRole="button" accessibilityLabel="Tirar o lugar do mapa" style={styles.close} hitSlop={8}>
           <Ionicons name="close" size={18} color={colors.gray[300]} />
-        </ScaleOnPress>
+        </PressScale>
       </View>
 
       <View style={styles.actions}>

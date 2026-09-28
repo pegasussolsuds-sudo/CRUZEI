@@ -4,15 +4,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import Animated, { Easing, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { Easing, FadeIn, FadeInDown, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import type { MapboxPlace, PlaceCategoryKey, VibeFilter, VibePlace } from '@cruzei/shared-types';
 import { useVibe, vibeOrigin } from '../../hooks/useVibe';
 import { useGeocodeSearch, type GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { shouldSearchPlaces, usePlaceSearch } from '../../hooks/usePlaceSearch';
-import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { PressScale } from '../animated/PressScale';
 import { VibePlaceRow } from './VibePlaceRow';
 import { MapboxPlaceRow } from './MapboxPlaceRow';
 import { BRAND } from '../../brand';
@@ -110,13 +110,20 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
 
   // entrada/saída
   const anim = useSharedValue(0);
+  // escolheu um lugar: some na hora (a câmera já vai voar; fade + voo + pino no mesmo quadro derrubavam o HWUI do Moto g54)
+  const fastClose = useRef(false);
+  // as linhas só entram animadas logo depois de abrir; digitando, entram direto (cada letra remontava dezenas de animações)
+  const [animateRows, setAnimateRows] = useState(true);
   useEffect(() => {
     if (visible) {
+      fastClose.current = false;
+      setAnimateRows(true);
       setMounted(true);
       anim.value = withTiming(1, { duration: reduceMotion ? 0 : 280, easing: Easing.out(Easing.cubic) });
     } else if (mounted) {
-      anim.value = withTiming(0, { duration: reduceMotion ? 0 : 200, easing: Easing.in(Easing.cubic) });
-      const id = setTimeout(() => setMounted(false), reduceMotion ? 0 : 210);
+      const instant = reduceMotion || fastClose.current;
+      anim.value = withTiming(0, { duration: instant ? 0 : 200, easing: Easing.in(Easing.cubic) });
+      const id = setTimeout(() => setMounted(false), instant ? 0 : 210);
       return () => clearTimeout(id);
     }
     return undefined;
@@ -168,6 +175,24 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
   // dados "emprestados" da consulta anterior enquanto a nova carrega: mostra carregando, nunca um vazio falso
   const loading = Boolean(origin) && (vibe.isPending || vibe.isPlaceholderData || (wantPlaces && places.isPending));
 
+  useEffect(() => {
+    if (query.length > 0) setAnimateRows(false);
+  }, [query]);
+  const pickPlace = useCallback(
+    (p: VibePlace | MapboxPlace) => {
+      fastClose.current = true;
+      onPickPlace(p);
+    },
+    [onPickPlace],
+  );
+  const pickGeocode = useCallback(
+    (r: GeocodeResult) => {
+      fastClose.current = true;
+      onPickGeocode(r);
+    },
+    [onPickGeocode],
+  );
+
   const pickFilter = useCallback((f: VibeFilter) => {
     Haptics.selectionAsync().catch(() => {});
     setFilter(f);
@@ -215,10 +240,10 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
       }
       // re-index só dentro da própria seção pra animação em cascata não pular
       const idx = index;
-      if (item.kind === 'cruzei') return <VibePlaceRow place={item.place} index={idx} onPress={onPickPlace} />;
-      return <MapboxPlaceRow place={item.place} index={idx} onPress={onPickPlace} />;
+      if (item.kind === 'cruzei') return <VibePlaceRow place={item.place} index={idx} onPress={pickPlace} animate={animateRows} />;
+      return <MapboxPlaceRow place={item.place} index={idx} onPress={pickPlace} animate={animateRows} />;
     },
-    [onPickPlace],
+    [pickPlace, animateRows],
   );
   const keyExtractor = useCallback((r: Row) => (r.kind === 'section' ? `sec:${r.key}` : `${r.kind}:${String(r.kind === 'cruzei' ? r.place.id : r.place.id)}`), []);
 
@@ -265,9 +290,9 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                 accessibilityLabel="Buscar bar, balada, bairro ou rua"
               />
               {query.length > 0 ? (
-                <ScaleOnPress onPress={() => setQuery('')} haptic={false} accessibilityRole="button" accessibilityLabel="Limpar busca" style={styles.clearBtn}>
+                <PressScale onPress={() => setQuery('')} haptic={false} accessibilityRole="button" accessibilityLabel="Limpar busca" style={styles.clearBtn}>
                   <Ionicons name="close-circle" size={18} color={colors.gray[400]} />
-                </ScaleOnPress>
+                </PressScale>
               ) : null}
             </View>
           </View>
@@ -277,7 +302,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
             {FILTERS.map((f) => {
               const on = filter === f.key;
               return (
-                <ScaleOnPress
+                <PressScale
                   key={f.key}
                   onPress={() => pickFilter(f.key)}
                   haptic={false}
@@ -287,14 +312,14 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                   style={[styles.chip, ...(on ? [styles.chipOn] : [])]}
                 >
                   <Text style={[styles.chipText, on && styles.chipTextOn]}>{f.label}</Text>
-                </ScaleOnPress>
+                </PressScale>
               );
             })}
             <View style={styles.chipDivider} />
             {CATEGORIES.map((c) => {
               const on = category === c.key;
               return (
-                <ScaleOnPress
+                <PressScale
                   key={c.key}
                   onPress={() => pickCategory(c.key)}
                   haptic={false}
@@ -304,7 +329,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                   style={[styles.chip, styles.chipCat, ...(on ? [styles.chipCatOn] : [])]}
                 >
                   <Text style={[styles.chipText, on && styles.chipCatTextOn]}>{c.label}</Text>
-                </ScaleOnPress>
+                </PressScale>
               );
             })}
           </ScrollView>
@@ -338,10 +363,10 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                   <Text style={styles.loadingText}>medindo a vibe da cidade…</Text>
                 </View>
               ) : (
-                <FadeInView fromY={8} style={styles.empty}>
+                <Animated.View entering={reduceMotion || !animateRows ? undefined : FadeIn.duration(200)} style={styles.empty}>
                   <Text style={styles.emptyEmoji}>{!origin ? '📍' : filter === 'hot' || filter === 'people' ? '😴' : '🔎'}</Text>
                   <Text style={styles.emptyText}>{emptyText}</Text>
-                </FadeInView>
+                </Animated.View>
               )
             }
             ListFooterComponent={
@@ -354,9 +379,9 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                     <Text style={styles.geoEmpty}>{geo.isError ? 'A busca de endereços falhou. Tenta de novo.' : `Nenhum bairro ou rua chamado "${debounced}".`}</Text>
                   ) : (
                     geoResults.map((r, i) => (
-                      <FadeInView key={r.id} delay={i * 40} fromY={8} durationMs={220}>
-                        <ScaleOnPress
-                          onPress={() => onPickGeocode(r)}
+                      <Animated.View key={r.id} entering={reduceMotion || !animateRows ? undefined : FadeInDown.delay(i * 40).duration(220)}>
+                        <PressScale
+                          onPress={() => pickGeocode(r)}
                           accessibilityRole="button"
                           accessibilityLabel={`Ir até ${r.name}${r.context ? `, ${r.context}` : ''}`}
                           style={styles.geoRow}
@@ -375,8 +400,8 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                             ) : null}
                           </View>
                           <Ionicons name="arrow-forward" size={18} color={colors.gray[500]} />
-                        </ScaleOnPress>
-                      </FadeInView>
+                        </PressScale>
+                      </Animated.View>
                     ))
                   )}
                 </View>

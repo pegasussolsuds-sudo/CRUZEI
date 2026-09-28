@@ -1,5 +1,5 @@
 import type { MapboxPlace } from '@cruzei/shared-types';
-import { intentCategories, isBlocked, kindOf, nameScore, rankByDistance, rankPlaces, spellingVariant, toPlace, type SearchBoxFeature } from './places.ranking';
+import { intentCategories, intentOf, isBlocked, kindOf, nameScore, rankByDistance, rankPlaces, spellingVariant, spellingVariants, toPlace, type SearchBoxFeature } from './places.ranking';
 
 const CENTER = { lat: -18.9186, lng: -48.2772 }; // centro de Uberlândia
 
@@ -52,6 +52,23 @@ describe('places.ranking', () => {
       expect(spellingVariant('hub')).toBeNull();
       expect(spellingVariant('rua 2421')).toBeNull();
       expect(spellingVariant('')).toBeNull();
+    });
+  });
+
+  describe('spellingVariants', () => {
+    it('simplifica letra dobrada palavra por palavra', () => {
+      expect(spellingVariants('olli pizza')).toEqual(['olli pizz', 'oli pizza', 'olli piza']);
+      expect(spellingVariants('zenaidde')).toEqual(['zenaidd', 'zenaide']);
+    });
+    it('respeita o teto e ignora palavra curta', () => {
+      expect(spellingVariants('hub')).toEqual([]);
+      expect(spellingVariants('olli pizza grill', 2)).toHaveLength(2);
+    });
+    it('"olli pizza": o Oli Pizza Bar vem primeiro', () => {
+      const variantHits = [place('Oli Pizza Bar', ['food', 'food_and_drink', 'restaurant'])];
+      const other = [place('Pizzaria Riviera', ['fast_food', 'food'])];
+      const out = rankPlaces([[], variantHits, other], 'olli pizza', spellingVariants('olli pizza'), 8);
+      expect(out[0].name).toBe('Oli Pizza Bar');
     });
   });
 
@@ -112,6 +129,9 @@ describe('places.ranking', () => {
       expect(intentCategories('Balada')).toEqual(['nightclub', 'music_venue']);
       expect(intentCategories('bares')).toEqual(['bar', 'pub', 'brewery']);
       expect(intentCategories('café')).toEqual(['cafe', 'coffee_shop']);
+    });
+    it('shopping só aceita shopping', () => {
+      expect(intentOf('Shopping')).toEqual({ categories: ['shopping_mall'], kinds: ['mall'] });
     });
     it('nome de lugar não é intenção', () => {
       expect(intentCategories('zenaide')).toBeNull();

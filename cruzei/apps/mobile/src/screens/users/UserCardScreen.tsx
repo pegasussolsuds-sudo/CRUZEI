@@ -289,7 +289,14 @@ export function UserCardScreen() {
       >
         {/* ── header com parallax + carrossel ── */}
         <Animated.View style={[{ width, height: HEADER_H, backgroundColor: colors.gray[900] }, headerStyle]}>
-          <PhotoCarousel photos={photos} width={width} height={HEADER_H} name={user.name} topInset={insets.top} />
+          <PhotoCarousel
+            photos={photos}
+            width={width}
+            height={HEADER_H}
+            name={user.name}
+            topInset={insets.top}
+            fallback={<CruzeiAvatar config={resolveAvatar(user.avatar, user.id)} mode="full" size={Math.round(HEADER_H * 0.62)} accessibilityLabel={`Avatar de ${user.name}`} />}
+          />
           <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, headerFade]}>
             <LinearGradient
               colors={['rgba(10,10,26,0)', 'rgba(10,10,26,0.15)', 'rgba(10,10,26,0.85)']}
@@ -552,12 +559,15 @@ function PhotoCarousel({
   height,
   name,
   topInset,
+  fallback,
 }: {
   photos: UserCardPhoto[];
   width: number;
   height: number;
   name: string;
   topInset: number;
+  /** o que mostrar sem foto ou quando a foto não carrega (o avatar da pessoa) */
+  fallback: React.ReactNode;
 }) {
   const count = Math.max(1, photos.length);
   const x = useSharedValue(0);
@@ -625,11 +635,9 @@ function PhotoCarousel({
           accessibilityLabel={`Fotos de ${name}, ${count} ${count === 1 ? 'foto' : 'fotos'}`}
         >
           {photos.length === 0 ? (
-            <View style={[styles.photoPlaceholder, { width, height }]}>
-              <Ionicons name="person" size={96} color={colors.gray[700]} />
-            </View>
+            <View style={[styles.photoPlaceholder, { width, height }]}>{fallback}</View>
           ) : (
-            photos.map((p, i) => <CarouselPhoto key={p.id} uri={p.url} i={i} width={width} height={height} index={index} />)
+            photos.map((p, i) => <CarouselPhoto key={p.id} uri={p.url} i={i} width={width} height={height} index={index} fallback={fallback} />)
           )}
         </Animated.View>
       </GestureDetector>
@@ -644,7 +652,22 @@ function PhotoCarousel({
   );
 }
 
-function CarouselPhoto({ uri, i, width, height, index }: { uri: string; i: number; width: number; height: number; index: SharedValue<number> }) {
+function CarouselPhoto({
+  uri,
+  i,
+  width,
+  height,
+  index,
+  fallback,
+}: {
+  uri: string;
+  i: number;
+  width: number;
+  height: number;
+  index: SharedValue<number>;
+  fallback: React.ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
   // leve zoom/parallax interno enquanto a foto entra/sai
   const style = useAnimatedStyle(() => {
     const d = index.value - i;
@@ -655,7 +678,11 @@ function CarouselPhoto({ uri, i, width, height, index }: { uri: string; i: numbe
   return (
     <View style={{ width, height, overflow: 'hidden' }}>
       <Animated.View style={[StyleSheet.absoluteFill, style]}>
-        <Image source={{ uri }} style={{ width, height }} resizeMode="cover" />
+        {failed ? (
+          <View style={[styles.photoPlaceholder, { width, height }]}>{fallback}</View>
+        ) : (
+          <Image source={{ uri }} style={{ width, height }} resizeMode="cover" onError={() => setFailed(true)} />
+        )}
       </Animated.View>
     </View>
   );

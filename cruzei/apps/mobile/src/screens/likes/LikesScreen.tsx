@@ -457,13 +457,21 @@ function NextCard({ card, progress }: { card: NearbyUser; progress: SharedValue<
 // ───────────────────────────── conteúdo do card ─────────────────────────────
 
 function CardBody({ card }: { card: NearbyUser }) {
+  // foto que falha (404, apagada, sem rede) não pode deixar o card em branco: cai no avatar da pessoa
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showPhoto = Boolean(card.mainPhotoUrl) && failedUrl !== card.mainPhotoUrl;
   return (
     <View style={styles.cardInner}>
-      {card.mainPhotoUrl ? (
-        <Image source={{ uri: card.mainPhotoUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      {showPhoto ? (
+        <Image
+          source={{ uri: card.mainPhotoUrl as string }}
+          style={StyleSheet.absoluteFill}
+          resizeMode="cover"
+          onError={() => setFailedUrl(card.mainPhotoUrl)}
+        />
       ) : (
         <View style={[StyleSheet.absoluteFill, styles.photoPlaceholder]}>
-          <Ionicons name="person" size={96} color={colors.gray[300]} />
+          <CruzeiAvatar config={resolveAvatar(card.avatar, card.id)} mode="full" size={260} accessibilityLabel={`Avatar de ${card.name}`} />
         </View>
       )}
       <LinearGradient
@@ -556,7 +564,7 @@ const styles = StyleSheet.create({
     ...shadows.strong,
   },
   cardInner: { flex: 1, backgroundColor: colors.gray[100] },
-  photoPlaceholder: { backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
+  photoPlaceholder: { backgroundColor: '#1B1B33', alignItems: 'center', justifyContent: 'center', paddingBottom: 90 },
   badges: { position: 'absolute', top: spacing.md, left: spacing.md, right: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   avatarBadge: {
     width: AVATAR_BADGE + 4,

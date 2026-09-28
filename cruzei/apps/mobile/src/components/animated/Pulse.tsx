@@ -6,7 +6,6 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
-  withSequence,
   withTiming,
 } from 'react-native-reanimated';
 import { duration, scale as scaleTokens } from '@cruzei/ui-mobile';
@@ -44,14 +43,8 @@ export function Pulse({
       t.value = withTiming(0, { duration: 200 });
       return;
     }
-    t.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: cycleMs / 2, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0, { duration: cycleMs / 2, easing: Easing.inOut(Easing.ease) }),
-      ),
-      -1,
-      false,
-    );
+    // sobe e desce com o próprio withRepeat (reverse): mesmo efeito do withSequence, sem mandar uma lista de animações
+    t.value = withRepeat(withTiming(1, { duration: cycleMs / 2, easing: Easing.inOut(Easing.ease) }), -1, true);
     return () => cancelAnimation(t);
   }, [active, cycleMs, t]);
 

@@ -5,13 +5,15 @@ import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobi
 import { formatApproxDistance } from '@cruzei/shared-utils';
 import type { VibeLevel, VibePlace } from '@cruzei/shared-types';
 import { Pulse } from '../animated/Pulse';
-import { ScaleOnPress } from '../animated/ScaleOnPress';
+import { PressScale } from '../animated/PressScale';
 import { CATEGORY_LABEL } from './PlacePreviewSheet';
 
 export interface VibePlaceRowProps {
   place: VibePlace;
   index: number;
   onPress: (place: VibePlace) => void;
+  /** anima a entrada (só na abertura da busca; digitando, as linhas entram sem animação) */
+  animate?: boolean;
 }
 
 const LEVEL_TEXT: Record<VibeLevel, string> = {
@@ -56,7 +58,7 @@ function activeText(band: VibePlace['lastActive']): string | null {
  * Linha de lugar no overlay "Onde tá a vibe": tile com a categoria (acende conforme o nível), nome,
  * bairro/categoria, distância e atividade; à direita, gente agora, tendência e o medidor de vibe.
  */
-export const VibePlaceRow = memo(function VibePlaceRow({ place, index, onPress }: VibePlaceRowProps) {
+export const VibePlaceRow = memo(function VibePlaceRow({ place, index, onPress, animate = true }: VibePlaceRowProps) {
   const reduceMotion = useReducedMotion();
   const cat = CATEGORY_LABEL[place.category] ?? CATEGORY_LABEL.other;
   const tile = LEVEL_TILE[place.vibeLevel];
@@ -80,8 +82,8 @@ export const VibePlaceRow = memo(function VibePlaceRow({ place, index, onPress }
 
   return (
     // entrada em cascata por layout animation (o FadeInView ficava invisível dentro da FlatList neste device)
-    <Animated.View entering={reduceMotion ? undefined : FadeInDown.delay(Math.min(index, 8) * 40).duration(240)}>
-      <ScaleOnPress onPress={() => onPress(place)} accessibilityRole="button" accessibilityLabel={a11y} style={[styles.row, ...(hot ? [styles.rowHot] : [])]}>
+    <Animated.View entering={reduceMotion || !animate ? undefined : FadeInDown.delay(Math.min(index, 8) * 40).duration(240)}>
+      <PressScale onPress={() => onPress(place)} accessibilityRole="button" accessibilityLabel={a11y} style={[styles.row, ...(hot ? [styles.rowHot] : [])]}>
         {/* "bombando": pulso + sombra magenta (sem canvas Skia dentro da lista) */}
         {place.vibeLevel === 'peak' ? <Pulse maxScale={1.05} cycleMs={1400}>{tileEl}</Pulse> : tileEl}
 
@@ -117,7 +119,7 @@ export const VibePlaceRow = memo(function VibePlaceRow({ place, index, onPress }
           )}
           <VibeMeter score={place.vibeScore} level={place.vibeLevel} />
         </View>
-      </ScaleOnPress>
+      </PressScale>
     </Animated.View>
   );
 });

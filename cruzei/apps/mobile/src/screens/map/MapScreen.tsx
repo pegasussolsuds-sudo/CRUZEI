@@ -81,14 +81,6 @@ interface WaveResponse {
   duplicate?: boolean;
 }
 
-interface NearbyData {
-  users: NearbyUser[];
-  pois: POI[];
-  /** pessoas por perto que existem mas não aparecem (região esparsa) — só o número */
-  hiddenCount: number;
-  me: DiscoveryResponse['me'] | null;
-}
-
 function minTier(a: PerfTier, b: PerfTier): PerfTier {
   const rank: Record<PerfTier, number> = { low: 0, mid: 1, high: 2 };
   return rank[a] <= rank[b] ? a : b;
@@ -311,18 +303,24 @@ export function MapScreen() {
   // ---------- nearby ----------
   // pessoas: o servidor usa a MINHA posição como centro (não manda centro nem me_lat) e devolve só faixas e posições
   // visuais anonimizadas; lugares (públicos) seguem o centro do mapa no raio largo
+  // pessoas: só a MINHA célula (~150 m) muda a consulta — arrastar o mapa não refaz a descoberta
   const nearbyQuery = useQuery({
-    queryKey: ['nearby', centerGeohash, meGeohash],
+    queryKey: ['nearby', 'people', meGeohash],
     enabled: Boolean(queryCenter),
     refetchInterval: active ? NEARBY_REFETCH_MS : false,
     placeholderData: keepPreviousData, // ao mudar de célula, sheet e card não piscam '0 pessoas'
-    queryFn: async (): Promise<NearbyData> => {
+    queryFn: async (): Promise<DiscoveryResponse> =>
+      (await api.get<DiscoveryResponse>('/location/nearby', { params: { radius_meters: PEOPLE_RADIUS_M } })).data,
+  });
+  // lugares (públicos): seguem o centro do mapa (célula de ~1 km)
+  const poisQuery = useQuery({
+    queryKey: ['nearby', 'pois', centerGeohash],
+    enabled: Boolean(queryCenter),
+    refetchInterval: active ? NEARBY_REFETCH_MS : false,
+    placeholderData: keepPreviousData,
+    queryFn: async (): Promise<POI[]> => {
       const c = queryCenter as { lat: number; lng: number };
-      const [u, p] = await Promise.all([
-        api.get<DiscoveryResponse>('/location/nearby', { params: { radius_meters: PEOPLE_RADIUS_M } }),
-        api.get<POI[]>('/pois/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: WIDE_RADIUS_M } }),
-      ]);
-      return { users: u.data.users, pois: p.data, hiddenCount: u.data.hiddenCount, me: u.data.me };
+      return (await api.get<POI[]>('/pois/nearby', { params: { lat: c.lat, lng: c.lng, radius_meters: WIDE_RADIUS_M } })).data;
     },
   });
 
@@ -341,8 +339,8 @@ export function MapScreen() {
       })
       .sort((a, b) => proximityRank(bands.get(a.id)) - proximityRank(bands.get(b.id)))
       .slice(0, MAX_USERS);
-    return { users: sorted, pois: nearbyQuery.data?.pois ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
-  }, [nearbyQuery.data, passed, localMatches]);
+    return { users: sorted, pois: poisQuery.data ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
+  }, [nearbyQuery.data, poisQuery.data, passed, localMatches]);
 
   // servidor sem minha presença (TTL venceu / push falhou): republica uma vez por transição, em vez de ficar invisível
   const repushedRef = useRef(false);
@@ -518,7 +516,7 @@ export function MapScreen() {
 
   // setData quando a lista memoizada muda (dados novos, minha posição pro corte dos 300, passar).
   // As definições de avatar vão ANTES: quem chega novo já nasce desenhado, sem silhueta.
-  const hasData = Boolean(nearbyQuery.data);
+  const hasData = Boolean(nearbyQuery.data || poisQuery.data);
   useEffect(() => {
     if (!hasData) return;
     defineAvatars(users.map((u) => resolveAvatar(u.avatar, u.id)));

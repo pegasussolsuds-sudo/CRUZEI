@@ -81,20 +81,25 @@ export interface SearchBoxFeature {
  * Palavra genérica de rolê ("balada", "bar", "comer"…) não é nome de lugar: vira navegação pela categoria
  * (os mais perto primeiro), junto com o que tiver esse nome.
  */
-const INTENTS: [RegExp, string[]][] = [
-  [/^(baladas?|boates?|night|noitada|festas?|roles?|dancar|danca)$/, ['nightclub', 'music_venue']],
-  [/^(bar|bares|botecos?|butecos?|pubs?|choperias?|cervejarias?|drinks?)$/, ['bar', 'pub', 'brewery']],
-  [/^(restaurantes?|comer|comida|jantar|almoco|almocar)$/, ['restaurant']],
-  [/^(cafes?|cafeterias?)$/, ['cafe', 'coffee_shop']],
-  [/^(parques?|pracas?)$/, ['park']],
-  [/^(shoppings?)$/, ['shopping_mall']],
-  [/^(shows?|ao vivo|musica ao vivo|teatros?)$/, ['music_venue', 'concert_hall', 'theatre']],
+const INTENTS: [RegExp, string[], PlaceKind[]][] = [
+  [/^(baladas?|boates?|night|noitada|festas?|roles?|dancar|danca)$/, ['nightclub', 'music_venue'], ['nightclub', 'music', 'nightlife', 'pub']],
+  [/^(bar|bares|botecos?|butecos?|pubs?|choperias?|cervejarias?|drinks?)$/, ['bar', 'pub', 'brewery'], ['bar', 'pub', 'cocktail', 'brewery', 'lounge', 'nightclub', 'nightlife']],
+  [/^(restaurantes?|comer|comida|jantar|almoco|almocar)$/, ['restaurant'], ['restaurant', 'fastfood']],
+  [/^(cafes?|cafeterias?)$/, ['cafe', 'coffee_shop'], ['cafe']],
+  [/^(parques?|pracas?)$/, ['park'], ['park']],
+  [/^(shoppings?)$/, ['shopping_mall'], ['mall']],
+  [/^(shows?|ao vivo|musica ao vivo|teatros?)$/, ['music_venue', 'concert_hall', 'theatre'], ['music', 'theatre', 'events']],
 ];
 
-export function intentCategories(q: string): string[] | null {
+/** palavra de rolê → categorias do Mapbox pra navegar + tipos de lugar aceitos no resultado */
+export function intentOf(q: string): { categories: string[]; kinds: PlaceKind[] } | null {
   const n = normalize(q);
-  for (const [re, cats] of INTENTS) if (re.test(n)) return cats;
+  for (const [re, categories, kinds] of INTENTS) if (re.test(n)) return { categories, kinds };
   return null;
+}
+
+export function intentCategories(q: string): string[] | null {
+  return intentOf(q)?.categories ?? null;
 }
 
 /** anúncio de acompanhante, massagem, motel e afins não entra na busca de um app de encontros */
@@ -191,7 +196,7 @@ export function isNightlife(kind: PlaceKind): boolean {
 export function normalize(s: string): string {
   return s
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
@@ -214,8 +219,34 @@ export function spellingVariant(q: string): string | null {
   return w.join(' ');
 }
 
-/** quão bem o nome casa com o que foi digitado (0-100) */
-export function nameScore(name: string, q: string, variant: string | null): number {
+/** letra repetida vira uma: "olli" → "oli", "zenaidde" → "zenaide" */
+function collapseDoubles(w: string): string {
+  return w.replace(/([a-z])\1+/g, '$1');
+}
+
+/**
+ * Até `max` grafias alternativas, na ordem: última palavra sem a letra final ("live" → "liv") e, pra cada palavra com
+ * letra dobrada, a busca com só aquela palavra simplificada ("olli pizza" → "oli pizza"; a outra palavra fica como está,
+ * senão "pizza" viraria "piza"). Cada grafia custa uma consulta ao Mapbox (cacheada), por isso o teto.
+ */
+export function spellingVariants(q: string, max = 3): string[] {
+  const base = words(normalize(q));
+  const out: string[] = [];
+  const push = (v: string | null) => {
+    if (v && v !== base.join(' ') && !out.includes(v)) out.push(v);
+  };
+  push(spellingVariant(q));
+  base.forEach((w, i) => {
+    if (w.length < 4 || /\d/.test(w)) return;
+    const c = collapseDoubles(w);
+    if (c !== w) push(base.map((x, j) => (j === i ? c : x)).join(' '));
+  });
+  return out.slice(0, max);
+}
+
+/** quão bem o nome casa com o que foi digitado (0-100); `variants` = grafias alternativas (ver spellingVariants) */
+export function nameScore(name: string, q: string, variants: string | string[] | null): number {
+  const list = variants == null ? [] : Array.isArray(variants) ? variants : [variants];
   const n = normalize(name);
   const qn = normalize(q);
   if (!qn) return 30;
@@ -225,15 +256,9 @@ export function nameScore(name: string, q: string, variant: string | null): numb
   const qw = words(qn);
   if (qw.every((w) => nw.includes(w))) return 75;
   if (qw.every((w) => nw.some((x) => x.startsWith(w)))) return 65;
-  if (variant) {
-    const vw = words(variant);
-    if (vw.every((w) => nw.includes(w))) return 62;
-  }
+  if (list.some((v) => words(v).every((w) => nw.includes(w)))) return 62;
   if (n.includes(qn)) return 55;
-  if (variant) {
-    const vw = words(variant);
-    if (vw.every((w) => nw.some((x) => x.startsWith(w)))) return 40;
-  }
+  if (list.some((v) => words(v).every((w) => nw.some((x) => x.startsWith(w))))) return 40;
   return 25;
 }
 
@@ -293,8 +318,8 @@ export interface Ranked {
  * Nota final = casamento do nome + tipo (noite pesa mais) − distância − "fora da vibe".
  * `order` é a posição que o Mapbox deu (desempate estável).
  */
-export function scorePlace(place: MapboxPlace, q: string, variant: string | null, order: number): number {
-  let s = q ? nameScore(place.name, q, variant) : 50;
+export function scorePlace(place: MapboxPlace, q: string, variants: string | string[] | null, order: number): number {
+  let s = q ? nameScore(place.name, q, variants) : 50;
   if (place.nightlife) s += 15;
   else if (OUTING_KINDS.has(place.kind)) s += 8;
   else if (place.kind !== 'other') s += 5;
@@ -306,12 +331,12 @@ export function scorePlace(place: MapboxPlace, q: string, variant: string | null
 }
 
 /** junta listas (primeira ocorrência vence), pontua e ordena */
-export function rankPlaces(lists: MapboxPlace[][], q: string, variant: string | null, limit: number): MapboxPlace[] {
+export function rankPlaces(lists: MapboxPlace[][], q: string, variants: string | string[] | null, limit: number): MapboxPlace[] {
   const seen = new Map<string, Ranked>();
   lists.forEach((list) =>
     list.forEach((place, i) => {
       if (seen.has(place.id)) return;
-      seen.set(place.id, { place, score: scorePlace(place, q, variant, i) });
+      seen.set(place.id, { place, score: scorePlace(place, q, variants, i) });
     }),
   );
   return [...seen.values()]
