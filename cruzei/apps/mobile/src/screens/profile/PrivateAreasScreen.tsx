@@ -47,6 +47,7 @@ export function PrivateAreasScreen() {
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/me/private-areas/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['private-areas'] }),
+    onError: (err) => Alert.alert('Não deu pra remover', toApiError(err).message),
   });
 
   const onAdd = useCallback(async () => {
@@ -81,6 +82,8 @@ export function PrivateAreasScreen() {
 
       <FlatList
         data={areas.data ?? []}
+        refreshing={areas.isRefetching}
+        onRefresh={() => areas.refetch()}
         keyExtractor={(a) => a.id}
         contentContainerStyle={styles.list}
         ListHeaderComponent={
@@ -131,7 +134,14 @@ export function PrivateAreasScreen() {
             </Pressable>
           </View>
         )}
-        ListEmptyComponent={!areas.isPending ? <Text style={styles.empty}>Nenhuma área cadastrada ainda.</Text> : null}
+        ListEmptyComponent={
+          // erro ≠ lista vazia: não dizer "nenhuma área" pra quem tem áreas e só não carregou
+          areas.isError ? (
+            <Text style={styles.empty}>Não consegui carregar suas áreas. Puxa pra baixo pra tentar de novo.</Text>
+          ) : !areas.isPending ? (
+            <Text style={styles.empty}>Nenhuma área cadastrada ainda.</Text>
+          ) : null
+        }
       />
     </SafeAreaView>
   );

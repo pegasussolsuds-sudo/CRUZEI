@@ -40,7 +40,8 @@ import { colors, fontFamily, radius, spacing, spring, typography } from '@cruzei
 import type { User, UserPhoto } from '@cruzei/shared-types';
 import { BlobBackground, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from '../../components/animated';
 import { api, toApiError } from '../../services/api';
-import { pickPhoto, takePhoto, uploadPhoto } from '../../services/photos';
+import { Linking } from 'react-native';
+import { PhotoPermissionError, explainPhotoPermission, pickPhoto, takePhoto, uploadPhoto } from '../../services/photos';
 import { useAuthStore } from '../../stores/auth';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 
@@ -620,8 +621,9 @@ export function PhotoUploadScreen() {
         if (!uri) return;
         setUploadingUri(uri);
         addMutation.mutate(uri);
-      } catch {
-        showError('Não consegui abrir a foto. Tenta de novo?');
+      } catch (err) {
+        if (err instanceof PhotoPermissionError) explainPhotoPermission(err, Alert.alert, () => Linking.openSettings().catch(() => {}));
+        else showError('Não consegui abrir a foto. Tenta de novo?');
       }
     },
     [addMutation, isFull, showError, uploadingUri],

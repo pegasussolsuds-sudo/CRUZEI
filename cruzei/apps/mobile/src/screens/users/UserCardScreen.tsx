@@ -270,8 +270,12 @@ export function UserCardScreen() {
   }
 
   const lookingLabel = LOOKING_FOR[user.lookingFor] ?? null;
-  const completedSeals = user.seals.filter((s) => s.isCompleted);
-  const showSeals = completedSeals.length > 0 ? completedSeals : user.seals.slice(0, 4);
+  // o card público pode mandar só o tipo (string[]) — normaliza pro formato UserSeal
+  const seals: UserSeal[] = ((user.seals ?? []) as Array<UserSeal | SealType>).map((s) =>
+    typeof s === 'string' ? { type: s, progress: 1, target: 1, isCompleted: true } : s,
+  );
+  const completedSeals = seals.filter((s) => s.isCompleted);
+  const showSeals = completedSeals.length > 0 ? completedSeals : seals.slice(0, 4);
   const active = user.lastActiveAt ? timeAgo(user.lastActiveAt) : null;
 
   return (

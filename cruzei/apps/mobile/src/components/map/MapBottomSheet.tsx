@@ -132,13 +132,13 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
           <ScaleOnPress
             onPress={goPremium}
             accessibilityRole="button"
-            accessibilityLabel="Desbloqueie Premium pra ver a cidade inteira"
+            accessibilityLabel="Desbloqueie Premium: avatar exclusivo e modo anônimo sem limite"
             style={styles.premiumCta}
             glowColor={colors.secondary}
           >
             <Ionicons name="lock-open" size={18} color={colors.white} />
             <Text style={styles.premiumText} numberOfLines={2}>
-              Desbloqueie Premium pra ver a cidade inteira
+              Desbloqueie Premium: avatar exclusivo e modo anônimo sem limite
             </Text>
             <Ionicons name="chevron-forward" size={18} color={colors.white} />
           </ScaleOnPress>

@@ -1,6 +1,7 @@
 import type { ProximityBand } from '@cruzei/shared-types';
-import React from 'react';
-import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
+import React, { useCallback, useState } from 'react';
+import { NavigationContainer, useNavigationContainerRef, type NavigatorScreenParams } from '@react-navigation/native';
+import { StatusBar } from 'expo-status-bar';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View } from 'react-native';
 
@@ -35,21 +36,32 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const dark = { headerShown: false, contentStyle: { backgroundColor: colors.black } } as const;
 const light = { headerShown: false, contentStyle: { backgroundColor: colors.background } } as const;
 
-export function RootNavigator() {
+// rotas com fundo/header escuro (inclusive aninhadas: Paywall é aba, Chat está no MatchesStack) → ícones claros na status bar
+const DARK_ROUTES = new Set(['UserCard', 'Boost', 'AvatarSetup', 'PhotoUpload', 'Paywall', 'Chat']);
+
+export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const onboardingStep = useAuthStore((s) => s.onboardingStep);
+  const navRef = useNavigationContainerRef<RootStackParamList>();
+  const [routeName, setRouteName] = useState<string | undefined>();
+  const syncRoute = useCallback(() => setRouteName(navRef.getCurrentRoute()?.name), [navRef]);
+
+  // única StatusBar do app logado: segue a rota focada (a splash escura por cima também pede ícones claros)
+  const barStyle = splashing || isLoading || !isAuthenticated || (routeName && DARK_ROUTES.has(routeName)) ? 'light' : 'dark';
 
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.black }}>
+        <StatusBar style={barStyle} />
         <ActivityIndicator color={colors.primary} size="large" />
       </View>
     );
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navRef} onReady={syncRoute} onStateChange={syncRoute}>
+      <StatusBar style={barStyle} />
       <Stack.Navigator
         // logo após o cadastro entra pela etapa pendente (avatar → fotos); nas demais aberturas, direto no mapa
         initialRouteName={

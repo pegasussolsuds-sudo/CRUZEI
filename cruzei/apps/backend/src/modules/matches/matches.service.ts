@@ -40,12 +40,6 @@ export class MatchesService {
       throw new BadRequestException('Essa pessoa está em modo anônimo — só dá match quando ela se revelar');
     }
 
-    // rate limit diário
-    const used = await this.redis.incrRate(likerId, 'like', 86_400);
-    if (used > DAILY_LIKE_LIMIT) {
-      throw new ForbiddenException('Limite diário de curtidas atingido');
-    }
-
     // bloqueado?
     const blocked = await this.prisma.block.findFirst({
       where: {
@@ -62,15 +56,24 @@ export class MatchesService {
       where: { likerId_likedId: { likerId, likedId } },
     });
     if (existing) {
+      // curtida repetida (toque duplo, deck recarregado): não gasta cota e só um match ATIVO conta como match
       const match = await this.findMatch(likerId, likedId);
+      const active = match && match.status === 'active' ? match : null;
+      const usedSoFar = Number((await this.redis.client.get(`rate:${likerId}:like`)) ?? 0);
       return {
         likeId: String(existing.id),
-        isMatch: Boolean(match),
-        matchId: match?.id,
-        context: match?.contextText ?? null,
-        chatExpiresAt: match?.chatExpiresAt?.toISOString(),
-        remainingToday: Math.max(0, DAILY_LIKE_LIMIT - used),
+        isMatch: Boolean(active),
+        matchId: active?.id,
+        context: active?.contextText ?? null,
+        chatExpiresAt: active?.chatExpiresAt?.toISOString(),
+        remainingToday: Math.max(0, DAILY_LIKE_LIMIT - usedSoFar),
       };
+    }
+
+    // rate limit diário (só curtida nova conta)
+    const used = await this.redis.incrRate(likerId, 'like', 86_400);
+    if (used > DAILY_LIKE_LIMIT) {
+      throw new ForbiddenException('Limite diário de curtidas atingido');
     }
 
     // cria like
@@ -242,19 +245,32 @@ export class MatchesService {
 
     // garante ordem canônica pra UNIQUE (a < b)
     const [a, b] = [likerId, likedId].sort();
-    const match = await this.prisma.match.create({
-      data: {
-        id: uuid(),
-        userAId: a,
-        userBId: b,
-        contextText,
-        chatExpiresAt: expires,
-      } as never,
-      include: {
-        userA: { select: USER_CARD_SELECT },
-        userB: { select: USER_CARD_SELECT },
-      },
-    });
+    // os dois curtiram ao mesmo tempo: as duas requisições chegam aqui e a segunda bate no UNIQUE —
+    // devolve o match que a primeira criou em vez de 500 (eventos em tempo real já saíram pela primeira)
+    const INCLUDE = { userA: { select: USER_CARD_SELECT }, userB: { select: USER_CARD_SELECT } } as const;
+    const previous = await this.prisma.match.findFirst({ where: { userAId: a, userBId: b }, include: INCLUDE });
+    if (previous?.status === 'active') return previous;
+    if (previous?.status === 'blocked') throw new BadRequestException('Não é possível interagir com esse usuário');
+    const match = previous
+      ? // já tiveram um match que venceu ou foi desfeito: reativa (o par é único na tabela)
+        await this.prisma.match.update({
+          where: { id: previous.id },
+          data: { status: 'active', chatExpiresAt: expires, contextText, matchedAt: new Date() } as never,
+          include: INCLUDE,
+        })
+      : await this.prisma.match
+          .create({
+            data: { id: uuid(), userAId: a, userBId: b, contextText, chatExpiresAt: expires } as never,
+            include: INCLUDE,
+          })
+          .catch(async (err: { code?: string }) => {
+            if (err?.code !== 'P2002') throw err;
+            // os dois curtiram ao mesmo tempo: a outra requisição criou primeiro (e já avisou os dois lados)
+            const existing = await this.prisma.match.findFirst({ where: { userAId: a, userBId: b }, include: INCLUDE });
+            if (!existing) throw err;
+            return Object.assign(existing, { __raced: true as const });
+          });
+    if ('__raced' in match) return match;
 
     // stats do perfil mudaram (matches) → derruba o cache dos dois
     await Promise.all([this.redis.invalidateProfile(match.userAId), this.redis.invalidateProfile(match.userBId)]);

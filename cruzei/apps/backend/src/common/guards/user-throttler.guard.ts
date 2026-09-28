@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { createHash } from 'node:crypto';
 
@@ -18,5 +18,13 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     }
     const ips = (req.ips as string[] | undefined) ?? [];
     return 'ip:' + (ips.length ? ips[0] : ((req.ip as string | undefined) ?? 'unknown'));
+  }
+
+  // 429 em pt-BR e no mesmo formato do cooldown do SMS (o padrão é "ThrottlerException: Too Many Requests")
+  protected async throwThrottlingException(): Promise<void> {
+    throw new HttpException(
+      { error: 'too_many_requests', message: 'Muitas tentativas. Espera um minuto e tenta de novo.' },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
   }
 }

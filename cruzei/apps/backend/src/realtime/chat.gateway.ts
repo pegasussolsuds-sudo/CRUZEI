@@ -6,6 +6,7 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
@@ -17,7 +18,7 @@ import type { JwtPayload } from '../modules/auth/auth.service';
 // Gateway único de tempo real: chat, match e presença.
 // Cada usuário entra na room "user:<id>"; cada chat aberto entra em "match:<id>".
 @WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 
   private readonly logger = new Logger(ChatGateway.name);
@@ -29,27 +30,33 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly prisma: PrismaService,
   ) {}
 
-  handleConnection(client: Socket) {
-    const fromAuth = client.handshake.auth?.token as string | undefined;
-    const fromHeader = (client.handshake.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
-    const raw = fromAuth ?? fromHeader;
+  // JWT validado no handshake (middleware): token vencido/ausente vira connect_error 'unauthorized' e o socket
+  // nunca chega a entrar em rooms. O app renova o token e chama socket.connect() de novo (socket.ts).
+  afterInit(server: Server) {
+    server.use((client, next) => {
+      const fromAuth = client.handshake.auth?.token as string | undefined;
+      const fromHeader = (client.handshake.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
+      const raw = fromAuth || fromHeader;
+      if (!raw) return next(new Error('unauthorized'));
+      try {
+        const payload = this.jwt.verify(raw, { secret: this.cfg.get<string>('jwt.secret') }) as JwtPayload;
+        client.data.userId = payload.sub;
+        next();
+      } catch {
+        next(new Error('unauthorized'));
+      }
+    });
+  }
 
-    if (!raw) {
-      client.emit('error', { code: 4001, message: 'Token ausente' });
-      client.disconnect(true);
+  handleConnection(client: Socket) {
+    const userId = client.data.userId as string | undefined;
+    if (!userId) {
+      client.disconnect(true); // não deveria acontecer: o middleware já barrou
       return;
     }
-
-    try {
-      const payload = this.jwt.verify(raw, { secret: this.cfg.get<string>('jwt.secret') }) as JwtPayload;
-      client.data.userId = payload.sub;
-      client.join(`user:${payload.sub}`);
-      this.online.set(payload.sub, (this.online.get(payload.sub) ?? 0) + 1);
-      this.logger.debug(`socket conectado user=${payload.sub} id=${client.id}`);
-    } catch {
-      client.emit('error', { code: 4001, message: 'Token inválido' });
-      client.disconnect(true);
-    }
+    client.join(`user:${userId}`);
+    this.online.set(userId, (this.online.get(userId) ?? 0) + 1);
+    this.logger.debug(`socket conectado user=${userId} id=${client.id}`);
   }
 
   handleDisconnect(client: Socket) {

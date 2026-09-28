@@ -77,6 +77,21 @@ function vibeScore(peopleNow: number, trend: number, isEvent: boolean, lastActiv
  */
 const USER_OK = Prisma.sql`u.visibility_mode = 'visible' AND u.is_paused = false AND u.deleted_at IS NULL AND u.discovery_mode <> 'nobody'`;
 
+/**
+ * Instantâneo de presença por lugar: a última linha viva de cada usuário (agora) e a de 45 min atrás (tendência).
+ * Uma consulta a cada PLACE_SNAPSHOT_MS serve TODAS as requisições — antes cada /pois/vibe varria o histórico
+ * inteiro e o /pois/nearby fazia uma varredura por lugar (N+1), o que esgotava o pool do banco com ~300 usuários.
+ * As contagens continuam agregadas e com piso; o solicitante é descontado na hora de ler (ver vibe()).
+ */
+interface PlaceSnapshot {
+  at: number;
+  /** poiId → quem está lá agora, do mais recente pro mais antigo */
+  now: Map<string, { userId: string; at: number }[]>;
+  /** poiId → quem estava lá há 45 min */
+  prev: Map<string, Set<string>>;
+}
+const PLACE_SNAPSHOT_MS = 15_000;
+
 /** rótulo do evento a partir do JSON de horários (formato livre do seed/OSM); "Hoje" quando não dá pra saber */
 function eventLabel(hours: unknown): string {
   if (hours && typeof hours === 'object') {
@@ -96,6 +111,65 @@ export class PoisService {
     private readonly location: LocationService,
   ) {}
 
+  private snapshot: PlaceSnapshot | null = null;
+  private snapshotInflight: Promise<PlaceSnapshot> | null = null;
+
+  /** instantâneo compartilhado (single-flight): no máximo uma recomputação por janela, sem fila de consultas iguais */
+  private async placeSnapshot(): Promise<PlaceSnapshot> {
+    if (this.snapshot && Date.now() - this.snapshot.at < PLACE_SNAPSHOT_MS) return this.snapshot;
+    if (!this.snapshotInflight) {
+      this.snapshotInflight = this.computeSnapshot()
+        .then((snap) => (this.snapshot = snap))
+        .finally(() => (this.snapshotInflight = null));
+    }
+    return this.snapshotInflight;
+  }
+
+  private async computeSnapshot(): Promise<PlaceSnapshot> {
+    // "agora": onde cada usuário ativo está NESTE momento (última linha viva); "antes": onde estava há 45 min
+    // (última linha até lá, dentro de uma janela de presença de 2 h). O DISTINCT ON roda sobre TODAS as linhas
+    // do usuário — quem foi pra casa ou pra outro lugar some daqui na hora.
+    const [nowRows, prevRows] = await Promise.all([
+      this.prisma.$queryRaw<{ user_id: string; poi_id: bigint; recorded_at: Date }[]>`
+        SELECT t.user_id, t.poi_id, t.recorded_at FROM (
+          SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id, l.recorded_at
+          FROM locations l JOIN users u ON u.id = l.user_id
+          WHERE l.expires_at > NOW() AND l.is_anonymous = false AND ${USER_OK}
+          ORDER BY l.user_id, l.recorded_at DESC
+        ) t WHERE t.poi_id IS NOT NULL`,
+      this.prisma.$queryRaw<{ user_id: string; poi_id: bigint }[]>`
+        SELECT t.user_id, t.poi_id FROM (
+          SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id
+          FROM locations l JOIN users u ON u.id = l.user_id
+          WHERE l.recorded_at BETWEEN NOW() - (${TREND_FROM_MIN + PRESENCE_WINDOW_MIN} * INTERVAL '1 minute') AND NOW() - (${TREND_TO_MIN} * INTERVAL '1 minute')
+            AND l.is_anonymous = false AND ${USER_OK}
+          ORDER BY l.user_id, l.recorded_at DESC
+        ) t WHERE t.poi_id IS NOT NULL`,
+    ]);
+    const now = new Map<string, { userId: string; at: number }[]>();
+    for (const r of nowRows) {
+      const k = String(r.poi_id);
+      const list = now.get(k) ?? [];
+      list.push({ userId: r.user_id, at: new Date(r.recorded_at).getTime() });
+      now.set(k, list);
+    }
+    for (const list of now.values()) list.sort((a, b) => b.at - a.at);
+    const prev = new Map<string, Set<string>>();
+    for (const r of prevRows) {
+      const k = String(r.poi_id);
+      const set = prev.get(k) ?? new Set<string>();
+      set.add(r.user_id);
+      prev.set(k, set);
+    }
+    return { at: Date.now(), now, prev };
+  }
+
+  /** contagem pública de um lugar (com piso), lida do instantâneo */
+  private countFrom(snap: PlaceSnapshot, poiId: number | bigint): number {
+    const n = snap.now.get(String(poiId))?.length ?? 0;
+    return n >= PRIVACY.MIN_PLACE_K ? n : 0;
+  }
+
   async nearby(lat: number, lng: number, radiusM: number, categories?: string[]) {
     const bbox = bboxAround(lat, lng, radiusM);
     const pois = await this.prisma.pOI.findMany({
@@ -107,11 +181,12 @@ export class PoisService {
       take: 100,
     });
 
+    const snap = await this.placeSnapshot();
     const enriched = await Promise.all(
       pois.map(async (poi) => {
         const dist = distanceMeters(lat, lng, Number(poi.latitude), Number(poi.longitude));
         if (dist > radiusM) return null;
-        const userCount = await this.countUsersAtPOI(Number(poi.id));
+        const userCount = this.countFrom(snap, poi.id);
         return {
           id: Number(poi.id),
           name: poi.name,
@@ -136,7 +211,7 @@ export class PoisService {
   async get(id: number) {
     const poi = await this.prisma.pOI.findUnique({ where: { id: BigInt(id) } });
     if (!poi) throw new NotFoundException('POI não encontrado');
-    const userCount = await this.countUsersAtPOI(id);
+    const userCount = this.countFrom(await this.placeSnapshot(), id);
     return {
       id: Number(poi.id),
       name: poi.name,
@@ -166,16 +241,9 @@ export class PoisService {
    * (piso de anonimato). Fora disso o lugar mostra só a contagem (também com piso).
    */
   async getPeople(requesterId: string, id: number) {
-    const here = await this.prisma.$queryRaw<{ user_id: string }[]>`
-      SELECT t.user_id FROM (
-        SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id
-        FROM locations l JOIN users u ON u.id = l.user_id
-        WHERE l.expires_at > NOW() AND l.is_anonymous = false AND ${USER_OK}
-        ORDER BY l.user_id, l.recorded_at DESC
-      ) t WHERE t.poi_id = ${BigInt(id)}
-      LIMIT 100`;
+    const here = ((await this.placeSnapshot()).now.get(String(id)) ?? []).slice(0, 100);
     const rows = await this.prisma.user.findMany({
-      where: { id: { in: here.map((r) => r.user_id) } },
+      where: { id: { in: here.map((r) => r.userId) } },
       select: { id: true, name: true, birthDate: true, showAge: true, gender: true, avatarConfig: true, photos: { where: { isMain: true }, select: { url: true, thumbnailUrl: true } } },
       take: 100,
     });
@@ -233,43 +301,24 @@ export class PoisService {
       return hay.includes(needle);
     };
 
-    const ids = inRange.map((c) => c.poi.id);
     const K = PRIVACY.MIN_PLACE_K;
     const nowMap = new Map<string, number>();
     const prevMap = new Map<string, number>();
     const lastMap = new Map<string, Date>();
-    if (ids.length > 0) {
-      // "agora": onde cada usuário ativo está NESTE momento (última linha viva); "antes": onde estava há 45 min
-      // (última linha até lá, dentro de uma janela de presença de 2 h). O DISTINCT ON roda sobre TODAS as linhas
-      // do usuário, não só as do recorte — senão quem foi pra um lugar de fora (ou pra casa) continuaria contando aqui.
-      const [nowRows, prevRows] = await Promise.all([
-        this.prisma.$queryRaw<{ poi_id: bigint; n: number; last_at: Date }[]>`
-          SELECT t.poi_id, COUNT(*)::int AS n, MAX(t.recorded_at) AS last_at FROM (
-            SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id, l.recorded_at
-            FROM locations l JOIN users u ON u.id = l.user_id
-            WHERE l.expires_at > NOW() AND l.is_anonymous = false AND l.user_id <> ${q.me}::uuid AND ${USER_OK}
-            ORDER BY l.user_id, l.recorded_at DESC
-          ) t
-          WHERE t.poi_id IN (${Prisma.join(ids)})
-          GROUP BY t.poi_id`,
-        this.prisma.$queryRaw<{ poi_id: bigint; n: number }[]>`
-          SELECT t.poi_id, COUNT(*)::int AS n FROM (
-            SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id
-            FROM locations l JOIN users u ON u.id = l.user_id
-            WHERE l.recorded_at BETWEEN NOW() - (${TREND_FROM_MIN + PRESENCE_WINDOW_MIN} * INTERVAL '1 minute') AND NOW() - (${TREND_TO_MIN} * INTERVAL '1 minute')
-              AND l.is_anonymous = false AND l.user_id <> ${q.me}::uuid AND ${USER_OK}
-            ORDER BY l.user_id, l.recorded_at DESC
-          ) t
-          WHERE t.poi_id IN (${Prisma.join(ids)})
-          GROUP BY t.poi_id`,
-      ]);
-      for (const r of nowRows) {
-        nowMap.set(String(r.poi_id), Number(r.n));
-        lastMap.set(String(r.poi_id), new Date(r.last_at));
+    if (inRange.length > 0) {
+      const snap = await this.placeSnapshot();
+      for (const { poi } of inRange) {
+        const key = String(poi.id);
+        // o solicitante fica FORA da conta (senão ele mesmo levanta um lugar acima do piso e lê o horário de quem está lá)
+        const others = (snap.now.get(key) ?? []).filter((x) => x.userId !== q.me);
+        if (others.length) {
+          nowMap.set(key, others.length);
+          lastMap.set(key, new Date(others[0].at));
+        }
+        const before = snap.prev.get(key);
+        if (before) prevMap.set(key, before.size - (before.has(q.me) ? 1 : 0));
       }
-      for (const r of prevRows) prevMap.set(String(r.poi_id), Number(r.n));
     }
-
     const now = Date.now();
     let peopleAtPlaces = 0;
     let hotCount = 0;
@@ -350,12 +399,8 @@ export class PoisService {
       where: { city },
       take: 200,
     });
-    const enriched = await Promise.all(
-      candidates.map(async (poi) => {
-        const users = await this.countUsersAtPOI(Number(poi.id));
-        return { poi, userCount: users };
-      }),
-    );
+    const snap = await this.placeSnapshot();
+    const enriched = candidates.map((poi) => ({ poi, userCount: this.countFrom(snap, poi.id) }));
     return enriched
       .filter((e) => e.userCount >= 3)
       .map((e) => ({
@@ -371,19 +416,6 @@ export class PoisService {
         lastUserAt: new Date().toISOString(),
       }))
       .sort((a, b) => b.userCount - a.userCount);
-  }
-
-  // contagem pública de um lugar: sem anônimos/ocultos e com piso de anonimato (1 pessoa sozinha não vira "1 pessoa aqui")
-  private async countUsersAtPOI(poiId: number): Promise<number> {
-    const rows = await this.prisma.$queryRaw<{ n: number }[]>`
-      SELECT COUNT(*)::int AS n FROM (
-        SELECT DISTINCT ON (l.user_id) l.user_id, l.poi_id
-        FROM locations l JOIN users u ON u.id = l.user_id
-        WHERE l.expires_at > NOW() AND l.is_anonymous = false AND ${USER_OK}
-        ORDER BY l.user_id, l.recorded_at DESC
-      ) t WHERE t.poi_id = ${BigInt(poiId)}`;
-    const n = Number(rows[0]?.n ?? 0);
-    return n >= PRIVACY.MIN_PLACE_K ? n : 0;
   }
 
   private age(birth: Date): number {

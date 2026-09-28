@@ -38,7 +38,8 @@ export class PublicUsersController {
         seals: { where: { isCompleted: true } },
       },
     });
-    if (!u || u.deletedAt || u.isPaused) throw notFound();
+    const paused = u?.isPaused && (!u.pausedUntil || u.pausedUntil > new Date()); // pausa vencida não conta
+    if (!u || u.deletedAt || paused) throw notFound();
     if (u.visibilityMode === 'anonymous') throw notFound();
 
     // faixa e lugar só se a pessoa deixou ("mostrar distância") E está descoberta por mim agora
@@ -70,7 +71,8 @@ export class PublicUsersController {
       placeName,
       photos: u.photos.map((p) => ({ id: p.id, url: p.url, thumbnailUrl: p.thumbnailUrl, isMain: p.isMain })),
       interests: u.userInterests.map((ui) => ui.interest.name),
-      seals: u.seals.map((s) => s.sealType),
+      // mesmo formato UserSeal do /me (o app lê type/progress/target/isCompleted)
+      seals: u.seals.map((s) => ({ type: s.sealType, progress: s.progress, target: s.target, isCompleted: s.isCompleted })),
       lookingFor: u.lookingFor,
       isVerified: u.isVerified,
       premiumTier: u.premiumTier,

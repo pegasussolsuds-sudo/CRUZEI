@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,10 +29,10 @@ import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { proximityBandLabel } from '@cruzei/shared-utils';
-import type { LikeResult, NearbyUser } from '@cruzei/shared-types';
+import type { DiscoveryResponse, LikeResult, NearbyUser } from '@cruzei/shared-types';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
-const RADIUS_M = 5000;
+const RADIUS_M = 350; // mesmo teto do servidor (PRIVACY.DISCOVERY_RADIUS_M)
 const SWIPE_RATIO = 0.35; // soltar além de 35% da largura = ação
 const FLING_VELOCITY = 900; // px/s — um "peteleco" também conta
 const MAX_ROTATION = 12; // graus
@@ -56,8 +56,8 @@ export function LikesScreen() {
   const nav = useNavigation<Nav>();
   const { width } = useWindowDimensions();
   const { lat, lng, status, locate } = useMyLocation();
-  const [queue, setQueue] = useState<NearbyUser[]>([]);
-  const [seeded, setSeeded] = useState(false);
+  // ids já curtidos/passados aqui — somem do deck até o servidor refletir
+  const [acted, setActed] = useState<Set<string>>(() => new Set());
   const [match, setMatch] = useState<MatchInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const topRef = useRef<SwipeCardHandle>(null);
@@ -69,21 +69,28 @@ export function LikesScreen() {
   const nearbyQuery = useQuery({
     queryKey: ['nearby', 'deck', lat?.toFixed(3), lng?.toFixed(3)],
     enabled: lat != null && lng != null,
+    // o servidor centra na MINHA presença (lat/lng só entram na chave do cache)
     queryFn: async () => {
-      const res = await api.get<NearbyUser[]>('/location/nearby', {
-        params: { lat, lng, radius_meters: RADIUS_M },
+      const res = await api.get<DiscoveryResponse>('/location/nearby', {
+        params: { radius_meters: RADIUS_M },
       });
-      return res.data;
+      return res.data; // { users, hiddenCount, radiusM, me }
     },
   });
 
-  // Monta a fila uma vez por carga (ignora anônimos — não dá pra curtir quem não se revelou)
-  useEffect(() => {
-    if (nearbyQuery.data && !seeded) {
-      setQueue(nearbyQuery.data.filter((u) => !u.isAnonymous));
-      setSeeded(true);
-    }
-  }, [nearbyQuery.data, seeded]);
+  // Fila derivada de cada carga: sem anônimos (não dá pra curtir quem não se revelou),
+  // sem quem já curti / já deu match, e sem quem acabei de passar/curtir aqui
+  const queue = useMemo(
+    () =>
+      (nearbyQuery.data?.users ?? []).filter(
+        (u) => !u.isAnonymous && !u.likedByMe && !u.matchId && !acted.has(u.id),
+      ),
+    [nearbyQuery.data, acted],
+  );
+  const radiusM = nearbyQuery.data?.radiusM ?? RADIUS_M;
+  // 'no_presence' = presença ainda não chegou no servidor (1ª carga) — não é "invisível"
+  const hiddenReason = nearbyQuery.data?.me?.hiddenReason ?? null;
+  const hidden = hiddenReason != null && hiddenReason !== 'no_presence';
 
   const likeMutation = useMutation({
     mutationFn: async ({ userId, isSuper }: { userId: string; isSuper: boolean }) =>
@@ -98,7 +105,7 @@ export function LikesScreen() {
       if (!card) return;
       setError(null);
       progress.value = 0;
-      setQueue((q) => q.slice(1));
+      setActed((s) => new Set(s).add(card.id));
       try {
         if (action === 'pass') {
           await api.post('/passes', { userId: card.id });
@@ -138,11 +145,11 @@ export function LikesScreen() {
     [nav],
   );
 
-  const reload = () => {
-    setSeeded(false);
-    setQueue([]);
+  // Recarregar: busca de novo e só então libera quem foi passado (curtidos o servidor já filtra)
+  const reload = async () => {
     progress.value = 0;
-    nearbyQuery.refetch();
+    const r = await nearbyQuery.refetch();
+    if (r.isSuccess) setActed(new Set());
   };
 
   if (status === 'denied' || status === 'unavailable') {
@@ -160,7 +167,23 @@ export function LikesScreen() {
     );
   }
 
-  if (nearbyQuery.isLoading || status === 'loading' || (!seeded && lat != null)) {
+  if (nearbyQuery.isError && !nearbyQuery.data) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <FadeInView fromScale={0.92} style={styles.centerInner}>
+          <Ionicons name="cloud-offline-outline" size={64} color={colors.gray[300]} />
+          <Text style={styles.emptyTitle}>não deu pra carregar</Text>
+          <Text style={styles.emptySub}>{toApiError(nearbyQuery.error).message}</Text>
+          <ScaleOnPress onPress={reload} style={styles.reload} accessibilityRole="button" accessibilityLabel="Tentar de novo">
+            <Text style={styles.reloadText}>Tentar de novo</Text>
+          </ScaleOnPress>
+        </FadeInView>
+      </SafeAreaView>
+    );
+  }
+
+  // isPending cobre "ainda sem localização" (query desligada) e a 1ª carga
+  if (status === 'idle' || status === 'loading' || nearbyQuery.isPending || (nearbyQuery.isFetching && queue.length === 0)) {
     return (
       <SafeAreaView style={styles.center}>
         <ActivityIndicator color={colors.primary} size="large" />
@@ -176,9 +199,11 @@ export function LikesScreen() {
       <SafeAreaView style={styles.center}>
         <FadeInView fromScale={0.92} style={styles.centerInner}>
           <Ionicons name="heart-outline" size={64} color={colors.gray[300]} />
-          <Text style={styles.emptyTitle}>acabou por aqui</Text>
+          <Text style={styles.emptyTitle}>{hidden ? 'tu tá invisível' : 'acabou por aqui'}</Text>
           <Text style={styles.emptySub}>
-            Ninguém novo num raio de 5 km agora. Sai um pouco, volta mais tarde ou recarrega.
+            {hidden
+              ? 'Enquanto tu tá oculto (anônimo, pausado ou em área privada), o deck pode ficar vazio. Dá pra mudar na privacidade.'
+              : `Ninguém novo num raio de ${radiusM} m agora. Sai um pouco, volta mais tarde ou recarrega.`}
           </Text>
           <ScaleOnPress onPress={reload} style={styles.reload} accessibilityRole="button" accessibilityLabel="Recarregar">
             <Text style={styles.reloadText}>Recarregar</Text>
@@ -194,7 +219,7 @@ export function LikesScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>quem tá por perto</Text>
         <Text style={styles.subtitle}>
-          {queue.length} {queue.length === 1 ? 'pessoa' : 'pessoas'} num raio de 5 km · arrasta pro lado
+          {queue.length} {queue.length === 1 ? 'pessoa' : 'pessoas'} num raio de {radiusM} m · arrasta pro lado
         </Text>
       </View>
 

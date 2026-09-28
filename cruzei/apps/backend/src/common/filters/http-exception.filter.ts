@@ -18,10 +18,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const req = ctx.getRequest<Request>();
 
     const isHttp = exception instanceof HttpException;
-    const status = isHttp
-      ? exception.getStatus()
-      : HttpStatus.INTERNAL_SERVER_ERROR;
-    const body = isHttp ? exception.getResponse() : { message: 'Erro interno' };
+    // erros do body-parser (corpo grande demais → 413, JSON quebrado → 400) chegam como Error com status 4xx
+    const parserStatus = !isHttp ? Number((exception as { status?: number; statusCode?: number })?.status ?? (exception as { statusCode?: number })?.statusCode) : NaN;
+    const clientError = parserStatus >= 400 && parserStatus < 500;
+    const status = isHttp ? exception.getStatus() : clientError ? parserStatus : HttpStatus.INTERNAL_SERVER_ERROR;
+    const body = isHttp
+      ? exception.getResponse()
+      : clientError
+        ? { error: parserStatus === 413 ? 'payload_too_large' : 'bad_request', message: parserStatus === 413 ? 'Conteúdo grande demais' : 'Requisição inválida' }
+        : { message: 'Erro interno' };
 
     if (status >= 500) {
       this.logger.error(

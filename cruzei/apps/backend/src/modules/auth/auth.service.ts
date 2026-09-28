@@ -1,10 +1,10 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { SmsService } from './sms.service';
-import { normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
+import { isAtLeast18, normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
 import { v4 as uuid } from 'uuid';
 
 export interface JwtPayload {
@@ -35,6 +35,8 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { phone } });
     const isNew = !user;
     if (isNew) {
+      // prova de posse do número (consumida uma única vez pelo /auth/register em até 10 min)
+      await this.redis.setSignupProof(phone);
       // usuário será criado no /auth/register com dados completos
       return {
         user: { id: null, name: '', phone, isNew: true },
@@ -58,6 +60,12 @@ export class AuthService {
 
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) throw new UnauthorizedException('Telefone já cadastrado');
+    if (Number.isNaN(payload.birthDate.getTime()) || !isAtLeast18(payload.birthDate)) {
+      throw new BadRequestException({ error: 'underage', message: 'Precisa ter 18 anos ou mais pra usar o Metch' });
+    }
+    // sem código de SMS confirmado não existe conta: nada de cadastrar o número dos outros
+    const proof = await this.redis.consumeSignupProof(phone);
+    if (!proof) throw new UnauthorizedException('Confirma o código do SMS antes de criar a conta');
 
     const id = uuid();
     const user = await this.prisma.user.create({

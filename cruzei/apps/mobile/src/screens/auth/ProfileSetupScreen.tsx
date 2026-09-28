@@ -9,22 +9,19 @@ import {
   Text,
   TextInput,
   View,
-  type AccessibilityActionEvent,
   type LayoutChangeEvent,
   type TextInputProps,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
+import { ScrollView } from 'react-native-gesture-handler';
 import Animated, {
   Easing,
   cancelAnimation,
   interpolateColor,
   runOnJS,
-  useAnimatedProps,
   useAnimatedStyle,
-  useDerivedValue,
   useSharedValue,
   withSequence,
   withSpring,
@@ -65,7 +62,7 @@ const STEPS = [
   { key: 'birth', title: 'Quando você nasceu?', hint: 'Só pra garantir que você tem 18+. A idade aparece no perfil, a data não.' },
   { key: 'gender', title: 'Como você se identifica?', hint: 'Isso ajuda a mostrar seu perfil pra quem faz sentido.' },
   { key: 'looking', title: 'O que você procura?', hint: 'Dá pra mudar depois, sem drama.' },
-  { key: 'prefs', title: 'Até que distância?', hint: 'Quem cruzou seu caminho aparece no mapa. Você decide o quão perto.' },
+  { key: 'prefs', title: 'Como você quer aparecer?', hint: 'Quem cruzou seu caminho num raio de até 350 m aparece no mapa. Você decide se te veem.' },
 ] as const;
 
 const TOTAL_STEPS = STEPS.length;
@@ -73,10 +70,6 @@ const LAST_STEP = TOTAL_STEPS - 1;
 const NAME_MAX = 50;
 const SLIDE_PX = 72;
 
-const MIN_M = 100;
-const MAX_M = 5000;
-const STEP_M = 100;
-const DEFAULT_M = 1000;
 const THUMB = 28;
 const LABEL_W = 72;
 
@@ -104,9 +97,6 @@ export function ProfileSetupScreen({ route }: Props) {
   const [birthDate, setBirthDate] = useState(''); // DD/MM/AAAA
   const [gender, setGender] = useState<string | null>(null);
   const [lookingFor, setLookingFor] = useState<string | null>(null);
-  // Raio de busca: o backend ainda não persiste raio (não há campo no useLocationStore nem endpoint).
-  // Fica só em estado local por enquanto; quando existir, é só plugar aqui.
-  const [radiusM, setRadiusM] = useState(DEFAULT_M);
   const [anonymous, setAnonymousLocal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -321,15 +311,9 @@ export function ProfileSetupScreen({ route }: Props) {
               ) : null}
 
               {step === 4 ? (
-                <>
-                  <FadeInView delay={80} fromY={10}>
-                    <RadiusSlider value={radiusM} onChange={setRadiusM} />
-                  </FadeInView>
-                  <FadeInView delay={200} fromY={10} style={styles.visibilityBlock}>
-                    <Text style={styles.sectionTitle}>Como você quer aparecer?</Text>
-                    <VisibilityToggle anonymous={anonymous} onChange={setAnonymousLocal} />
-                  </FadeInView>
-                </>
+                <FadeInView delay={80} fromY={10} style={styles.visibilityBlock}>
+                  <VisibilityToggle anonymous={anonymous} onChange={setAnonymousLocal} />
+                </FadeInView>
               ) : null}
 
               {error ? <ErrorBanner message={error} /> : null}
@@ -589,147 +573,7 @@ function Chip({ label, emoji, selected, onPress }: ChipProps) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Slider de raio (100 m – 5 km) — gesture-handler + Reanimated, label flutuante
-// ─────────────────────────────────────────────────────────────────────────────
 
-const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
-
-function formatRadius(m: number): string {
-  'worklet';
-  if (m < 1000) return `${m} m`;
-  const km = m / 1000;
-  return `${Number.isInteger(km) ? String(km) : km.toFixed(1).replace('.', ',')} km`;
-}
-
-function toProgress(m: number): number {
-  'worklet';
-  return (m - MIN_M) / (MAX_M - MIN_M);
-}
-
-function snapMeters(p: number): number {
-  'worklet';
-  return MIN_M + Math.round((p * (MAX_M - MIN_M)) / STEP_M) * STEP_M;
-}
-
-interface RadiusSliderProps {
-  value: number;
-  onChange: (meters: number) => void;
-}
-
-function RadiusSlider({ value, onChange }: RadiusSliderProps) {
-  const [trackW, setTrackW] = useState(0);
-  const usable = Math.max(1, trackW - THUMB);
-
-  const progress = useSharedValue(toProgress(value));
-  const dragging = useSharedValue(0);
-  const lastSnapped = useSharedValue(value);
-  const snapped = useDerivedValue(() => snapMeters(progress.value));
-
-  useEffect(() => {
-    // sincroniza quando o valor muda por fora (ex.: ações de acessibilidade)
-    if (dragging.value === 0) progress.value = withSpring(toProgress(value), spring.snappy);
-  }, [dragging, progress, value]);
-
-  const tick = useCallback(() => {
-    Haptics.selectionAsync().catch(() => {});
-  }, []);
-
-  const setFromX = (x: number) => {
-    'worklet';
-    const p = Math.min(1, Math.max(0, (x - THUMB / 2) / usable));
-    progress.value = p;
-    const s = snapMeters(p);
-    if (s !== lastSnapped.value) {
-      lastSnapped.value = s;
-      runOnJS(tick)();
-    }
-  };
-
-  const pan = Gesture.Pan()
-    .minDistance(0)
-    .onBegin((e) => {
-      dragging.value = withSpring(1, spring.snappy);
-      setFromX(e.x);
-    })
-    .onUpdate((e) => {
-      setFromX(e.x);
-    })
-    .onFinalize(() => {
-      dragging.value = withSpring(0, spring.snappy);
-      const s = snapped.value;
-      progress.value = withSpring(toProgress(s), spring.snappy);
-      runOnJS(onChange)(s);
-    });
-
-  const fillStyle = useAnimatedStyle(() => ({ width: THUMB / 2 + progress.value * usable }));
-  const thumbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: progress.value * usable }, { scale: 1 + 0.18 * dragging.value }],
-  }));
-  const labelStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: progress.value * usable + THUMB / 2 - LABEL_W / 2 },
-      { translateY: -6 * dragging.value },
-      { scale: 1 + 0.06 * dragging.value },
-    ],
-  }));
-  const labelProps = useAnimatedProps(() => {
-    const t = formatRadius(snapped.value);
-    return { text: t, defaultValue: t } as unknown as TextInputProps;
-  });
-
-  const onAccessibilityAction = (e: AccessibilityActionEvent) => {
-    const delta = e.nativeEvent.actionName === 'increment' ? 500 : e.nativeEvent.actionName === 'decrement' ? -500 : 0;
-    if (!delta) return;
-    onChange(Math.min(MAX_M, Math.max(MIN_M, value + delta)));
-  };
-
-  return (
-    <View
-      style={styles.sliderBlock}
-      accessible
-      accessibilityRole="adjustable"
-      accessibilityLabel="Distância máxima"
-      accessibilityValue={{ text: formatRadius(value) }}
-      accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-      onAccessibilityAction={onAccessibilityAction}
-    >
-      <View style={styles.sliderLabelRow}>
-        <Animated.View style={[styles.sliderLabel, labelStyle]}>
-          <AnimatedTextInput
-            animatedProps={labelProps}
-            defaultValue={formatRadius(value)}
-            editable={false}
-            underlineColorAndroid="transparent"
-            style={styles.sliderLabelText}
-          />
-        </Animated.View>
-      </View>
-
-      <GestureDetector gesture={pan}>
-        <View style={styles.sliderHit} onLayout={(e: LayoutChangeEvent) => setTrackW(e.nativeEvent.layout.width)}>
-          <View style={styles.sliderTrack}>
-            <Animated.View style={[styles.sliderFill, fillStyle]} />
-          </View>
-          <Animated.View style={[styles.thumbWrap, thumbStyle]} pointerEvents="none">
-            <Glow color={colors.primary} spread={10} intensity={0.8} shape="circle" cycleMs={2200}>
-              <View style={styles.thumb} />
-            </Glow>
-          </Animated.View>
-        </View>
-      </GestureDetector>
-
-      <View style={styles.sliderEnds}>
-        <Text style={styles.sliderEnd}>100 m</Text>
-        <Text style={styles.sliderEnd}>5 km</Text>
-      </View>
-    </View>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Toggle Visível / Anônimo (segmento deslizante com spring)
-// ─────────────────────────────────────────────────────────────────────────────
 
 interface VisibilityToggleProps {
   anonymous: boolean;

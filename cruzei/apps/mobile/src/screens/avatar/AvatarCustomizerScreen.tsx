@@ -137,7 +137,8 @@ export function AvatarCustomizerScreen() {
           // no meio do cadastro não vale a pena sair pro paywall: dá pra liberar depois pelo perfil
           showToast('Item Premium — dá pra liberar depois no Perfil ✨');
         } else {
-          nav.navigate('Main', { screen: 'Paywall' });
+          // sair pro paywall desmontaria esta tela e perderia as escolhas: avisa e deixa o usuário decidir depois
+          showToast('Item Premium — salva o avatar e libera na aba Premium ✨');
         }
         return;
       }

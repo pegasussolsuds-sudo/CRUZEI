@@ -1,17 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { AppState, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { ReanimatedLogLevel, configureReanimatedLogger } from 'react-native-reanimated';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { RootNavigator } from './navigation/RootNavigator';
 import { useAuthStore } from './stores/auth';
 import { useBootStore } from './stores/boot';
 import { useLocationStore } from './stores/location';
-import { connectSocket, disconnectSocket } from './services/socket';
+import { connectSocket, disconnectSocket, ensureSocketAlive } from './services/socket';
 import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
+
+// Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
+// ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
+configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -75,6 +80,14 @@ export function App() {
     };
   }, [isAuthenticated]);
 
+  // volta pro app: se o servidor derrubou o socket (token venceu em background), reconecta
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') ensureSocketAlive();
+    });
+    return () => sub.remove();
+  }, []);
+
   // enquanto as fontes carregam, fundo escuro (mesma cor da splash) em vez de tela branca
   if (!fontsReady) return <View style={{ flex: 1, backgroundColor: '#0A0A1A' }} />;
 
@@ -82,8 +95,9 @@ export function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <QueryClientProvider client={queryClient}>
         <SafeAreaProvider>
-          <StatusBar style={isAuthenticated ? 'dark' : 'light'} />
-          {shellReady ? <RootNavigator /> : null}
+          {/* ícones claros na splash escura; depois o RootNavigator decide pela rota focada */}
+          {!shellReady ? <StatusBar style="light" /> : null}
+          {shellReady ? <RootNavigator splashing={!splashDone} /> : null}
           {/* Splash animada por cima até a sessão hidratar e o navegador montar (mín. 2.7s) */}
           {!splashDone ? (
             <SplashScreen

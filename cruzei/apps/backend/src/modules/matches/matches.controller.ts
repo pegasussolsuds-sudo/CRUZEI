@@ -54,7 +54,7 @@ export class MatchesController {
     @Query('limit') limit = '20',
     @Query('offset') offset = '0',
   ) {
-    return this.svc.listMatches(user.id, Number(limit), Number(offset));
+    return this.svc.listMatches(user.id, Math.min(Math.max(Number(limit) || 20, 1), 200), Math.max(Number(offset) || 0, 0));
   }
 
   @Get(':id')

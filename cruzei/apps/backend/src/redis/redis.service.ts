@@ -23,14 +23,20 @@ export class RedisService implements OnModuleDestroy {
     hidden = false,
     cell = '',
   ): Promise<void> {
+    const now = Date.now();
+    // mudou de célula → sai da antiga (senão fica sendo escaneado lá até o TTL)
+    const prev = await this.client.hget(`user:loc:${userId}`, 'geohash');
     const pipeline = this.client.pipeline();
-    pipeline.zadd(`presence:${geohash}`, Date.now(), userId);
+    if (prev && prev !== geohash) pipeline.zrem(`presence:${prev}`, userId);
+    // o EXPIRE da chave é renovado a cada update: sem poda por score, a célula acumula todo mundo que já passou
+    pipeline.zremrangebyscore(`presence:${geohash}`, '-inf', now - ttlSeconds * 1000);
+    pipeline.zadd(`presence:${geohash}`, now, userId);
     pipeline.expire(`presence:${geohash}`, ttlSeconds);
     pipeline.hset(`user:loc:${userId}`, {
       lat: String(lat),
       lng: String(lng),
       geohash,
-      updated_at: String(Date.now()),
+      updated_at: String(now),
       // lugar ATUAL (string vazia = em lugar nenhum) — sempre gravado pra não sobrar POI de um update anterior
       poi_id: poi?.id ?? '',
       poi_name: poi?.name ?? '',
@@ -76,5 +82,15 @@ export class RedisService implements OnModuleDestroy {
 
   async invalidateProfile(userId: string): Promise<void> {
     await this.client.del(`profile:${userId}`);
+  }
+
+  /** prova de que o número confirmou um código de SMS (login com isNew) — vale 10 min, consumida pelo /auth/register */
+  async setSignupProof(phone: string): Promise<void> {
+    await this.client.set(`sms:verified:${phone}`, '1', 'EX', 600);
+  }
+
+  async consumeSignupProof(phone: string): Promise<boolean> {
+    const v = await this.client.getdel(`sms:verified:${phone}`);
+    return v === '1';
   }
 }

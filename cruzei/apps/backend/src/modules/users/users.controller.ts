@@ -101,6 +101,17 @@ export class UsersController {
     return this.svc.pause(user.id, dto.durationHours);
   }
 
+  // retomar perfil pausado (DELETE /me/pause; PATCH /me/unpause é alias)
+  @Delete('pause')
+  resume(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.resume(user.id);
+  }
+
+  @Patch('unpause')
+  unpause(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.resume(user.id);
+  }
+
   // ---- áreas privadas (casa, trabalho…): dentro delas ninguém me descobre. Só o dono lê/escreve; a coordenada nunca sai. ----
   @Get('private-areas')
   privateAreas(@CurrentUser() user: AuthenticatedUser) {

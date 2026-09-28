@@ -1,9 +1,30 @@
 import * as ImagePicker from 'expo-image-picker';
 import { api } from './api';
 
+/** permissão de galeria/câmera negada (diferente de "cancelou") — a tela avisa e oferece os ajustes */
+export class PhotoPermissionError extends Error {
+  constructor(public readonly canAskAgain: boolean) {
+    super('permission_denied');
+  }
+}
+
+type AlertFn = (title: string, msg: string, buttons?: { text: string; onPress?: () => void; style?: 'cancel' | 'default' }[]) => void;
+
+/** copy padrão pra permissão negada; abre os ajustes quando não dá mais pra perguntar */
+export function explainPhotoPermission(err: PhotoPermissionError, alert: AlertFn, openSettings: () => void) {
+  if (err.canAskAgain) {
+    alert('Sem acesso às fotos', 'Precisamos da permissão pra você escolher uma foto. Tenta de novo e permite.');
+  } else {
+    alert('Sem acesso às fotos', 'A permissão está desligada nos ajustes do sistema.', [
+      { text: 'Agora não', style: 'cancel' },
+      { text: 'Abrir ajustes', onPress: openSettings },
+    ]);
+  }
+}
+
 export async function pickPhoto(): Promise<string | null> {
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!perm.granted) return null;
+  if (!perm.granted) throw new PhotoPermissionError(perm.canAskAgain);
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ImagePicker.MediaTypeOptions.Images,
     allowsEditing: true,
@@ -16,7 +37,7 @@ export async function pickPhoto(): Promise<string | null> {
 
 export async function takePhoto(): Promise<string | null> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
-  if (!perm.granted) return null;
+  if (!perm.granted) throw new PhotoPermissionError(perm.canAskAgain);
   const result = await ImagePicker.launchCameraAsync({
     allowsEditing: true,
     aspect: [4, 5],

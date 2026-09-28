@@ -1,6 +1,7 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
+import { RedisService } from '../../redis/redis.service';
 import { v4 as uuid } from 'uuid';
 
 type MessageRow = {
@@ -20,6 +21,7 @@ export class MessagesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: ChatGateway,
+    private readonly redis: RedisService,
   ) {}
 
   // Retorna as últimas `limit` mensagens em ordem cronológica (antiga → nova)
@@ -45,6 +47,19 @@ export class MessagesService {
     if (!content || content.trim().length === 0) throw new BadRequestException('Mensagem vazia');
     if (content.length > 500) throw new BadRequestException('Mensagem muito longa (máx 500)');
 
+    // idempotência do reenvio: o app reusa o clientId quando o POST falha/estoura o tempo. Se a 1ª tentativa
+    // chegou a gravar, devolve a mesma mensagem em vez de criar outra (10 min de memória por clientId)
+    const cidKey = clientId ? `msg:cid:${matchId}:${userId}:${clientId.slice(0, 64)}` : null;
+    if (cidKey) {
+      const claimed = await this.redis.client.set(cidKey, 'pending', 'EX', 600, 'NX');
+      if (!claimed) {
+        const prevId = await this.redis.client.get(cidKey);
+        const prev = prevId && prevId !== 'pending' ? await this.prisma.message.findUnique({ where: { id: prevId } }) : null;
+        if (prev) return { id: prev.id, clientId, createdAt: prev.createdAt.toISOString() };
+        throw new ConflictException('Essa mensagem ainda está sendo enviada');
+      }
+    }
+
     const message = await this.prisma.message.create({
       data: {
         id: uuid(),
@@ -55,6 +70,7 @@ export class MessagesService {
       },
     });
 
+    if (cidKey) await this.redis.client.set(cidKey, message.id, 'EX', 600);
     this.broadcast(match, message, clientId);
 
     return {

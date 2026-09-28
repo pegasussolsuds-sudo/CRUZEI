@@ -8,6 +8,10 @@ import { PRIVACY } from '../location/discovery-privacy';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
 
+/** modo anônimo no plano grátis: 24 h por vez (sorted set userId → vencimento em ms; o cron devolve ao visível) */
+export const ANON_FREE_KEY = 'anon:free:until';
+export const ANON_FREE_HOURS = 24;
+
 /**
  * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
  * → free + premium; senão só free. 'event' fica bloqueado pra todos por enquanto.
@@ -48,6 +52,19 @@ export class UsersService {
       avatarConfig = await this.downgradeAvatarToFree(userId, avatarConfig);
     }
 
+    // pausa vencida → volta na hora (o cron unpauseExpired cobre quem não abre o app)
+    let isPaused = user.isPaused;
+    let pausedUntil = user.pausedUntil;
+    if (isPaused && pausedUntil && pausedUntil <= new Date()) {
+      // só se ainda vencida: não desfaz uma pausa nova feita no meio do caminho
+      await this.prisma.user.updateMany({ where: { id: userId, isPaused: true, pausedUntil: { lte: new Date() } }, data: { isPaused: false, pausedUntil: null } as never });
+      isPaused = false;
+      pausedUntil = null;
+    }
+
+    // tier efetivo: assinatura vencida conta como free (mesma regra que o update() usa pra validar o avatar)
+    const premiumTier = allowedTiersFor(user).has('premium') ? user.premiumTier : 'free';
+
     const profile = {
       id: user.id,
       phone: user.phone,
@@ -73,7 +90,7 @@ export class UsersService {
         target: s.target,
         isCompleted: s.isCompleted,
       })),
-      premiumTier: user.premiumTier,
+      premiumTier,
       isVerified: user.isVerified,
       profileCompleteness: user.profileCompleteness,
       avatar: avatarOrFallback({ id: user.id, gender: user.gender, avatarConfig }),
@@ -82,8 +99,9 @@ export class UsersService {
         showDistance: user.showDistance,
         showAge: user.showAge,
         showPhotoOnMap: user.showPhotoOnMap,
-        isPaused: user.isPaused,
-        pausedUntil: user.pausedUntil?.toISOString() ?? null,
+        discoveryMode: user.discoveryMode,
+        isPaused,
+        pausedUntil: pausedUntil?.toISOString() ?? null,
       },
       stats: {
         likesReceived: user._count.likesReceived ?? 0,
@@ -94,7 +112,12 @@ export class UsersService {
       lastActiveAt: user.lastActiveAt.toISOString(),
     };
 
-    await this.redis.cacheProfile(userId, profile, 3600);
+    // cache não passa do fim da pausa/assinatura, senão o app vê estado vencido por até 1h
+    const now = Date.now();
+    const edges = [pausedUntil, user.premiumExpiresAt]
+      .filter((d): d is Date => !!d && d.getTime() > now)
+      .map((d) => Math.ceil((d.getTime() - now) / 1000));
+    await this.redis.cacheProfile(userId, profile, Math.max(1, Math.min(3600, ...edges)));
     return profile;
   }
 
@@ -159,8 +182,21 @@ export class UsersService {
       where: { id: userId },
       data: dto as never,
     });
+    // anônimo no plano grátis tem prazo (24 h); o cron devolve a pessoa ao modo visível quando vence
+    let anonymousUntil: string | null = null;
+    if (dto.visibilityMode === 'anonymous') {
+      const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { premiumTier: true, premiumExpiresAt: true } });
+      if (allowedTiersFor(u).has('premium')) await this.redis.client.zrem(ANON_FREE_KEY, userId);
+      else {
+        const until = Date.now() + ANON_FREE_HOURS * 3_600_000;
+        await this.redis.client.zadd(ANON_FREE_KEY, until, userId);
+        anonymousUntil = new Date(until).toISOString();
+      }
+    } else if (dto.visibilityMode === 'visible') {
+      await this.redis.client.zrem(ANON_FREE_KEY, userId);
+    }
     await this.redis.invalidateProfile(userId);
-    return { ok: true, ...dto };
+    return { ok: true, ...dto, ...(dto.visibilityMode === 'anonymous' ? { anonymousUntil } : {}) };
   }
 
   // ---- áreas privadas: coordenada precisa do PRÓPRIO usuário; a resposta só devolve rótulo/raio ----
@@ -196,6 +232,18 @@ export class UsersService {
     });
     await this.redis.invalidateProfile(userId);
     return { pausedUntil: pausedUntil.toISOString() };
+  }
+
+  /** retomar perfil antes do fim da pausa */
+  async resume(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isPaused: false, pausedUntil: null } as never,
+    });
+    // a próxima atualização de posição é aceita na hora (sem esperar o intervalo mínimo nem a resposta em cache "pausado")
+    await this.redis.client.del(`loc:gate:${userId}`, `loc:last:${userId}`);
+    await this.redis.invalidateProfile(userId);
+    return { ok: true };
   }
 
   async addPhoto(userId: string, url: string, thumbnailUrl?: string, isMain?: boolean) {

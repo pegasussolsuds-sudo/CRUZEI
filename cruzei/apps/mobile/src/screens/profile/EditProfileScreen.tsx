@@ -4,6 +4,7 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   StyleSheet,
   Text,
@@ -30,7 +31,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { api, toApiError } from '../../services/api';
-import { pickPhoto, takePhoto, uploadPhoto } from '../../services/photos';
+import { PhotoPermissionError, explainPhotoPermission, pickPhoto, takePhoto, uploadPhoto } from '../../services/photos';
 import { useAuthStore } from '../../stores/auth';
 import { FadeInView, ScaleOnPress, SlideInView } from '../../components/animated';
 import { Button } from '@cruzei/ui-mobile';
@@ -137,7 +138,9 @@ export function EditProfileScreen() {
       await refreshMe();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (err) {
-      Alert.alert('Falha no upload', toApiError(err).message);
+      // permissão negada ≠ falha de upload: explica e oferece os ajustes
+      if (err instanceof PhotoPermissionError) explainPhotoPermission(err, Alert.alert, () => Linking.openSettings().catch(() => {}));
+      else Alert.alert('Falha no upload', toApiError(err).message);
     } finally {
       setUploading(false);
     }
@@ -185,6 +188,16 @@ export function EditProfileScreen() {
       return [...cur, n];
     });
   };
+
+  // /me falhou sem nada em cache: mostra o erro e deixa tentar de novo (em vez de spinner eterno)
+  if (meQuery.isError && !meQuery.data) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>{toApiError(meQuery.error).message}</Text>
+        <Button title="Tentar de novo" onPress={() => meQuery.refetch()} loading={meQuery.isFetching} />
+      </View>
+    );
+  }
 
   if (!meQuery.data || !loaded) {
     return (
@@ -416,7 +429,8 @@ function Chip({ label, on, onPress, radio }: { label: string; on: boolean; onPre
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background, gap: spacing.md, padding: spacing.lg },
+  errorText: { ...typography.bodySmall, color: colors.gray[500], textAlign: 'center' },
   content: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   label: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', marginTop: spacing.lg, marginBottom: spacing.sm },
   hint: { ...typography.bodySmall, color: colors.gray[500], marginTop: spacing.xs },

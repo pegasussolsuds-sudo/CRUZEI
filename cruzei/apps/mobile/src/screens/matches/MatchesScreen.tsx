@@ -26,6 +26,7 @@ import { resolveAvatar } from '../../avatar';
 const AVATAR = 56;
 const STAGGER_MS = 55;
 const STAGGER_CAP = 8;
+const MATCHES_LIMIT = 100; // servidor aceita até 200; chats duram 48h, então a lista ativa é curta
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Linha do match: stagger na entrada, avatar Cruzei (o mesmo do mapa), dot pulsando se há não lidas
@@ -111,9 +112,11 @@ export function MatchesScreen() {
   const nav = useNavigation<NativeStackNavigationProp<MatchesStackParamList>>();
   const myId = useAuthStore((s) => s.user?.id);
 
+  // o servidor corta em 20 por padrão (teto 200) — pede o bastante pra não sumir conversa antiga.
+  // chave própria (prefixo ['matches'] continua invalidando) pra não brigar com o cache do badge
   const query = useQuery({
-    queryKey: ['matches'],
-    queryFn: async () => (await api.get<Match[]>('/matches')).data,
+    queryKey: ['matches', { limit: MATCHES_LIMIT }],
+    queryFn: async () => (await api.get<Match[]>('/matches', { params: { limit: MATCHES_LIMIT } })).data,
     refetchInterval: 30_000,
   });
 

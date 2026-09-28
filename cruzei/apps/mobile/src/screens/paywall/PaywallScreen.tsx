@@ -62,6 +62,9 @@ interface PremiumStatus {
   tier: 'free' | 'premium' | 'premium_plus';
   expiresAt?: string;
   daysRemaining: number;
+  /** false depois de cancelar: o acesso segue até expiresAt, mas não renova */
+  autoRenew?: boolean;
+  cancelledAt?: string | null;
 }
 
 const TIER_LABEL: Record<string, string> = { premium: 'Premium', premium_plus: 'Premium+' };
@@ -70,14 +73,10 @@ const INTERVAL_LABEL: Record<string, string> = { month: 'mês', quarter: 'trimes
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const PERKS: { icon: IoniconName; label: string; hint: string }[] = [
-  { icon: 'eye-off-outline', label: 'Modo anônimo ilimitado', hint: 'Some do mapa quando quiser' },
-  { icon: 'flash-outline', label: '1 boost grátis por semana', hint: 'Seu avatar cresce e brilha' },
-  { icon: 'heart-outline', label: '5 super curtidas por dia', hint: 'Pra quem não dá pra deixar passar' },
-  { icon: 'refresh-outline', label: 'Reverter última curtida', hint: 'Passou sem querer? Volta.' },
-  { icon: 'navigate-outline', label: 'Lugares visitados (heat map)', hint: 'Onde você mais cruza gente' },
-  { icon: 'star-outline', label: 'Selo verificado prioritário', hint: 'Fila VIP pra verificação' },
+  // só o que existe de verdade no Premium (nada de raio maior: descoberta é 350 m pra todo mundo)
+  { icon: 'eye-off-outline', label: 'Modo anônimo ilimitado', hint: 'No grátis ele vale 24 h por vez' },
   { icon: 'color-palette-outline', label: 'Itens exclusivos de avatar', hint: 'Auras, cores neon e roupas só pra Premium' },
-  { icon: 'locate-outline', label: 'Destaque no mapa', hint: 'Seu avatar aparece maior em áreas movimentadas' },
+  { icon: 'locate-outline', label: 'Destaque no mapa', hint: 'Anel e aura dourados no seu avatar' },
 ];
 
 const GRADIENT_PREMIUM = [colors.secondary, colors.accent, colors.primary];
@@ -302,10 +301,16 @@ function ActiveBadge({ status, onCancel, cancelling }: ActiveBadgeProps) {
   }));
 
   const tier = TIER_LABEL[status.tier] ?? status.tier;
+  // cancelada: continua Premium até o fim do período, só não renova
+  const cancelled = status.autoRenew === false;
+  const until = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString('pt-BR') : null;
+  const sub = cancelled
+    ? `Não renova · ${tier} até ${until ?? `daqui ${status.daysRemaining} dias`}`
+    : `${status.daysRemaining} ${status.daysRemaining === 1 ? 'dia restante' : 'dias restantes'} · aproveita`;
 
   return (
     <SlideInView from="up" distance={18} delay={120} springPreset="bouncy">
-      <Animated.View style={[styles.activeBox, borderStyle]} accessible accessibilityLabel={`Você é ${tier}. ${status.daysRemaining} dias restantes.`}>
+      <Animated.View style={[styles.activeBox, borderStyle]} accessible accessibilityLabel={`Você é ${tier}. ${sub}.`}>
         <Glow color={colors.accent} spread={10} intensity={0.8} shape="circle" cycleMs={1800}>
           <Pulse maxScale={1.12} cycleMs={1800}>
             <View style={styles.activeIcon}>
@@ -315,21 +320,21 @@ function ActiveBadge({ status, onCancel, cancelling }: ActiveBadgeProps) {
         </Glow>
         <View style={{ flex: 1 }}>
           <Text style={styles.activeTitle}>Você é {tier} 💚</Text>
-          <Text style={styles.activeSub}>
-            {status.daysRemaining} {status.daysRemaining === 1 ? 'dia restante' : 'dias restantes'} · aproveita
-          </Text>
+          <Text style={styles.activeSub}>{sub}</Text>
         </View>
-        <Pressable
-          onPress={onCancel}
-          disabled={cancelling}
-          hitSlop={8}
-          style={styles.cancelBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Cancelar assinatura"
-          accessibilityState={{ disabled: cancelling }}
-        >
-          {cancelling ? <ActivityIndicator color={colors.gray[400]} size="small" /> : <Text style={styles.cancelText}>Cancelar</Text>}
-        </Pressable>
+        {cancelled ? null : (
+          <Pressable
+            onPress={onCancel}
+            disabled={cancelling}
+            hitSlop={8}
+            style={styles.cancelBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Cancelar assinatura"
+            accessibilityState={{ disabled: cancelling }}
+          >
+            {cancelling ? <ActivityIndicator color={colors.gray[400]} size="small" /> : <Text style={styles.cancelText}>Cancelar</Text>}
+          </Pressable>
+        )}
       </Animated.View>
     </SlideInView>
   );
@@ -365,7 +370,7 @@ export function PaywallScreen() {
       await qc.invalidateQueries({ queryKey: ['premium-status'] });
       await qc.invalidateQueries({ queryKey: ['me'] });
       refreshMe().catch(() => {});
-      Alert.alert('Bem-vindo(a) ao Premium 💚', 'Modo anônimo ilimitado e super curtidas liberados.');
+      Alert.alert('Bem-vindo(a) ao Premium 💚', 'Modo anônimo ilimitado e itens exclusivos de avatar liberados.');
     },
     onError: (err) => Alert.alert('Não rolou', toApiError(err).message),
   });
@@ -382,11 +387,15 @@ export function PaywallScreen() {
 
   const plans = plansQuery.data ?? [];
   const status = statusQuery.data;
-  const isPremium = status && status.tier !== 'free';
+  // enquanto o /premium/status não chega, o tier do /me evita mostrar "Virar Premium" pra quem já assina
+  const meTier = useAuthStore((s) => s.user?.premiumTier);
+  const isPremium = (status?.tier ?? meTier ?? 'free') !== 'free';
+  // só oferece assinar com o status confirmado como free
+  const canSubscribe = status?.tier === 'free';
   const chosen = plans.find((p) => p.id === selected) ?? plans[0];
 
   const onStart = () => {
-    if (!chosen) return;
+    if (!chosen || !canSubscribe) return;
     Alert.alert(
       `${TIER_LABEL[chosen.tier] ?? chosen.tier} — ${formatBRL(chosen.priceCents)}/${INTERVAL_LABEL[chosen.interval] ?? chosen.interval}`,
       chosen.trialDays ? `${chosen.trialDays} dias grátis, depois renova automaticamente. Cancela quando quiser.` : 'Renova automaticamente. Cancela quando quiser.',
@@ -396,6 +405,19 @@ export function PaywallScreen() {
       ],
     );
   };
+
+  // um toque só não derruba a assinatura: confirma e diz até quando o acesso vale
+  const onCancel = (s: PremiumStatus) =>
+    Alert.alert(
+      'Cancelar assinatura?',
+      s.expiresAt
+        ? `Não renova mais, mas você continua ${TIER_LABEL[s.tier] ?? s.tier} até ${new Date(s.expiresAt).toLocaleDateString('pt-BR')}. Depois volta pro plano grátis.`
+        : 'Você volta pro plano grátis.',
+      [
+        { text: 'Manter', style: 'cancel' },
+        { text: 'Cancelar assinatura', style: 'destructive', onPress: () => cancel.mutate() },
+      ],
+    );
 
   return (
     <View style={styles.root}>
@@ -424,13 +446,13 @@ export function PaywallScreen() {
             />
             <FadeInView delay={820} fromY={10}>
               <Text style={styles.subtitle}>
-                Fica invisível quando quiser, turbina sua presença e vê quem curtiu você antes de você curtir de volta.
+                Fica invisível quando quiser, personaliza seu avatar e ganha destaque no mapa.
               </Text>
             </FadeInView>
           </View>
 
           {isPremium && status ? (
-            <ActiveBadge status={status} onCancel={() => cancel.mutate()} cancelling={cancel.isPending} />
+            <ActiveBadge status={status} onCancel={() => onCancel(status)} cancelling={cancel.isPending} />
           ) : null}
 
           {/* benefícios, um por um */}
@@ -473,7 +495,16 @@ export function PaywallScreen() {
 
           <View style={{ height: spacing.xl }} />
 
-          {!isPremium ? (
+          {!status && statusQuery.isError ? (
+            <FadeInView style={styles.errorBox}>
+              <Text style={styles.errorText}>Não consegui checar sua assinatura.</Text>
+              <Pressable onPress={() => statusQuery.refetch()} style={styles.retry} accessibilityRole="button" accessibilityLabel="Tentar de novo">
+                <Text style={styles.retryText}>Tentar de novo</Text>
+              </Pressable>
+            </FadeInView>
+          ) : !status && !isPremium ? (
+            <ActivityIndicator color={colors.primary} style={{ marginVertical: spacing.lg }} />
+          ) : canSubscribe ? (
             <FadeInView delay={600} fromY={16} durationMs={320}>
               <PremiumCta title="Virar Premium" onPress={onStart} loading={subscribe.isPending} disabled={!chosen} />
               {chosen ? (

@@ -41,6 +41,7 @@ export class AuthController {
     return this.auth.login(dto.phone, dto.code);
   }
 
+  @Throttle({ strict: { ttl: 60_000, limit: 5 } })
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.auth.register({

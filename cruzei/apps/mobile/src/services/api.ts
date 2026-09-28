@@ -78,7 +78,14 @@ api.interceptors.response.use(
 
     if (err.response?.status === 401 && original && !original._retry && !isAuthRoute) {
       original._retry = true;
-      const newToken = await refreshAccessToken();
+      let newToken: string | null;
+      try {
+        newToken = await refreshAccessToken();
+      } catch (refreshErr) {
+        // refresh falhou por rede/timeout/5xx: falha só esta requisição, a sessão continua.
+        // rejeita com o erro do refresh (não o 401 original): hydrate()/verifyCode() tratam 401 como sessão inválida
+        return Promise.reject(refreshErr);
+      }
       if (newToken) {
         original.headers.Authorization = `Bearer ${newToken}`;
         return api(original);
@@ -90,19 +97,24 @@ api.interceptors.response.use(
   },
 );
 
-// Refresh único mesmo com várias requisições 401 simultâneas
-async function refreshAccessToken(): Promise<string | null> {
+// Refresh único mesmo com várias requisições 401 simultâneas.
+// null = sessão inválida (sem refresh token ou servidor recusou); lança em erro transitório (rede/timeout/5xx).
+export async function refreshAccessToken(): Promise<string | null> {
   if (!refreshing) {
     refreshing = (async () => {
-      const rt = await getRefreshToken();
-      if (!rt) return null;
       try {
+        // dentro do try: o finally precisa zerar `refreshing` também quando não há refresh token
+        const rt = await getRefreshToken();
+        if (!rt) return null;
         const res = await axios.post(`${config.apiBaseUrl}/auth/refresh`, { refreshToken: rt }, { timeout: 10_000 });
         await setToken(res.data.token);
         await setRefreshToken(res.data.refreshToken);
         return res.data.token as string;
-      } catch {
-        return null;
+      } catch (e) {
+        const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+        // 400/401/403 = servidor recusou o refresh token de fato
+        if (status === 400 || status === 401 || status === 403) return null;
+        throw e;
       } finally {
         refreshing = null;
       }

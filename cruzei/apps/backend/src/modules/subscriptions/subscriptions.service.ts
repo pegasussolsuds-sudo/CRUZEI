@@ -1,7 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { UsersService } from '../users/users.service';
+
+/** dias por intervalo do plano */
+const INTERVAL_DAYS: Record<string, number> = { month: 30, quarter: 90, year: 365 };
 
 const PLANS = [
   { id: 'premium_monthly', tier: 'premium', interval: 'month', priceCents: 2990, currency: 'BRL', trialDays: 7 },
@@ -27,15 +30,28 @@ export class SubscriptionsService {
       where: { id: userId },
       select: { premiumTier: true, premiumExpiresAt: true },
     });
-    const expiresAt = user?.premiumExpiresAt?.toISOString();
-    const daysRemaining = expiresAt
-      ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86_400_000))
-      : 0;
+    // vencida → free de verdade (senão o paywall mostra "Premium · 0 dias" sem como renovar)
+    const expired = Boolean(user && user.premiumTier !== 'free' && user.premiumExpiresAt && user.premiumExpiresAt <= new Date());
+    if (expired) {
+      await this.prisma.user.update({ where: { id: userId }, data: { premiumTier: 'free' } as never });
+      await this.users.downgradeAvatarToFree(userId);
+      await this.redis.invalidateProfile(userId);
+    }
+    const tier = expired ? 'free' : (user?.premiumTier ?? 'free');
+    const expiresAt = tier === 'free' ? undefined : user?.premiumExpiresAt?.toISOString();
+    const daysRemaining = expiresAt ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86_400_000)) : 0;
+    const latest =
+      tier === 'free'
+        ? null
+        : await this.prisma.subscription.findFirst({ where: { userId }, orderBy: { expiresAt: 'desc' }, select: { productId: true, startsAt: true, cancelledAt: true } });
+    const plan = latest?.productId ? PLANS.find((p) => p.id === latest.productId) : undefined;
+    const trialActive = Boolean(latest && plan?.trialDays && Date.now() < latest.startsAt.getTime() + plan.trialDays * 86_400_000);
     return {
-      tier: user?.premiumTier ?? 'free',
+      tier,
       expiresAt,
-      trialActive: false,
-      autoRenew: false,
+      trialActive,
+      autoRenew: Boolean(latest && !latest.cancelledAt),
+      cancelledAt: latest?.cancelledAt?.toISOString() ?? null,
       daysRemaining,
     };
   }
@@ -44,21 +60,34 @@ export class SubscriptionsService {
     userId: string,
     planId: string,
     platform: 'ios' | 'android' | 'web',
-    _receipt: string,
+    receipt: string,
   ) {
     const plan = PLANS.find((p) => p.id === planId);
     if (!plan) throw new BadRequestException('Plano inválido');
 
-    // Em produção: validar receipt via Apple/Google/Stripe.
-    // Aqui aceitamos e marcamos como ativo por 30 dias.
-    const expiresAt = new Date(Date.now() + 30 * 86_400_000);
+    // Recibo: a validação de verdade (App Store Server API / Google Play Developer API) ainda não existe.
+    // O recibo "dev" só vale fora de produção (ou com ALLOW_DEV_RECEIPTS=true); qualquer outro é recusado com 402.
+    const devOk = process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_RECEIPTS === 'true';
+    if (!(receipt === 'dev' && devOk)) throw new HttpException('Recibo inválido ou validação indisponível', 402);
+
+    // já assinante: não cria uma 2ª linha nem rebaixa o vencimento — devolve o estado atual
+    const current = await this.prisma.user.findUnique({ where: { id: userId }, select: { premiumTier: true, premiumExpiresAt: true } });
+    if (current && current.premiumTier !== 'free' && current.premiumExpiresAt && current.premiumExpiresAt > new Date()) {
+      throw new BadRequestException('Você já tem uma assinatura ativa');
+    }
+
+    // duração = intervalo do plano + dias de teste (não 30 dias fixos)
+    const trialDays = plan.trialDays ?? 0;
+    const startsAt = new Date();
+    const expiresAt = new Date(startsAt.getTime() + ((INTERVAL_DAYS[plan.interval] ?? 30) + trialDays) * 86_400_000);
 
     await this.prisma.subscription.create({
       data: {
         userId,
         tier: plan.tier as never,
         platform,
-        startsAt: new Date(),
+        productId: plan.id,
+        startsAt,
         expiresAt,
       },
     });
@@ -76,14 +105,14 @@ export class SubscriptionsService {
     };
   }
 
+  /** cancela a renovação: o acesso continua até o fim do período já pago (o cron/leitura rebaixa quando vencer) */
   async cancel(userId: string) {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { premiumTier: 'free' } as never,
-    });
-    // voltou pra free → itens premium do avatar caem pro default
-    await this.users.downgradeAvatarToFree(userId);
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { premiumTier: true, premiumExpiresAt: true } });
+    if (!user || user.premiumTier === 'free') throw new BadRequestException('Você não tem assinatura ativa');
+    const cancelledAt = new Date();
+    const latest = await this.prisma.subscription.findFirst({ where: { userId, cancelledAt: null }, orderBy: { expiresAt: 'desc' }, select: { id: true } });
+    if (latest) await this.prisma.subscription.update({ where: { id: latest.id }, data: { cancelledAt } });
     await this.redis.invalidateProfile(userId);
-    return { expiresAt: null, cancelledAt: new Date().toISOString() };
+    return { expiresAt: user.premiumExpiresAt?.toISOString() ?? null, cancelledAt: cancelledAt.toISOString() };
   }
 }

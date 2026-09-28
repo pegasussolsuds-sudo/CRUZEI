@@ -80,13 +80,25 @@ export const useAuthStore = create<AuthState>((set, get) => {
       if (res.data.user?.isNew) return { isNew: true };
       await setToken(res.data.token);
       await setRefreshToken(res.data.refreshToken);
-      const me = await api.get('/me');
-      set({ user: me.data, isAuthenticated: !opts?.deferAuth });
+      // o código já foi consumido e a sessão já está salva: só 401/404 no /me desfaz o login
+      let me: User | null = null;
+      try {
+        me = (await api.get('/me')).data;
+      } catch (err) {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (status === 401 || status === 404) {
+          await clearSession();
+          throw err;
+        }
+        // sem rede / backend fora: segue logado como no hydrate(), as telas tentam /me de novo
+      }
+      set({ user: me, isAuthenticated: !opts?.deferAuth });
       return { isNew: false };
     },
 
     commitAuth() {
-      if (get().user && !get().isAuthenticated) set({ isAuthenticated: true });
+      // não depende de `user`: o /me pode ter falhado por rede com a sessão já salva
+      if (!get().isAuthenticated) set({ isAuthenticated: true });
     },
 
     async register(input) {

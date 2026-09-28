@@ -4,6 +4,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -97,27 +98,45 @@ interface BubbleProps {
   item: ChatMessage;
   isMe: boolean;
   animateIn: boolean;
+  /** só pra mensagem minha que falhou — toca e reenvia com o mesmo clientId */
+  onRetry?: (item: ChatMessage) => void;
 }
 
-const Bubble = memo(function Bubble({ item, isMe, animateIn }: BubbleProps) {
+const Bubble = memo(function Bubble({ item, isMe, animateIn, onRetry }: BubbleProps) {
   // decidido uma única vez por montagem — re-render por readAt não troca o wrapper
   const shouldAnimate = useRef(animateIn).current;
+  const canRetry = Boolean(isMe && item.failed && onRetry);
+
+  const inner = (
+    <>
+      <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.content}</Text>
+      <View style={styles.meta}>
+        <Text style={[styles.bubbleTime, isMe && styles.bubbleTimeMe]}>
+          {item.pending ? 'enviando…' : item.failed ? 'não foi 😕 · toca pra reenviar' : timeAgo(item.createdAt)}
+        </Text>
+        {isMe && !item.pending && !item.failed ? <ReadReceipt read={Boolean(item.readAt)} /> : null}
+      </View>
+    </>
+  );
+  const bubbleStyle = [styles.bubble, isMe ? styles.bubbleMe : styles.bubbleOther, item.failed && styles.bubbleFailed, item.pending && styles.bubblePending];
 
   const body = (
     <View style={[styles.bubbleRow, isMe && styles.bubbleRowMe]}>
-      <View
-        style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleOther, item.failed && styles.bubbleFailed, item.pending && styles.bubblePending]}
-        accessibilityRole="text"
-        accessibilityLabel={`${isMe ? 'você' : 'mensagem'}: ${item.content ?? ''}`}
-      >
-        <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.content}</Text>
-        <View style={styles.meta}>
-          <Text style={[styles.bubbleTime, isMe && styles.bubbleTimeMe]}>
-            {item.pending ? 'enviando…' : item.failed ? 'não foi 😕' : timeAgo(item.createdAt)}
-          </Text>
-          {isMe && !item.pending && !item.failed ? <ReadReceipt read={Boolean(item.readAt)} /> : null}
+      {canRetry ? (
+        <Pressable
+          onPress={() => onRetry?.(item)}
+          style={bubbleStyle}
+          accessibilityRole="button"
+          accessibilityLabel={`você: ${item.content ?? ''}. não foi enviada`}
+          accessibilityHint="toca pra reenviar"
+        >
+          {inner}
+        </Pressable>
+      ) : (
+        <View style={bubbleStyle} accessibilityRole="text" accessibilityLabel={`${isMe ? 'você' : 'mensagem'}: ${item.content ?? ''}`}>
+          {inner}
         </View>
-      </View>
+      )}
     </View>
   );
 
@@ -232,7 +251,7 @@ export function ChatScreen() {
     return () => clearInterval(id);
   }, []);
 
-  // Histórico → estado local (mantém otimistas ainda pendentes). Histórico nunca anima.
+  // Histórico → estado local (mantém otimistas pendentes E as que falharam, pra dar pra reenviar). Histórico nunca anima.
   useEffect(() => {
     if (!historyQuery.data) return;
     for (const m of historyQuery.data) {
@@ -240,7 +259,9 @@ export function ChatScreen() {
       if (m.clientId) seenIds.current.add(m.clientId);
     }
     setMessages((prev) => {
-      const pending = prev.filter((m) => m.pending);
+      // se o servidor já tem a mensagem (mesmo clientId), a cópia local sai — evita duplicata/chave repetida
+      const saved = new Set(historyQuery.data!.map((m) => m.clientId).filter(Boolean));
+      const pending = prev.filter((m) => (m.pending || m.failed) && !(m.clientId && saved.has(m.clientId)));
       return [...historyQuery.data!, ...pending];
     });
   }, [historyQuery.data]);
@@ -258,7 +279,9 @@ export function ChatScreen() {
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
-    socket.emit('join_match', { matchId });
+    const join = () => socket.emit('join_match', { matchId });
+    join();
+    socket.on('connect', join); // reconexão (rede, token renovado) cria outra conexão, sem a sala
 
     const onMessage = ({ matchId: mid, message }: { matchId: string; message: Message }) => {
       if (mid !== matchId) return;
@@ -287,6 +310,7 @@ export function ChatScreen() {
     socket.on('message_read', onRead);
     return () => {
       socket.emit('leave_match', { matchId });
+      socket.off('connect', join);
       socket.off('message_received', onMessage);
       socket.off('typing_indicator', onTyping);
       socket.off('message_read', onRead);
@@ -340,17 +364,38 @@ export function ChatScreen() {
     };
     setContent('');
     setMessages((prev) => [...prev, optimistic]);
-    try {
-      const res = await api.post<{ id: string; createdAt: string }>(`/matches/${matchId}/messages`, { content: trimmed, clientId });
-      setMessages((prev) =>
-        prev.map((m) => (m.clientId === clientId ? { ...m, id: res.data.id, createdAt: res.data.createdAt, pending: false } : m)),
-      );
-      qc.invalidateQueries({ queryKey: ['matches'] });
-    } catch (err) {
-      setMessages((prev) => prev.map((m) => (m.clientId === clientId ? { ...m, pending: false, failed: true } : m)));
-      setError(toApiError(err).message);
-    }
+    await postMessage(clientId, trimmed);
   };
+
+  // POST com o clientId do balão otimista — usado no envio e no reenvio
+  const postMessage = useCallback(
+    async (clientId: string, text: string) => {
+      try {
+        const res = await api.post<{ id: string; createdAt: string }>(`/matches/${matchId}/messages`, { content: text, clientId });
+        setMessages((prev) =>
+          prev.map((m) => (m.clientId === clientId ? { ...m, id: res.data.id, createdAt: res.data.createdAt, pending: false, failed: false } : m)),
+        );
+        qc.invalidateQueries({ queryKey: ['matches'] });
+      } catch (err) {
+        // se o socket já confirmou (timeout depois de salvar), não marca como falha
+        setMessages((prev) => prev.map((m) => (m.clientId === clientId && m.pending ? { ...m, pending: false, failed: true } : m)));
+        setError(toApiError(err).message);
+      }
+    },
+    [matchId, qc],
+  );
+
+  // Reenvio: volta o balão pra "enviando…" e tenta de novo com o mesmo clientId
+  const retry = useCallback(
+    (item: ChatMessage) => {
+      if (!item.clientId || !item.content) return;
+      const { clientId, content: text } = item;
+      setError(null);
+      setMessages((prev) => prev.map((m) => (m.clientId === clientId ? { ...m, pending: true, failed: false } : m)));
+      postMessage(clientId, text);
+    },
+    [postMessage],
+  );
 
   const expired = useMemo(() => {
     const at = matchQuery.data?.chatExpiresAt;
@@ -393,9 +438,10 @@ export function ChatScreen() {
         seenIds.current.add(key);
         seenIds.current.add(item.id);
       }
-      return <Bubble item={item} isMe={item.senderId === myId} animateIn={isNew} />;
+      const isMe = item.senderId === myId;
+      return <Bubble item={item} isMe={isMe} animateIn={isNew} onRetry={isMe && item.failed ? retry : undefined} />;
     },
-    [myId],
+    [myId, retry],
   );
 
   return (

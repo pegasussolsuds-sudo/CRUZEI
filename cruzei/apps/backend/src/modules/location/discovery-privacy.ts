@@ -17,6 +17,11 @@ function envInt(name: string, def: number): number {
 export const PRIVACY = {
   /** raio máximo da descoberta individual (m) — o cálculo exato fica no servidor */
   DISCOVERY_RADIUS_M: envInt('DISCOVERY_RADIUS_M', 350),
+  /** carga: descobertas simultâneas por instância (o resto espera) e teto de pessoas por resposta */
+  DISCOVERY_MAX_CONCURRENCY: envInt('DISCOVERY_MAX_CONCURRENCY', 16),
+  DISCOVERY_MAX_USERS: envInt('DISCOVERY_MAX_USERS', 300),
+  /** por quanto tempo os dados de perfil de um candidato são reaproveitados entre descobertas (ms) */
+  DISCOVERY_CANDIDATE_TTL_MS: envInt('DISCOVERY_CANDIDATE_TTL_MS', 5000),
   /** limites das faixas: 0–100 muito perto, 100–250 perto, 250–raio na região */
   BAND_VERY_NEAR_M: envInt('DISCOVERY_BAND_VERY_NEAR_M', 100),
   BAND_NEAR_M: envInt('DISCOVERY_BAND_NEAR_M', 250),

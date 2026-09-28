@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, useWindowDimensions } from 'react-native';
-import { BlurMask, Canvas, Circle, Group } from '@shopify/react-native-skia';
+import { BlurMask, Canvas, Circle, Group, Path, Skia } from '@shopify/react-native-skia';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   Easing,
@@ -101,17 +101,17 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
   const ox = useSharedValue(width / 2);
   const oy = useSharedValue(height / 2 - 82);
 
-  const particles = useMemo(
-    () =>
-      Array.from({ length: PARTICLES }, (_, i) => ({
-        angle: seeded(i, 1) * Math.PI * 2,
-        dist: 70 + seeded(i, 2) * 150,
-        size: 1.6 + seeded(i, 3) * 3.4,
-        color: [colors.primary, colors.secondary, colors.white, colors.primary][i % 4],
-        delay: seeded(i, 4) * 0.25,
-      })),
-    [],
-  );
+  // agrupadas por cor: cada grupo vira UM path derivado (3 mappers no total, em vez de 78)
+  const particleGroups = useMemo(() => {
+    const all = Array.from({ length: PARTICLES }, (_, i) => ({
+      angle: seeded(i, 1) * Math.PI * 2,
+      dist: 70 + seeded(i, 2) * 150,
+      size: 1.6 + seeded(i, 3) * 3.4,
+      color: [colors.primary, colors.secondary, colors.white, colors.primary][i % 4],
+      delay: seeded(i, 4) * 0.25,
+    }));
+    return [colors.primary, colors.secondary, colors.white].map((color) => ({ color, items: all.filter((q) => q.color === color) }));
+  }, []);
 
   // Começa no commit (layout effect), não nos efeitos passivos — que no boot rodam segundos depois
   useLayoutEffect(() => {
@@ -224,24 +224,22 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
     opacity: interpolate(exit.value, [0.35, 1], [1, 0], Extrapolation.CLAMP),
   }));
 
-  // Partículas em Skia: posição derivada do progresso (cada uma com delay próprio e saída em ease-out)
-  const particleValues = particles.map((p) => {
+  // Partículas: um path por cor, recalculado na UI thread (posição com delay próprio, saída em ease-out, leve gravidade)
+  const particlePaths = particleGroups.map((g) => {
+    const items = g.items;
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    const px = useDerivedValue(() => {
-      const e = outCubic(seg(burst.value, p.delay, 1 - p.delay));
-      return ox.value + Math.cos(p.angle) * p.dist * e;
+    const path = useDerivedValue(() => {
+      const out = Skia.Path.Make();
+      const b = burst.value;
+      if (b < 0.02) return out;
+      for (let i = 0; i < items.length; i++) {
+        const q = items[i];
+        const e = outCubic(seg(b, q.delay, 1 - q.delay));
+        out.addCircle(ox.value + Math.cos(q.angle) * q.dist * e, oy.value + Math.sin(q.angle) * q.dist * e + 34 * e * e, q.size * (1 - e * 0.6));
+      }
+      return out;
     });
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const py = useDerivedValue(() => {
-      const e = outCubic(seg(burst.value, p.delay, 1 - p.delay));
-      return oy.value + Math.sin(p.angle) * p.dist * e + 34 * e * e; // leve gravidade
-    });
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    const pr = useDerivedValue(() => {
-      const e = outCubic(seg(burst.value, p.delay, 1 - p.delay));
-      return p.size * (1 - e * 0.6);
-    });
-    return { px, py, pr, color: p.color };
+    return { path, color: g.color };
   });
   const particleOpacity = useDerivedValue(() => (burst.value < 0.02 ? 0 : (1 - burst.value) * 0.95 * (1 - exit.value)));
   // halo desfocado atrás do monograma — acende no encontro e respira
@@ -266,8 +264,8 @@ export function SplashScreen({ onFinish, onSettled, ready = true, minDurationMs 
           </Circle>
         </Group>
         <Group opacity={particleOpacity}>
-          {particleValues.map((p, i) => (
-            <Circle key={i} cx={p.px} cy={p.py} r={p.pr} color={p.color} />
+          {particlePaths.map((g, i) => (
+            <Path key={i} path={g.path} color={g.color} />
           ))}
         </Group>
       </Canvas>

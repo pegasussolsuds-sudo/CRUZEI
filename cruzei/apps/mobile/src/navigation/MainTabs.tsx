@@ -3,6 +3,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { MapScreen } from '../screens/map/MapScreen';
 import { LikesScreen } from '../screens/likes/LikesScreen';
@@ -24,10 +25,12 @@ export type MainTabParamList = {
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
 export function MainTabs() {
+  // iPhone com home indicator: soma o inset (no Android sem edge-to-edge é 0 → mesmo layout de antes)
+  const insets = useSafeAreaInsets();
   // badge de não lidas na aba Matches (mesma query da lista → sem request extra)
   const matches = useQuery({
-    queryKey: ['matches'],
-    queryFn: async () => (await api.get<Match[]>('/matches')).data,
+    queryKey: ['matches', { limit: 100 }],
+    queryFn: async () => (await api.get<Match[]>('/matches', { params: { limit: 100 } })).data,
     refetchInterval: 30_000,
   });
   const unread = (matches.data ?? []).reduce((n, m) => n + (m.unreadCount ?? 0), 0);
@@ -41,8 +44,8 @@ export function MainTabs() {
         tabBarStyle: {
           backgroundColor: colors.black,
           borderTopColor: colors.gray[800],
-          height: 64,
-          paddingBottom: 8,
+          height: 64 + insets.bottom,
+          paddingBottom: 8 + insets.bottom,
           paddingTop: 6,
         },
         tabBarIcon: ({ color, size, focused }) => {

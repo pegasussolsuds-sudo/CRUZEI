@@ -369,10 +369,12 @@ function AvatarOrbit({ uri, initial, size, paused, glowColor = colors.accent }: 
       <Glow color={glowColor} spread={18} intensity={0.85} shape="circle">
         <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
           {uri ? (
-            <Image source={{ uri }} style={{ width: size, height: size }} accessibilityIgnoresInvertColors />
+            // raio na própria Image (Fresco) — nunca overflow:hidden + borda clipando uma Image com raio (SIGSEGV no HWUI)
+            <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2 }} accessibilityIgnoresInvertColors />
           ) : (
             <Text style={[styles.avatarInitial, { fontSize: size * 0.4 }]}>{initial}</Text>
           )}
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: size / 2, borderWidth: 3, borderColor: colors.accent }]} />
         </View>
       </Glow>
       <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -770,10 +772,7 @@ const styles = StyleSheet.create({
   hero: { height: ROCKET_H, alignItems: 'center', justifyContent: 'center', marginTop: -spacing.md },
   avatarRow: { marginTop: -spacing.xl, alignItems: 'center' },
   avatar: {
-    overflow: 'hidden',
     backgroundColor: colors.gray[800],
-    borderWidth: 3,
-    borderColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },

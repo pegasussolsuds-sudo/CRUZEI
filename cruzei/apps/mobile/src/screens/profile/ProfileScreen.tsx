@@ -71,6 +71,8 @@ const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 
 const lightTap = () => Haptics.selectionAsync().catch(() => {});
 
+type SettingsPatch = { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean; discoveryMode?: 'everyone' | 'compatible' | 'nobody' };
+
 export function ProfileScreen() {
   const nav = useNavigation<ProfileNav>();
   const qc = useQueryClient();
@@ -86,12 +88,28 @@ export function ProfileScreen() {
       setUser(me);
       return me;
     },
+    // perfil do store enquanto o /me chega (sem spinner eterno depois de login/logout)
+    placeholderData: () => useAuthStore.getState().user ?? undefined,
   });
 
+  // otimista: o switch fica onde o usuário deixou; volta só se o servidor recusar
   const settings = useMutation({
-    mutationFn: async (patch: { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean; discoveryMode?: 'everyone' | 'compatible' | 'nobody' }) => (await api.patch('/me/settings', patch)).data,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['me'] }),
-    onError: (err) => Alert.alert('Ops', toApiError(err).message),
+    mutationKey: ['me-settings'],
+    mutationFn: async (patch: SettingsPatch) => (await api.patch('/me/settings', patch)).data,
+    onMutate: async (patch) => {
+      await qc.cancelQueries({ queryKey: ['me'] });
+      const prev = qc.getQueryData<User>(['me']);
+      qc.setQueryData<User>(['me'], (old) => (old ? { ...old, settings: { ...old.settings, ...patch } } : old));
+      return { prev };
+    },
+    onError: (err, _patch, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['me'], ctx.prev);
+      Alert.alert('Ops', toApiError(err).message);
+    },
+    // só refaz o /me quando o último toque terminar (senão um refetch no meio desfaz o seguinte)
+    onSettled: () => {
+      if (qc.isMutating({ mutationKey: ['me-settings'] }) === 1) qc.invalidateQueries({ queryKey: ['me'] });
+    },
   });
 
   // ---- parallax do header (UI thread) ----
@@ -119,7 +137,16 @@ export function ProfileScreen() {
     transform: [{ translateY: interpolate(scrollY.value, [PARALLAX_RANGE * 0.55, PARALLAX_RANGE], [-8, 0], Extrapolation.CLAMP) }],
   }));
 
-  if (query.isLoading || !query.data) {
+  if (query.isError && !query.data) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.loadingText}>{toApiError(query.error).message}</Text>
+        <Button title="Tentar de novo" onPress={() => query.refetch()} loading={query.isFetching} />
+      </SafeAreaView>
+    );
+  }
+
+  if (query.isPending || !query.data) {
     return (
       <SafeAreaView style={styles.center}>
         <Pulse maxScale={1.12} minOpacity={0.6}>
@@ -158,6 +185,19 @@ export function ProfileScreen() {
         },
       },
     ]);
+
+  const resume = async () => {
+    setBusy(true);
+    try {
+      await api.delete('/me/pause');
+      qc.invalidateQueries({ queryKey: ['me'] });
+      qc.invalidateQueries({ queryKey: ['nearby'] });
+    } catch (err) {
+      Alert.alert('Ops', toApiError(err).message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const goEdit = () => nav.navigate('EditProfile');
   const goBoost = () => nav.navigate('Boost');
@@ -304,17 +344,17 @@ export function ProfileScreen() {
             label="Modo anônimo"
             hint="Você vê todo mundo, ninguém vê você"
             value={isAnonymous}
-            onToggle={toggleAnonymous}
+            onToggle={() => toggleAnonymous()}
           />
-          <Row icon="navigate-outline" label="Mostrar distância" value={me.settings.showDistance} onToggle={() => settings.mutate({ showDistance: !me.settings.showDistance })} />
+          <Row icon="navigate-outline" label="Mostrar distância" value={me.settings.showDistance} onToggle={(v) => settings.mutate({ showDistance: v })} />
           <Row
             icon="image-outline"
             label="Mostrar minha foto no mapa"
             hint="Desligado: no mapa aparece só o seu avatar"
             value={me.settings.showPhotoOnMap ?? true}
-            onToggle={() => settings.mutate({ showPhotoOnMap: !(me.settings.showPhotoOnMap ?? true) })}
+            onToggle={(v) => settings.mutate({ showPhotoOnMap: v })}
           />
-          <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={() => settings.mutate({ showAge: !me.settings.showAge })} />
+          <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={(v) => settings.mutate({ showAge: v })} />
           <DiscoveryModeRow value={me.settings.discoveryMode ?? 'everyone'} onChange={(discoveryMode) => settings.mutate({ discoveryMode })} />
           <Link icon="home-outline" label="Áreas privadas" hint="casa, trabalho… ninguém te descobre lá" onPress={() => nav.navigate('PrivateAreas' as never)} last />
         </Section>
@@ -328,12 +368,16 @@ export function ProfileScreen() {
           />
           <Link
             icon="pause-circle-outline"
-            label={me.settings.isPaused ? 'Perfil pausado' : 'Pausar perfil por 24h'}
-            hint={me.settings.isPaused ? 'de volta em breve' : undefined}
-            onPress={pause}
-            disabled={busy || me.settings.isPaused}
+            label={me.settings.isPaused ? 'Retomar perfil agora' : 'Pausar perfil por 24h'}
+            hint={me.settings.isPaused ? 'você está fora do mapa e das curtidas' : undefined}
+            onPress={me.settings.isPaused ? resume : pause}
+            disabled={busy}
           />
-          <Link icon="download-outline" label="Baixar meus dados (LGPD)" onPress={() => Alert.alert('LGPD', 'Pedido registrado. Você recebe o arquivo por SMS em até 15 dias.')} />
+          <Link
+            icon="download-outline"
+            label="Baixar meus dados (LGPD)"
+            onPress={() => Alert.alert('Baixar meus dados', `Manda um "meus dados" pro ${BRAND.supportEmail} — o export automático chega no beta.`)}
+          />
           <Link
             icon="trash-outline"
             label="Excluir conta"
@@ -479,10 +523,11 @@ function Section({ title, delay, children }: { title: string; delay: number; chi
   );
 }
 
-function Row({ icon, label, hint, value, onToggle, last }: { icon: string; label: string; hint?: string; value: boolean; onToggle: () => void; last?: boolean }) {
-  const change = () => {
+function Row({ icon, label, hint, value, onToggle, last }: { icon: string; label: string; hint?: string; value: boolean; onToggle: (next: boolean) => void; last?: boolean }) {
+  // repassa o valor novo do Switch (não o inverso do cache, que pode estar velho)
+  const change = (next: boolean) => {
     lightTap();
-    onToggle();
+    onToggle(next);
   };
   return (
     <View style={[styles.row, last && styles.rowLast]}>
