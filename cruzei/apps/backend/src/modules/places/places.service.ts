@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import * as fs from 'node:fs';
 import type { MapboxPlace, PlaceCategoryKey, PlaceSearchResponse } from '@cruzei/shared-types';
+import { decodeGeohash, decodeGeohashBounds } from '@cruzei/shared-utils';
+import { CROWD, localDateBrazil } from '../location/discovery-privacy';
 import { RedisService } from '../../redis/redis.service';
 import {
   CHIP_TO_MAPBOX,
@@ -26,6 +29,14 @@ const BBOX_DEG = 0.35;
 /** o que passar disso só entra quando a região não tem nada com esse nome */
 const LOCAL_MAX_M = 60_000;
 const CACHE_VERSION = 'v6';
+/** lugar devolvido pela NOSSA busca: só esses podem ser sugeridos pro mapa (nada de nome/ponto vindo do cliente) */
+const REMEMBER_TTL_SECONDS = 6 * 3600;
+/** lugares do Mapbox em volta de uma célula movimentada (inclusive 'nenhum'): 7 dias */
+const CELL_TTL_SECONDS = 7 * 86_400;
+/** categorias consultadas pelo detector numa célula (as mesmas famílias da busca, que já sabemos que o Mapbox aceita) */
+const CELL_CATEGORIES = ['bar', 'nightlife', 'restaurant', 'cafe', 'park', 'shopping_mall'];
+/** folga em volta da célula geohash-7 na consulta ao Mapbox (lugar na borda da célula) */
+const CELL_MARGIN_M = 60;
 
 export interface PlacesSearchArgs {
   q: string;
@@ -62,7 +73,75 @@ export class PlacesService {
     // distância recalculada do ponto exato (o cache guarda a da célula)
     const center = args.center;
     const out = (places ?? []).map((p) => (center ? { ...p, distanceM: haversineMeters(center.lat, center.lng, p.latitude, p.longitude) } : p));
+    await this.remember(out);
     return { places: out, q, generatedAt: new Date().toISOString() };
+  }
+
+  /** um lugar que a nossa busca devolveu nas últimas 6 h (id 'mbx:…'), ou null */
+  async lookup(id: string): Promise<MapboxPlace | null> {
+    try {
+      const raw = await this.redis.client.get(`mbx:p:${id}`);
+      return raw ? (JSON.parse(raw) as MapboxPlace) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async remember(places: MapboxPlace[]): Promise<void> {
+    if (places.length === 0) return;
+    try {
+      const pipe = this.redis.client.pipeline();
+      for (const p of places) pipe.set(`mbx:p:${p.id}`, JSON.stringify(p), 'EX', REMEMBER_TTL_SECONDS);
+      await pipe.exec();
+    } catch (err) {
+      this.log.warn(`cache de lugares falhou: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Lugares públicos do Mapbox dentro de uma célula geohash-7 (+ folga). Só a CAIXA da célula vai pro Mapbox (dado
+   * agregado), nunca a posição de alguém. Cache de 7 dias (inclusive vazio) e teto diário de chamadas do detector.
+   * null = pulou (sem token, teto do dia, falha) — o detector tenta de novo na próxima rodada.
+   * MAPBOX_STUB=<arquivo.json> (fora de produção): lê uma lista fixa de lugares em vez de chamar o Mapbox (testes/carga).
+   */
+  async venuesInCell(cell: string): Promise<MapboxPlace[] | null> {
+    const key = `mbx:cell:v1:${cell}`;
+    const hit = await this.cached(key);
+    if (hit) return hit;
+    const b = decodeGeohashBounds(cell);
+    const dLat = CELL_MARGIN_M / 111_195;
+    const dLng = dLat / Math.cos((((b.latMin + b.latMax) / 2) * Math.PI) / 180);
+    const box = { latMin: b.latMin - dLat, latMax: b.latMax + dLat, lngMin: b.lngMin - dLng, lngMax: b.lngMax + dLng };
+    const inside = (p: MapboxPlace) => p.latitude >= box.latMin && p.latitude <= box.latMax && p.longitude >= box.lngMin && p.longitude <= box.lngMax;
+    const c = decodeGeohash(cell);
+    const center = { lat: c.latitude, lng: c.longitude };
+
+    let venues: MapboxPlace[] | null;
+    const stub = process.env.NODE_ENV !== 'production' ? (process.env.MAPBOX_STUB ?? '').trim() : '';
+    if (stub) {
+      try {
+        venues = (JSON.parse(fs.readFileSync(stub, 'utf8')) as MapboxPlace[]).filter(inside);
+      } catch (err) {
+        this.log.warn(`MAPBOX_STUB ilegível: ${(err as Error).message}`);
+        return null;
+      }
+    } else {
+      if (!this.token) return null;
+      const budgetKey = `mbx:budget:${localDateBrazil()}`;
+      const used = await this.redis.client.incrby(budgetKey, CELL_CATEGORIES.length);
+      if (used === CELL_CATEGORIES.length) await this.redis.client.expire(budgetKey, 2 * 86_400);
+      if (used > CROWD.MAPBOX_DAILY_CAP) return null;
+      const bbox = [box.lngMin, box.latMin, box.lngMax, box.latMax].map((n) => n.toFixed(5)).join(',');
+      const lists = await Promise.all(CELL_CATEGORIES.map((cat) => this.categoryBrowse(cat, center, bbox)));
+      if (lists.every((l) => l === null)) return null;
+      const byId = new Map<string, MapboxPlace>();
+      for (const l of lists) for (const p of l ?? []) if (inside(p)) byId.set(p.id, p);
+      venues = [...byId.values()];
+    }
+    await this.redis.client.set(key, JSON.stringify(venues), 'EX', CELL_TTL_SECONDS);
+    // cada lugar achado também pode ser sugerido/confirmado depois (mesmo cache da busca)
+    await this.remember(venues);
+    return venues;
   }
 
   /** null = falha (não cacheia); [] = o Mapbox respondeu e não tem nada */
@@ -139,11 +218,11 @@ export class PlacesService {
     return this.request(`${SEARCHBOX_URL}/forward?${params.toString()}`, cell);
   }
 
-  private categoryBrowse(category: string, cell: { lat: number; lng: number } | null): Promise<MapboxPlace[] | null> {
+  private categoryBrowse(category: string, cell: { lat: number; lng: number } | null, bbox?: string): Promise<MapboxPlace[] | null> {
     const params = new URLSearchParams({ language: 'pt', limit: '25', access_token: this.token });
     if (cell) {
       params.set('proximity', `${cell.lng},${cell.lat}`);
-      params.set('bbox', bboxAround(cell));
+      params.set('bbox', bbox ?? bboxAround(cell));
     } else {
       params.set('country', 'br');
     }

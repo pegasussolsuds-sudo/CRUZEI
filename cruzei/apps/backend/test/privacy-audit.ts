@@ -146,10 +146,10 @@ async function main() {
   {
     const far = { lat: -18.9600, lng: -48.3300 }; // ~6 km, área vazia
     const meFar = { lat: -18.9605, lng: -48.3300 };
-    const ghB = (await import('@cruzei/shared-utils')).encodeGeohash(far.lat, far.lng, 5);
+    const ghB = (await import('@cruzei/shared-utils')).encodeGeohash(far.lat, far.lng, 6);
     await redis.hset(`user:loc:${b.id}`, { lat: String(far.lat), lng: String(far.lng), updated_at: String(Date.now()), geohash: ghB, hidden: '0' });
     await redis.zadd(`presence:${ghB}`, Date.now(), b.id);
-    const ghMe = (await import('@cruzei/shared-utils')).encodeGeohash(meFar.lat, meFar.lng, 5);
+    const ghMe = (await import('@cruzei/shared-utils')).encodeGeohash(meFar.lat, meFar.lng, 6);
     await redis.hset(`user:loc:${me.id}`, { lat: String(meFar.lat), lng: String(meFar.lng), updated_at: String(Date.now()), geohash: ghMe, hidden: '0' });
     await redis.zadd(`presence:${ghMe}`, Date.now(), me.id);
     const r = await call(tMe, 'GET', '/location/nearby');
@@ -208,6 +208,71 @@ async function main() {
     };
     walk(root);
     report('10 app não persiste descoberta/posição de terceiros (react-query só em memória)', hits === 0, `${hits} persistências encontradas`);
+  }
+
+  // TESTE 11 — descoberta de lugares: só lugar que a NOSSA busca devolveu pode ser sugerido; resposta uniforme
+  const venue = {
+    id: 'mbx:auditoria-lugar-teste-0001',
+    name: 'Bar Auditoria Teste',
+    category: 'bar',
+    kind: 'bar',
+    nightlife: true,
+    address: null,
+    neighborhood: null,
+    city: 'Uberlândia',
+    state: 'MG',
+    latitude: ME.lat + 0.0003,
+    longitude: ME.lng,
+    distanceM: 0,
+    source: 'mapbox',
+  };
+  {
+    await prisma.$executeRaw`DELETE FROM place_candidates WHERE key = ${venue.id}`;
+    const unknown = await call(tMe, 'POST', '/pois/suggest', { mapboxId: 'mbx:nunca-veio-da-busca-123' });
+    await redis.set(`mbx:p:${venue.id}`, JSON.stringify(venue), 'EX', 600); // como se a busca tivesse devolvido
+    await presence(me.id, ME.lat, ME.lng);
+    const ok = await call(tMe, 'POST', '/pois/suggest', { mapboxId: venue.id });
+    const keys = Object.keys((ok.json as object) ?? {});
+    const bad = findForbiddenKeys(ok.json);
+    report(
+      '11 sugestão: id fora da busca = 404; aceita responde só { status } (sem quem/quantos/por quê)',
+      unknown.status === 404 && ok.status === 200 && keys.join(',') === 'status' && (ok.json as { status?: string }).status === 'pending' && bad.length === 0,
+      `fora da busca: ${unknown.status}; aceita: ${ok.status} ${JSON.stringify(ok.json)}`,
+    );
+  }
+
+  // TESTE 12 — voto "no lugar" de quem está longe = mesma resposta que candidato inexistente (sem enumeração)
+  {
+    const [cand] = await prisma.$queryRaw<{ id: bigint }[]>`SELECT id FROM place_candidates WHERE key = ${venue.id}`;
+    await presence(b.id, -18.96, -48.33); // B a ~6 km do lugar
+    const far = cand ? await call(tB, 'POST', `/pois/candidates/${cand.id}/vote`, { vote: 'confirm' }) : { status: 0, json: null };
+    const none = await call(tB, 'POST', '/pois/candidates/999999999/vote', { vote: 'confirm' });
+    report('12 voto de longe = 404 idêntico ao de candidato inexistente', far.status === 404 && none.status === 404 && JSON.stringify(far.json) === JSON.stringify(none.json), `longe: ${far.status}; inexistente: ${none.status}`);
+    await presence(b.id, B.lat, B.lng);
+    await prisma.$executeRaw`DELETE FROM place_candidates WHERE key = ${venue.id}`;
+  }
+
+  // TESTE 13 — denúncia: sempre { ok: true } pra lugar que existe; 404 pra inexistente
+  {
+    const anyPoi = await prisma.pOI.findFirst({ select: { id: true } });
+    const rep = anyPoi ? await call(tMe, 'POST', `/pois/${anyPoi.id}/report`, { reason: 'closed' }) : { status: 0, json: null };
+    const missing = await call(tMe, 'POST', '/pois/999999999/report', { reason: 'closed' });
+    report('13 denúncia responde { ok: true } (nada sobre outras denúncias)', rep.status === 200 && JSON.stringify(rep.json) === '{"ok":true}' && missing.status === 404, `existe: ${rep.status} ${JSON.stringify(rep.json)}; inexistente: ${missing.status}`);
+    if (anyPoi) await prisma.$executeRaw`DELETE FROM poi_reports WHERE poi_id = ${anyPoi.id} AND user_id = ${me.id}::uuid`;
+  }
+
+  // TESTE 14 — esconder-se vale NA HORA (cache de candidatos é invalidado em todos os processos)
+  {
+    const before = await prisma.user.findUnique({ where: { id: a.id }, select: { discoveryMode: true } });
+    await presence(a.id, A.lat, A.lng);
+    await presence(b.id, B.lat, B.lng);
+    const seen1 = await call(tB, 'GET', '/location/nearby');
+    const saw = ((seen1.json as { users?: { id: string }[] })?.users ?? []).some((u) => u.id === a.id);
+    const off = await call(tA, 'PATCH', '/me/settings', { discoveryMode: 'nobody' });
+    const seen2 = await call(tB, 'GET', '/location/nearby');
+    const still = ((seen2.json as { users?: { id: string }[] })?.users ?? []).some((u) => u.id === a.id);
+    report('14 "Ninguém" some na hora da descoberta dos outros (sem esperar o cache)', off.status === 200 && !still, `antes via: ${saw}; depois via: ${still}; settings: ${off.status}`);
+    await call(tA, 'PATCH', '/me/settings', { discoveryMode: before?.discoveryMode ?? 'everyone' });
   }
 
   console.log(`\n${results.filter((r) => r.ok).length}/${results.length} PASS · chaves proibidas monitoradas: ${[...FORBIDDEN_CLIENT_KEYS].join(', ')}`);

@@ -74,7 +74,22 @@ export interface DiscoveryResponse {
   /** pessoas por perto que existem mas não aparecem (região esparsa) — só o número */
   hiddenCount: number;
   radiusM: number;
-  me: { discoverable: boolean; hiddenReason: HiddenReason | null };
+  me: { discoverable: boolean; hiddenReason: HiddenReason | null; placePrompt?: PlacePrompt | null };
+}
+
+/**
+ * '✨ Tá rolando algo aqui?': quem está parado há alguns minutos perto de um lugar que a galera pediu (ou onde a
+ * multidão divide dois lugares) pode confirmar qual é. Sem coordenadas e sem contagens — só nome e tipo públicos.
+ * Vem no máximo 1 vez a cada 6 h; o app guarda até a pessoa responder ou dispensar.
+ */
+export interface PlacePrompt {
+  options: { candidateId: string; name: string; kind: PlaceKind }[];
+}
+
+/** resposta do POST /pois/suggest */
+export interface PlaceSuggestResponse {
+  status: 'pending' | 'active';
+  poi?: { id: number; name: string; category: string; latitude: number; longitude: number; source: string };
 }
 
 export interface Hotspot {
@@ -105,6 +120,8 @@ export interface POI {
   totalRatings: number;
   isPartner: boolean;
   partnerOffer: string | null;
+  /** origem: "osm"/"seed"/"partner"… ou "mapbox" = descoberto pela galera (multidão, pedidos, confirmações) */
+  source?: string;
   userCount?: number;
   distanceM?: number;
 }

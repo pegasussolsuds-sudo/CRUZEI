@@ -3,12 +3,16 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bull';
 
 import { configuration, validateEnv } from './config/configuration';
+import { ENV_FILE_PATHS } from './config/env-files';
+import { isCronWorker } from './config/runtime';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
+import { RedisService } from './redis/redis.service';
 import { RealtimeModule } from './realtime/realtime.module';
 
 import { AuthModule } from './modules/auth/auth.module';
@@ -42,21 +46,29 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['../../.env', '.env'],
+      // apps/backend/.env primeiro, raiz do monorepo depois (independe do cwd — ver config/env-files.ts)
+      envFilePath: ENV_FILE_PATHS,
       load: [configuration],
       validate: validateEnv,
     }),
 
     // Rate limiting global (ThrottlerGuard em APP_GUARD, abaixo) — endpoints sensíveis apertam com @Throttle.
-    // default 600/min por IP: vários usuários atrás do mesmo NAT (bar, faculdade, CGNAT do 4G) e o app
+    // default 600/min por usuário: vários usuários atrás do mesmo NAT (bar, faculdade, CGNAT do 4G) e o app
     // chama nearby a cada 45 s + pois + boosts + matches; 100/min derrubava gente legítima.
-    ThrottlerModule.forRoot([
-      { name: 'default', ttl: 60_000, limit: 600 },
-      { name: 'strict', ttl: 60_000, limit: 5, skipIf: (ctx) => !hasStrictOverride(ctx) },
-    ]),
+    // Contagem no Redis (O(1), vale entre processos) — o storage em memória do pacote era O(N) por requisição.
+    ThrottlerModule.forRootAsync({
+      inject: [RedisService],
+      useFactory: (redis: RedisService) => ({
+        throttlers: [
+          { name: 'default', ttl: 60_000, limit: 600 },
+          { name: 'strict', ttl: 60_000, limit: 5, skipIf: (ctx: ExecutionContext) => !hasStrictOverride(ctx) },
+        ],
+        storage: new RedisThrottlerStorage(redis.client),
+      }),
+    }),
 
-    // Cron jobs (cleanup, expiração de matches etc.)
-    ScheduleModule.forRoot(),
+    // Cron jobs (cleanup, expiração de matches etc.) — num processo só quando o backend roda em cluster
+    ...(isCronWorker() ? [ScheduleModule.forRoot()] : []),
 
     // Bull (fila de notificações)
     BullModule.forRootAsync({

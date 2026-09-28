@@ -10,7 +10,7 @@ import Redis from 'ioredis';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { randomAvatarConfig } from '@cruzei/shared-utils';
+import { encodeGeohash, randomAvatarConfig } from '@cruzei/shared-utils';
 import { UPLOAD_DIR } from '../src/modules/uploads/uploads.constants';
 import { makeThumbnail, thumbNameFor } from '../src/modules/uploads/thumbnails';
 
@@ -24,22 +24,8 @@ const prisma = new PrismaClient();
 const PHOTO_BASE = process.env.PUBLIC_BASE_URL ?? 'http://127.0.0.1:3000';
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
-const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';
-function encodeGeohash(lat: number, lng: number, precision = 5): string {
-  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180, bit = 0, evenBit = true, hash = '';
-  while (hash.length < precision) {
-    if (evenBit) {
-      const mid = (lngMin + lngMax) / 2;
-      if (lng >= mid) { hash += BASE32[bit * 2 + 1]; lngMin = mid; } else { hash += BASE32[bit * 2]; lngMax = mid; }
-    } else {
-      const mid = (latMin + latMax) / 2;
-      if (lat >= mid) { hash += BASE32[bit * 2 + 1]; latMin = mid; } else { hash += BASE32[bit * 2]; latMax = mid; }
-    }
-    evenBit = !evenBit;
-    bit = bit < 4 ? bit + 1 : 0;
-  }
-  return hash;
-}
+// mesmo geohash (e mesma precisão) que o backend usa pra presença
+const PRESENCE_PRECISION = 6;
 
 type Fake = {
   name: string;
@@ -206,7 +192,7 @@ async function main() {
       await prisma.photo.deleteMany({ where: { userId: user.id } });
     }
 
-    const geohash = encodeGeohash(uLat, uLng, 5);
+    const geohash = encodeGeohash(uLat, uLng, PRESENCE_PRECISION);
     const ttl = 18_000;
     await prisma.location.create({
       data: { userId: user.id, latitude: uLat, longitude: uLng, geohash, expiresAt: new Date(Date.now() + ttl * 1000), poiId },

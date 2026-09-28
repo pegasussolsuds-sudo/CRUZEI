@@ -1,4 +1,7 @@
+// .env ANTES de tudo (constantes lidas no import dependem dele)
+import './config/load-env';
 import 'reflect-metadata';
+import cluster from 'node:cluster';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -9,14 +12,18 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { UPLOAD_DIR } from './modules/uploads/uploads.constants';
+import { clusterWorkerCount, clusterWorkerIndex, resolveLogLevels } from './config/runtime';
 
 async function bootstrap() {
+  const levels = resolveLogLevels();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    ...(levels ? { logger: levels } : {}),
   });
 
   const config = app.get(ConfigService);
-  const logger = new Logger('Bootstrap');
+  const worker = clusterWorkerIndex();
+  const logger = new Logger(worker ? `Bootstrap#${worker}` : 'Bootstrap');
 
   app.setGlobalPrefix(config.get<string>('apiPrefix') ?? 'v1');
   app.useGlobalPipes(
@@ -62,11 +69,41 @@ async function bootstrap() {
   const port = config.get<number>('port') ?? 3000;
   await app.listen(port, '0.0.0.0');
   logger.log(`🚀 Metch API rodando em http://localhost:${port}/${config.get('apiPrefix')}`);
-  logger.log(`🖼️  Uploads em ${UPLOAD_DIR}`);
+  if (!worker) logger.log(`🖼️  Uploads em ${UPLOAD_DIR}`);
 }
 
-bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('Falha ao subir:', err);
-  process.exit(1);
-});
+/**
+ * CLUSTER_WORKERS > 1: o primário só cria e vigia os workers (cada um sobe o Nest inteiro e divide a porta).
+ * O worker 1 roda os crons (IS_CRON_WORKER); worker que cai é recriado com espera crescente.
+ */
+function runPrimary(workers: number) {
+  const log = new Logger('Cluster');
+  const restarts = new Map<number, number>();
+  const fork = (index: number) => {
+    const w = cluster.fork({
+      CLUSTER_WORKER_INDEX: String(index),
+      IS_CRON_WORKER: process.env.IS_CRON_WORKER ?? (index === 1 ? '1' : '0'),
+    });
+    w.on('exit', (code, signal) => {
+      const n = (restarts.get(index) ?? 0) + 1;
+      restarts.set(index, n);
+      const wait = Math.min(30_000, 500 * 2 ** Math.min(n, 6));
+      log.warn(`worker ${index} saiu (code=${code} signal=${signal ?? '-'}); recriando em ${wait} ms`);
+      setTimeout(() => fork(index), wait);
+    });
+    w.on('listening', () => restarts.set(index, 0));
+  };
+  log.log(`subindo ${workers} workers (primário pid ${process.pid})`);
+  for (let i = 1; i <= workers; i++) fork(i);
+}
+
+const workers = clusterWorkerCount();
+if (workers > 1 && cluster.isPrimary) {
+  runPrimary(workers);
+} else {
+  bootstrap().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('Falha ao subir:', err);
+    process.exit(1);
+  });
+}

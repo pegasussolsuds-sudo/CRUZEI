@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 import { bboxAround, distanceMeters } from '@cruzei/shared-utils';
 import { avatarOrFallback } from '../../common/avatar';
 import { LocationService } from '../location/location.service';
@@ -91,6 +92,31 @@ interface PlaceSnapshot {
   prev: Map<string, Set<string>>;
 }
 const PLACE_SNAPSHOT_MS = 15_000;
+/** o instantâneo é calculado UMA vez por janela no cluster inteiro e compartilhado pelo Redis (antes: cada processo
+ *  rodava a mesma varredura de ~700 ms no histórico a cada 15 s) */
+const SNAP_KEY = 'poi:snap:v1';
+const SNAP_LOCK = 'poi:snap:lock';
+
+function encodeSnapshot(s: PlaceSnapshot): string {
+  return JSON.stringify({
+    at: s.at,
+    now: [...s.now].map(([k, list]) => [k, list.map((x) => [x.userId, x.at])]),
+    prev: [...s.prev].map(([k, set]) => [k, [...set]]),
+  });
+}
+
+function decodeSnapshot(raw: string): PlaceSnapshot | null {
+  try {
+    const o = JSON.parse(raw) as { at: number; now: [string, [string, number][]][]; prev: [string, string[]][] };
+    return {
+      at: o.at,
+      now: new Map(o.now.map(([k, list]) => [k, list.map(([userId, at]) => ({ userId, at }))])),
+      prev: new Map(o.prev.map(([k, ids]) => [k, new Set(ids)])),
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** rótulo do evento a partir do JSON de horários (formato livre do seed/OSM); "Hoje" quando não dá pra saber */
 function eventLabel(hours: unknown): string {
@@ -109,6 +135,7 @@ export class PoisService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly location: LocationService,
+    private readonly redis: RedisService,
   ) {}
 
   private snapshot: PlaceSnapshot | null = null;
@@ -118,11 +145,34 @@ export class PoisService {
   private async placeSnapshot(): Promise<PlaceSnapshot> {
     if (this.snapshot && Date.now() - this.snapshot.at < PLACE_SNAPSHOT_MS) return this.snapshot;
     if (!this.snapshotInflight) {
-      this.snapshotInflight = this.computeSnapshot()
+      this.snapshotInflight = this.sharedSnapshot()
         .then((snap) => (this.snapshot = snap))
         .finally(() => (this.snapshotInflight = null));
     }
     return this.snapshotInflight;
+  }
+
+  /** fresco no Redis → usa; senão quem pega a trava calcula e publica; os outros esperam um pouco e leem */
+  private async sharedSnapshot(): Promise<PlaceSnapshot> {
+    const r = this.redis.client;
+    let stale: PlaceSnapshot | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const raw = await r.get(SNAP_KEY).catch(() => null);
+      const got = raw ? decodeSnapshot(raw) : null;
+      if (got && Date.now() - got.at < PLACE_SNAPSHOT_MS) return got;
+      if (got) stale = got;
+      if ((await r.set(SNAP_LOCK, '1', 'PX', 10_000, 'NX').catch(() => null)) === 'OK') {
+        try {
+          const snap = await this.computeSnapshot();
+          await r.set(SNAP_KEY, encodeSnapshot(snap), 'EX', 60).catch(() => undefined);
+          return snap;
+        } finally {
+          await r.del(SNAP_LOCK).catch(() => undefined);
+        }
+      }
+      if (attempt === 0) await new Promise((res) => setTimeout(res, 1_200)); // outro processo está calculando
+    }
+    return stale ?? this.snapshot ?? this.computeSnapshot();
   }
 
   private async computeSnapshot(): Promise<PlaceSnapshot> {
@@ -199,6 +249,7 @@ export class PoisService {
           totalRatings: poi.totalRatings,
           isPartner: poi.isPartner,
           partnerOffer: poi.partnerOffer,
+          source: poi.source,
           distanceM: Math.round(dist),
           userCount,
         };
@@ -231,6 +282,7 @@ export class PoisService {
       photos: poi.photos,
       isPartner: poi.isPartner,
       partnerOffer: poi.partnerOffer,
+      source: poi.source,
       userCount,
     };
   }

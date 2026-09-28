@@ -1,11 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 
 const ANON_LIMIT_FREE_HOURS = 24;
 
 @Injectable()
 export class AnonymousService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+  ) {}
 
   async enable(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -22,6 +26,8 @@ export class AnonymousService {
       where: { id: userId },
       data: { visibilityMode: 'anonymous' } as never,
     });
+    // some do mapa dos outros na hora (e o /me em cache não fica dizendo 'visível')
+    await this.redis.invalidateProfile(userId);
 
     return { visibilityMode: 'anonymous', expiresAt: expiresAt?.toISOString() ?? null };
   }
@@ -31,6 +37,7 @@ export class AnonymousService {
       where: { id: userId },
       data: { visibilityMode: 'visible' } as never,
     });
+    await this.redis.invalidateProfile(userId);
     return { visibilityMode: 'visible' };
   }
 

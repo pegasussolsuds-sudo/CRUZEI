@@ -265,6 +265,11 @@ export function nameScore(name: string, q: string, variants: string | string[] |
 /** buffet infantil e salão de festa casam com "festa", mas não é o rolê de quem procura balada */
 const OFF_VIBE = /\b(buffet|infantil|kids|salao de festas?|festas e eventos|consultorio|clinica)\b/;
 
+/** fora do clima do app (buffet infantil, clínica…): nunca vira lugar descoberto pela galera */
+export function isOffVibe(name: string): boolean {
+  return OFF_VIBE.test(normalize(name));
+}
+
 export function haversineMeters(la1: number, lo1: number, la2: number, lo2: number): number {
   const R = 6_371_000;
   const dLat = ((la2 - la1) * Math.PI) / 180;

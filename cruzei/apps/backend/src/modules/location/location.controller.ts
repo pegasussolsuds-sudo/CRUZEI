@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { IsLatitude, IsLongitude, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsLatitude, IsLongitude, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { LocationService } from './location.service';
@@ -8,7 +8,7 @@ import { LocationService } from './location.service';
 class UpdateLocationDto {
   @IsLatitude() latitude!: number;
   @IsLongitude() longitude!: number;
-  @IsOptional() @IsNumber() accuracyMeters?: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(100_000) accuracyMeters?: number;
   @IsOptional() @IsNumber() poiId?: number;
   @IsOptional() @IsString() city?: string;
   @IsOptional() @IsString() state?: string;

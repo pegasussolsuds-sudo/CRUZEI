@@ -1,17 +1,26 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as ngeohash from 'ngeohash';
 import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../redis/redis.service';
+import type { Redis } from 'ioredis';
+import { CANDIDATE_INVALIDATION_CHANNEL, RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
-import { bboxAround, distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
+import { distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
+import type { PlaceKind, PlacePrompt } from '@cruzei/shared-types';
+import { ExpiringCache, SaturatedError, Semaphore, TtlMemo, chunk, historySignature, matchesHomeCells, planCellReload, selectTop, triageForDiscovery } from './hot-path';
+import { PoiIndex } from './poi-index';
+import { HISTORY_QUEUE, HISTORY_QUEUE_MAX, LAST_ACTIVE_PENDING, accuracyForDb, type QueuedHistory } from './location-writes';
 import {
+  CROWD,
+  CROWD_CELL_PRECISION,
   PRIVACY,
   anonymizedCellPosition,
   anonymizedPlacePosition,
   cellOf,
   cellWithNeighbors,
   coarse,
+  crowdMember,
+  dwellBand,
   insidePrivateArea,
   lastSeenBand,
   localDateBrazil,
@@ -23,7 +32,10 @@ import {
   type ProximityBand,
 } from './discovery-privacy';
 
-const GEOHASH_PRECISION = 5; // ~4.9km x 4.9km — só pra achar candidatos no Redis
+// células de presença: geohash-6 ≈ 1,2 km × 0,6 km; a célula + 8 vizinhas (≈ 3,7 km × 1,8 km) cobre o raio de 350 m.
+// (Até 28/09 era 5 com um encoder quebrado que punha o Brasil inteiro numa célula só.)
+export const PRESENCE_PRECISION = 6;
+const GEOHASH_PRECISION = PRESENCE_PRECISION;
 // selo "novo por aqui" na bolha de identidade do mapa
 const NEW_USER_MS = 7 * 24 * 3_600_000;
 // Quem reporta posição a até 40 m de um POI é considerado "nele" (bbox de 60 m pra busca)
@@ -33,6 +45,25 @@ const POI_CLAIM_M = 150;
 const POI_SEARCH_M = 60;
 // Salt de fallback quando LOCATION_SALT não está configurado (validateEnv avisa no boot)
 const DEV_SALT = 'cruzei-dev-salt';
+/** convite "Tá rolando algo aqui?": o lugar candidato precisa estar a até isto de quem recebe */
+const PROMPT_M = 150;
+// --- carga (teste de 40 mil pessoas em Uberlândia) ---
+/** quem está parado reaproveita a linha de histórico por até X s (cada linha vale 2 h) em vez de gravar uma a cada 20 s */
+const HISTORY_REUSE_S = 300;
+/** "último acesso" gravado no banco no máximo a cada X s por pessoa (a coluna é indexada: cada UPDATE reescreve índices) */
+const LAST_ACTIVE_EVERY_S = 60;
+/** lugares públicos mudam raramente: índice em memória recarregado a cada minuto (e na hora quando um lugar é criado) */
+const POI_INDEX_TTL_MS = 60_000;
+/** consultas com IN: no máximo N ids por vez (o Postgres aceita até 32.767 parâmetros) */
+const ID_CHUNK = 5_000;
+/**
+ * presenças de uma célula (lidas do Redis) reaproveitadas por X ms entre descobertas do mesmo processo.
+ * Numa multidão (show, balada: milhares de pessoas nas 9 células), cada /nearby lia milhares de HGETALL — o teste de
+ * 40 mil chegou a 217 mil operações/s no Redis com só 550 req/s. As posições só mudam a cada ≥ 20 s por pessoa.
+ */
+const CELL_PRESENCE_TTL_MS = 2_000;
+/** células guardadas pra recarga incremental antes de podar as esquecidas */
+const CELL_STATE_MAX = 4_000;
 
 /** thumbnail pra bolha do mapa: só quando existe um thumb de verdade (diferente da foto original) */
 function mapThumb(photo: { url: string; thumbnailUrl: string | null } | undefined): string | null {
@@ -64,6 +95,12 @@ export interface Presence {
   poi: PresencePoi | null;
   /** dentro de área privada / residência: existe pra quem consulta os outros, mas ninguém a vê */
   hidden: boolean;
+  /** células calculadas uma vez por presença lida (área de anonimato geohash-6 e célula visual geohash-7) — só uso interno */
+  area?: string;
+  vcell?: string;
+  /** posição visual já calculada pra esta presença (chave = tipo + célula/lugar + dia) — só uso interno */
+  vposKey?: string;
+  vpos?: { lat: number; lng: number };
 }
 
 /** O que sai pro cliente sobre outra pessoa — sem coordenada real, sem distância, sem timestamp. */
@@ -95,7 +132,16 @@ export interface DiscoveryResult {
   /** pessoas por perto que existem mas não ganham marcador/identidade (área esparsa) */
   hiddenCount: number;
   radiusM: number;
-  me: { discoverable: boolean; hiddenReason: HiddenReason | null };
+  me: { discoverable: boolean; hiddenReason: HiddenReason | null; placePrompt?: PlacePrompt | null };
+}
+
+/** candidato que pode aparecer no convite "Tá rolando algo aqui?" (posição só pra filtrar aqui dentro; nunca sai) */
+interface PromptOption {
+  id: string;
+  name: string;
+  kind: PlaceKind;
+  lat: number;
+  lng: number;
 }
 
 type DiscoveryMode = 'everyone' | 'compatible' | 'nobody';
@@ -109,47 +155,66 @@ interface Party {
   deletedAt: Date | null;
 }
 
-interface CandidateRow {
+/** flags de privacidade do candidato: recarregadas a cada DISCOVERY_CANDIDATE_TTL_MS (consulta leve, só colunas) */
+interface CandidateFlags {
   id: string;
-  name: string;
-  gender: string | null;
-  birthDate: Date;
-  showAge: boolean;
-  showPhotoOnMap: boolean;
-  createdAt: Date;
-  premiumTier: string;
-  isVerified: boolean;
-  avatarConfig: unknown;
   visibilityMode: string;
   isPaused: boolean;
   deletedAt: Date | null;
   discoveryMode: DiscoveryMode;
+  showAge: boolean;
+  showPhotoOnMap: boolean;
+}
+
+/** parte pesada do perfil: recarregada a cada DISCOVERY_PROFILE_TTL_MS */
+interface CandidateProfile {
+  id: string;
+  name: string;
+  gender: string | null;
+  birthDate: Date;
+  createdAt: Date;
+  premiumTier: string;
+  isVerified: boolean;
+  avatarConfig: unknown;
   photos: { url: string; thumbnailUrl: string | null }[];
   userInterests: { interestId: number }[];
 }
 
+type CandidateRow = CandidateFlags & CandidateProfile;
+
 @Injectable()
-export class LocationService {
-  // --- carga (teste de 25/09: 1.200 descobertas simultâneas numa multidão de 600 pessoas levaram o processo a 2,7 GB) ---
-  private discoverActive = 0;
-  private readonly discoverWaiters: (() => void)[] = [];
-  private readonly candidateCache = new Map<string, { row: CandidateRow; at: number }>();
-  private poiCache: { at: number; byId: Map<string, PresencePoi> } | null = null;
-
-  private async acquireDiscoverSlot(): Promise<void> {
-    if (this.discoverActive < PRIVACY.DISCOVERY_MAX_CONCURRENCY) {
-      this.discoverActive++;
-      return;
-    }
-    await new Promise<void>((resolve) => this.discoverWaiters.push(resolve));
-  }
-
-  private releaseDiscoverSlot(): void {
-    const next = this.discoverWaiters.shift();
-    if (next) next(); // passa a vaga direto pra quem espera
-    else this.discoverActive--;
-  }
+export class LocationService implements OnModuleInit, OnModuleDestroy {
+  private readonly log = new Logger(LocationService.name);
+  // --- carga: no máximo N descobertas ao mesmo tempo por processo; a fila tem teto e prazo (lotou → 503, o app tenta de novo)
+  private readonly discoverSlots = new Semaphore(PRIVACY.DISCOVERY_MAX_CONCURRENCY, {
+    maxQueue: PRIVACY.DISCOVERY_MAX_QUEUE,
+    maxWaitMs: PRIVACY.DISCOVERY_MAX_WAIT_MS,
+  });
+  /**
+   * linhas de candidato montadas (null = não elegível: pausado, anônimo, excluído) — valem o prazo das FLAGS de
+   * privacidade (5 s). Poda incremental, teto de 60 mil.
+   */
+  private readonly candidateCache = new ExpiringCache<string, CandidateRow | null>(PRIVACY.DISCOVERY_CANDIDATE_TTL_MS, 60_000);
+  /**
+   * parte pesada do perfil (nome, fotos, avatar, interesses), reaproveitada por DISCOVERY_PROFILE_TTL_MS: numa multidão
+   * cada processo recarregava milhares de perfis COMPLETOS a cada 5 s — a maior parte da CPU do /nearby ia pro Prisma
+   */
+  private readonly profileCache = new ExpiringCache<string, CandidateProfile | null>(PRIVACY.DISCOVERY_PROFILE_TTL_MS, 60_000);
+  private readonly poiIndexMemo = new TtlMemo<'all', PoiIndex>(POI_INDEX_TTL_MS, 1);
+  /** presenças por célula de presença (geohash-6), com carga única por célula ("single-flight") */
+  private readonly cellPresence = new TtlMemo<string, Map<string, Presence>>(CELL_PRESENCE_TTL_MS, 20_000);
+  /** última carga de cada célula (ids + horário) pra recarga incremental */
+  private readonly cellState = new Map<string, { at: number; scores: Map<string, number>; pres: Map<string, Presence> }>();
+  /** "Party" (regras de descoberta + interesses) de cada linha de perfil — a linha vive no candidateCache */
+  private readonly partyCache = new WeakMap<CandidateRow, Party>();
+  /** quem está com boost ativo agora (poucas linhas; vale pra todas as consultas por 10 s) */
+  private readonly boostMemo = new TtlMemo<'all', Set<string>>(10_000, 1);
+  /** as 9 células em volta de uma célula central já juntas num mapa só (todo mundo da mesma região reaproveita por 2 s) */
+  private readonly regionPresence = new TtlMemo<string, Map<string, Presence>>(CELL_PRESENCE_TTL_MS, 5_000);
+  /** candidatos a lugar abertos pra confirmação no local, por célula geohash-7 do lugar (recarrega a cada 60 s) */
+  private readonly promptMemo = new TtlMemo<'all', Map<string, PromptOption[]>>(60_000, 1);
   private readonly salt: string;
+  private invalidations: Redis | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -157,6 +222,30 @@ export class LocationService {
     config: ConfigService,
   ) {
     this.salt = config.get<string>('locationSalt') || DEV_SALT;
+  }
+
+  /** cada processo escuta as invalidações (perfil/privacidade mudou) e esquece a pessoa na hora */
+  async onModuleInit(): Promise<void> {
+    try {
+      this.invalidations = this.redis.client.duplicate();
+      this.invalidations.on('message', (_channel: string, id: string) => {
+        if (id === '*') {
+          this.candidateCache.clear();
+          this.profileCache.clear();
+          return;
+        }
+        this.candidateCache.delete(id);
+        this.profileCache.delete(id);
+      });
+      this.invalidations.on('error', (e: Error) => this.log.warn(`canal de invalidação: ${e.message}`));
+      await this.invalidations.subscribe(CANDIDATE_INVALIDATION_CHANNEL);
+    } catch (e) {
+      this.log.warn(`sem canal de invalidação (fica o prazo de segurança): ${(e as Error).message}`);
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.invalidations?.quit().catch(() => undefined);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -184,6 +273,8 @@ export class LocationService {
         isPaused: true,
         deletedAt: true,
         discoveryMode: true,
+        createdAt: true,
+        isVerified: true,
         privateAreas: { select: { latitude: true, longitude: true, radiusM: true } },
       },
     });
@@ -191,7 +282,9 @@ export class LocationService {
 
     // lugar atual: o que o app mandou (se existir) ou o POI mais próximo a <= 40 m da posição reportada
     // um poiId inventado (posição a km do lugar) não pode "colocar" alguém num lugar — ver PoisService.vibe
-    const poi = (payload.poiId != null ? await this.poiWithin(payload.poiId, latitude, longitude) : null) ?? (await this.nearestPoi(latitude, longitude));
+    // (índice em memória: antes eram 1–2 consultas por atualização varrendo a tabela sem índice espacial)
+    const idx = await this.poiIndex();
+    const poi = (payload.poiId != null ? this.poiWithin(idx, payload.poiId, latitude, longitude) : null) ?? this.nearestPoi(idx, latitude, longitude);
 
     // residência / área privada (servidor decide; o app só recebe "você está oculto aqui")
     const cell = cellOf(latitude, longitude);
@@ -202,41 +295,98 @@ export class LocationService {
     );
     const home = !manual && (await this.learnHome(userId, cell));
     const hidden = manual || home;
-
-    // histórico GROSSEIRO (3 casas ≈ 110 m): serve pro contexto do match/lugares em comum, nunca pra rastrear
-    await this.prisma.location.create({
-      data: {
-        userId,
-        latitude: coarse(latitude),
-        longitude: coarse(longitude),
-        geohash,
-        accuracyMeters,
-        poiId: poi ? BigInt(poi.id) : undefined,
-        city,
-        state,
-        expiresAt,
-        isAnonymous: isAnonymous || hidden,
-      },
-    });
-
-    await this.prisma.user.update({ where: { id: userId }, data: { lastActiveAt: new Date(now) } });
-
     const visible = !user?.isPaused && !user?.deletedAt;
-    if (visible) {
-      await this.redis.setUserPresence(
-        userId,
-        geohash,
-        latitude,
-        longitude,
-        PRIVACY.PRESENCE_TTL_S,
-        poi ? { id: String(poi.id), name: poi.name } : null,
-        hidden,
-        cell,
+
+    // sinal de multidão (descoberta de lugares): só quem está visível, fora de área privada/casa e FORA de um lugar já
+    // conhecido, com GPS razoável e conta com idade mínima (ou selfie verificada) — contas novas em massa não fabricam
+    // um 'lugar'. Grava só agregados (HyperLogLog de hashes com chave) e só depois de CROWD.DWELL_MS parado ali.
+    const crowdOk =
+      CROWD.RECORD_ENABLED &&
+      CROWD.MODE !== 'off' &&
+      visible &&
+      !poi &&
+      !hidden &&
+      !isAnonymous &&
+      user?.discoveryMode !== 'nobody' &&
+      (accuracyMeters == null || accuracyMeters <= 100) &&
+      !!user &&
+      (user.isVerified || now - user.createdAt.getTime() >= CROWD.MIN_ACCOUNT_AGE_D * 86_400_000);
+    const crowd = crowdOk
+      ? {
+          member: crowdMember(this.salt, userId),
+          day: localDateBrazil(),
+          sub: cellOf(latitude, longitude, CROWD_CELL_PRECISION + 1).slice(-1),
+          band: dwellBand(localHourBrazil()),
+          dwellMs: CROWD.DWELL_MS,
+          ttlS: CROWD.KEY_TTL_S,
+        }
+      : null;
+
+    // histórico GROSSEIRO (3 casas ≈ 110 m): serve pro contexto do match/lugares em comum, nunca pra rastrear.
+    // Parado no mesmo ponto (mesma grade, lugar e anonimato), reaproveita a linha anterior por até HISTORY_REUSE_S.
+    const row = {
+      latitude: coarse(latitude),
+      longitude: coarse(longitude),
+      geohash,
+      poiId: poi ? poi.id : null,
+      city: city ?? null,
+      state: state ?? null,
+      isAnonymous: isAnonymous || hidden,
+    };
+    const signature = historySignature(row);
+    const [prevSignature, touchActive] = await Promise.all([
+      this.redis.client.get(`loc:hist:${userId}`),
+      // "último acesso" no máximo a cada LAST_ACTIVE_EVERY_S
+      this.redis.client.set(`la:gate:${userId}`, '1', 'EX', LAST_ACTIVE_EVERY_S, 'NX'),
+    ]);
+
+    // histórico e "último acesso" vão pra fila no Redis; o LocationWritesFlusher grava em lote (ver location-writes.ts)
+    const writes: Promise<unknown>[] = [];
+    if (prevSignature !== signature) {
+      const hist: QueuedHistory = {
+        u: userId,
+        la: row.latitude,
+        lo: row.longitude,
+        g: geohash,
+        a: accuracyForDb(accuracyMeters),
+        p: poi ? poi.id : null,
+        c: city ?? null,
+        s: state ?? null,
+        x: expiresAt.getTime(),
+        an: row.isAnonymous,
+        t: now,
+      };
+      writes.push(
+        this.redis.client
+          .multi()
+          .rpush(HISTORY_QUEUE, JSON.stringify(hist))
+          .ltrim(HISTORY_QUEUE, -HISTORY_QUEUE_MAX, -1)
+          .set(`loc:hist:${userId}`, signature, 'EX', HISTORY_REUSE_S)
+          .exec(),
       );
     }
+    if (touchActive === 'OK') writes.push(this.redis.client.hset(LAST_ACTIVE_PENDING, userId, String(now)));
+    if (visible) {
+      writes.push(
+        this.redis.setUserPresence(
+          userId,
+          geohash,
+          latitude,
+          longitude,
+          PRIVACY.PRESENCE_TTL_S,
+          poi ? { id: String(poi.id), name: poi.name } : null,
+          hidden,
+          cell,
+          ngeohash.neighbors(cell),
+          crowd,
+        ),
+      );
+    }
+    await Promise.all(writes);
 
-    const nearbyUsers = await this.estimateNearbyUsers(latitude, longitude, userId);
-    const nearbyPois = await this.prisma.pOI.count({ where: city ? { city } : {} });
+    // só CONTA (ZCOUNT por célula): antes trazia os ids das 9 células inteiras a cada atualização
+    const nearbyUsers = await this.redis.countNearbyPresence([geohash, ...ngeohash.neighbors(geohash)], userId, now - PRIVACY.PRESENCE_TTL_S * 1000);
+    const nearbyPois = idx.countByCity(city);
 
     let hiddenReason: HiddenReason | null = null;
     if (!visible) hiddenReason = 'paused';
@@ -270,33 +420,62 @@ export class LocationService {
       await this.redis.client.expire(key, PRIVACY.HOME_LEARN_DAYS * 86_400);
       const nights = await this.redis.client.scard(key);
       if (nights >= PRIVACY.HOME_MIN_NIGHTS) {
-        await this.redis.client.sadd(`home:cells:${userId}`, cell);
+        // quantas casas aprendidas caem nesta célula (só a contagem, sem ids): o detector de lugares usa pra descartar
+        // células residenciais — uma rua cheia de casas não vira "lugar"
+        if ((await this.redis.client.sadd(`home:cells:${userId}`, cell)) === 1) {
+          await this.redis.client.incr(`home:cnt:${cell}`);
+          await this.redis.client.expire(`home:cnt:${cell}`, 45 * 86_400);
+        }
         await this.redis.client.expire(`home:cells:${userId}`, PRIVACY.HOME_LEARN_DAYS * 86_400);
       }
     }
     const homeCells = await this.redis.client.smembers(`home:cells:${userId}`);
-    if (homeCells.length === 0) return false;
-    const around = new Set(cellWithNeighbors(cell));
-    return homeCells.some((c) => around.has(c));
+    return matchesHomeCells(homeCells, cellWithNeighbors(cell));
   }
 
-  /** Lê as presenças (hash user:loc:<id>) de vários usuários e resolve os POIs referenciados numa query só. */
-  /** metadados de POI (nome e coordenada públicos) — mudam raramente: cache de 60 s, busca só o que faltar */
-  private async poisById(poiIds: string[]): Promise<Map<string, PresencePoi>> {
-    const now = Date.now();
-    if (!this.poiCache || now - this.poiCache.at > 60_000) this.poiCache = { at: now, byId: new Map() };
-    const cache = this.poiCache.byId;
-    const missing = poiIds.filter((id) => !cache.has(id));
-    if (missing.length) {
-      const pois = await this.prisma.pOI.findMany({
-        where: { id: { in: missing.map((p) => BigInt(p)) } },
-        select: { id: true, name: true, latitude: true, longitude: true },
-      });
-      for (const p of pois) cache.set(String(p.id), { id: Number(p.id), name: p.name, lat: Number(p.latitude), lng: Number(p.longitude) });
-    }
-    return cache;
+  /** índice em memória dos lugares públicos (nome, coordenada, cidade) — recarrega a cada POI_INDEX_TTL_MS */
+  private poiIndex(): Promise<PoiIndex> {
+    return this.poiIndexMemo.get('all', async () => {
+      const rows = await this.prisma.pOI.findMany({ select: { id: true, name: true, latitude: true, longitude: true, city: true } });
+      return new PoiIndex(rows.map((p) => ({ id: Number(p.id), name: p.name, lat: Number(p.latitude), lng: Number(p.longitude), city: p.city ?? null })));
+    });
   }
 
+  /** um lugar novo (ex.: descoberto pelos usuários) passa a valer na próxima atualização, sem esperar o minuto */
+  invalidatePoiIndex(): void {
+    this.poiIndexMemo.invalidate('all');
+  }
+
+  /**
+   * Presenças vivas de uma célula de presença. A célula guarda quem ATUALIZOU nela; a posição de cada um vem do hash
+   * user:loc (pode já ter saído da célula — não importa: a triagem usa a distância real). Carga única por célula.
+   */
+  private presencesInCell(cell: string): Promise<Map<string, Presence>> {
+    return this.cellPresence.get(cell, async () => {
+      // incremental: 1 ZRANGE com os horários; só quem mudou desde a última carga volta a ser lido (antes: um HGETALL
+      // por pessoa da célula a cada 2 s em cada processo — numa multidão, dezenas de milhares de comandos por segundo)
+      const raw = await this.redis.client.zrange(`presence:${cell}`, 0, -1, 'WITHSCORES');
+      const prev = this.cellState.get(cell);
+      const plan = planCellReload(raw, prev, Date.now() - PRIVACY.PRESENCE_TTL_S * 1000);
+      const out = plan.keep;
+      // em lotes: pipelines gigantes seguram o Redis (single-thread) pra todo mundo
+      for (const part of chunk(plan.fetch, 2_000)) {
+        const m = await this.getPresences(part);
+        for (const [id, p] of m) out.set(id, p);
+      }
+      this.cellState.set(cell, { at: Date.now(), scores: plan.scores, pres: out });
+      if (this.cellState.size > CELL_STATE_MAX) this.pruneCellState();
+      return out;
+    });
+  }
+
+  /** esquece células que ninguém consultou no último minuto (a próxima carga delas é completa) */
+  private pruneCellState(): void {
+    const cutoff = Date.now() - 60_000;
+    for (const [cell, st] of this.cellState) if (st.at < cutoff) this.cellState.delete(cell);
+  }
+
+  /** Lê as presenças (hash user:loc:<id>) de vários usuários; os lugares vêm do índice em memória. */
   async getPresences(userIds: string[]): Promise<Map<string, Presence>> {
     const out = new Map<string, Presence>();
     if (userIds.length === 0) return out;
@@ -312,15 +491,14 @@ export class LocationService {
       if (m?.lat && m?.lng) raw.set(id, m);
     });
 
-    const poiIds = [...new Set([...raw.values()].map((m) => m.poi_id).filter((p) => p && /^\d+$/.test(p)))];
-    const poiById = await this.poisById(poiIds);
-
+    const idx = raw.size > 0 ? await this.poiIndex() : null;
     raw.forEach((m, id) => {
+      const p = idx && m.poi_id && /^\d+$/.test(m.poi_id) ? idx.byId(Number(m.poi_id)) : undefined;
       out.set(id, {
         lat: Number(m.lat),
         lng: Number(m.lng),
         updatedAt: m.updated_at ? Number(m.updated_at) : null,
-        poi: m.poi_id ? (poiById.get(m.poi_id) ?? null) : null,
+        poi: p ? { id: p.id, name: p.name, lat: p.lat, lng: p.lng } : null,
         hidden: m.hidden === '1',
       });
     });
@@ -331,21 +509,25 @@ export class LocationService {
   // Descoberta por proximidade — centro = MINHA posição no servidor (o cliente não escolhe o centro)
   // ---------------------------------------------------------------------------------------------
   async discover(requesterId: string, requestedRadiusM?: number): Promise<DiscoveryResult> {
-    await this.acquireDiscoverSlot();
     try {
-      return await this.discoverNow(requesterId, requestedRadiusM);
-    } finally {
-      this.releaseDiscoverSlot();
+      return await this.discoverSlots.run(() => this.discoverNow(requesterId, requestedRadiusM));
+    } catch (e) {
+      if (e instanceof SaturatedError) {
+        this.log.warn(`descoberta saturada (${e.reason}): ${this.discoverSlots.inUse} rodando, ${this.discoverSlots.waiting} na fila`);
+        throw new ServiceUnavailableException({ error: 'busy', message: 'Muita gente procurando agora. Tenta de novo em instantes.' });
+      }
+      throw e;
     }
   }
 
   private async discoverNow(requesterId: string, requestedRadiusM?: number): Promise<DiscoveryResult> {
     const radiusM = Math.min(PRIVACY.DISCOVERY_RADIUS_M, Math.max(50, requestedRadiusM ?? PRIVACY.DISCOVERY_RADIUS_M));
+    let placePrompt: PlacePrompt | null = null;
     const empty = (reason: HiddenReason | null): DiscoveryResult => ({
       users: [],
       hiddenCount: 0,
       radiusM,
-      me: { discoverable: reason === null, hiddenReason: reason },
+      me: { discoverable: reason === null, hiddenReason: reason, placePrompt },
     });
 
     const me = await this.loadParty(requesterId);
@@ -356,37 +538,48 @@ export class LocationService {
     const myReason = this.selfHiddenReason(me, mine);
     // "Ninguém": não aparece e não vê (reciprocidade)
     if (me.discoveryMode === 'nobody') return empty('nobody');
+    // convite pra confirmar um lugar: só quem está visível (não oculto/anônimo/pausado) e parado perto do candidato
+    if (myReason === null) placePrompt = await this.placePromptFor(requesterId, mine).catch(() => null);
 
-    // candidatos: células geohash-5 em volta da MINHA posição real
+    // candidatos: células geohash-6 em volta da MINHA posição real — presenças por célula, reaproveitadas por 2 s
+    // entre as descobertas deste processo (numa multidão, cada /nearby relia milhares de posições do Redis)
     const centerHash = encodeGeohash(mine.lat, mine.lng, GEOHASH_PRECISION);
-    const ids = (await this.redis.getNearbyUserIds([centerHash, ...ngeohash.neighbors(centerHash)])).filter((id) => id !== requesterId);
-    if (ids.length === 0) return empty(myReason);
+    const region = await this.regionPresence.get(centerHash, async () => {
+      const cells = await Promise.all([centerHash, ...ngeohash.neighbors(centerHash)].map((c) => this.presencesInCell(c)));
+      const all = new Map<string, Presence>();
+      for (const cell of cells) for (const [id, p] of cell) all.set(id, p);
+      return all;
+    });
+    // o mapa da região é compartilhado: em vez de copiar sem mim, só pulo meu id nos laços abaixo
+    const pres = region;
+    if (pres.size === 0 || (pres.size === 1 && pres.has(requesterId))) return empty(myReason);
 
-    const blocked = await this.blockedWith(requesterId, ids);
-    const rows = await this.loadCandidates(ids.filter((id) => !blocked.has(id)));
-    const pres = await this.getPresences(rows.map((r) => r.id));
+    // triagem ANTES de carregar perfis: só quem está no raio e quem entra nas contagens de anonimato que o raio vai
+    // ler (mesmo resultado de contar a região inteira, sem carregar milhares)
+    const triage = triageForDiscovery({ lat: mine.lat, lng: mine.lng }, radiusM, pres, (p) => this.areaOf(p as Presence), requesterId);
+    if (triage.inRadius.size === 0) return empty(myReason);
+
+    const blocked = await this.blockedWith(requesterId);
+    const rows = await this.loadCandidates(triage.needed.filter((id) => !blocked.has(id)));
 
     // 1) elegibilidade (visível, com presença, não oculto, regras de descoberta dos DOIS lados) + raio REAL
     const eligible: { u: CandidateRow; p: Presence; dist: number }[] = [];
     for (const u of rows) {
+      const dist = triage.inRadius.get(u.id);
       const p = pres.get(u.id);
-      if (!p || !this.mutuallyDiscoverable(me, this.partyOf(u), p)) continue;
-      const dist = distanceMeters(mine.lat, mine.lng, p.lat, p.lng);
-      if (dist <= radiusM) eligible.push({ u, p, dist });
+      if (dist == null || !p || !this.mutuallyDiscoverable(me, this.partyOfCached(u), p)) continue;
+      eligible.push({ u, p, dist });
     }
     if (eligible.length === 0) return empty(myReason);
 
     // 2) anonimato: contagem de pessoas visíveis por área (geohash-6) e por lugar — sobre TODO mundo visível da região,
     //    não só quem eu posso ver (quanto mais gente na conta, mais conservador é o "esconder")
-    const allVisible = rows.filter((u) => {
-      const p = pres.get(u.id);
-      return p && !p.hidden && u.visibilityMode === 'visible' && !u.isPaused && !u.deletedAt && u.discoveryMode !== 'nobody';
-    });
     const areaCount = new Map<string, number>();
     const placeCount = new Map<number, number>();
-    for (const u of allVisible) {
-      const p = pres.get(u.id)!;
-      const area = cellOf(p.lat, p.lng, PRIVACY.AREA_PRECISION);
+    for (const u of rows) {
+      const p = pres.get(u.id);
+      if (!p || p.hidden || u.visibilityMode !== 'visible' || u.isPaused || u.deletedAt || u.discoveryMode === 'nobody') continue;
+      const area = triage.areaOf.get(u.id) ?? this.areaOf(p);
       areaCount.set(area, (areaCount.get(area) ?? 0) + 1);
       if (p.poi) placeCount.set(p.poi.id, (placeCount.get(p.poi.id) ?? 0) + 1);
     }
@@ -395,52 +588,48 @@ export class LocationService {
     const shown: { u: CandidateRow; p: Presence; pos: { lat: number; lng: number }; type: PresenceType; band: ProximityBand; poi: PresencePoi | null }[] = [];
     let hiddenCount = 0;
     for (const { u, p } of eligible) {
-      const seed = `${this.salt}:${day}:${u.id}`;
       const atPlace = p.poi && (placeCount.get(p.poi.id) ?? 0) >= PRIVACY.MIN_PLACE_K ? p.poi : null;
       if (atPlace) {
-        const pos = anonymizedPlacePosition(seed, atPlace);
+        const pos = this.visualPosition(p, u.id, day, 'place', atPlace);
         shown.push({ u, p, pos, type: 'place', band: proximityBand(distanceMeters(mine.lat, mine.lng, pos.lat, pos.lng)), poi: atPlace });
         continue;
       }
-      const area = cellOf(p.lat, p.lng, PRIVACY.AREA_PRECISION);
+      const area = triage.areaOf.get(u.id) ?? this.areaOf(p);
       if ((areaCount.get(area) ?? 0) < PRIVACY.MIN_AREA_K) {
         hiddenCount += 1; // região esparsa: existe alguém por perto, mas sem identidade nem marcador
         continue;
       }
-      const pos = anonymizedCellPosition(seed, cellOf(p.lat, p.lng));
+      const pos = this.visualPosition(p, u.id, day, 'cell', this.vcellOf(p));
       // a faixa é calculada da posição VISUAL (não da real): consultar de vários pontos só reconstrói a célula
       shown.push({ u, p, pos, type: 'nearby', band: proximityBand(distanceMeters(mine.lat, mine.lng, pos.lat, pos.lng)), poi: null });
     }
 
-    // 3) enriquecimento social (boost, curtida, match) — só pra quem vai aparecer (depois do teto)
-    const bandOrder: Record<ProximityBand, number> = { very_near: 0, near: 1, region: 2 };
-    if (shown.length > PRIVACY.DISCOVERY_MAX_USERS) {
-      shown.sort((a, b) => bandOrder[a.band] - bandOrder[b.band] || a.u.name.localeCompare(b.u.name));
-    }
-    const shownIds = shown.slice(0, PRIVACY.DISCOVERY_MAX_USERS).map((s) => s.u.id);
+    // 3) teto de pessoas por resposta: as N mais perto (faixa) e depois por nome — seleção parcial, sem ordenar milhares
+    //    (antes: dois sorts com localeCompare sobre a multidão inteira); quem sobra entra no "+N por perto"
+    const bandRank: Record<ProximityBand, number> = { very_near: 0, near: 1, region: 2 };
+    const keyed = shown.map((s) => ({ s, r: bandRank[s.band], n: s.u.name.toLowerCase() }));
+    const { top, rest } = selectTop(keyed, PRIVACY.DISCOVERY_MAX_USERS, (a, b) => a.r - b.r || (a.n < b.n ? -1 : a.n > b.n ? 1 : 0));
+    hiddenCount += rest;
+    const chosen = top.map((k) => k.s);
+
+    // 4) enriquecimento social (boost, curtida, match) — consultas pequenas e indexadas pelo MEU id (antes: três IN
+    //    com os 300 mostrados, a maior parte da CPU da descoberta ia pro motor do Prisma montando e lendo essas listas)
     const now = new Date();
-    const [boosts, likes, matches] = shownIds.length
+    const [boosted, likes, matches] = chosen.length
       ? await Promise.all([
-          this.prisma.boost.findMany({ where: { userId: { in: shownIds }, expiresAt: { gt: now } }, select: { userId: true } }),
-          this.prisma.like.findMany({ where: { likerId: requesterId, likedId: { in: shownIds } }, select: { likedId: true } }),
+          this.activeBoosts(),
+          this.prisma.like.findMany({ where: { likerId: requesterId }, select: { likedId: true } }),
           this.prisma.match.findMany({
-            where: { status: 'active', OR: [{ userAId: requesterId, userBId: { in: shownIds } }, { userBId: requesterId, userAId: { in: shownIds } }] },
+            where: { status: 'active', OR: [{ userAId: requesterId }, { userBId: requesterId }] },
             select: { id: true, userAId: true, userBId: true },
           }),
         ])
-      : [[], [], []];
-    const boosted = new Set(boosts.map((b) => b.userId));
+      : [new Set<string>(), [], []];
     const liked = new Set(likes.map((l) => l.likedId));
     const matchByUser = new Map(matches.map((m) => [m.userAId === requesterId ? m.userBId : m.userAId, m.id]));
     const newSince = now.getTime() - NEW_USER_MS;
-    const bandRank: Record<ProximityBand, number> = { very_near: 0, near: 1, region: 2 };
 
-    shown.sort((a, b) => bandRank[a.band] - bandRank[b.band] || a.u.name.localeCompare(b.u.name));
-    if (shown.length > PRIVACY.DISCOVERY_MAX_USERS) {
-      hiddenCount += shown.length - PRIVACY.DISCOVERY_MAX_USERS;
-      shown.length = PRIVACY.DISCOVERY_MAX_USERS;
-    }
-    const users: DiscoveryUserDto[] = shown
+    const users: DiscoveryUserDto[] = chosen
       .map(({ u, p, pos, type, band, poi }) => ({
         id: u.id,
         name: u.name,
@@ -463,7 +652,7 @@ export class LocationService {
         matchId: matchByUser.get(u.id) ?? null,
       }));
 
-    return { users, hiddenCount, radiusM, me: { discoverable: myReason === null, hiddenReason: myReason } };
+    return { users, hiddenCount, radiusM, me: { discoverable: myReason === null, hiddenReason: myReason, placePrompt } };
   }
 
   /**
@@ -473,7 +662,7 @@ export class LocationService {
   async discoverability(requesterId: string, targetId: string): Promise<{ ok: boolean; band: ProximityBand | null; poi: { id: number; name: string } | null }> {
     const none = { ok: false, band: null, poi: null };
     if (requesterId === targetId) return none;
-    const [me, blocked] = await Promise.all([this.loadParty(requesterId), this.blockedWith(requesterId, [targetId])]);
+    const [me, blocked] = await Promise.all([this.loadParty(requesterId), this.blockedWith(requesterId)]);
     if (!me || blocked.has(targetId) || me.discoveryMode === 'nobody') return none;
     const rows = await this.loadCandidates([targetId]);
     if (rows.length === 0) return none;
@@ -499,11 +688,11 @@ export class LocationService {
     if (candidateIds.length === 0) return [];
     const me = await this.loadParty(requesterId);
     if (!me || me.discoveryMode === 'nobody') return [];
-    const poi = await this.prisma.pOI.findUnique({ where: { id: BigInt(poiId) }, select: { latitude: true, longitude: true } });
+    const poi = (await this.poiIndex()).byId(poiId);
     const pres = await this.getPresences([requesterId, ...candidateIds]);
     const mine = pres.get(requesterId);
-    if (!poi || !mine || distanceMeters(mine.lat, mine.lng, Number(poi.latitude), Number(poi.longitude)) > PRIVACY.DISCOVERY_RADIUS_M) return [];
-    const blocked = await this.blockedWith(requesterId, candidateIds);
+    if (!poi || !mine || distanceMeters(mine.lat, mine.lng, poi.lat, poi.lng) > PRIVACY.DISCOVERY_RADIUS_M) return [];
+    const blocked = await this.blockedWith(requesterId);
     const rows = await this.loadCandidates(candidateIds.filter((id) => id !== requesterId && !blocked.has(id)));
     const ok = rows.filter((u) => {
       const p = pres.get(u.id);
@@ -523,15 +712,101 @@ export class LocationService {
     return null;
   }
 
+  /**
+   * "✨ Tá rolando algo aqui?": até 3 lugares candidatos a <= 150 m de quem está parado há CROWD.DWELL_MS na mesma
+   * célula, com conta antiga (ou verificada), que ainda não votou neles — no máximo 1 vez a cada 6 h por pessoa.
+   * O caminho comum (nenhum candidato perto) não toca no Redis nem no banco.
+   */
+  private async placePromptFor(userId: string, mine: Presence): Promise<PlacePrompt | null> {
+    if (CROWD.MODE === 'off') return null;
+    const byCell = await this.promptMemo.get('all', () => this.loadPromptOptions());
+    if (byCell.size === 0) return null;
+    const myCell = cellOf(mine.lat, mine.lng, CROWD_CELL_PRECISION);
+    const near: PromptOption[] = [];
+    for (const c of [myCell, ...ngeohash.neighbors(myCell)]) {
+      for (const o of byCell.get(c) ?? []) if (distanceMeters(mine.lat, mine.lng, o.lat, o.lng) <= PROMPT_M) near.push(o);
+    }
+    if (near.length === 0) return null;
+    const since = Number(await this.redis.client.hget(`user:loc:${userId}`, 'cell_since'));
+    if (!since || Date.now() - since < CROWD.DWELL_MS) return null;
+    const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { createdAt: true, isVerified: true } });
+    if (!u || (!u.isVerified && Date.now() - u.createdAt.getTime() < CROWD.MIN_ACCOUNT_AGE_D * 86_400_000)) return null;
+    const voted = await this.prisma.$queryRaw<{ id: bigint }[]>`
+      SELECT candidate_id AS id FROM place_votes WHERE user_id = ${userId}::uuid AND candidate_id = ANY(${near.map((o) => BigInt(o.id))}::bigint[])`;
+    const seen = new Set(voted.map((v) => String(v.id)));
+    const options = near.filter((o) => !seen.has(o.id)).sort((a, b) => (a.name < b.name ? -1 : 1)).slice(0, 3);
+    if (options.length === 0) return null;
+    if ((await this.redis.client.set(`prompt:cool:${userId}`, '1', 'EX', 6 * 3600, 'NX')) !== 'OK') return null;
+    return { options: options.map((o) => ({ candidateId: o.id, name: o.name, kind: o.kind })) };
+  }
+
+  /** candidatos pendentes que valem convite: multidão dividida entre dois lugares, ou pedidos da galera em 14 dias */
+  private async loadPromptOptions(): Promise<Map<string, PromptOption[]>> {
+    const rows = await this.prisma.$queryRaw<{ id: bigint; cell: string; name: string; kind: string; latitude: unknown; longitude: unknown }[]>`
+      SELECT c.id, c.cell, c.name, c.kind, c.latitude, c.longitude FROM place_candidates c
+       WHERE c.status = 'pending' AND (c.ambiguous OR EXISTS (
+         SELECT 1 FROM place_votes v WHERE v.candidate_id = c.id AND v.kind = 'request' AND v.voted_on >= current_date - 13))`;
+    const out = new Map<string, PromptOption[]>();
+    for (const r of rows) {
+      const list = out.get(r.cell) ?? [];
+      list.push({ id: String(r.id), name: r.name, kind: r.kind as PlaceKind, lat: Number(r.latitude), lng: Number(r.longitude) });
+      out.set(r.cell, list);
+    }
+    return out;
+  }
+
   /** A e B se descobrem só se as regras dos DOIS permitirem (reciprocidade). */
   private mutuallyDiscoverable(a: Party, b: Party, bPresence: Presence): boolean {
     if (b.visibilityMode !== 'visible' || b.isPaused || b.deletedAt) return false;
     if (bPresence.hidden) return false;
     if (a.discoveryMode === 'nobody' || b.discoveryMode === 'nobody') return false;
-    const shared = () => [...a.interests].some((i) => b.interests.has(i));
-    if (a.discoveryMode === 'compatible' && !shared()) return false;
-    if (b.discoveryMode === 'compatible' && !shared()) return false;
-    return true;
+    if (a.discoveryMode !== 'compatible' && b.discoveryMode !== 'compatible') return true;
+    // interesse em comum (sem criar array por candidato: numa multidão isso roda milhares de vezes por consulta)
+    const small = a.interests.size <= b.interests.size ? a.interests : b.interests;
+    const big = small === a.interests ? b.interests : a.interests;
+    for (const i of small) if (big.has(i)) return true;
+    return false;
+  }
+
+  private activeBoosts(): Promise<Set<string>> {
+    return this.boostMemo.get('all', async () => {
+      const rows = await this.prisma.boost.findMany({ where: { expiresAt: { gt: new Date() } }, select: { userId: true } });
+      return new Set(rows.map((r) => r.userId));
+    });
+  }
+
+  private partyOfCached(u: CandidateRow): Party {
+    let p = this.partyCache.get(u);
+    if (!p) {
+      p = this.partyOf(u);
+      this.partyCache.set(u, p);
+    }
+    return p;
+  }
+
+  private areaOf(p: Presence): string {
+    return (p.area ??= cellOf(p.lat, p.lng, PRIVACY.AREA_PRECISION));
+  }
+
+  private vcellOf(p: Presence): string {
+    return (p.vcell ??= cellOf(p.lat, p.lng));
+  }
+
+  /**
+   * Posição VISUAL de alguém (centro da célula ou ponto do lugar + deslocamento do dia). É determinística por
+   * pessoa + célula/lugar + dia, então fica guardada até a virada do dia (ou até o cache passar de 200 mil).
+   */
+  private visualPosition(p: Presence, userId: string, day: string, kind: 'cell', where: string): { lat: number; lng: number };
+  private visualPosition(p: Presence, userId: string, day: string, kind: 'place', where: PresencePoi): { lat: number; lng: number };
+  private visualPosition(p: Presence, userId: string, day: string, kind: 'cell' | 'place', where: string | PresencePoi): { lat: number; lng: number } {
+    // guardada na própria presença (que vive 2 s no cache da célula e é compartilhada por todas as consultas da região)
+    const key = kind === 'cell' ? `c${where as string}|${day}` : `p${(where as PresencePoi).id}|${day}`;
+    if (p.vposKey === key && p.vpos) return p.vpos;
+    const seed = `${this.salt}:${day}:${userId}`;
+    const pos = kind === 'cell' ? anonymizedCellPosition(seed, where as string) : anonymizedPlacePosition(seed, where as PresencePoi);
+    p.vposKey = key;
+    p.vpos = pos;
+    return pos;
   }
 
   private partyOf(u: CandidateRow): Party {
@@ -558,63 +833,90 @@ export class LocationService {
     if (ids.length === 0) return [];
     // dados de perfil mudam pouco: reaproveita por alguns segundos (mudanças de visibilidade aparecem em até DISCOVERY_CANDIDATE_TTL_MS)
     const now = Date.now();
+    this.candidateCache.prune(now, 2_000); // poda incremental: nunca varre o cache inteiro numa requisição
     const fresh: CandidateRow[] = [];
     const missing: string[] = [];
     for (const id of ids) {
-      const c = this.candidateCache.get(id);
-      if (c && now - c.at < PRIVACY.DISCOVERY_CANDIDATE_TTL_MS) {
-        if (c.row) fresh.push(c.row);
-      } else missing.push(id);
+      const c = this.candidateCache.get(id, now);
+      if (c === undefined) missing.push(id);
+      else if (c) fresh.push(c);
     }
     if (missing.length === 0) return fresh;
-    const loaded = await this.loadCandidatesFromDb(missing);
-    const found = new Set(loaded.map((r) => r.id));
-    for (const r of loaded) this.candidateCache.set(r.id, { row: r, at: now });
-    // quem não voltou (pausado, anônimo, excluído) também fica em cache como "ausente"
-    for (const id of missing) if (!found.has(id)) this.candidateCache.set(id, { row: null as unknown as CandidateRow, at: now });
-    if (this.candidateCache.size > 20_000) {
-      for (const [k, v] of this.candidateCache) if (now - v.at >= PRIVACY.DISCOVERY_CANDIDATE_TTL_MS) this.candidateCache.delete(k);
+    // 1) flags de privacidade de quem faltou (consulta leve, só colunas) — em lotes: IN com dezenas de milhares de ids
+    //    estoura o limite de parâmetros do Postgres
+    const flags: CandidateFlags[] = [];
+    for (const part of chunk(missing, ID_CHUNK)) flags.push(...(await this.loadFlagsFromDb(part)));
+    // 2) perfil pesado só de quem está elegível e não tem perfil em cache
+    this.profileCache.prune(now, 2_000);
+    const needProfile = flags.filter((f) => this.profileCache.get(f.id, now) === undefined).map((f) => f.id);
+    for (const part of chunk(needProfile, ID_CHUNK)) {
+      const rows = await this.loadProfilesFromDb(part);
+      const got = new Set<string>();
+      for (const r of rows) {
+        this.profileCache.set(r.id, r, now);
+        got.add(r.id);
+      }
+      for (const id of part) if (!got.has(id)) this.profileCache.set(id, null, now);
     }
+    const loaded: CandidateRow[] = [];
+    for (const f of flags) {
+      const p = this.profileCache.get(f.id, now);
+      if (p) loaded.push({ ...p, ...f });
+    }
+    const found = new Set(loaded.map((r) => r.id));
+    for (const r of loaded) this.candidateCache.set(r.id, r, now);
+    // quem não voltou (pausado, anônimo, excluído) também fica em cache como "ausente"
+    for (const id of missing) if (!found.has(id)) this.candidateCache.set(id, null, now);
     return fresh.concat(loaded);
   }
 
-  private async loadCandidatesFromDb(ids: string[]): Promise<CandidateRow[]> {
-    const rows = await this.prisma.user.findMany({
-      where: { id: { in: ids }, deletedAt: null, isPaused: false, visibilityMode: 'visible' },
-      select: {
-        id: true,
-        name: true,
-        gender: true,
-        birthDate: true,
-        showAge: true,
-        showPhotoOnMap: true,
-        createdAt: true,
-        premiumTier: true,
-        isVerified: true,
-        avatarConfig: true,
-        visibilityMode: true,
-        isPaused: true,
-        deletedAt: true,
-        discoveryMode: true,
-        photos: { where: { isMain: true }, select: { url: true, thumbnailUrl: true } },
-        userInterests: { select: { interestId: true } },
-      },
-    });
-    return rows as unknown as CandidateRow[];
+  /**
+   * só quem pode aparecer: visível, não pausado, não excluído. Um parâmetro só (= ANY(array)): o IN do Prisma mandava
+   * milhares de parâmetros por consulta e o Postgres gastava mais planejando do que lendo.
+   */
+  private async loadFlagsFromDb(ids: string[]): Promise<CandidateFlags[]> {
+    return this.prisma.$queryRaw<CandidateFlags[]>`
+      SELECT id::text AS id, visibility_mode::text AS "visibilityMode", is_paused AS "isPaused", deleted_at AS "deletedAt",
+             discovery_mode::text AS "discoveryMode", show_age AS "showAge", show_photo_on_map AS "showPhotoOnMap"
+        FROM users
+       WHERE id = ANY(${ids}::uuid[]) AND deleted_at IS NULL AND is_paused = false AND visibility_mode = 'visible'`;
   }
 
-  /** ids bloqueados em qualquer direção entre `me` e `ids` */
-  private async blockedWith(me: string, ids: string[]): Promise<Set<string>> {
-    if (ids.length === 0) return new Set();
+  private async loadProfilesFromDb(ids: string[]): Promise<CandidateProfile[]> {
+    const rows = await this.prisma.$queryRaw<
+      { id: string; name: string; gender: string | null; birthDate: Date; createdAt: Date; premiumTier: string; isVerified: boolean; avatarConfig: unknown; photo: { url: string; thumbnailUrl: string | null } | null; interests: number[] | null }[]
+    >`
+      SELECT u.id::text AS id, u.name, u.gender::text AS gender, u.birth_date AS "birthDate", u.created_at AS "createdAt",
+             u.premium_tier::text AS "premiumTier", u.is_verified AS "isVerified", u.avatar_config AS "avatarConfig",
+             (SELECT json_build_object('url', p.url, 'thumbnailUrl', p.thumbnail_url) FROM photos p WHERE p.user_id = u.id AND p.is_main LIMIT 1) AS photo,
+             (SELECT array_agg(ui.interest_id::int) FROM user_interests ui WHERE ui.user_id = u.id) AS interests
+        FROM users u
+       WHERE u.id = ANY(${ids}::uuid[]) AND u.deleted_at IS NULL`;
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      gender: r.gender,
+      birthDate: r.birthDate,
+      createdAt: r.createdAt,
+      premiumTier: r.premiumTier,
+      isVerified: r.isVerified,
+      avatarConfig: r.avatarConfig,
+      photos: r.photo ? [r.photo] : [],
+      userInterests: (r.interests ?? []).map((interestId) => ({ interestId })),
+    }));
+  }
+
+  /**
+   * Todo mundo com quem `me` tem bloqueio, em qualquer direção. Consulta só pelos MEUS bloqueios (poucos, indexados)
+   * e filtra em memória — antes mandava a lista de candidatos inteira num IN (quebrava acima de ~16 mil ids).
+   */
+  private async blockedWith(me: string): Promise<Set<string>> {
     const blocks = await this.prisma.block.findMany({
-      where: { OR: [{ blockerId: me, blockedId: { in: ids } }, { blockedId: me, blockerId: { in: ids } }] },
+      where: { OR: [{ blockerId: me }, { blockedId: me }] },
       select: { blockedId: true, blockerId: true },
     });
     const out = new Set<string>();
-    blocks.forEach((b) => {
-      out.add(b.blockedId);
-      out.add(b.blockerId);
-    });
+    for (const b of blocks) out.add(b.blockerId === me ? b.blockedId : b.blockerId);
     return out;
   }
 
@@ -634,39 +936,16 @@ export class LocationService {
   }
 
   /** o lugar informado pelo app só vale se a posição reportada está a <= POI_CLAIM_M dele */
-  private async poiWithin(poiId: number, lat: number, lng: number): Promise<{ id: number; name: string } | null> {
-    const p = await this.prisma.pOI.findUnique({ where: { id: BigInt(poiId) }, select: { id: true, name: true, latitude: true, longitude: true } });
+  private poiWithin(idx: PoiIndex, poiId: number, lat: number, lng: number): { id: number; name: string } | null {
+    const p = idx.byId(poiId);
     if (!p) return null;
-    return distanceMeters(lat, lng, Number(p.latitude), Number(p.longitude)) <= POI_CLAIM_M ? { id: Number(p.id), name: p.name } : null;
+    return distanceMeters(lat, lng, p.lat, p.lng) <= POI_CLAIM_M ? { id: p.id, name: p.name } : null;
   }
 
-  // POI mais próximo a <= 40 m (bbox de 60 m no banco, distância exata em memória)
-  private async nearestPoi(lat: number, lng: number): Promise<{ id: number; name: string } | null> {
-    const bbox = bboxAround(lat, lng, POI_SEARCH_M);
-    const pois = await this.prisma.pOI.findMany({
-      where: {
-        latitude: { gte: bbox.south, lte: bbox.north },
-        longitude: { gte: bbox.west, lte: bbox.east },
-      },
-      select: { id: true, name: true, latitude: true, longitude: true },
-      take: 20,
-    });
-    let best: { id: number; name: string } | null = null;
-    let bestD = POI_SNAP_M;
-    for (const p of pois) {
-      const d = distanceMeters(lat, lng, Number(p.latitude), Number(p.longitude));
-      if (d <= bestD) {
-        bestD = d;
-        best = { id: Number(p.id), name: p.name };
-      }
-    }
-    return best;
-  }
-
-  private async estimateNearbyUsers(lat: number, lng: number, me: string): Promise<number> {
-    const hash = encodeGeohash(lat, lng, GEOHASH_PRECISION);
-    const ids = await this.redis.getNearbyUserIds([hash, ...ngeohash.neighbors(hash)]);
-    return ids.filter((id) => id !== me).length;
+  // POI mais próximo a <= 40 m (quadrado de 60 m no índice, distância exata)
+  private nearestPoi(idx: PoiIndex, lat: number, lng: number): { id: number; name: string } | null {
+    const p = idx.nearest(lat, lng, POI_SEARCH_M, POI_SNAP_M);
+    return p ? { id: p.id, name: p.name } : null;
   }
 
   private age(birth: Date): number {

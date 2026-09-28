@@ -7,6 +7,7 @@
 //
 // Todos os limites são configuráveis por variável de ambiente (valores padrão abaixo).
 import * as ngeohash from 'ngeohash';
+import { createHmac } from 'node:crypto';
 import { distanceMeters, offsetLatLng, positionJitter } from '@cruzei/shared-utils';
 
 function envInt(name: string, def: number): number {
@@ -20,8 +21,18 @@ export const PRIVACY = {
   /** carga: descobertas simultâneas por instância (o resto espera) e teto de pessoas por resposta */
   DISCOVERY_MAX_CONCURRENCY: envInt('DISCOVERY_MAX_CONCURRENCY', 16),
   DISCOVERY_MAX_USERS: envInt('DISCOVERY_MAX_USERS', 300),
-  /** por quanto tempo os dados de perfil de um candidato são reaproveitados entre descobertas (ms) */
-  DISCOVERY_CANDIDATE_TTL_MS: envInt('DISCOVERY_CANDIDATE_TTL_MS', 5000),
+  /** carga: quantas descobertas podem esperar vaga e por quanto tempo (ms) — além disso responde 503 na hora (o app tenta de novo) */
+  DISCOVERY_MAX_QUEUE: envInt('DISCOVERY_MAX_QUEUE', 2_000),
+  DISCOVERY_MAX_WAIT_MS: envInt('DISCOVERY_MAX_WAIT_MS', 15_000),
+  /**
+   * prazo de SEGURANÇA das flags de privacidade de um candidato (visível/anônimo, pausado, excluído, modo de
+   * descoberta, mostrar foto/idade) em cache (ms). Quem muda alguma delas é esquecido NA HORA em todos os processos
+   * (RedisService.invalidateProfile → canal de invalidação); o prazo só vale se o aviso se perder. Antes eram 5 s sem
+   * aviso: com 40 mil pessoas, cada processo revalidava a região inteira a cada 5 s (centenas de milhares de linhas/s).
+   */
+  DISCOVERY_CANDIDATE_TTL_MS: envInt('DISCOVERY_CANDIDATE_TTL_MS', 60_000),
+  /** o resto do perfil (nome, fotos, avatar, interesses) muda pouco e custa caro de carregar: reaproveita por mais tempo */
+  DISCOVERY_PROFILE_TTL_MS: envInt('DISCOVERY_PROFILE_TTL_MS', 60_000),
   /** limites das faixas: 0–100 muito perto, 100–250 perto, 250–raio na região */
   BAND_VERY_NEAR_M: envInt('DISCOVERY_BAND_VERY_NEAR_M', 100),
   BAND_NEAR_M: envInt('DISCOVERY_BAND_NEAR_M', 250),
@@ -114,15 +125,20 @@ export function insidePrivateArea(lat: number, lng: number, areas: PrivateAreaLi
   return areas.some((a) => distanceMeters(lat, lng, a.latitude, a.longitude) <= a.radiusM);
 }
 
+// formatadores criados uma vez: construir um Intl.DateTimeFormat custa dezenas de µs e isso rodava a cada update
+let hourFmt: Intl.DateTimeFormat | null = null;
+let dateFmt: Intl.DateTimeFormat | null = null;
+
 /** hora local (Brasília) — usada só pra aprender a célula de residência (madrugada) */
 export function localHourBrazil(d = new Date()): number {
-  const h = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false }).format(d);
-  const n = Number(h);
+  hourFmt ??= new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
+  const n = Number(hourFmt.format(d));
   return Number.isFinite(n) ? n % 24 : d.getUTCHours();
 }
 
 export function localDateBrazil(d = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  dateFmt ??= new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+  return dateFmt.format(d);
 }
 
 /** arredonda pra grade grosseira (3 casas ≈ 110 m) — o histórico nunca guarda a posição fina */
@@ -130,6 +146,71 @@ export function coarse(v: number, decimals = PRIVACY.HISTORY_DECIMALS): number {
   const f = 10 ** decimals;
   return Math.round(v * f) / f;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Descoberta de lugares pela galera (brief 28/09): "muita gente fica no mesmo ponto" → lugar novo no mapa.
+// Só AGREGADOS: HyperLogLog de hashes com chave (nunca o id cru) + contagens por sub-célula, apagados em 4 dias.
+// O lugar publicado é SEMPRE um lugar público do Mapbox (nome e ponto dele) — nunca um centro calculado de pessoas.
+// ---------------------------------------------------------------------------------------------
+function envNum(name: string, def: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 0 ? v : def;
+}
+function envFlag(name: string, def: boolean): boolean {
+  const v = (process.env[name] ?? '').trim().toLowerCase();
+  if (!v) return def;
+  return ['1', 'true', 'on', 'yes', 'sim'].includes(v);
+}
+
+export const CROWD = {
+  /** grava o sinal de multidão no caminho quente da localização */
+  RECORD_ENABLED: envFlag('CROWD_RECORD_ENABLED', true),
+  /** off = não roda; shadow = só registra "promoveria N"; on = publica */
+  MODE: ((process.env.CROWD_MODE ?? 'on').trim().toLowerCase() as 'off' | 'shadow' | 'on'),
+  /** janela de detecção (dias de Brasília) — igual à retenção do histórico, sem nova exceção de retenção */
+  WINDOW_DAYS: envInt('CROWD_WINDOW_DAYS', 3),
+  /** pessoas distintas num dia pra ele contar como "ativo" (acima do piso de anonimato 2) */
+  MIN_DAILY: envInt('CROWD_MIN_DAILY', 3),
+  MIN_ACTIVE_DAYS: envInt('CROWD_MIN_ACTIVE_DAYS', 2),
+  /** pessoas distintas na janela inteira (maior que um grupo de amigos) */
+  MIN_UNION: envInt('CROWD_MIN_UNION', 8),
+  /** soma diária ÷ distintos: casa/escritório/escola repete as mesmas pessoas todo dia (≈ 2,5–3); bar ≈ 1,0–1,4 */
+  MAX_REPEAT: envNum('CROWD_MAX_REPEAT', 1.6),
+  /** fatia máxima de permanência de madrugada (04–08 h): madrugada parado = casa */
+  NIGHT_MAX_SHARE: envNum('CROWD_NIGHT_MAX_SHARE', 0.35),
+  /** só conta quem PERMANECE: X min na mesma célula (ou vizinha) — quem passa de carro/andando não conta */
+  DWELL_MS: envInt('CROWD_DWELL_MIN', 8) * 60_000,
+  /** conta nova precisa de X dias (ou selfie verificada) pra contar e pra contribuir; 0 no dev pra testar */
+  MIN_ACCOUNT_AGE_D: envNum('CROWD_MIN_ACCOUNT_AGE_D', 7),
+  /** raio (m) em volta de um lugar do Mapbox pra atribuir a permanência a ele */
+  VENUE_RADIUS_M: envInt('CROWD_VENUE_RADIUS_M', 45),
+  /** fatia mínima da permanência da célula que um lugar precisa ter; dois lugares acima disso = ambíguo */
+  VENUE_MIN_SHARE: envNum('CROWD_VENUE_MIN_SHARE', 0.3),
+  /** teto de chamadas ao Mapbox por dia feitas pelo detector */
+  MAPBOX_DAILY_CAP: envInt('CROWD_MAPBOX_DAILY_CAP', 300),
+  /** chaves de multidão vivem janela + 1 dia */
+  get KEY_TTL_S(): number {
+    return (this.WINDOW_DAYS + 1) * 86_400;
+  },
+} as const;
+
+/** precisão da célula de multidão (geohash-7 ≈ 153 m) e da sub-célula (geohash-8 ≈ 38 × 19 m) */
+export const CROWD_CELL_PRECISION = 7;
+
+/** hash com chave do id: o HyperLogLog nunca guarda o id cru (sem o LOCATION_SALT não dá pra testar "fulano esteve aqui") */
+export function crowdMember(salt: string, userId: string): string {
+  return createHmac('sha256', salt).update('crowd:' + userId).digest('base64url').slice(0, 16);
+}
+
+/** faixa do dia (Brasília): 0 = 04–08 h (madrugada/casa), 1 = 08–18 h, 2 = 18–04 h (noite) */
+export function dwellBand(hour: number): 0 | 1 | 2 {
+  if (hour >= 4 && hour < 8) return 0;
+  if (hour >= 8 && hour < 18) return 1;
+  return 2;
+}
+
+/** nunca podem aparecer numa resposta dos fluxos de contribuição (quem sugeriu, votou, quando, quantos) */
+export const CONTRIBUTOR_KEYS = new Set(['userId', 'suggestedBy', 'voters', 'confirmations', 'createdAt', 'firstSeenOn', 'cell', 'reason', 'votes', 'count']);
 
 /** varre um objeto e devolve as chaves proibidas encontradas (usado pelos testes de segurança e pelo guard de resposta) */
 export const FORBIDDEN_CLIENT_KEYS = new Set([

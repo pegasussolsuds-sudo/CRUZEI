@@ -1,9 +1,28 @@
-import { BadRequestException, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { IsIn, IsString, MaxLength } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import { POICategory } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { PoisService, VIBE_FILTERS, type VibeFilter } from './pois.service';
+import { PlaceDiscoveryService } from './place-discovery.service';
+
+class SuggestPlaceDto {
+  /** id 'mbx:…' de um lugar que a busca do app devolveu (nome e ponto vêm do Mapbox, nunca do cliente) */
+  @IsString()
+  @MaxLength(130)
+  mapboxId!: string;
+}
+
+class VotePlaceDto {
+  @IsIn(['confirm', 'deny'])
+  vote!: 'confirm' | 'deny';
+}
+
+class ReportPlaceDto {
+  @IsIn(['not_public', 'residence', 'closed', 'wrong_place', 'offensive'])
+  reason!: string;
+}
 
 const POI_CATEGORIES = new Set<string>(Object.values(POICategory));
 
@@ -19,7 +38,10 @@ function parseCategories(raw?: string): POICategory[] | undefined {
 @UseGuards(JwtAuthGuard)
 @Controller('pois')
 export class PoisController {
-  constructor(private readonly svc: PoisService) {}
+  constructor(
+    private readonly svc: PoisService,
+    private readonly discovery: PlaceDiscoveryService,
+  ) {}
 
   @Get('nearby')
   nearby(
@@ -72,6 +94,25 @@ export class PoisController {
     return this.svc.hotspotsInCity(city);
   }
 
+  /**
+   * '📌 Pôr no Metch': pede pra um lugar da busca entrar no mapa. Resposta uniforme: { status: 'pending' } ou, se já
+   * está no mapa, { status: 'active', poi } — nunca quem mais pediu, quantos, nem por que ainda não entrou.
+   */
+  @Post('suggest')
+  @HttpCode(200)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  suggest(@CurrentUser() user: AuthenticatedUser, @Body() dto: SuggestPlaceDto) {
+    return this.discovery.suggest(user.id, dto.mapboxId);
+  }
+
+  /** 'É o <nome>?' / 'Aqui não é lugar público': só vale estando no lugar (senão 404, igual a 'não existe') */
+  @Post('candidates/:id/vote')
+  @HttpCode(200)
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  vote(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: VotePlaceDto) {
+    return this.discovery.vote(user.id, id, dto.vote);
+  }
+
   @Get(':id')
   one(@Param('id') id: string) {
     return this.svc.get(Number(id));
@@ -82,6 +123,14 @@ export class PoisController {
   @Throttle({ default: { ttl: 60_000, limit: 30 } })
   people(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.svc.getPeople(user.id, Number(id));
+  }
+
+  /** '⚑ Reportar' um lugar: sempre { ok: true } (3 pessoas diferentes em 30 dias tiram um lugar descoberto do mapa) */
+  @Post(':id/report')
+  @HttpCode(200)
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  report(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() dto: ReportPlaceDto) {
+    return this.discovery.report(user.id, Number(id), dto.reason);
   }
 
   @Post(':id/checkin')

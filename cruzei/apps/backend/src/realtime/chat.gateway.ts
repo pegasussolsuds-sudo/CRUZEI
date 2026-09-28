@@ -12,7 +12,10 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { PrismaService } from '../database/prisma.service';
+import { RedisService } from '../redis/redis.service';
+import { processesSharingResources } from '../config/runtime';
 import type { JwtPayload } from '../modules/auth/auth.service';
 
 // Gateway único de tempo real: chat, match e presença.
@@ -28,11 +31,18 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly jwt: JwtService,
     private readonly cfg: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
   ) {}
 
   // JWT validado no handshake (middleware): token vencido/ausente vira connect_error 'unauthorized' e o socket
   // nunca chega a entrar em rooms. O app renova o token e chama socket.connect() de novo (socket.ts).
   afterInit(server: Server) {
+    // em cluster cada worker tem os SEUS sockets: sem o adaptador, uma mensagem enviada pelo worker 2 não chega em
+    // quem está conectado no worker 1. O adaptador Redis repassa os emits de room entre os processos.
+    if (processesSharingResources() > 1) {
+      server.adapter(createAdapter(this.redis.client.duplicate(), this.redis.client.duplicate()));
+      this.logger.log('tempo real com adaptador Redis (cluster)');
+    }
     server.use((client, next) => {
       const fromAuth = client.handshake.auth?.token as string | undefined;
       const fromHeader = (client.handshake.headers.authorization as string | undefined)?.replace(/^Bearer\s+/i, '');
