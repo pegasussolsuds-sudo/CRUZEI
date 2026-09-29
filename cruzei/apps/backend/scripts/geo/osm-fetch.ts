@@ -7,16 +7,7 @@
 // Etiqueta do Overpass: uma consulta por vez, pausa entre temas, User-Agent próprio, sem repetir à toa.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { DATA_DIR, DEFAULT_BBOX, arg, overpassBBox, parseBBox, type BBox } from './common';
-
-const MIRRORS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-];
-const UA = 'metch-geo-import/1.0 (catálogo de lugares do app Metch; contato: dev)';
-const PAUSE_MS = 4_000;
+import { DATA_DIR, DEFAULT_BBOX, OVERPASS_MIRRORS, OVERPASS_PAUSE_MS as PAUSE_MS, arg, overpass, overpassBBox, parseBBox, sleep, type BBox } from './common';
 
 const ADMIN = '["boundary"="administrative"]["admin_level"~"^(8|9|10)$"]';
 
@@ -66,39 +57,11 @@ node["place"~"^(city|town|village|hamlet|suburb|neighbourhood|quarter|locality)$
 out;`,
 };
 
-async function overpass(query: string, mirrors: string[]): Promise<string> {
-  let lastErr = '';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    for (const url of mirrors) {
-      try {
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ data: query }).toString(),
-          signal: AbortSignal.timeout(360_000),
-        });
-        const text = await r.text();
-        // o Overpass às vezes responde 200 com erro de runtime no JSON (remark) ou HTML de ocupado
-        if (r.ok && text.trimStart().startsWith('{') && !/"remark":\s*"runtime error/.test(text)) return text;
-        lastErr = `${url} → HTTP ${r.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}`;
-      } catch (e) {
-        lastErr = `${url} → ${(e as Error).message}`;
-      }
-      console.warn(`  falhou: ${lastErr}`);
-      await sleep(PAUSE_MS);
-    }
-    await sleep(15_000 * (attempt + 1));
-  }
-  throw new Error(`Overpass indisponível: ${lastErr}`);
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 async function main() {
   const bbox = parseBBox(arg('bbox', DEFAULT_BBOX)!);
   const only = (arg('only') ?? Object.keys(THEMES).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
   const mirror = arg('mirror');
-  const mirrors = mirror ? [mirror] : MIRRORS;
+  const mirrors = mirror ? [mirror] : OVERPASS_MIRRORS;
   fs.mkdirSync(DATA_DIR, { recursive: true });
 
   for (const [i, theme] of only.entries()) {

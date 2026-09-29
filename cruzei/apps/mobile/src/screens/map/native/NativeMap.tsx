@@ -25,6 +25,7 @@ import {
   type ViewStateChangeEvent,
 } from '@maplibre/maplibre-react-native';
 
+import { config } from '../../../config';
 import type { InitTier, MapCommand, MapEvent, MapTheme, PerfTier } from '../bridge';
 import { BaseTheme, HORIZON_COLOR, MAP_ATTRIBUTION, MAP_LIGHT, makeBaseStyle } from './theme';
 import { MapImages, MetchLayers } from './layers';
@@ -188,7 +189,7 @@ export const NativeMap = memo(
     // string estável (o <Map> faz JSON.stringify de objeto a cada render e o nativo recarregaria o estilo): montada uma
     // vez com o fundo e a luz do tema inicial, pro fundo não piscar na cor da noite até o BaseTheme aplicar o tema
     const styleRef = useRef<string | null>(null);
-    if (!styleRef.current) styleRef.current = JSON.stringify(makeBaseStyle(initTheme));
+    if (!styleRef.current) styleRef.current = JSON.stringify(makeBaseStyle(initTheme, config.apiBaseUrl));
 
     useImperativeHandle(ref, () => ({ run: (c) => engine.run(c) }), [engine]);
 

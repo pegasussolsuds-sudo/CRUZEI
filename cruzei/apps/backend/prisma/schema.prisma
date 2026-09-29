@@ -651,3 +651,19 @@ model GeoName {
   @@index([kind, city], map: "geo_names_kind_city_idx")
   @@map("geo_names")
 }
+
+/// prédio extra: footprint da Microsoft onde o OSM não tem prédio (migration 20260930140000_extra_buildings; dados: scripts/geo/buildings-msft.ts)
+model ExtraBuilding {
+  id          BigInt                                  @id
+  source      String                                  @default("msft") @db.VarChar(16)
+  geom        Unsupported("geometry(Geometry, 4326)")
+  height      Float                                   @db.Real
+  minHeight   Float                                   @default(0) @map("min_height") @db.Real
+  heightSrc   String                                  @map("height_src") @db.VarChar(16)
+  height3dg   Float?                                  @map("height_3dg") @db.Real
+  areaM2      Float                                   @map("area_m2") @db.Real
+  confidence  Float?                                  @db.Real
+  refreshedOn DateTime                                @map("refreshed_on") @db.Date
+
+  @@map("extra_buildings")
+}

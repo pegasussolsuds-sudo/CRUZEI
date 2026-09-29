@@ -2,6 +2,12 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { createHash } from 'node:crypto';
 
+/** chave do rate limit por IP (o primeiro de req.ips quando o Express confia no proxy) */
+export function ipTracker(req: Record<string, unknown>): string {
+  const ips = (req.ips as string[] | undefined) ?? [];
+  return 'ip:' + (ips.length ? ips[0] : ((req.ip as string | undefined) ?? 'unknown'));
+}
+
 /**
  * Rate limit por USUÁRIO (brief PRIVACIDADE §6): o guard global roda antes do JwtAuthGuard, então `req.user` ainda
  * não existe — a chave é o hash do bearer token (1 token = 1 sessão = 1 pessoa). Sem token, cai no IP.
@@ -16,8 +22,7 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     if (auth && /^Bearer\s+\S+/i.test(auth)) {
       return 'u:' + createHash('sha256').update(auth.slice(7).trim()).digest('hex').slice(0, 32);
     }
-    const ips = (req.ips as string[] | undefined) ?? [];
-    return 'ip:' + (ips.length ? ips[0] : ((req.ip as string | undefined) ?? 'unknown'));
+    return ipTracker(req);
   }
 
   // 429 em pt-BR e no mesmo formato do cooldown do SMS (o padrão é "ThrottlerException: Too Many Requests")

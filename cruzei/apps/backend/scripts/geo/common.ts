@@ -70,3 +70,50 @@ export function coreSql(normExpr: string): string {
   // \m e \M: começo e fim de palavra na regex do Postgres
   return `btrim(regexp_replace(regexp_replace(${normExpr}, '\\m(${GENERIC_WORDS.join('|')})\\M', '', 'g'), '\\s+', ' ', 'g'))`;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Overpass (osm-fetch.ts e buildings-msft.ts). Etiqueta: uma consulta por vez, pausa entre tentativas, User-Agent próprio.
+// ---------------------------------------------------------------------------------------------
+
+export const OVERPASS_MIRRORS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+const OVERPASS_UA = 'metch-geo-import/1.0 (catálogo de lugares do app Metch; contato: dev)';
+export const OVERPASS_PAUSE_MS = 4_000;
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * texto JSON da resposta; tenta os espelhos na ordem, 3 rodadas com espera crescente. `minBase` (ISO): recusa espelho
+ * com base de dados mais velha que isso (há espelho parado meses atrás; consulta [date:] nele devolve o OSM velho).
+ */
+export async function overpass(query: string, mirrors: string[] = OVERPASS_MIRRORS, minBase?: string): Promise<string> {
+  let lastErr = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    for (const url of mirrors) {
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'User-Agent': OVERPASS_UA, 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ data: query }).toString(),
+          signal: AbortSignal.timeout(360_000),
+        });
+        const text = await r.text();
+        // o Overpass às vezes responde 200 com erro de runtime no JSON (remark) ou HTML de ocupado
+        const base = text.slice(0, 2000).match(/"timestamp_osm_base":\s*"([^"]+)"/)?.[1];
+        const stale = minBase && (!base || Date.parse(base) < Date.parse(minBase));
+        if (r.ok && !stale && text.trimStart().startsWith('{') && !/"remark":\s*"runtime error/.test(text)) return text;
+        lastErr = stale ? `${url} → base do OSM ${base ?? '?'} mais velha que ${minBase}` : `${url} → HTTP ${r.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}`;
+      } catch (e) {
+        lastErr = `${url} → ${(e as Error).message}`;
+      }
+      console.warn(`  falhou: ${lastErr}`);
+      await sleep(OVERPASS_PAUSE_MS);
+    }
+    await sleep(15_000 * (attempt + 1));
+  }
+  throw new Error(`Overpass indisponível: ${lastErr}`);
+}

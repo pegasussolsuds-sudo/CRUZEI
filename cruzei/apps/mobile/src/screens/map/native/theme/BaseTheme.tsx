@@ -1,5 +1,5 @@
 // Tema do mapa base (MapLibre + OpenFreeMap): todas as camadas base como <Layer> filhos do <Map>, montadas sempre
-// (./layers). O estilo JSON (./style: BASE_STYLE/makeBaseStyle) só tem as fontes e o background; aqui o tema troca por
+// (./layers). O estilo JSON (./style: makeBaseStyle) só tem as fontes e o background; aqui o tema troca por
 // props com *-transition (o nativo interpola cor constante/por zoom) e o tier liga/desliga os efeitos caros por
 // visibility. Registra também as texturas geradas em código (./textures: fachadas acesas e brilho da água).
 //

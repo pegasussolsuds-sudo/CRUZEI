@@ -2,13 +2,14 @@
 // Ordem do array = ordem de desenho (de baixo pra cima), sempre com as MESMAS camadas: desmontar um <Layer> remove a
 // camada do estilo. O tier liga/desliga pelo layout visibility; o tema troca só paint constante ou por zoom (com
 // *-transition, que o nativo interpola). Cor por feature (prédio por altura) não interpola: troca seca no fundo de um
-// mergulho de opacidade (o BaseTheme controla o `shown`).
+// mergulho de opacidade (o BaseTheme controla o `shown`). Os prédios extras do backend (SRC_BLD) saem das mesmas
+// funções que os do OFM, só com os nomes de propriedade da fonte deles (BLD_SETS).
 //
 // TS puro (sem react-native): o preview/validador do scratchpad gera o JSON completo a partir daqui.
 
 import type { MapTheme, PerfTier } from '../../bridge';
 import { BASE_COLORS, type BaseColors } from './colors';
-import { FIRST_LABEL_LAYER_ID, MAP_FONTS, SRC_DEM, SRC_OMT, SUN } from './style';
+import { BLD_SOURCE_LAYER, FIRST_LABEL_LAYER_ID, MAP_FONTS, SRC_BLD, SRC_DEM, SRC_OMT, SUN } from './style';
 import { TEX, type LitTheme } from './textures';
 
 type Expr = unknown[];
@@ -173,18 +174,45 @@ const B_Z1 = 15.5;
 const BANDS = [8, 25, 60] as const;
 const TOWER_M = 12;
 
-function heightExpr(prop: 'render_height' | 'render_min_height', mul: number): Expr {
+/**
+ * conjunto de prédios com as mesmas camadas (sombras, AO, flood light, sólido, aceso) e a mesma lógica de tema, tier
+ * e rastro: os do OFM e os extras do backend (footprints da Microsoft só onde o OSM não tem prédio, sem sobreposição)
+ */
+interface BldSet {
+  /** id da extrusão sólida; as outras camadas do conjunto levam sufixo (-lit, -ao, -flood, -shadow-*) */
+  id: string;
+  source: string;
+  sourceLayer: string;
+  /** propriedades de altura e de base (m) */
+  height: string;
+  base: string;
+  /** quem pode virar 3D (o OpenMapTiles marca hide_3d nas partes já desenhadas por outro prédio) */
+  only3d?: Expr;
+}
+// prettier-ignore
+const BLD_SETS: readonly BldSet[] = [
+  { id: 'base-bld',  source: SRC_OMT, sourceLayer: 'building',       height: 'render_height', base: 'render_min_height', only3d: HAS_3D },
+  { id: 'base-bldx', source: SRC_BLD, sourceLayer: BLD_SOURCE_LAYER, height: 'height',        base: 'min_height' },
+];
+
+/** filtro do conjunto: o dele (hide_3d) e o da camada, quando houver */
+function bldFilter(s: BldSet, f?: Expr): Expr | undefined {
+  if (s.only3d && f) return ['all', s.only3d, f];
+  return s.only3d ?? f;
+}
+
+function heightExpr(prop: string, mul: number): Expr {
   const v: Expr = mul >= 1 ? ['get', prop] : ['*', ['get', prop], mul];
   return ['interpolate', ['linear'], ['zoom'], B_Z0, 0, B_Z1, v];
 }
 
-function bandColor(c: BaseColors): Expr {
-  return ['step', ['get', 'render_height'], c.bld[0], BANDS[0], c.bld[1], BANDS[1], c.bld[2], BANDS[2], c.bld[3]];
+function bandColor(c: BaseColors, prop: string): Expr {
+  return ['step', ['get', prop], c.bld[0], BANDS[0], c.bld[1], BANDS[1], c.bld[2], BANDS[2], c.bld[3]];
 }
 
-function facadeExpr(theme: MapTheme): Expr {
+function facadeExpr(theme: MapTheme, prop: string): Expr {
   const lt: LitTheme = theme === 'day' ? 'night' : theme;
-  return ['step', ['get', 'render_height'], TEX.facade('low', lt), TOWER_M, TEX.facade('tower', lt)];
+  return ['step', ['get', prop], TEX.facade('low', lt), TOWER_M, TEX.facade('tower', lt)];
 }
 
 /** janelas acesas (fill-extrusion-pattern = 2 passadas + atlas): só high/mid e só entardecer/noite */
@@ -203,12 +231,18 @@ export function bldUse(theme: MapTheme, shown: MapTheme, tier: PerfTier): BldUse
 // ---------- sombra projetada falsa ----------
 /** metros por px lógico no z16 na latitude de Uberlândia (tiles de 512 px) */
 const M_PER_PX_Z16 = (40075016.686 * Math.cos((18.9 * Math.PI) / 180)) / (512 * 65536);
-/** alturas representativas das 3 faixas de sombra (m) */
-const SHADOW_BANDS: ReadonlyArray<{ id: string; filter: Expr; h: number }> = [
-  { id: 'lo', filter: ['all', ['>=', ['get', 'render_height'], 1.5], ['<', ['get', 'render_height'], 10]], h: 5 },
-  { id: 'mid', filter: ['all', ['>=', ['get', 'render_height'], 10], ['<', ['get', 'render_height'], 30]], h: 16 },
-  { id: 'hi', filter: ['>=', ['get', 'render_height'], 30], h: 42 },
+/** 3 faixas de sombra: altura do prédio em [from, to) e a altura representativa h (m) que dá o comprimento */
+const SHADOW_BANDS: ReadonlyArray<{ id: string; from: number; to?: number; h: number }> = [
+  { id: 'lo', from: 1.5, to: 10, h: 5 },
+  { id: 'mid', from: 10, to: 30, h: 16 },
+  { id: 'hi', from: 30, h: 42 },
 ];
+
+/** altura em [from, to) */
+function heightIn(prop: string, from: number, to?: number): Expr {
+  const lo: Expr = ['>=', ['get', prop], from];
+  return to === undefined ? lo : ['all', lo, ['<', ['get', prop], to]];
+}
 const SHADOW_ZOOMS = [14, 14.5, 15, 15.5, 16, 17, 18, 19, 20, 22];
 
 /** fill-translate (px, âncora no mapa) da sombra de um prédio de h metros: oposta ao sol, cresce junto com os prédios */
@@ -259,6 +293,12 @@ export function buildBaseLayers(input: BaseLayerInput): BaseLayerSpec[] {
     'source-layer': sourceLayer,
     ...rest,
   });
+
+  /** camada de um conjunto de prédios (mesma ordem de chaves das outras specs) */
+  const bld = (s: BldSet, suffix: string, type: BaseLayerSpec['type'], o: { minzoom: number; filter?: Expr; layout: Record<string, unknown>; paint: Record<string, unknown> }): BaseLayerSpec => {
+    const filter = bldFilter(s, o.filter);
+    return { id: s.id + suffix, type, source: s.source, 'source-layer': s.sourceLayer, minzoom: o.minzoom, ...(filter ? { filter } : {}), layout: o.layout, paint: o.paint };
+  };
 
   const symbolText = (color: string, halo: string, haloW = 1.3) =>
     paint({ 'text-color': color, 'text-halo-color': halo, 'text-halo-width': haloW, 'text-halo-blur': 0.4 }, t);
@@ -535,93 +575,98 @@ export function buildBaseLayers(input: BaseLayerInput): BaseLayerSpec[] {
       paint: paint({ 'line-color': C.boundary, 'line-width': interp([[2, 0.6], [8, 1.6], [14, 3]]), 'line-opacity': 0.8 }, t),
     }),
 
-    // ---------------- prédios: chão (sombras, flood light), depois as extrusões ----------------
-    ...SHADOW_BANDS.map(
-      (b): BaseLayerSpec =>
-        omt(`base-bld-shadow-${b.id}`, 'fill', 'building', {
-          minzoom: B_Z0,
-          filter: ['all', HAS_3D, b.filter],
-          layout: { visibility: vis(midUp) },
-          paint: paint(
-            {
-              'fill-color': C.shadow,
-              'fill-opacity': zoomIn(B_Z0 + 0.3, B_Z1, fx(C.shadowAlpha)),
-              'fill-translate': shadowTranslate(theme, b.h),
-              'fill-translate-anchor': 'map',
-              'fill-antialias': false,
-            },
-            t,
-            { 'fill-opacity': groundT },
-          ),
-        }),
+    // ---------------- prédios (OFM e extras): chão de todos (sombras, AO, flood light), depois as extrusões ----------------
+    ...BLD_SETS.flatMap((s) =>
+      SHADOW_BANDS.map(
+        (b): BaseLayerSpec =>
+          bld(s, `-shadow-${b.id}`, 'fill', {
+            minzoom: B_Z0,
+            filter: heightIn(s.height, b.from, b.to),
+            layout: { visibility: vis(midUp) },
+            paint: paint(
+              {
+                'fill-color': C.shadow,
+                'fill-opacity': zoomIn(B_Z0 + 0.3, B_Z1, fx(C.shadowAlpha)),
+                'fill-translate': shadowTranslate(theme, b.h),
+                'fill-translate-anchor': 'map',
+                'fill-antialias': false,
+              },
+              t,
+              { 'fill-opacity': groundT },
+            ),
+          }),
+      ),
     ),
     // sombra de contato (AO falso): contorno do pé do prédio, borrado; metade some embaixo da extrusão
-    omt('base-bld-ao', 'line', 'building', {
-      minzoom: B_Z0 + 0.3,
-      filter: HAS_3D,
-      layout: { visibility: vis(midUp), 'line-join': 'round' },
-      paint: paint(
-        {
-          'line-color': C.ao,
-          'line-width': interp([[14.3, 1], [16, 5], [18, 12], [20, 26]]),
-          'line-blur': interp([[14.3, 1], [16, 4], [18, 9], [20, 20]]),
-          'line-opacity': zoomIn(B_Z0 + 0.3, B_Z1, fx(C.aoAlpha)),
-        },
-        t,
-        { 'line-opacity': groundT },
-      ),
-    }),
+    ...BLD_SETS.map((s) =>
+      bld(s, '-ao', 'line', {
+        minzoom: B_Z0 + 0.3,
+        layout: { visibility: vis(midUp), 'line-join': 'round' },
+        paint: paint(
+          {
+            'line-color': C.ao,
+            'line-width': interp([[14.3, 1], [16, 5], [18, 12], [20, 26]]),
+            'line-blur': interp([[14.3, 1], [16, 4], [18, 9], [20, 20]]),
+            'line-opacity': zoomIn(B_Z0 + 0.3, B_Z1, fx(C.aoAlpha)),
+          },
+          t,
+          { 'line-opacity': groundT },
+        ),
+      }),
+    ),
     // flood light neon no chão em volta dos prédios mais altos (substitui o flood-light do Mapbox)
-    omt('base-bld-flood', 'line', 'building', {
-      minzoom: 15,
-      filter: ['all', HAS_3D, ['>=', ['get', 'render_height'], 10]],
-      layout: { visibility: vis(high), 'line-join': 'round' },
-      paint: paint(
-        {
-          'line-color': '#FF1493',
-          'line-width': interp([[15, 6], [16, 10], [18, 22], [20, 44]]),
-          'line-blur': interp([[15, 6], [16, 9], [18, 19], [20, 38]]),
-          'line-opacity': zoomIn(15, 16, fx(C.floodAlpha)),
-        },
-        t,
-        { 'line-opacity': groundT },
-      ),
-    }),
+    ...BLD_SETS.map((s) =>
+      bld(s, '-flood', 'line', {
+        minzoom: 15,
+        filter: heightIn(s.height, 10),
+        layout: { visibility: vis(high), 'line-join': 'round' },
+        paint: paint(
+          {
+            'line-color': '#FF1493',
+            'line-width': interp([[15, 6], [16, 10], [18, 22], [20, 44]]),
+            'line-blur': interp([[15, 6], [16, 9], [18, 19], [20, 38]]),
+            'line-opacity': zoomIn(15, 16, fx(C.floodAlpha)),
+          },
+          t,
+          { 'line-opacity': groundT },
+        ),
+      }),
+    ),
     // sólido: todos os temas no tier low; de dia em todos os tiers. Cor por altura = por feature: troca seca (T0)
     // no fundo do mergulho. Cantos arredondados (layout, metros) só no high: ~5x a memória das extrusões.
-    omt('base-bld', 'fill-extrusion', 'building', {
-      minzoom: B_Z0,
-      filter: HAS_3D,
-      layout: { visibility: vis(solidVisible), 'fill-extrusion-rounded-corner-distance': high ? 1.5 : 0 },
-      paint: paint(
-        {
-          'fill-extrusion-color': bandColor(S),
-          'fill-extrusion-height': heightExpr('render_height', heightMul),
-          'fill-extrusion-base': heightExpr('render_min_height', heightMul),
-          'fill-extrusion-opacity': solidOn * appear,
-          'fill-extrusion-vertical-gradient': true,
-        },
-        T0,
-        { 'fill-extrusion-opacity': bldT },
-      ),
-    }),
-    // fachada com janelas acesas (entardecer/noite, high/mid)
-    omt('base-bld-lit', 'fill-extrusion', 'building', {
-      minzoom: B_Z0,
-      filter: HAS_3D,
-      layout: { visibility: vis(litVisible), 'fill-extrusion-rounded-corner-distance': high ? 1.5 : 0 },
-      paint: paint(
-        {
-          'fill-extrusion-pattern': facadeExpr(shown),
-          'fill-extrusion-height': heightExpr('render_height', heightMul),
-          'fill-extrusion-base': heightExpr('render_min_height', heightMul),
-          'fill-extrusion-opacity': litOn * appear,
-          'fill-extrusion-vertical-gradient': true,
-        },
-        T0,
-        { 'fill-extrusion-opacity': bldT },
-      ),
-    }),
+    // Fachada acesa: entardecer/noite, high/mid. Visibility pelo rastro (trail) nos dois conjuntos.
+    ...BLD_SETS.flatMap((s): BaseLayerSpec[] => [
+      bld(s, '', 'fill-extrusion', {
+        minzoom: B_Z0,
+        layout: { visibility: vis(solidVisible), 'fill-extrusion-rounded-corner-distance': high ? 1.5 : 0 },
+        paint: paint(
+          {
+            'fill-extrusion-color': bandColor(S, s.height),
+            'fill-extrusion-height': heightExpr(s.height, heightMul),
+            'fill-extrusion-base': heightExpr(s.base, heightMul),
+            'fill-extrusion-opacity': solidOn * appear,
+            'fill-extrusion-vertical-gradient': true,
+          },
+          T0,
+          { 'fill-extrusion-opacity': bldT },
+        ),
+      }),
+      bld(s, '-lit', 'fill-extrusion', {
+        minzoom: B_Z0,
+        layout: { visibility: vis(litVisible), 'fill-extrusion-rounded-corner-distance': high ? 1.5 : 0 },
+        paint: paint(
+          {
+            'fill-extrusion-pattern': facadeExpr(shown, s.height),
+            'fill-extrusion-height': heightExpr(s.height, heightMul),
+            'fill-extrusion-base': heightExpr(s.base, heightMul),
+            'fill-extrusion-opacity': litOn * appear,
+            'fill-extrusion-vertical-gradient': true,
+          },
+          T0,
+          { 'fill-extrusion-opacity': bldT },
+        ),
+      }),
+    ]),
 
     // ---------------- rótulos (os de cima têm prioridade na colisão) ----------------
     omt(FIRST_LABEL_LAYER_ID, 'symbol', 'waterway', {

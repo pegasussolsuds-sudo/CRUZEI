@@ -36,6 +36,7 @@ import { UploadsModule } from './modules/uploads/uploads.module';
 import { AccountModule } from './modules/account/account.module';
 import { ModerationModule } from './modules/moderation/moderation.module';
 import { LegalModule } from './modules/legal/legal.module';
+import { TilesModule } from './modules/tiles/tiles.module';
 
 import { HealthController } from './health/health.controller';
 
@@ -106,6 +107,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     UploadsModule,
     ModerationModule,
     LegalModule,
+    TilesModule,
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.
