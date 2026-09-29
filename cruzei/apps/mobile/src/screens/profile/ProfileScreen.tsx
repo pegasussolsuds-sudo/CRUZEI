@@ -78,7 +78,7 @@ export function ProfileScreen() {
   const qc = useQueryClient();
   const insets = useSafeAreaInsets();
   const { logout, setUser } = useAuthStore();
-  const { isAnonymous, toggle: toggleAnonymous } = useVisibility();
+  const { isAnonymous, askToggle: toggleAnonymous } = useVisibility();
   const [busy, setBusy] = useState(false);
 
   const query = useQuery({

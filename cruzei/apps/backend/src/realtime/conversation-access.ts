@@ -15,7 +15,8 @@ export interface ConversationAccess {
 /**
  * Pode entrar na sala conv:<id> (só o "digitando"): é membro, a conversa não está arquivada PRA ELE
  * (bloqueio e banimento arquivam os dois lados) e não há Block entre os dois em nenhum sentido
- * (segunda proteção: desbloquear não desarquiva, mas o Block vale mesmo com a conversa ativa).
+ * (segunda proteção: desbloquear não desarquiva, mas o Block vale mesmo com a conversa ativa). Invisível sem Premium
+ * também fica fora (inbox/visibility.messagingLocked — a mesma regra, em SQL).
  * Devolve o papel e a promoção de quem entra, ou null sem acesso. Uma consulta só, parametrizada.
  */
 export async function conversationAccess(
@@ -28,9 +29,17 @@ export async function conversationAccess(
     SELECT m.role::text AS role, c.promoted_at
     FROM conversation_members m
     JOIN conversations c ON c.id = m.conversation_id
+    JOIN users u ON u.id = m.user_id
     WHERE m.conversation_id = ${conversationId}::uuid
       AND m.user_id = ${userId}::uuid
       AND m.archived_at IS NULL
+      AND NOT (
+        u.visibility_mode = 'anonymous'
+        AND NOT (
+          u.premium_tier IN ('premium', 'premium_plus')
+          AND (u.premium_expires_at IS NULL OR u.premium_expires_at > now())
+        )
+      )
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (b.blocker_id = c.user_low_id AND b.blocked_id = c.user_high_id)

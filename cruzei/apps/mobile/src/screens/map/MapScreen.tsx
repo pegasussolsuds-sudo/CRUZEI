@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, type AppStateStatus, BackHandler, type LayoutChangeEvent, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, BackHandler, type LayoutChangeEvent, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
@@ -110,7 +110,7 @@ export function MapScreen() {
   const me = useAuthStore((s) => s.user);
   // tracking: posição acompanhada + presença renovada só enquanto o mapa está em foco e o app em primeiro plano
   const { lat, lng, status: locStatus, locate, refresh: refreshLocation } = useMyLocation(true, active);
-  const { isAnonymous, toggle: toggleVisibility, isPending: togglePending } = useVisibility();
+  const { isAnonymous, askToggle: askToggleVisibility, isPending: togglePending } = useVisibility();
   const { theme } = useMapTheme();
   const boostQuery = useActiveBoost(Boolean(me), active);
   const boost = boostQuery.data ?? null;
@@ -931,20 +931,8 @@ export function MapScreen() {
     send(cmd.setCenter(loc.latitude, loc.longitude, 16, { pitch: 58, bearing: -12, duration: 1100 }));
   }, [lat, lng, locate, refreshLocation, send]);
 
-  const onToggleVisibility = useCallback(() => {
-    if (isAnonymous) {
-      toggleVisibility();
-      return;
-    }
-    Alert.alert(
-      'Quer ver sem aparecer?',
-      `Em modo anônimo você vê todo mundo, mas ninguém te vê no mapa e não rola match por enquanto.${isFree ? ' No plano grátis vale por 24 h; no Premium é sem limite.' : ''}`,
-      [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Ficar anônimo', onPress: toggleVisibility },
-      ],
-    );
-  }, [isAnonymous, isFree, toggleVisibility]);
+  // ligar explica o prazo e as mensagens do plano grátis (useVisibility.askToggle)
+  const onToggleVisibility = askToggleVisibility;
 
   // permissão negada com "não perguntar de novo": o único caminho é a tela de ajustes. Re-checa a cada volta pro app;
   // se o usuário liberou nos ajustes, o useMyLocation re-localiza sozinho (e o banner some)

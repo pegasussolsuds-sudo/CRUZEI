@@ -31,6 +31,7 @@ import {
   emitEvent,
   flushInboxEvents,
   leaveEvent,
+  withoutHeld,
   type InboxEvent,
   type InboxGatewayPort,
 } from './inbox.events';
@@ -64,7 +65,14 @@ import {
   type ConversationFacts,
   type MemberRole,
 } from './routing';
-import { CARD_TARGET_SELECT, cardVisible, peerReachable, senderDenied } from './visibility';
+import {
+  CARD_TARGET_SELECT,
+  cardVisible,
+  MESSAGING_GATE_SELECT,
+  messagingLocked,
+  peerReachable,
+  senderDenied,
+} from './visibility';
 
 // Conversas: Principal + Solicitações (Instagram + reciprocidade do Tinder). O chat NUNCA é bloqueado: as duas pessoas
 // conversam desde a 1ª mensagem; muda só ONDE a conversa aparece (regras puras em routing.ts, pasta gravada em
@@ -114,12 +122,21 @@ const ACCOUNT_SELECT = {
   reviewHoldAt: true,
   suspendedUntil: true,
   moderationReason: true,
+  ...MESSAGING_GATE_SELECT,
 } as const;
 type AccountRow = Prisma.UserGetPayload<{ select: typeof ACCOUNT_SELECT }>;
 
 // 404 idêntico pra inexistente, bloqueado (qualquer sentido), sem acesso, anônimo, pausado, banido, em análise, apagado
 const conversationNotFound = () => new NotFoundException('Conversa não encontrada');
 const userNotFound = () => new NotFoundException('Usuário não encontrado');
+
+/** invisível sem Premium (visibility.messagingLocked): não manda nem abre as conversas — o app mostra o convite */
+const messagingLockedError = () =>
+  new ForbiddenException({
+    error: 'anonymous_requires_premium',
+    message:
+      'No modo invisível, mandar e receber mensagens é do Premium. Fica visível pra conversar.',
+  });
 
 /** clientId reusado pelo MESMO remetente em OUTRA conversa (cliente com defeito): não devolve mensagem de outro par */
 const clientIdConflict = () =>
@@ -198,6 +215,7 @@ export class InboxService {
     if (toUserId === me) throw userNotFound();
     const clientId = normClientId(clientIdRaw);
     const [low, high] = pairOf(me, toUserId);
+    await this.assertMessagingOpen(this.prisma, me);
 
     // reenvio de algo que já foi gravado: antes de limites e regras (não gasta cota nem cai no teto de 3)
     if (clientId) {
@@ -287,7 +305,7 @@ export class InboxService {
         return {
           created,
           replayed: false,
-          events,
+          events: await this.dropHeld(tx, events),
           result: { conversation, message: sent.message },
         };
       }, TX_OPTIONS);
@@ -351,6 +369,7 @@ export class InboxService {
     const pre = await this.loadConv(this.prisma, conversationId);
     if (!pre || !pre.members.some((m) => m.userId === me)) throw conversationNotFound();
     const peerId = otherOf(pre, me);
+    await this.assertMessagingOpen(this.prisma, me);
 
     // reenvio (timeout/queda depois do commit, ou a 1ª mensagem que saiu pelo POST /conversations): a mesma mensagem
     if (clientId) {
@@ -359,7 +378,10 @@ export class InboxService {
     }
 
     await this.checkSendRate(me, peerId);
-    const out = await this.prisma.$transaction(async (tx) => {
+    type SendOut =
+      | { replay: ChatMessageWithClientId }
+      | { message: ChatMessageWithClientId; events: InboxEvent[] };
+    const out = await this.prisma.$transaction(async (tx): Promise<SendOut> => {
       await lockPairTx(tx, me, peerId);
       const conv = await this.loadConv(tx, conversationId, true); // de novo, dentro da trava (promoção/unread frescos)
       if (!conv) throw conversationNotFound();
@@ -372,7 +394,8 @@ export class InboxService {
           };
         }
       }
-      return this.appendMessage(tx, conv, me, input, { clientId });
+      const sent = await this.appendMessage(tx, conv, me, input, { clientId });
+      return { message: sent.message, events: await this.dropHeld(tx, sent.events) };
     }, TX_OPTIONS);
     if ('replay' in out) {
       await this.refundSendRate(me, peerId);
@@ -386,6 +409,8 @@ export class InboxService {
    * Grava UMA mensagem de gente e reavalia a pasta na mesma transação (chamar com a trava do par).
    * - quem envia: conta apagada/fora de 'active' → o erro do JwtAuthGuard; em análise → só responde (senderDenied)
    * - Block (qualquer sentido) ou a outra ponta apagada/fora de 'active' → 404
+   * - quem envia invisível sem Premium → 403 anonymous_requires_premium; a outra ponta nessa situação fica com a
+   *   mensagem gravada, sem evento (quem chama passa os eventos por dropHeld)
    * - REQUESTER sem resposta: no máximo INBOX_LIMITS.requesterMessagesBeforeReply → 429 awaiting_reply
    * - soma 1 nas não lidas do outro; quem estava arquivado volta a ver a conversa
    * - promoção idempotente (applyPromotion): bounce ou curtida mútua que ainda não tinha virado principal
@@ -408,6 +433,8 @@ export class InboxService {
     const peer = conv.members.find((m) => m.userId !== senderId);
     if (!me || !peer) throw notFound();
     const sender = await this.assertPairOpen(tx, senderId, peer.userId, notFound);
+    // de novo com a linha fresca: ficou invisível (ou o Premium venceu) enquanto o envio esperava a trava
+    if (messagingLocked(sender)) throw messagingLockedError();
 
     const { facts } = await this.loadFacts(tx, conv);
     if (senderDenied(sender, sendIntent(me.role, facts, opts.opening === true)) === 'hold') {
@@ -566,7 +593,10 @@ export class InboxService {
     if (!conv || conv.promotedAt) return { promotedConversationIds: [], events: [] };
     const { facts } = await this.loadFacts(tx, conv);
     const events = await this.applyPromotion(tx, conv, facts, likerId, new Date());
-    return { promotedConversationIds: events.length ? [conv.id] : [], events };
+    return {
+      promotedConversationIds: events.length ? [conv.id] : [],
+      events: await this.dropHeld(tx, events),
+    };
   }
 
   /** reavalia a pasta de uma conversa (operação/testes); idempotente — rodar de novo não gera efeito */
@@ -579,7 +609,7 @@ export class InboxService {
       if (!conv) throw conversationNotFound();
       const { facts, lastLikerId } = await this.loadFacts(tx, conv);
       const actor = actorId ?? lastLikerId ?? conv.members[0]?.userId ?? conv.userLowId;
-      return this.applyPromotion(tx, conv, facts, actor, new Date());
+      return this.dropHeld(tx, await this.applyPromotion(tx, conv, facts, actor, new Date()));
     }, TX_OPTIONS);
     this.flush(events);
     return {
@@ -592,6 +622,7 @@ export class InboxService {
     const pre = await this.loadConv(this.prisma, conversationId);
     if (!pre || !pre.members.some((m) => m.userId === me)) throw conversationNotFound();
     const peerId = otherOf(pre, me);
+    await this.assertMessagingOpen(this.prisma, me);
 
     const out = await this.prisma.$transaction(async (tx) => {
       await lockPairTx(tx, me, peerId);
@@ -628,7 +659,7 @@ export class InboxService {
       }
       const summary = await this.summaryFor(tx, conv.id, me);
       if (!summary) throw conversationNotFound();
-      return { summary, events };
+      return { summary, events: await this.dropHeld(tx, events) };
     }, TX_OPTIONS);
     this.flush(out.events);
     return out.summary;
@@ -645,6 +676,7 @@ export class InboxService {
     cursorRaw?: string,
     limitRaw?: number,
   ): Promise<InboxListResponse> {
+    await this.assertMessagingOpen(this.prisma, me);
     const cursor = cursorRaw ? decodeCursor(cursorRaw) : null;
     if (cursorRaw && !cursor) throw new BadRequestException('Cursor inválido');
     const limit = Math.min(Math.max(Math.trunc(limitRaw || LIST_DEFAULT), 1), LIST_MAX);
@@ -661,13 +693,14 @@ export class InboxService {
     };
   }
 
-  /** GET /inbox/counts: badges da aba Mensagens */
+  /** GET /inbox/counts: badges da aba Mensagens (só números: vale também invisível sem Premium, pro convite) */
   counts(me: string): Promise<InboxCounts> {
     return inboxCounts(this.prisma, me);
   }
 
   /** GET /conversations/:id (inclusive arquivada por mim; bloqueio/conta fora = 404) */
   async getConversation(me: string, conversationId: string): Promise<ConversationDetail> {
+    await this.assertMessagingOpen(this.prisma, me);
     const [row] = await summaryRows(this.prisma, {
       viewerId: me,
       conversationId,
@@ -720,6 +753,7 @@ export class InboxService {
   ): Promise<ChatMessage[]> {
     const conv = await this.loadConv(this.prisma, conversationId);
     if (!conv || !conv.members.some((m) => m.userId === me)) throw conversationNotFound();
+    await this.assertMessagingOpen(this.prisma, me);
     await this.assertPairOpen(this.prisma, me, otherOf(conv, me), conversationNotFound);
     const limit = Math.min(Math.max(Math.trunc(limitRaw || 50), 1), INBOX_LIMITS.historyPageMax);
     let beforeId: string | undefined;
@@ -753,6 +787,7 @@ export class InboxService {
     const pre = await this.loadConv(this.prisma, conversationId);
     if (!pre || !pre.members.some((m) => m.userId === me)) throw conversationNotFound();
     const peerId = otherOf(pre, me);
+    await this.assertMessagingOpen(this.prisma, me);
 
     const out = await this.prisma.$transaction(async (tx) => {
       // mesma trava do envio: a recontagem não perde uma mensagem que chega no meio
@@ -792,7 +827,11 @@ export class InboxService {
         // permitido: os dois (recibo pro outro + badge dos meus outros aparelhos); senão só os meus aparelhos
         events.push(emitEvent(allowed ? [me, peerId] : [me], 'message:read', payload));
       }
-      return { events, unreadCount, readAt: allowed ? readAt.toISOString() : null };
+      return {
+        events: await this.dropHeld(tx, events),
+        unreadCount,
+        readAt: allowed ? readAt.toISOString() : null,
+      };
     }, TX_OPTIONS);
     this.flush(out.events);
     return { unreadCount: out.unreadCount, readAt: out.readAt };
@@ -993,6 +1032,28 @@ export class InboxService {
     if (blocked) throw notFound();
     if (!peerReachable(users.find((u) => u.id === peerId))) throw notFound();
     return sender;
+  }
+
+  /** quem age está invisível sem Premium → 403 anonymous_requires_premium (visibility.messagingLocked) */
+  private async assertMessagingOpen(db: Tx, me: string): Promise<void> {
+    const u = await db.user.findUnique({ where: { id: me }, select: MESSAGING_GATE_SELECT });
+    if (messagingLocked(u)) throw messagingLockedError();
+  }
+
+  /**
+   * Tira dos eventos de entrega quem está invisível sem Premium (lido dentro da transação, na ordem dos envios): a
+   * mensagem fica gravada e aparece quando a pessoa volta a ficar visível; quem enviou não percebe diferença.
+   */
+  private async dropHeld(tx: Tx, events: InboxEvent[]): Promise<InboxEvent[]> {
+    const ids = new Set<string>();
+    for (const e of events) if (e.kind === 'emit') e.to.forEach((id) => ids.add(id));
+    if (ids.size === 0) return events;
+    const users = await tx.user.findMany({
+      where: { id: { in: [...ids] } },
+      select: { id: true, ...MESSAGING_GATE_SELECT },
+    });
+    const held = new Set(users.filter((u) => messagingLocked(u)).map((u) => u.id));
+    return withoutHeld(events, held);
   }
 
   /** por remetente (30/min, todas as conversas) e por par (15/min) — além do @Throttle da rota */

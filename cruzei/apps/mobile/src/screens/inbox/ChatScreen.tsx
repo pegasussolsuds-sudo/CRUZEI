@@ -47,6 +47,8 @@ import { FadeInView, ScaleOnPress, SlideInView, TypingDots } from '../../compone
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import { SafetySheet, askBlock } from '../../components/safety/SafetySheet';
+import { MessagingLocked } from '../../components/inbox/MessagingLocked';
+import { isMessagingLockedError, useMessagingLocked } from '../../hooks/useMessagingLock';
 import {
   applyConversationNew,
   applyUnread,
@@ -56,6 +58,7 @@ import {
   useConversation,
   useConversationMessages,
   useConversationWith,
+  useInboxCounts,
   usePromoteRequest,
   type CachedMessage,
   type OutboxMessage,
@@ -287,7 +290,29 @@ function WaitingBanner({ name, left }: { name: string; left: number | null | und
 // ───────────────────────────────────────────────────────────────────────────────
 // Tela
 // ───────────────────────────────────────────────────────────────────────────────
+/** invisível sem Premium: o chat vira o convite (e sai da sala do "digitando" ao desmontar o chat de verdade) */
 export function ChatScreen() {
+  const locked = useMessagingLocked();
+  return locked ? <ChatLocked /> : <ChatScreenInner />;
+}
+
+function ChatLocked() {
+  const route = useRoute<RouteProp<InboxStackParamList, 'Chat'>>();
+  const nav = useNavigation<ChatNav>();
+  const counts = useInboxCounts();
+  const name = route.params.peer.name;
+  useEffect(() => {
+    nav.setOptions({ title: name });
+  }, [nav, name]);
+  const c = counts.data;
+  return (
+    <SafeAreaView style={styles.safe} edges={['bottom']}>
+      <MessagingLocked waiting={(c?.unreadInbox ?? 0) + (c?.requests ?? 0)} />
+    </SafeAreaView>
+  );
+}
+
+function ChatScreenInner() {
   const route = useRoute<RouteProp<InboxStackParamList, 'Chat'>>();
   const nav = useNavigation<ChatNav>();
   const qc = useQueryClient();
@@ -587,6 +612,11 @@ export function ChatScreen() {
         const e = toApiError(err);
         setOutbox((prev) => prev.map((m) => (m.clientId === clientId && m.pending ? { ...m, pending: false, failed: true } : m)));
         if (e.status === 429) setError(rateLimitText(err));
+        else if (isMessagingLockedError(err)) {
+          // o app achava que estava visível (ou com Premium): o /me novo troca o chat pelo convite
+          setError(e.message);
+          useAuthStore.getState().refreshMe().catch(() => {});
+        }
         else if (e.status === 404 && id) leaveClosed('Essa conversa não está mais disponível.');
         else if (e.status === 404) {
           // alvo anônimo, bloqueado, pausado, fora do ar: o servidor responde igual pra todos

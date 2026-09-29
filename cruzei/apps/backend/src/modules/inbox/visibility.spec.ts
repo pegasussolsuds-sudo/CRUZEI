@@ -1,7 +1,9 @@
 import {
   cardVisible,
   isPausedNow,
+  messagingLocked,
   peerReachable,
+  premiumActive,
   senderDenied,
   type CardTarget,
   type SenderAccount,
@@ -77,5 +79,49 @@ describe('senderDenied (quem ENVIA)', () => {
   it('inexistente → account', () => {
     expect(senderDenied(null, 'reply')).toBe('account');
     expect(senderDenied(undefined, 'start')).toBe('account');
+  });
+});
+
+describe('messagingLocked (invisível sem Premium não manda nem recebe mensagens)', () => {
+  const DAY = 86_400_000;
+  const u = (
+    visibilityMode: string,
+    premiumTier: string,
+    premiumExpiresAt: Date | null = null,
+  ) => ({
+    visibilityMode,
+    premiumTier,
+    premiumExpiresAt,
+  });
+
+  it.each([
+    ['visível grátis', u('visible', 'free'), false],
+    ['visível Premium', u('visible', 'premium'), false],
+    ['invisível grátis', u('anonymous', 'free'), true],
+    ['invisível Premium sem vencimento', u('anonymous', 'premium'), false],
+    [
+      'invisível Premium+ vigente',
+      u('anonymous', 'premium_plus', new Date(NOW.getTime() + DAY)),
+      false,
+    ],
+    ['invisível Premium vencido', u('anonymous', 'premium', new Date(NOW.getTime() - 1)), true],
+    ['invisível Premium+ vencendo agora', u('anonymous', 'premium_plus', NOW), true],
+    ['visível Premium vencido', u('visible', 'premium', new Date(NOW.getTime() - DAY)), false],
+  ])('%s → %s', (_nome, user, locked) => {
+    expect(messagingLocked(user, NOW)).toBe(locked);
+  });
+
+  it('sem linha (usuário inexistente) não trava: quem decide é a conferência de conta', () => {
+    expect(messagingLocked(null, NOW)).toBe(false);
+    expect(messagingLocked(undefined, NOW)).toBe(false);
+  });
+
+  it('premiumActive: só premium/premium_plus, sem vencimento ou no futuro', () => {
+    expect(premiumActive({ premiumTier: 'free', premiumExpiresAt: null }, NOW)).toBe(false);
+    expect(premiumActive({ premiumTier: 'premium', premiumExpiresAt: null }, NOW)).toBe(true);
+    expect(
+      premiumActive({ premiumTier: 'premium', premiumExpiresAt: new Date(NOW.getTime() + 1) }, NOW),
+    ).toBe(true);
+    expect(premiumActive({ premiumTier: 'premium_plus', premiumExpiresAt: NOW }, NOW)).toBe(false);
   });
 });

@@ -20,6 +20,8 @@ import { resolveAvatar } from '../../avatar';
 import { SafetySheet, askBlock } from '../../components/safety/SafetySheet';
 import { toApiError } from '../../services/api';
 import { useInboxCounts, useInboxList, usePromoteRequest } from '../../hooks/useInbox';
+import { useMessagingLocked } from '../../hooks/useMessagingLock';
+import { MessagingLocked } from '../../components/inbox/MessagingLocked';
 
 const AVATAR = 56;
 const SYSTEM_PREVIEW = 'Vocês se curtiram. A conversa foi movida para a principal.';
@@ -243,14 +245,16 @@ export function InboxScreen() {
     if (route.params?.folder) setFolder(route.params.folder);
   }, [route.params?.folder]);
 
+  // invisível sem Premium: o servidor não entrega as listas (403) — só a contagem, pro convite
+  const locked = useMessagingLocked();
   const counts = useInboxCounts();
-  const inboxQ = useInboxList('inbox');
+  const inboxQ = useInboxList('inbox', !locked);
   // solicitações só carregam quando a aba abre (o número do segmentado vem da contagem)
   const [requestsSeen, setRequestsSeen] = useState(folder === 'requests');
   useEffect(() => {
     if (folder === 'requests') setRequestsSeen(true);
   }, [folder]);
-  const requestsQ = useInboxList('requests', requestsSeen || folder === 'requests');
+  const requestsQ = useInboxList('requests', !locked && (requestsSeen || folder === 'requests'));
   const query = folder === 'inbox' ? inboxQ : requestsQ;
   const items = useMemo(() => query.data?.pages.flatMap((p) => p.items) ?? [], [query.data]);
   const c = counts.data;
@@ -314,6 +318,19 @@ export function InboxScreen() {
             ? 'suas conversas'
             : `${conversations} ${conversations === 1 ? 'conversa' : 'conversas'}`
       : 'Pedidos de conversa. Responder ou mover pra principal aceita; antes disso ninguém sabe que você leu.';
+
+  if (locked) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={styles.header}>
+          <Text style={styles.title} accessibilityRole="header">
+            mensagens
+          </Text>
+        </View>
+        <MessagingLocked waiting={(c?.unreadInbox ?? 0) + (c?.requests ?? 0)} />
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>

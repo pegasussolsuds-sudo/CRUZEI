@@ -1,7 +1,10 @@
+import { useCallback } from 'react';
+import { Alert } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../services/api';
 import { useLocationStore } from '../stores/location';
 import { useAuthStore } from '../stores/auth';
+import { inboxKeys } from './useInbox';
 
 // Alterna visível/anônimo: atualiza o servidor, o store local e o cache do perfil.
 export function useVisibility() {
@@ -9,6 +12,7 @@ export function useVisibility() {
   const isAnonymous = useLocationStore((s) => s.isAnonymous);
   const setAnonymous = useLocationStore((s) => s.setAnonymous);
   const refreshMe = useAuthStore((s) => s.refreshMe);
+  const isFree = useAuthStore((s) => (s.user?.premiumTier ?? 'free') === 'free');
 
   const mutation = useMutation({
     mutationFn: async (next: boolean) => {
@@ -20,13 +24,38 @@ export function useVisibility() {
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['me'] });
       await qc.invalidateQueries({ queryKey: ['nearby'] });
+      // invisível sem Premium não recebe mensagens (ficam guardadas no servidor): ao voltar, listas e chats buscam de novo
+      await qc.invalidateQueries({ queryKey: inboxKeys.all });
+      await qc.invalidateQueries({ queryKey: ['conversation'] });
+      await qc.invalidateQueries({ queryKey: ['messages'] });
       refreshMe().catch(() => {});
     },
   });
 
+  const toggle = useCallback(() => mutation.mutate(!isAnonymous), [mutation, isAnonymous]);
+
+  /** desligar é direto; ligar explica antes o que muda (prazo e mensagens no plano grátis) */
+  const askToggle = useCallback(() => {
+    if (isAnonymous) {
+      toggle();
+      return;
+    }
+    Alert.alert(
+      'Quer ver sem aparecer?',
+      isFree
+        ? 'No modo invisível você vê todo mundo, mas ninguém te vê no mapa nem te curte. No plano grátis vale por 24 h e as mensagens ficam pausadas: você não manda nem recebe até voltar a ficar visível (nada se perde). No Premium é sem limite e dá pra conversar invisível.'
+        : 'No modo invisível você vê todo mundo, mas ninguém te vê no mapa nem te curte. Suas conversas continuam normais.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Ficar invisível', onPress: toggle },
+      ],
+    );
+  }, [isAnonymous, isFree, toggle]);
+
   return {
     isAnonymous,
-    toggle: () => mutation.mutate(!isAnonymous),
+    toggle,
+    askToggle,
     isPending: mutation.isPending,
   };
 }

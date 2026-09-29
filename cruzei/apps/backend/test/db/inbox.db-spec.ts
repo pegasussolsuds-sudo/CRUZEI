@@ -182,6 +182,7 @@ type UserExtra = Partial<{
   reviewHoldAt: Date | null;
   deletedAt: Date | null;
   premiumTier: 'free' | 'premium' | 'premium_plus';
+  premiumExpiresAt: Date | null;
 }>;
 
 async function newUser(name: string, extra: UserExtra = {}): Promise<string> {
@@ -1036,6 +1037,238 @@ describe('bloqueio (BlocksService) e visibilidade', () => {
     await prisma.user.update({ where: { id: bia }, data: { accountStatus: 'banned' } });
     expect((await inbox.list(ana, 'inbox')).items).toEqual([]);
     await expectHttp(inbox.sendMessage(ana, conv, 'e agora?'), 404);
+  });
+});
+
+// =================================================================================================
+describe('modo invisível: mandar e receber mensagens é do Premium', () => {
+  const LOCKED = 'anonymous_requires_premium';
+  const anonFree = (id: string) =>
+    prisma.user.update({
+      where: { id },
+      data: { visibilityMode: 'anonymous', premiumTier: 'free' },
+    });
+  const toVisible = (id: string) =>
+    prisma.user.update({ where: { id }, data: { visibilityMode: 'visible' } });
+  const emittedTo = (id: string) => gw.emitted.filter((e) => e.to.includes(id));
+
+  it('invisível grátis NÃO manda: responder, abrir, reenviar → 403; nada gravado, nada emitido, cota intacta', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const cris = await newUser('Cris');
+    const conv = (await inbox.createConversation(ana, bia, 'oi', 'c-1')).conversation.id;
+    await anonFree(ana);
+    gw.reset();
+    const before = await prisma.message.count();
+    const convNew = await redis.client.get(`rate:${ana}:conv:new`);
+
+    await expectHttp(inbox.sendMessage(ana, conv, 'tá aí?'), 403, LOCKED);
+    await expectHttp(inbox.createConversation(ana, cris, 'oi cris'), 403, LOCKED);
+    // nem o reenvio de algo já gravado passa: invisível sem Premium não usa o chat
+    await expectHttp(inbox.createConversation(ana, bia, 'oi', 'c-1'), 403, LOCKED);
+    await expectHttp(inbox.sendMessage(ana, conv, 'oi', 'c-1'), 403, LOCKED);
+
+    expect(await prisma.message.count()).toBe(before);
+    expect(await prisma.conversation.count()).toBe(1);
+    expect(gw.emitted).toHaveLength(0);
+    expect(await redis.client.get(`rate:${ana}:conv:new`)).toBe(convNew);
+    expect(await redis.client.get(`rate:${ana}:msg`)).toBe('1'); // só a 1ª mensagem, quando ainda estava visível
+
+    // voltou a ficar visível: tudo normal de novo
+    await toVisible(ana);
+    await expect(inbox.sendMessage(ana, conv, 'voltei')).resolves.toMatchObject({ body: 'voltei' });
+  });
+
+  it('invisível grátis não abre as conversas: listas, detalhe, histórico, aceitar e lida → 403; a contagem continua', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await anonFree(bia);
+    gw.reset();
+    await expectHttp(inbox.list(bia, 'inbox'), 403, LOCKED);
+    await expectHttp(inbox.list(bia, 'requests'), 403, LOCKED);
+    await expectHttp(inbox.getConversation(bia, conv), 403, LOCKED);
+    await expectHttp(inbox.listMessages(bia, conv), 403, LOCKED);
+    await expectHttp(inbox.promoteManual(bia, conv), 403, LOCKED);
+    await expectHttp(inbox.markRead(bia, conv), 403, LOCKED);
+    await expectHttp(inbox.updateConversation(bia, conv, { archived: true }), 403, LOCKED);
+    // só números, pro convite ("1 conversa te esperando")
+    expect(await inbox.counts(bia)).toMatchObject({ requests: 1 });
+    expect(gw.emitted).toHaveLength(0);
+    const conversation = await prisma.conversation.findUniqueOrThrow({ where: { id: conv } });
+    expect(conversation.promotedAt).toBeNull();
+    expect((await memberOf(conv, bia)).unreadCount).toBe(1);
+  });
+
+  it('invisível grátis NÃO recebe: a mensagem é gravada e conta como não lida, mas nada chega por socket; ao ficar visível, aparece tudo', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await inbox.sendMessage(bia, conv, 'oi!'); // bounce: principal dos dois
+    await inbox.markRead(ana, conv);
+    await inbox.markRead(bia, conv);
+    await anonFree(bia);
+    gw.reset();
+
+    // quem envia não percebe diferença nenhuma
+    const m = await inbox.sendMessage(ana, conv, 'tá aí?');
+    expect(m).toMatchObject({ body: 'tá aí?', senderId: ana });
+    expect(emittedTo(bia)).toEqual([]);
+    expect(of('message:new').map((e) => e.to)).toEqual([[ana]]);
+    expect((await memberOf(conv, bia)).unreadCount).toBe(1);
+    await inbox.sendMessage(ana, conv, 'e aí?');
+    expect(emittedTo(bia)).toEqual([]);
+
+    await toVisible(bia);
+    const biaInbox = await inbox.list(bia, 'inbox');
+    expect(biaInbox.items[0]).toMatchObject({ id: conv, unreadCount: 2 });
+    expect(biaInbox.items[0].lastMessage).toMatchObject({ body: 'e aí?' });
+    const history = await inbox.listMessages(bia, conv);
+    expect(history.map((x) => x.body)).toEqual(['oi', 'oi!', 'tá aí?', 'e aí?']);
+    // e a partir daqui recebe ao vivo
+    gw.reset();
+    await inbox.sendMessage(ana, conv, 'agora foi');
+    expect(of('message:new').map((e) => e.to)).toEqual([[ana], [bia]]);
+  });
+
+  it('lida de quem está visível sobre mensagens de quem está invisível grátis: gravada, sem recibo pro outro', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await inbox.sendMessage(bia, conv, 'oi!');
+    await anonFree(ana);
+    gw.reset();
+    await inbox.markRead(bia, conv);
+    expect(of('message:read').map((e) => e.to)).toEqual([[bia]]);
+    expect(emittedTo(ana)).toEqual([]);
+    const first = await prisma.message.findFirstOrThrow({
+      where: { conversationId: conv, senderId: ana },
+    });
+    expect(first.readAt).not.toBeNull();
+  });
+
+  it('solicitação pra quem ficou invisível grátis: gravada sem aviso; ao voltar, responde e vira principal', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await anonFree(bia);
+    gw.reset();
+    await inbox.sendMessage(ana, conv, 'oi de novo');
+    expect(emittedTo(bia)).toEqual([]);
+    expect((await memberOf(conv, bia)).unreadCount).toBe(2);
+
+    await toVisible(bia);
+    expect((await inbox.list(bia, 'requests')).items.map((c) => c.id)).toEqual([conv]);
+    gw.reset();
+    await inbox.sendMessage(bia, conv, 'oi, voltei'); // resposta: bounce
+    expect(of('conversation:promoted').map((e) => sorted(e.to))).toEqual([sorted([ana, bia])]);
+  });
+
+  it('Premium e Premium+ invisíveis mandam e recebem normalmente; Premium vencido volta a travar', async () => {
+    const ana = await newUser('Ana', { visibilityMode: 'anonymous', premiumTier: 'premium' });
+    const bia = await newUser('Bia');
+    const leo = await newUser('Leo', {
+      visibilityMode: 'anonymous',
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const conv = (await inbox.createConversation(ana, bia, 'oi, tô invisível')).conversation.id;
+    gw.reset();
+    await inbox.sendMessage(bia, conv, 'oi!');
+    expect(of('message:new').map((e) => e.to)).toEqual([[bia], [ana]]);
+    expect(of('conversation:promoted').map((e) => sorted(e.to))).toEqual([sorted([ana, bia])]);
+    expect((await inbox.list(ana, 'inbox')).items.map((c) => c.id)).toEqual([conv]);
+
+    // quem está visível escreve pra conversa que já existe com a Premium invisível (uma conversa por par)
+    expect((await inbox.createConversation(bia, ana, 'e aí?')).conversation.id).toBe(conv);
+    const convLeo = (await inbox.createConversation(leo, bia, 'oi, sou o Leo')).conversation.id;
+    gw.reset();
+    await inbox.sendMessage(bia, convLeo, 'oi Leo');
+    expect(of('message:new').map((e) => e.to)).toEqual([[bia], [leo]]);
+
+    await prisma.user.update({
+      where: { id: ana },
+      data: { premiumExpiresAt: new Date(Date.now() - 1_000) },
+    });
+    await expectHttp(inbox.sendMessage(ana, conv, 'venceu?'), 403, LOCKED);
+    gw.reset();
+    await inbox.sendMessage(bia, conv, 'cadê você?');
+    expect(emittedTo(ana)).toEqual([]);
+  });
+
+  it('abrir conversa COM quem está invisível continua 404 (o cartão não aparece), mesmo sendo Premium', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia', { visibilityMode: 'anonymous', premiumTier: 'premium' });
+    const cris = await newUser('Cris', { visibilityMode: 'anonymous' });
+    await expectHttp(inbox.createConversation(ana, bia, 'oi'), 404);
+    await expectHttp(inbox.createConversation(ana, cris, 'oi'), 404);
+    expect(await prisma.conversation.count()).toBe(0);
+  });
+
+  it('curtida mútua com quem está invisível grátis: promove e grava "Vocês se curtiram", mas só o lado visível recebe os eventos', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await likes.like(ana, bia);
+    await anonFree(bia);
+    gw.reset();
+
+    const r = await likes.like(bia, ana); // quem está invisível ainda curte quem está visível
+    expect(r).toMatchObject({
+      likeStatus: 'MUTUAL',
+      isMutual: true,
+      promotedConversationIds: [conv],
+    });
+    expect(of('conversation:promoted').map((e) => e.to)).toEqual([[ana]]);
+    expect(of('message:new').map((e) => e.to)).toEqual([[ana]]);
+    expect(of('like_received')).toEqual([
+      {
+        to: [ana],
+        event: 'like_received',
+        payload: { fromUserId: bia, isSuper: false, isMutual: true },
+      },
+    ]);
+    expect(emittedTo(bia)).toEqual([]);
+    expect(await systemMessages(conv)).toHaveLength(1);
+
+    await toVisible(bia);
+    const biaInbox = await inbox.list(bia, 'inbox');
+    expect(biaInbox.items[0]).toMatchObject({
+      id: conv,
+      likeStatus: 'MUTUAL',
+      promotedReason: 'mutual',
+    });
+    expect(biaInbox.items[0].lastMessage).toMatchObject({
+      systemKind: 'mutual_like',
+      body: MUTUAL_LIKE_TEXT,
+    });
+  });
+
+  it('curtida mútua com Premium invisível: os dois recebem tudo, como sempre', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    await inbox.createConversation(ana, bia, 'oi');
+    await likes.like(ana, bia);
+    await prisma.user.update({
+      where: { id: bia },
+      data: { visibilityMode: 'anonymous', premiumTier: 'premium' },
+    });
+    gw.reset();
+    await likes.like(bia, ana);
+    expect(of('conversation:promoted').map((e) => sorted(e.to))).toEqual([sorted([ana, bia])]);
+    expect(sorted(of('message:new').flatMap((e) => e.to))).toEqual(sorted([ana, bia]));
+  });
+
+  it('"Mover para principal" por quem está visível, com o outro invisível grátis: promove sem avisar o outro', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await anonFree(ana);
+    gw.reset();
+    await inbox.promoteManual(bia, conv);
+    expect(of('conversation:promoted').map((e) => e.to)).toEqual([[bia]]);
+    expect(emittedTo(ana)).toEqual([]);
   });
 });
 

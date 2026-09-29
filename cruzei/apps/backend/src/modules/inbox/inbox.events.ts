@@ -51,6 +51,32 @@ export function leaveEvent(conversationId: string, userIds: string[]): InboxEven
   return { kind: 'leave', conversationId, userIds };
 }
 
+/** eventos que entregam conversa/mensagem — quem não pode receber (visibility.messagingLocked) fica fora deles */
+const DELIVERY_EVENTS: ReadonlySet<InboxEventName> = new Set<InboxEventName>([
+  'conversation:new',
+  'conversation:promoted',
+  'message:new',
+  'message:read',
+]);
+
+/** tira `held` dos destinatários dos eventos de entrega (emit sem ninguém some); leave e remoção passam intactos */
+export function withoutHeld(
+  events: readonly InboxEvent[],
+  held: ReadonlySet<string>,
+): InboxEvent[] {
+  if (held.size === 0) return [...events];
+  const out: InboxEvent[] = [];
+  for (const e of events) {
+    if (e.kind !== 'emit' || !DELIVERY_EVENTS.has(e.event)) {
+      out.push(e);
+      continue;
+    }
+    const to = e.to.filter((id) => !held.has(id));
+    if (to.length) out.push({ ...e, to });
+  }
+  return out;
+}
+
 /** envia na ordem em que a transação juntou; mesmo payload pra duas pessoas = um emit só (um publish no Redis) */
 export function flushInboxEvents(gateway: InboxGatewayPort, events: readonly InboxEvent[]): void {
   for (const e of events) {

@@ -3,6 +3,7 @@
 // que um id existe, nem que a pessoa bloqueou, pausou, está anônima ou foi banida).
 // Conversa que JÁ existe não passa por aqui: o chat nunca é bloqueado (só Block, conta apagada ou fora de 'active').
 // Quem ENVIA também é conferido (senderDenied), com a linha fresca do banco: o guard do JWT lê um cache de estado.
+// Invisível sem Premium (messagingLocked) não manda nem recebe mensagens — regra de plano, vale pros dois lados.
 import type { SendIntent } from './routing';
 
 /** campos do alvo que decidem se o cartão aparece */
@@ -75,4 +76,41 @@ export function senderDenied(
   if (!u || u.deletedAt || u.accountStatus !== 'active') return 'account';
   if (u.reviewHoldAt && intent !== 'reply') return 'hold';
   return null;
+}
+
+/** campos que decidem se a pessoa manda e recebe mensagens (modo invisível × plano) */
+export interface MessagingGate {
+  visibilityMode: string;
+  premiumTier: string;
+  premiumExpiresAt: Date | null;
+}
+
+/** select do Prisma com exatamente esses campos */
+export const MESSAGING_GATE_SELECT = {
+  visibilityMode: true,
+  premiumTier: true,
+  premiumExpiresAt: true,
+} as const;
+
+/** Premium vigente (premium ou premium_plus, sem premiumExpiresAt ou no futuro): a mesma conta do allowedTiersFor */
+export function premiumActive(
+  u: Pick<MessagingGate, 'premiumTier' | 'premiumExpiresAt'>,
+  now: Date = new Date(),
+): boolean {
+  if (u.premiumTier !== 'premium' && u.premiumTier !== 'premium_plus') return false;
+  return u.premiumExpiresAt == null || u.premiumExpiresAt > now;
+}
+
+/**
+ * Mandar e receber mensagens no modo invisível é do Premium (decisão do dono, 29/09/2026). Invisível sem Premium vigente:
+ * - não manda, não abre conversa, não aceita solicitação, não marca lida (403 anonymous_requires_premium)
+ * - não recebe: a mensagem do outro é gravada normalmente (quem envia não fica sabendo de nada — o envio dele passa
+ *   igual), mas nenhum evento chega por socket e as listas ficam fechadas; tudo aparece quando a pessoa volta a ficar
+ *   visível ou assina
+ */
+export function messagingLocked(
+  u: MessagingGate | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  return Boolean(u && u.visibilityMode === 'anonymous' && !premiumActive(u, now));
 }

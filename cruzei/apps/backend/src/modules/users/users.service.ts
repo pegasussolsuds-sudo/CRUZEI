@@ -7,6 +7,7 @@ import { avatarOrFallback } from '../../common/avatar';
 import { PRIVACY } from '../location/discovery-privacy';
 import { LEGAL_VERSION } from '@cruzei/shared-types';
 import { PhotoModerationService } from '../moderation/photo-moderation.service';
+import { ChatGateway } from '../../realtime/chat.gateway';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
 
@@ -32,6 +33,7 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly photoModeration: PhotoModerationService,
+    private readonly chat: ChatGateway,
   ) {}
 
   async me(userId: string) {
@@ -206,6 +208,8 @@ export class UsersService {
         const until = Date.now() + ANON_FREE_HOURS * 3_600_000;
         await this.redis.client.zadd(ANON_FREE_KEY, until, userId);
         anonymousUntil = new Date(until).toISOString();
+        // invisível sem Premium não manda nem recebe mensagens (inbox/visibility.messagingLocked): sai dos chats abertos
+        await this.chat.leaveAllConversations(userId).catch(() => undefined);
       }
     } else if (dto.visibilityMode === 'visible') {
       await this.redis.client.zrem(ANON_FREE_KEY, userId);

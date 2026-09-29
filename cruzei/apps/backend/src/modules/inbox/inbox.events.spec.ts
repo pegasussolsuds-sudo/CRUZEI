@@ -1,4 +1,10 @@
-import { emitEvent, flushInboxEvents, leaveEvent, type InboxGatewayPort } from './inbox.events';
+import {
+  emitEvent,
+  flushInboxEvents,
+  leaveEvent,
+  withoutHeld,
+  type InboxGatewayPort,
+} from './inbox.events';
 
 // Os eventos saem na ordem em que a transação juntou, só pras salas user:<id> do par; mesmo payload pros dois = um emit.
 
@@ -45,5 +51,42 @@ describe('flushInboxEvents', () => {
     flushInboxEvents(gw, []);
     flushInboxEvents(gw, [{ kind: 'emit', to: [], event: 'message:read', payload: {} as never }]);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('withoutHeld (invisível sem Premium não recebe)', () => {
+  const msg = { conversationId: 'c', message: {} as never, unreadCount: 1 };
+  it('tira quem está retido dos eventos de entrega; emit que fica sem ninguém some', () => {
+    const events = [
+      emitEvent('ana', 'message:new', msg),
+      emitEvent('bia', 'message:new', msg),
+      emitEvent(['ana', 'bia'], 'conversation:promoted', {
+        conversationId: 'c',
+        reason: 'bounce',
+        promotedAt: 'x',
+      }),
+      emitEvent(['ana', 'bia'], 'message:read', {
+        conversationId: 'c',
+        readerId: 'ana',
+        upToMessageId: null,
+        readAt: 'x',
+      }),
+    ];
+    const out = withoutHeld(events, new Set(['bia']));
+    expect(out.map((e) => (e.kind === 'emit' ? [e.event, e.to] : e.kind))).toEqual([
+      ['message:new', ['ana']],
+      ['conversation:promoted', ['ana']],
+      ['message:read', ['ana']],
+    ]);
+  });
+
+  it('saída da sala, remoção e curtida passam intactas; ninguém retido = a mesma lista', () => {
+    const events = [
+      leaveEvent('c', ['bia']),
+      emitEvent('bia', 'conversation:removed', { conversationId: 'c' }),
+      emitEvent('bia', 'like_received', { isSuper: false }),
+    ];
+    expect(withoutHeld(events, new Set(['bia']))).toEqual(events);
+    expect(withoutHeld(events, new Set())).toEqual(events);
   });
 });

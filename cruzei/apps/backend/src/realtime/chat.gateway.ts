@@ -226,6 +226,18 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     this.server?.in(rooms).socketsLeave(convRoom(conversationId));
   }
 
+  /**
+   * Tira a pessoa de TODAS as salas conv:<id>, em todos os processos: ficou invisível sem Premium e para de ver o
+   * "digitando" dos outros na hora (inbox/visibility.messagingLocked). Não avisa ninguém.
+   */
+  async leaveAllConversations(userId: string): Promise<void> {
+    if (!this.server || !userId) return;
+    const sockets = await this.server.in(userRoom(userId)).fetchSockets();
+    for (const s of sockets) {
+      for (const room of s.rooms) if (room.startsWith('conv:')) s.leave(room);
+    }
+  }
+
   /** conta banida/suspensa: derruba as conexões em todos os processos (o adaptador Redis repassa) */
   disconnectUser(userId: string, reason: unknown) {
     const room = this.server?.in(userRoom(userId));

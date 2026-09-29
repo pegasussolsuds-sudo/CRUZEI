@@ -18,10 +18,16 @@ const prisma = new PrismaClient();
 const resetDb = () =>
   prisma.$executeRawUnsafe('TRUNCATE conversations, users RESTART IDENTITY CASCADE');
 
+// visível por padrão: o default do banco é 'anonymous' (e invisível sem Premium não entra na sala)
 const newUser = async (name: string) =>
   (
     await prisma.user.create({
-      data: { name, birthDate: new Date('1995-01-01'), gender: 'female' },
+      data: {
+        name,
+        birthDate: new Date('1995-01-01'),
+        gender: 'female',
+        visibilityMode: 'visible',
+      },
       select: { id: true },
     })
   ).id;
@@ -105,6 +111,28 @@ describe('canJoinConversation (sala conv:<id> do gateway)', () => {
     await prisma.block.create({ data: { blockerId: ana, blockedId: cris } });
     await prisma.block.create({ data: { blockerId: cris, blockedId: bia } });
     expect(await can(conv, ana)).toBe(true);
+    expect(await can(conv, bia)).toBe(true);
+  });
+
+  it('invisível sem Premium fica de fora (Premium e Premium+ vigentes entram; Premium vencido não)', async () => {
+    const setBia = (data: {
+      visibilityMode?: 'visible' | 'anonymous';
+      premiumTier?: 'free' | 'premium' | 'premium_plus';
+      premiumExpiresAt?: Date | null;
+    }) => prisma.user.update({ where: { id: bia }, data });
+    await setBia({ visibilityMode: 'anonymous' });
+    expect(await can(conv, bia)).toBe(false);
+    expect(await can(conv, ana)).toBe(true);
+    await setBia({ premiumTier: 'premium' });
+    expect(await can(conv, bia)).toBe(true);
+    await setBia({
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    expect(await can(conv, bia)).toBe(true);
+    await setBia({ premiumExpiresAt: new Date(Date.now() - 1_000) });
+    expect(await can(conv, bia)).toBe(false);
+    await setBia({ visibilityMode: 'visible' });
     expect(await can(conv, bia)).toBe(true);
   });
 
