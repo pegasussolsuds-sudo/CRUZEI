@@ -21,7 +21,7 @@ Backend (`apps/backend`)
 
 App (`apps/mobile`)
 - `src/screens/map/MapScreen.tsx` — `/nearby` sem centro; faixas em vez de distância; marcador só com `mapPosition`; pessoas no lugar só pela presença do servidor; contagem de ocultos; banner de área privada.
-- `src/screens/map/mapbox-html.ts`, `bridge.ts` — WebView só recebe `mapPosition` (posição visual).
+- `src/screens/map/native/engine/MapEngine.ts`, `bridge.ts` — o motor do mapa (MapLibre nativo) só recebe `mapPosition` (posição visual).
 - `src/components/map/MapBottomSheet.tsx`, `PersonRow.tsx`, `UserPreviewSheet.tsx`, `MapHeader.tsx`, `src/components/MatchModal.tsx`, `src/hooks/useDiscoveryHints.ts`, `src/screens/likes/LikesScreen.tsx`, `src/screens/users/UserCardScreen.tsx`, `src/navigation/RootNavigator.tsx` — faixas, presença sem horário.
 - `src/screens/profile/ProfileScreen.tsx` — seletor "Descoberta por proximidade" e link "Áreas privadas".
 - `src/services/location.ts`, `src/stores/location.ts` — resposta do update alimenta o estado "estou descoberto?"; função de permissão de background removida.
@@ -81,8 +81,8 @@ Pacotes
 ## 9. Dados que deixaram de ir ao cliente
 `latitude`, `longitude`, `distanceM` e `recordedAt` de terceiros (em `/nearby`, `/users/:id`, deck de curtidas, modal de match, contexto do match em metros), `distanceM` do cartão, lugar/distância de quem não está descoberto, nomes em lugares distantes ou com poucas pessoas, contagens de lugar com 1 pessoa, presença de anônimos nas contagens.
 
-## 10. Mapbox
-O WebView recebe só `mapPosition` (posição visual) por pessoa; `setData` descarta quem não tem. Movimento, seleção, momento do match e efeitos usam essa posição. Nenhum `u.latitude/u.longitude` restou no HTML gerado. Lugares e eventos (públicos) continuam com coordenada.
+## 10. Mapa (MapLibre)
+O motor do mapa recebe só `mapPosition` (posição visual) por pessoa; quem não tem é descartado. Movimento, seleção, momento do match e efeitos usam essa posição. Nenhum `u.latitude/u.longitude` chega às fontes GeoJSON do mapa. Os tiles vêm do OpenFreeMap e os prédios extras do nosso backend (`/v1/tiles/bld`, só geometria e altura); a busca de lugares, ruas e bairros é local (catálogo no Postgres), sem enviar texto ou posição a terceiros. Lugares e eventos (públicos) continuam com coordenada.
 
 ## 11. Realtime / WebSocket
 Auditado `realtime/chat.gateway.ts` e todos os `emitToUser`: `like_received {fromUserId,isSuper}`, `match_created`, `message_read`, `typing_indicator`, `wave_received {fromUserId,name,avatar,at}` — nenhum payload com coordenada, distância ou lugar. Teste 9 confirma com um cliente socket.io real.
