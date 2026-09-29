@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { GeoLabelResponse, GeoSearchResponse, GeoSearchResult } from '@cruzei/shared-types';
 import { decodeGeohash, encodeGeohash } from '@cruzei/shared-utils';
@@ -16,15 +16,26 @@ const SEARCH_EMPTY_TTL_SECONDS = 10 * 60;
 const PHOTON_TIMEOUT_MS = 1_500;
 /** nomes trazidos do banco antes do ranking fino */
 const NAME_POOL = 40;
+/** centro da célula no mar ou numa fresta entre municípios (fora de todo polígono): vale o município a até ~1 km */
+const NEAR_CITY_DEG = 0.01;
+/** "tem catálogo aqui?": lugar ou rua importados a até 15 km do centro da célula (~11 km) */
+const COVERAGE_RADIUS_M = 15_000;
+const COVERAGE_TTL_SECONDS = 6 * 3600;
 
 type LatLng = { lat: number; lng: number };
 
+/** GET /geo/coverage: false = fora da região com lugares/ruas importados (o app mostra "ainda não temos essa região") */
+export interface GeoCoverageResponse {
+  covered: boolean;
+}
+
 /**
- * "Cidade · Bairro" (polígonos do OSM em geo_areas) e "ir até lá" (ruas, bairros e cidades em geo_names; Photon
- * auto-hospedado primeiro quando PHOTON_URL existe). Tudo no nosso servidor: nada vai pro Mapbox nem pro Google.
+ * "Cidade · Bairro" (geo_areas: bairros do OSM no bbox importado, municípios do IBGE no Brasil inteiro) e "ir até lá"
+ * (ruas, bairros e cidades em geo_names; Photon auto-hospedado primeiro quando PHOTON_URL existe). Tudo no nosso
+ * servidor: nada vai pro Mapbox nem pro Google.
  */
 @Injectable()
-export class GeoService {
+export class GeoService implements OnModuleInit {
   private readonly log = new Logger(GeoService.name);
   private readonly photonUrl = (process.env.PHOTON_URL ?? '').trim().replace(/\/+$/, '');
 
@@ -33,24 +44,69 @@ export class GeoService {
     private readonly redis: RedisService,
   ) {}
 
+  onModuleInit(): void {
+    if (process.env.NODE_ENV === 'production' && !this.photonUrl) {
+      this.log.warn('PHOTON_URL vazio em produção: rua e bairro só aparecem no bbox importado (fora dele, "ir até lá" e o cabeçalho ficam só com a cidade do IBGE)');
+    }
+  }
+
   /**
    * Bairro e cidade de um ponto. Calcula no centro da célula geohash-6 (~1,2 × 0,6 km), a mesma do cache: o
-   * resultado é de bairro, não precisa de mais, e a posição fina não entra na chave nem no cálculo. Fora das áreas
-   * importadas, pergunta ao Photon (se houver).
+   * resultado é de bairro, não precisa de mais, e a posição fina não entra na chave nem no cálculo. Sem bairro
+   * importado (fora do bbox só há o município do IBGE), pergunta o bairro ao Photon (se houver).
    */
   async label(lat: number, lng: number): Promise<GeoLabelResponse> {
     const cell = encodeGeohash(lat, lng, 6);
-    const key = `geo:label:v1:${cell}`;
+    // v2: com os municípios do IBGE (a v1 guardou "fora da área" pra quase todo o Brasil)
+    const key = `geo:label:v2:${cell}`;
     const hit = await this.getJson<GeoLabelResponse>(key);
     if (hit) return hit;
     const c = decodeGeohash(cell);
-    const rows = await this.prisma.$queryRaw<AreaRow[]>`
+    const pt = Prisma.sql`ST_SetSRID(ST_MakePoint(${c.longitude}::float8, ${c.latitude}::float8), 4326)`;
+    // mesmo nível: o polígono do OSM (o que tem os bairros) antes do município do IBGE
+    let rows = await this.prisma.$queryRaw<AreaRow[]>`
       SELECT kind, name, city, state FROM geo_areas
-       WHERE ST_Covers(geom, ST_SetSRID(ST_MakePoint(${c.longitude}::float8, ${c.latitude}::float8), 4326))
-       ORDER BY admin_level DESC NULLS LAST`;
+       WHERE ST_Covers(geom, ${pt})
+       ORDER BY admin_level DESC NULLS LAST, (id LIKE 'ibge:%')`;
+    if (rows.length === 0) {
+      // a malha do IBGE para na costa: centro da célula na praia/no mar fica com o município mais perto
+      rows = await this.prisma.$queryRaw<AreaRow[]>`
+        SELECT kind, name, city, state FROM geo_areas
+         WHERE kind = 'city' AND ST_DWithin(geom, ${pt}, ${NEAR_CITY_DEG}::float8)
+         ORDER BY ST_Distance(geom, ${pt}), (id LIKE 'ibge:%')
+         LIMIT 1`;
+    }
     let out = labelFromAreas(rows);
-    if (!out.city && !out.neighborhood) out = (await this.photonLabel(c.latitude, c.longitude)) ?? out;
-    await this.setJson(key, out, out.city || out.neighborhood ? LABEL_TTL_SECONDS : LABEL_EMPTY_TTL_SECONDS);
+    let ttl = out.city || out.neighborhood ? LABEL_TTL_SECONDS : LABEL_EMPTY_TTL_SECONDS;
+    if (!out.neighborhood && this.photonUrl) {
+      const ph = await this.photonLabel(c.latitude, c.longitude);
+      // bairro do Photon só se for da mesma cidade (o /reverse pega o mais perto, que pode ser do vizinho)
+      if (ph && (!out.city || !ph.city || normalize(ph.city) === normalize(out.city))) {
+        out = { city: out.city ?? ph.city, neighborhood: ph.neighborhood, state: out.state ?? ph.state };
+      } else if (!ph) {
+        ttl = LABEL_EMPTY_TTL_SECONDS; // Photon fora do ar ou sem nada: tenta de novo em 1 h
+      }
+    }
+    await this.setJson(key, out, ttl);
+    return out;
+  }
+
+  /**
+   * Se a região em volta do ponto tem lugares/ruas importados (place_catalog, geo_names). Fora dela a busca de
+   * lugares e ruas volta vazia por falta de dado, não por nome errado, e o app avisa. Célula de 0,1° (~11 km) no cache.
+   */
+  async coverage(lat: number, lng: number): Promise<GeoCoverageResponse> {
+    const la = Math.round(lat * 10) / 10;
+    const ln = Math.round(lng * 10) / 10;
+    const key = `geo:cov:v1:${la.toFixed(1)},${ln.toFixed(1)}`;
+    const hit = await this.getJson<GeoCoverageResponse>(key);
+    if (hit) return hit;
+    const pt = Prisma.sql`ST_SetSRID(ST_MakePoint(${ln}::float8, ${la}::float8), 4326)::geography`;
+    const [row] = await this.prisma.$queryRaw<{ covered: boolean }[]>`
+      SELECT EXISTS (SELECT 1 FROM place_catalog WHERE dup_of IS NULL AND searchable AND ST_DWithin(geog, ${pt}, ${COVERAGE_RADIUS_M}::float8))
+          OR EXISTS (SELECT 1 FROM geo_names WHERE kind = 'street' AND ST_DWithin(geog, ${pt}, ${COVERAGE_RADIUS_M}::float8)) AS covered`;
+    const out = { covered: row?.covered === true };
+    await this.setJson(key, out, COVERAGE_TTL_SECONDS);
     return out;
   }
 
@@ -59,7 +115,8 @@ export class GeoService {
     const text = q.trim();
     // ~1 km: a mesma região reaproveita o cache
     const cell = center ? `${center.lat.toFixed(2)},${center.lng.toFixed(2)}` : 'br';
-    const key = `geo:s:v1:${normalize(text)}|${cell}|${limit}`;
+    // v2: com as cidades do IBGE
+    const key = `geo:s:v2:${normalize(text)}|${cell}|${limit}`;
     let results = await this.getJson<GeoSearchResult[]>(key);
     if (!results) {
       results = (await this.photon(text, center, limit)) ?? [];

@@ -134,6 +134,12 @@ const PUSH_MIN_MS = 200; // republicar a fonte users (clusterizada, até 300 fea
 const LEAVE_FADE_MAX = 15;
 /** espera depois de registrar uma imagem nova antes de apontar a feature pra ela (o nativo decodifica assíncrono) */
 const IMAGE_SETTLE_MS = 160;
+/** custo estimado de cada imagem nova na fila do nativo: o patch do MLRN carrega num pool de 4 threads (o Fresco lê o
+ *  disco com 2, então rende ~2x o serial de ~6 ms), mas numa rajada (boot, refetch com muita gente chegando) as últimas
+ *  ainda demoram mais que IMAGE_SETTLE_MS */
+const IMAGE_TASK_MS = 3;
+/** teto da espera alargada: passou disso, aponta assim mesmo (no pior caso some um instante, como antes) */
+const IMAGE_SETTLE_MAX_MS = 1200;
 /** fim da animação: espera os quadros em voo chegarem antes de voltar pra estática (senão um quadro atrasado vence) */
 const STATIC_GRACE_MS = 250;
 /** versão do desenho: muda quando draw.ts mudar o visual (invalida o cache em disco) */
@@ -315,7 +321,7 @@ export class MapEngine {
 
   // ---------- estado (espelha o `state` do WebView) ----------
   private theme: MapTheme;
-  private tier: PerfTier = 'high';
+  private tier: PerfTier;
   private readonly initTier: InitTier;
   private active = true;
   private loaded = false;
@@ -349,6 +355,8 @@ export class MapEngine {
   private readonly silPending = new Map<string, string>();
   private readonly groups = new Map<string, Record<string, MapImageEntry>>();
   private imagesDirty = false;
+  /** fim estimado (ms) da fila de imagens novas no nativo: alarga a espera antes de apontar a feature numa rajada */
+  private imgQueueUntil = 0;
 
   private tweens: AlphaTween[] = [];
   /** último alfa aplicado por fonte|id|chave: um tween novo parte daqui e valores repetidos não vão pro nativo */
@@ -381,7 +389,8 @@ export class MapEngine {
   constructor(private readonly deps: EngineDeps) {
     this.theme = deps.initTheme;
     this.initTier = deps.initTier;
-    if (deps.initTier !== 'auto') this.tier = deps.initTier;
+    // já nasce no tier que o onMapLoaded vai usar ('mid' na 1ª abertura): o estilo e o fps não montam 'high' no boot
+    this.tier = deps.initTier === 'auto' ? 'mid' : deps.initTier;
     this.camera = new CameraCtl(() => this.camRef?.current ?? null);
     this.setLook({ theme: this.theme, tier: this.tier });
     AccessibilityInfo.isReduceMotionEnabled()
@@ -824,8 +833,15 @@ export class MapEngine {
     const cur = this.groups.get(group);
     const uri = ref.path;
     if (cur && cur[name] && cur[name].source.uri === uri) return;
+    // nome novo (troca de quadro não conta: o nativo mantém a imagem antiga até a nova chegar) entra no fim da fila estimada
+    if (!cur?.[name]) this.imgQueueUntil = Math.max(this.imgQueueUntil, Date.now()) + IMAGE_TASK_MS;
     this.groups.set(group, { ...(cur ?? {}), [name]: { source: { uri, scale: ref.scale } } });
     this.markImagesDirty();
+  }
+
+  /** espera antes de apontar a feature pra uma imagem recém-registrada: a base + o que a fila estimada ainda tem pela frente */
+  private settleMs(): number {
+    return Math.min(IMAGE_SETTLE_MAX_MS, IMAGE_SETTLE_MS + Math.max(0, this.imgQueueUntil - Date.now()));
   }
 
   private dropGroup(group: string): void {
@@ -986,7 +1002,7 @@ export class MapEngine {
         f.imgReady = true;
         if (f.id === 'me') this.pushMe();
         else this.schedulePush(0);
-      }, IMAGE_SETTLE_MS);
+      }, this.settleMs());
     }
   }
 
@@ -1032,6 +1048,14 @@ export class MapEngine {
     this.dropGroup(this.groupOf(f));
     // o feature-state fica guardado por id na fonte mesmo sem a feature: quem voltar não pode nascer invisível
     for (const src of f.alphaDirty) this.setAlpha(src, id, 1);
+    // nem com a bolha apagada (saiu no meio do fade da foto): 'pa' volta a 1 em todas as fontes
+    this.tweens = this.tweens.filter((t) => !(t.id === id && t.key === 'pa'));
+    for (const s of PERSON_SOURCES) {
+      const k = `${s}|${id}|pa`;
+      if (!this.lastAlpha.has(k)) continue;
+      this.setAlpha(s, id, 1, 'pa');
+      this.lastAlpha.delete(k);
+    }
     this.figs.delete(id);
   }
 
@@ -1248,13 +1272,16 @@ export class MapEngine {
         this.pushMe();
         return;
       }
-      // a foto chega com fade de 300 ms (o thumb aparecia transparente e acendia, no original)
-      for (const s of PERSON_SOURCES) this.setAlpha(s, f.id, 0, 'pa');
+      // a foto chega com fade de 300 ms (o thumb aparecia transparente e acendia, no original). O fade roda em todas as
+      // fontes de pessoa: o feature-state fica guardado por id na fonte, e quem troca de fonte (anda, ganha/perde boost)
+      // levaria um pa=0 esquecido e ficaria sem bolha (a fila do feature-state junta tudo numa chamada por fonte)
       const now = Date.now();
-      this.addTween({ source: this.spotSourceOf(f.id), id: f.id, key: 'pa', from: 0, to: 1, start: now, dur: 300 });
-      this.addTween({ source: SRC.spot, id: f.id, key: 'pa', from: 0, to: 1, start: now, dur: 300 });
+      for (const s of PERSON_SOURCES) {
+        this.setAlpha(s, f.id, 0, 'pa');
+        this.addTween({ source: s, id: f.id, key: 'pa', from: 0, to: 1, start: now, dur: 300 });
+      }
       this.schedulePush(0);
-    }, IMAGE_SETTLE_MS);
+    }, this.settleMs());
   }
 
   /** refetch trouxe a pessoa de novo: foto trocou/sumiu → descarta; estado mudou → redesenha */
@@ -1308,7 +1335,7 @@ export class MapEngine {
             this.silReady.set(key, name);
             this.schedulePush(0);
             this.pushMe();
-          }, IMAGE_SETTLE_MS);
+          }, this.settleMs());
         })
         .catch(() => {});
     }

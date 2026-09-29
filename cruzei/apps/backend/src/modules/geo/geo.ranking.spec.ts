@@ -90,6 +90,19 @@ describe('geo.ranking', () => {
       const rows = [name('Rua Miraporanga', 'street', { size_m: 1_000 }), name('Miraporanga', 'place', { lat: CENTER.lat - 0.3 })];
       expect(rankGeoNames(rows, 'miraporanga', CENTER, 6)[0]).toMatchObject({ type: 'locality', name: 'Miraporanga' });
     });
+    it('município do IBGE: "são paulo" de Uberlândia acha a capital antes da rua e das cidades com o nome no meio', () => {
+      const city = (n: string, uf: string, size: number, extra: Partial<GeoNameRow> = {}) =>
+        name(n, 'city', { id: `ibge:${n}`, city: n, state: uf, lat: -23.55, lng: -46.58, size_m: size, ...extra });
+      const rows = [
+        name('Rua São Paulo', 'street', { size_m: 2_400, neighborhood: 'Brasil' }),
+        city('São Paulo de Olivença', 'AM', 140_000, { sim: 0.9 }),
+        city('São Paulo', 'SP', 39_000),
+        city('São Paulo das Missões', 'RS', 15_000, { sim: 0.9 }),
+      ];
+      const out = rankGeoNames(rows, 'são paulo', CENTER, 6);
+      expect(out[0]).toMatchObject({ id: 'ibge:São Paulo', type: 'city', context: 'SP' });
+      expect(out.map((r) => r.name).indexOf('Rua São Paulo')).toBeGreaterThan(0);
+    });
     it('respeita o limite', () => {
       const rows = Array.from({ length: 10 }, (_, i) => name(`Rua ${i}`, 'street', { id: `osm:st${i}` }));
       expect(rankGeoNames(rows, 'rua', CENTER, 4)).toHaveLength(4);

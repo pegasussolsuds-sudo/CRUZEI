@@ -6,18 +6,28 @@ import { distanceMeters } from '@cruzei/shared-utils';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { PlacesService } from '../places/places.service';
-import { nameScore, normalize } from '../places/places.ranking';
 import { LocationService } from '../location/location.service';
 import { CROWD, CROWD_CELL_PRECISION, PRIVACY, cellOf, localDateBrazil } from '../location/discovery-privacy';
-import { USER_KINDS, addDays, evaluateCandidate, evaluateCell, pickVenues, venueAllowed, type CandidateFacts, type SubStay } from './crowd-rules';
+import {
+  SAME_PLACE_NAME_M,
+  TOMBSTONE_DAYS,
+  USER_KINDS,
+  addDays,
+  evaluateCandidate,
+  evaluateCell,
+  findTombstone,
+  pickVenues,
+  samePlace,
+  venueAllowed,
+  type CandidateFacts,
+  type PlacePoint,
+  type SubStay,
+} from './crowd-rules';
 
 /** "tô aqui": presença fresca, não oculta e a até isto do lugar */
 const ONSITE_M = 150;
 /** pedido de longe só vale na mesma região */
 const REQUEST_MAX_M = 30_000;
-/** mesmo lugar: POI existente a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
-const DUP_NAME_M = 60;
-const DUP_POINT_M = 8;
 /** id do catálogo ('ovt:<gers>', 'osm:n123'); 'mbx:' (app antigo, busca do Mapbox) passa no formato e cai no 404 do lookup */
 const PLACE_ID = /^(ovt|osm|mbx):[A-Za-z0-9_\-.=:]{2,120}$/;
 const REPORT_REASONS = ['not_public', 'residence', 'closed', 'wrong_place', 'offensive'] as const;
@@ -41,8 +51,18 @@ export interface CrowdRunSummary {
   expired: number;
   takenDown: number;
   wouldPromote: number;
+  /** candidato que ia ser publicado, mas o mesmo lugar já estava no mapa: aponta pro POI que existe */
+  merged: number;
+  /** lugar que a multidão levaria, mas tem lápide do mesmo lugar (qualquer id): não vira candidato */
+  blocked: number;
   ms: number;
 }
+
+/** lugar a comparar: id do catálogo + nome + ponto */
+type PlaceRef = PlacePoint & { id: string };
+
+/** o que o upsert devolve; tombstone = achou lápide do mesmo lugar e não criou nem reabriu nada */
+type CandidateRef = Pick<CandidateRow, 'id' | 'status' | 'poi_id'> & { tombstone: boolean };
 
 interface PresenceRow {
   lat: number;
@@ -165,7 +185,7 @@ export class PlaceDiscoveryService {
     const t0 = Date.now();
     const today = localDateBrazil(now);
     const days = [today, addDays(today, -1), addDays(today, -2)];
-    const sum: CrowdRunSummary = { cells: 0, busyCells: 0, passingCells: 0, venueLookups: 0, candidatesTouched: 0, promoted: 0, rejected: 0, expired: 0, takenDown: 0, wouldPromote: 0, ms: 0 };
+    const sum: CrowdRunSummary = { cells: 0, busyCells: 0, passingCells: 0, venueLookups: 0, candidatesTouched: 0, promoted: 0, rejected: 0, expired: 0, takenDown: 0, wouldPromote: 0, merged: 0, blocked: 0, ms: 0 };
     const r = this.redis.client;
 
     // 1) células com alguma permanência na janela
@@ -223,7 +243,8 @@ export class PlaceDiscoveryService {
       for (const v of picks) {
         if (await this.findExisting(v)) continue; // já está no mapa
         const c = await this.upsertCandidate(v, today, { crowdPassOn: today, ambiguous });
-        if (c) sum.candidatesTouched++;
+        if (c?.tombstone) sum.blocked++;
+        else if (c) sum.candidatesTouched++;
       }
     }
 
@@ -246,13 +267,27 @@ export class PlaceDiscoveryService {
       const facts: CandidateFacts = { name: c.name, kind: c.kind as PlaceKind, ambiguous: c.ambiguous, crowdPassOn: c.crowd_pass_on, lastEvidenceOn: c.last_evidence_on };
       const decision = evaluateCandidate(facts, { onsite3: c.onsite3, req14: c.req14, deny3: c.deny3 }, today);
       if (decision.startsWith('promote')) {
+        // o mesmo lugar pode já estar no mapa (outro candidato, com outro id, publicado antes) ou ter lápide: nada de POI duplicado
+        const place: PlaceRef = { id: c.ext_id, name: c.name, latitude: Number(c.latitude), longitude: Number(c.longitude) };
+        const existing = await this.findExisting(place);
+        const tomb = existing ? null : await this.findTombstone(place, today);
         if (!opts.promote) {
-          sum.wouldPromote++;
+          if (!existing && !tomb) sum.wouldPromote++;
           continue;
         }
-        await this.promote(c, today);
-        sum.promoted++;
-        changedMap = true;
+        if (existing) {
+          await this.prisma.$executeRaw`
+            UPDATE place_candidates SET status = 'promoted', poi_id = ${BigInt(existing.id)}, resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
+          sum.merged++;
+        } else if (tomb) {
+          // lápide do mesmo lugar com outro id: vence (a faxina apaga; só volta a pendente depois que a lápide vencer)
+          await this.prisma.$executeRaw`UPDATE place_candidates SET status = 'expired' WHERE id = ${c.id} AND status = 'pending'`;
+          sum.expired++;
+        } else {
+          await this.promote(c, today);
+          sum.promoted++;
+          changedMap = true;
+        }
       } else if (decision === 'reject') {
         await this.prisma.$executeRaw`UPDATE place_candidates SET status = 'rejected', resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
         sum.rejected++;
@@ -287,7 +322,8 @@ export class PlaceDiscoveryService {
     // só números agregados no log
     this.log.log(
       `descoberta: ${sum.cells} células, ${sum.busyCells} movimentadas, ${sum.passingCells} passaram, ${sum.candidatesTouched} candidatos, ` +
-        `${sum.promoted} publicados${opts.promote ? '' : ` (sombra: ${sum.wouldPromote})`}, ${sum.rejected} recusados, ${sum.expired} vencidos, ${sum.takenDown} retirados, ${sum.ms} ms`,
+        `${sum.promoted} publicados${opts.promote ? '' : ` (sombra: ${sum.wouldPromote})`}, ${sum.merged} já no mapa, ${sum.blocked} com lápide, ` +
+        `${sum.rejected} recusados, ${sum.expired} vencidos, ${sum.takenDown} retirados, ${sum.ms} ms`,
     );
     return sum;
   }
@@ -328,12 +364,17 @@ export class PlaceDiscoveryService {
     });
   }
 
-  /** cria/atualiza o candidato (chave = id do catálogo); nunca reabre lápide (rejected); vencido volta a pendente */
-  private async upsertCandidate(p: CatalogPlace, today: string, crowd: { crowdPassOn: string; ambiguous: boolean } | null): Promise<CandidateRow | null> {
+  /**
+   * cria/atualiza o candidato (chave = id do catálogo); vencido volta a pendente. Antes, procura lápide do MESMO LUGAR com
+   * qualquer id (recusado, retirado ou publicado há até 90 dias): achando, não cria nem reabre nada e devolve a lápide.
+   */
+  private async upsertCandidate(p: CatalogPlace, today: string, crowd: { crowdPassOn: string; ambiguous: boolean } | null): Promise<CandidateRef | null> {
+    const tomb = await this.findTombstone(p, today);
+    if (tomb) return { id: tomb.id, status: tomb.status, poi_id: tomb.poi_id, tombstone: true };
     const category = p.category ?? 'other';
     const cell = cellOf(p.latitude, p.longitude, CROWD_CELL_PRECISION); // célula do LUGAR (público), nunca de pessoa
     // mapbox_id é a coluna legada (NOT NULL no backend antigo, que ainda a lê): recebe o mesmo id até ser apagada
-    const rows = await this.prisma.$queryRaw<CandidateRow[]>`
+    const rows = await this.prisma.$queryRaw<Pick<CandidateRow, 'id' | 'status' | 'poi_id'>[]>`
       INSERT INTO place_candidates (key, ext_id, mapbox_id, cell, status, name, category, kind, latitude, longitude, address, neighborhood, city, state,
                                     ambiguous, crowd_pass_on, last_evidence_on, created_on)
       VALUES (${p.id}, ${p.id}, ${p.id}, ${cell}, 'pending', ${p.name.slice(0, 255)}, ${category}::"POICategory", ${p.kind}, ${p.latitude}, ${p.longitude},
@@ -345,7 +386,30 @@ export class PlaceDiscoveryService {
         crowd_pass_on = COALESCE(EXCLUDED.crowd_pass_on, place_candidates.crowd_pass_on),
         ambiguous = CASE WHEN EXCLUDED.crowd_pass_on IS NOT NULL THEN EXCLUDED.ambiguous ELSE place_candidates.ambiguous END
       RETURNING id, status, poi_id`;
-    return rows[0] ?? null;
+    return rows[0] ? { ...rows[0], tombstone: false } : null;
+  }
+
+  /**
+   * lápide do MESMO LUGAR, independente do id ('mbx:' da era Mapbox, canônico antigo do catálogo): candidato recusado,
+   * retirado ou publicado há até 90 dias, com a mesma chave ou pela regra do samePlace (60 m + nome parecido, ou 8 m)
+   */
+  private async findTombstone(p: PlaceRef, today: string): Promise<{ id: bigint; status: string; poi_id: bigint | null } | null> {
+    const cell = cellOf(p.latitude, p.longitude, CROWD_CELL_PRECISION);
+    const cells = [cell, ...ngeohash.neighbors(cell)]; // célula-7 (~150 m) + vizinhas cobrem os 60 m (índice status, cell)
+    const dLat = SAME_PLACE_NAME_M / 111_195;
+    const dLng = dLat / Math.cos((p.latitude * Math.PI) / 180);
+    const rows = await this.prisma.$queryRaw<
+      { id: bigint; key: string; status: string; name: string; latitude: Prisma.Decimal; longitude: Prisma.Decimal; poi_id: bigint | null; resolved_on: string }[]
+    >`
+      SELECT id, key, status, name, latitude, longitude, poi_id, to_char(COALESCE(resolved_on, last_evidence_on), 'YYYY-MM-DD') AS resolved_on
+        FROM place_candidates
+       WHERE status IN ('rejected', 'promoted') AND COALESCE(resolved_on, last_evidence_on) >= ${addDays(today, -TOMBSTONE_DAYS)}::date
+         AND (key = ${p.id}
+              OR (cell = ANY(${cells}::text[])
+                  AND latitude BETWEEN ${p.latitude - dLat} AND ${p.latitude + dLat}
+                  AND longitude BETWEEN ${p.longitude - dLng} AND ${p.longitude + dLng}))`;
+    const facts = rows.map((r) => ({ ...r, latitude: Number(r.latitude), longitude: Number(r.longitude), resolvedOn: r.resolved_on }));
+    return findTombstone(p, facts, today);
   }
 
   /** voto único por pessoa e candidato; "no lugar" nunca é rebaixado pra "pedido" */
@@ -358,13 +422,13 @@ export class PlaceDiscoveryService {
   }
 
   /** o lugar já está no mapa? mesmo id do catálogo, ou POI a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
-  private async findExisting(p: CatalogPlace): Promise<SuggestResult['poi'] | null> {
+  private async findExisting(p: PlaceRef): Promise<SuggestResult['poi'] | null> {
     const same = await this.prisma.pOI.findUnique({
       where: { source_externalId: { source: 'catalog', externalId: p.id } },
       select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true },
     });
     if (same) return lite(same);
-    const dLat = DUP_NAME_M / 111_195;
+    const dLat = SAME_PLACE_NAME_M / 111_195;
     const dLng = dLat / Math.cos((p.latitude * Math.PI) / 180);
     const near = await this.prisma.pOI.findMany({
       where: {
@@ -374,13 +438,8 @@ export class PlaceDiscoveryService {
       select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true },
       take: 50,
     });
-    const want = normalize(p.name);
     for (const q of near) {
-      const d = distanceMeters(p.latitude, p.longitude, Number(q.latitude), Number(q.longitude));
-      if (d <= DUP_POINT_M) return lite(q);
-      if (d > DUP_NAME_M) continue;
-      const got = normalize(q.name);
-      if (got === want || got.includes(want) || want.includes(got) || nameScore(q.name, p.name, null) >= 75) return lite(q);
+      if (samePlace(p, { name: q.name, latitude: Number(q.latitude), longitude: Number(q.longitude) })) return lite(q);
     }
     return null;
   }

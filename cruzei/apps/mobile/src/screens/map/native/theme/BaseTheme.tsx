@@ -10,7 +10,7 @@ import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Images, Layer, type ImageEntry, type LayerProps } from '@maplibre/maplibre-react-native';
 
 import type { MapTheme, PerfTier } from '../../bridge';
-import { buildBaseLayers, DIP_MS, SETTLE_MS, type BaseLayerSpec } from './layers';
+import { bldUse, buildBaseLayers, DIP_MS, settleMs, type BaseLayerSpec, type BldUse } from './layers';
 import { TEX_SCALE, textureDataUris } from './textures';
 
 export interface BaseThemeProps {
@@ -41,6 +41,13 @@ interface Cached {
   el: React.ReactElement;
 }
 
+/** extrusões ligadas desde a última configuração assentada (inclusive ela) */
+interface Trail extends BldUse {
+  /** configuração (tema|shown|tier) que o rastro já inclui */
+  cfg: string;
+  settled: boolean;
+}
+
 export const BaseTheme = memo(function BaseTheme({ theme, tier, buildingScale }: BaseThemeProps) {
   // a 1ª aplicação entra seca; da 1ª troca de tema em diante, crossfade
   const [bootTheme] = useState(theme);
@@ -56,19 +63,37 @@ export const BaseTheme = memo(function BaseTheme({ theme, tier, buildingScale }:
     return () => clearTimeout(id);
   }, [theme, shown]);
 
-  // assentou (sem troca em andamento): a extrusão fora de uso sai por visibility, depois que a opacidade dela zerou
-  const settleKey = `${theme}|${shown}|${tier}`;
-  const [settledKey, setSettledKey] = useState(settleKey);
+  // extrusões ligadas: as usadas desde a última configuração assentada (a que saiu segue visível até a opacidade
+  // zerar). Só assenta settleMs depois da última troca, com o mergulho terminado; aí a fora de uso sai por
+  // visibility. Acumula em vez de comparar chaves: A->B->A rápido não assenta na hora com um fade no meio.
+  const cfg = `${theme}|${shown}|${tier}`;
+  const [trailState, setTrail] = useState<Trail>(() => ({ cfg, settled: true, ...bldUse(theme, shown, tier) }));
+  let trail = trailState;
+  if (trail.cfg !== cfg) {
+    const use = bldUse(theme, shown, tier);
+    trail = { cfg, settled: false, solid: trail.solid || use.solid, lit: trail.lit || use.lit };
+    setTrail(trail);
+  }
   useEffect(() => {
-    if (shown !== theme || settledKey === settleKey) return undefined;
-    const id = setTimeout(() => setSettledKey(settleKey), SETTLE_MS);
+    if (trail.settled || shown !== theme) return undefined;
+    const id = setTimeout(() => {
+      setTrail((p) => (p.cfg === cfg ? { cfg, settled: true, ...bldUse(theme, shown, tier) } : p));
+    }, settleMs(fade));
     return () => clearTimeout(id);
-  }, [settleKey, settledKey, shown, theme]);
-  const settled = settledKey === settleKey;
+  }, [trail, cfg, theme, shown, tier, fade]);
+  const { solid: trailSolid, lit: trailLit } = trail;
 
   const specs = useMemo(
-    () => buildBaseLayers({ theme, shown, tier, scale: buildingScale, fade, settled }),
-    [theme, shown, tier, buildingScale, fade, settled],
+    () =>
+      buildBaseLayers({
+        theme,
+        shown,
+        tier,
+        scale: buildingScale,
+        fade,
+        trail: { solid: trailSolid, lit: trailLit },
+      }),
+    [theme, shown, tier, buildingScale, fade, trailSolid, trailLit],
   );
 
   // o <Layer> do MLRN reenvia o estilo inteiro ao nativo a cada render: reaproveita o MESMO elemento quando a spec

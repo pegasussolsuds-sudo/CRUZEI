@@ -4,9 +4,9 @@
 // (bar, restaurante, praça…). O lugar publicado é SEMPRE um lugar público do catálogo (nome + ponto do place_catalog) —
 // nunca uma coordenada tirada das pessoas, nunca um nome digitado por alguém.
 import type { CatalogPlace, PlaceKind } from '@cruzei/shared-types';
-import { decodeGeohash } from '@cruzei/shared-utils';
+import { decodeGeohash, distanceMeters } from '@cruzei/shared-utils';
 import { CROWD } from '../location/discovery-privacy';
-import { haversineMeters, isBlocked, isOffVibe } from '../places/places.ranking';
+import { haversineMeters, isBlocked, isOffVibe, nameScore, normalize } from '../places/places.ranking';
 
 /** tipos que o detector pode pôr no mapa sozinho (lugares de rolê/encontro; campus/estádio/marco ficam de fora) */
 export const AUTO_KINDS: ReadonlySet<PlaceKind> = new Set<PlaceKind>([
@@ -128,6 +128,52 @@ export function evaluateCandidate(c: CandidateFacts, v: VoteCounts, today: strin
   if (v.req14 >= 4) return 'promote_requests';
   if (c.lastEvidenceOn < addDays(today, -14)) return 'expire';
   return 'keep';
+}
+
+/** mesmo lugar: a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
+export const SAME_PLACE_NAME_M = 60;
+export const SAME_PLACE_POINT_M = 8;
+/** candidato recusado, retirado por denúncia ou publicado segura o MESMO LUGAR por 90 dias, com qualquer id */
+export const TOMBSTONE_DAYS = 90;
+
+/** nome + ponto de um lugar (do catálogo, de um POI ou de um candidato) */
+export interface PlacePoint {
+  name: string;
+  latitude: number;
+  longitude: number;
+}
+
+/**
+ * `b` é o mesmo lugar que `a`? (a = lugar que vai entrar; b = POI no mapa ou candidato antigo). Regra única do
+ * "já está no mapa" e da lápide: a até 8 m com qualquer nome, ou a até 60 m com nome igual, contido ou parecido.
+ */
+export function samePlace(a: PlacePoint, b: PlacePoint): boolean {
+  const d = distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude);
+  if (d <= SAME_PLACE_POINT_M) return true;
+  if (d > SAME_PLACE_NAME_M) return false;
+  const want = normalize(a.name);
+  const got = normalize(b.name);
+  return got === want || got.includes(want) || want.includes(got) || nameScore(b.name, a.name, null) >= 75;
+}
+
+/** candidato antigo lido pra lápide (data yyyy-mm-dd de Brasília: resolvido ou, sem data, última evidência) */
+export interface TombstoneFacts extends PlacePoint {
+  key: string;
+  status: string;
+  resolvedOn: string;
+}
+
+/** recusado/retirado ou publicado há até 90 dias */
+export function isTombstone(t: Pick<TombstoneFacts, 'status' | 'resolvedOn'>, today: string): boolean {
+  return (t.status === 'rejected' || t.status === 'promoted') && t.resolvedOn >= addDays(today, -TOMBSTONE_DAYS);
+}
+
+/**
+ * Lápide do MESMO LUGAR, independente do id: o id do catálogo muda (linhas 'mbx:' da era Mapbox, canônico que troca
+ * no re-import), então vale a mesma chave OU a regra do samePlace. Achando, o lugar não vira candidato de novo.
+ */
+export function findTombstone<T extends TombstoneFacts>(p: PlacePoint & { id: string }, rows: readonly T[], today: string): T | null {
+  return rows.find((t) => isTombstone(t, today) && (t.key === p.id || samePlace(p, t))) ?? null;
 }
 
 /** soma dias a uma data yyyy-mm-dd (aritmética em UTC: não sofre com horário de verão) */

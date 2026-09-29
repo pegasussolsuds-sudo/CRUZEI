@@ -1,6 +1,6 @@
 import type { CatalogPlace } from '@cruzei/shared-types';
 import { encodeGeohash } from '@cruzei/shared-utils';
-import { addDays, evaluateCandidate, evaluateCell, pickVenues, type CellStats } from './crowd-rules';
+import { addDays, evaluateCandidate, evaluateCell, findTombstone, isTombstone, pickVenues, samePlace, type CellStats, type TombstoneFacts } from './crowd-rules';
 
 const cfg = { MIN_DAILY: 3, MIN_ACTIVE_DAYS: 2, MIN_UNION: 8, MAX_REPEAT: 1.6, NIGHT_MAX_SHARE: 0.35, VENUE_RADIUS_M: 45, VENUE_MIN_SHARE: 0.3 };
 const stats = (daily: number[], union: number, bands: [number, number, number] = [0, 10, 30], homes = 0): CellStats => ({ daily, union, bands, homes });
@@ -84,5 +84,57 @@ describe('evaluateCandidate', () => {
   it('addDays atravessa mês e ano', () => {
     expect(addDays('2026-09-30', 1)).toBe('2026-10-01');
     expect(addDays('2027-01-01', -1)).toBe('2026-12-31');
+  });
+});
+
+describe('lápide do mesmo lugar (qualquer id)', () => {
+  const today = '2026-09-29';
+  // ~1,11 m por 0,00001° de latitude
+  const m = (meters: number) => meters / 111_195;
+  const leo = { id: 'ovt:novo-canonico', name: 'Bar do Léo', latitude: -18.9186, longitude: -48.2772 };
+  const tomb = (over: Partial<TombstoneFacts>): TombstoneFacts => ({
+    key: 'mbx:dXJuOm1ieHBvaTphYmM', status: 'rejected', name: 'Bar do Leo', latitude: leo.latitude + m(20), longitude: leo.longitude, resolvedOn: addDays(today, -10), ...over,
+  });
+
+  it('samePlace: 8 m com qualquer nome; até 60 m só com nome igual, contido ou parecido', () => {
+    expect(samePlace(leo, { name: 'Salão Qualquer', latitude: leo.latitude + m(6), longitude: leo.longitude })).toBe(true);
+    expect(samePlace(leo, { name: 'Bar do Leo', latitude: leo.latitude + m(50), longitude: leo.longitude })).toBe(true);
+    expect(samePlace(leo, { name: 'Léo', latitude: leo.latitude + m(40), longitude: leo.longitude })).toBe(true);
+    expect(samePlace(leo, { name: 'Zenaide Bar', latitude: leo.latitude + m(30), longitude: leo.longitude })).toBe(false);
+    expect(samePlace(leo, { name: 'Bar do Léo', latitude: leo.latitude + m(70), longitude: leo.longitude })).toBe(false);
+  });
+
+  it("recusado/retirado com a chave 'mbx:' da era Mapbox segura o id novo do catálogo", () => {
+    expect(findTombstone(leo, [tomb({})], today)?.key).toBe('mbx:dXJuOm1ieHBvaTphYmM');
+  });
+
+  it('canônico que trocou no re-import (ovt → osm) também é o mesmo lugar', () => {
+    expect(findTombstone({ ...leo, id: 'osm:n123' }, [tomb({ key: 'ovt:antigo' })], today)).not.toBeNull();
+  });
+
+  it('publicado (POI apagado depois) também é lápide', () => {
+    expect(findTombstone(leo, [tomb({ status: 'promoted' })], today)).not.toBeNull();
+  });
+
+  it('mesma chave vale mesmo longe (ponto do catálogo mudou)', () => {
+    expect(findTombstone(leo, [tomb({ key: leo.id, name: 'Outro Nome', latitude: leo.latitude + m(300) })], today)).not.toBeNull();
+  });
+
+  it('a até 8 m vale com qualquer nome', () => {
+    expect(findTombstone(leo, [tomb({ name: 'Casa da Esquina', latitude: leo.latitude + m(6) })], today)).not.toBeNull();
+  });
+
+  it('90 dias: no 90º ainda segura, no 91º libera', () => {
+    expect(isTombstone({ status: 'rejected', resolvedOn: addDays(today, -90) }, today)).toBe(true);
+    expect(isTombstone({ status: 'rejected', resolvedOn: addDays(today, -91) }, today)).toBe(false);
+    expect(findTombstone(leo, [tomb({ resolvedOn: addDays(today, -91) })], today)).toBeNull();
+  });
+
+  it('pendente ou vencido não é lápide', () => {
+    expect(findTombstone(leo, [tomb({ status: 'pending' }), tomb({ status: 'expired' })], today)).toBeNull();
+  });
+
+  it('outro lugar perto (nome diferente, 30 m) ou o mesmo nome longe (70 m) não bloqueiam', () => {
+    expect(findTombstone(leo, [tomb({ name: 'Zenaide Bar', latitude: leo.latitude + m(30) }), tomb({ latitude: leo.latitude + m(70) })], today)).toBeNull();
   });
 });

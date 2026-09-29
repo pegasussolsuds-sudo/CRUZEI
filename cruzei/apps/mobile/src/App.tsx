@@ -19,6 +19,7 @@ import { asAccountBlocked, useAccountBlockStore } from './stores/accountBlock';
 import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
 import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
+import { cleanupLegacyMapbox } from './services/legacyMapboxCleanup';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
@@ -66,8 +67,15 @@ export function App() {
 
   // Sentry (no-op sem DSN): a sessão só pelo id do usuário e o motor do mapa em uso, pra separar os crashes
   useEffect(() => {
-    setSentryTag('map.engine', 'native');
+    setSentryTag('map.engine', 'maplibre');
   }, []);
+
+  // restos do SDK do Mapbox da versão antiga (~7 MB): apaga uma vez, longe do boot
+  useEffect(() => {
+    if (!mapReady) return;
+    const id = setTimeout(cleanupLegacyMapbox, 15_000);
+    return () => clearTimeout(id);
+  }, [mapReady]);
   useEffect(() => {
     setSentryUser(user?.id ?? null);
   }, [user?.id]);

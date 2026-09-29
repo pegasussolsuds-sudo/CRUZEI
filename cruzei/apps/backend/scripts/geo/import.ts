@@ -8,7 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { DATA_DIR, DEFAULT_BBOX, arg, chunk, coreSql, parseBBox, todayBrazil, type BBox } from './common';
+import { DATA_DIR, DEFAULT_BBOX, UF_BY_IBGE as UF, arg, chunk, coreSql, parseBBox, todayBrazil, type BBox } from './common';
 import { classifyOsm, classifyOverture, type OvertureRow } from './taxonomy';
 
 type Tx = Prisma.TransactionClient;
@@ -22,13 +22,6 @@ const OSM_CONFIDENCE = 0.6;
 const STREET_EPS_DEG = 0.0015;
 /** anel de fronteira aberto no OSM: fecha ligando as pontas se o buraco for até isto (ou 10% do perímetro) */
 const AREA_GAP_M = 300;
-
-/** código IBGE (2 primeiros dígitos) → UF */
-const UF: Record<string, string> = {
-  '11': 'RO', '12': 'AC', '13': 'AM', '14': 'RR', '15': 'PA', '16': 'AP', '17': 'TO', '21': 'MA', '22': 'PI', '23': 'CE',
-  '24': 'RN', '25': 'PB', '26': 'PE', '27': 'AL', '28': 'SE', '29': 'BA', '31': 'MG', '32': 'ES', '33': 'RJ', '35': 'SP',
-  '41': 'PR', '42': 'SC', '43': 'RS', '50': 'MS', '51': 'MT', '52': 'GO', '53': 'DF',
-};
 
 const prisma = new PrismaClient();
 const TX = { timeout: 15 * 60_000, maxWait: 60_000 };
@@ -155,9 +148,15 @@ async function importAreas(bbox: BBox, today: string) {
     );
     const broken = await tx.$queryRawUnsafe<{ id: string; name: string }[]>(`SELECT id, name FROM tmp_areas WHERE geom IS NULL OR ST_IsEmpty(geom)`);
     if (broken.length) console.warn(`  ${broken.length} áreas sem anel fechado (ignoradas; a versão anterior, se houver, fica): ${broken.map((b) => `${b.name} ${b.id}`).join(', ')}`);
-    // o que sumiu do OSM neste bbox sai (tabela derivada; nada aponta pra ela)
+    // o que sumiu do OSM neste bbox sai (tabela derivada; nada aponta pra ela). Município do IBGE (ibge-municipios.ts)
+    // não é deste import: só sai quando o OSM traz a mesma cidade (código IBGE igual), logo abaixo
     const ids = rows.map((r) => r.id);
-    await tx.$executeRaw`DELETE FROM geo_areas WHERE NOT (id = ANY(${ids}::text[])) AND ST_Intersects(geom, ${envelope(bbox)})`;
+    await tx.$executeRaw`DELETE FROM geo_areas WHERE NOT (id = ANY(${ids}::text[])) AND id NOT LIKE 'ibge:%' AND ST_Intersects(geom, ${envelope(bbox)})`;
+    const ibgeDup = Prisma.sql`SELECT i.id FROM geo_areas i JOIN geo_areas o ON o.kind = 'city' AND o.id NOT LIKE 'ibge:%' AND o.ibge_code = i.ibge_code
+                                WHERE i.id LIKE 'ibge:%'`;
+    await tx.$executeRaw`DELETE FROM geo_names WHERE id IN (${ibgeDup})`;
+    const replaced = await tx.$executeRaw`DELETE FROM geo_areas WHERE id IN (${ibgeDup})`;
+    if (replaced) console.log(`  ${replaced} municípios do IBGE trocados pelo polígono do OSM (com bairros)`);
     // município de cada área e a área-mãe (menor área de nível acima que contém um ponto de dentro)
     await tx.$executeRaw`UPDATE geo_areas SET city = name WHERE kind = 'city' AND ST_Intersects(geom, ${envelope(bbox)})`;
     await tx.$executeRaw`
@@ -464,7 +463,8 @@ async function importNames(bbox: BBox, today: string) {
               ARRAY[ST_XMin(a.geom), ST_YMin(a.geom), ST_XMax(a.geom), ST_YMax(a.geom)],
               sqrt(ST_Area(a.geom::geography)), a.id, $1::date
          FROM geo_areas a LEFT JOIN tmp_labels l ON l.id = a.id
-        WHERE ST_Intersects(a.geom, ST_MakeEnvelope(${bbox.w}, ${bbox.s}, ${bbox.e}, ${bbox.n}, 4326))`,
+        WHERE ST_Intersects(a.geom, ST_MakeEnvelope(${bbox.w}, ${bbox.s}, ${bbox.e}, ${bbox.n}, 4326))
+          AND a.id NOT LIKE 'ibge:%'`,
       today,
     );
 
@@ -525,10 +525,11 @@ async function importNames(bbox: BBox, today: string) {
       today,
     );
 
-    // troca o conteúdo do bbox pelo recalculado (tabela derivada: ids determinísticos, nada aponta pra ela)
+    // troca o conteúdo do bbox pelo recalculado (tabela derivada: ids determinísticos, nada aponta pra ela); a cidade
+    // do IBGE (na sede) é do ibge-municipios.ts
     await tx.$executeRawUnsafe(
       `DELETE FROM geo_names g WHERE ST_Intersects(g.geog, ST_MakeEnvelope(${bbox.w}, ${bbox.s}, ${bbox.e}, ${bbox.n}, 4326)::geography)
-          AND NOT EXISTS (SELECT 1 FROM tmp_names t WHERE t.id = g.id)`,
+          AND g.id NOT LIKE 'ibge:%' AND NOT EXISTS (SELECT 1 FROM tmp_names t WHERE t.id = g.id)`,
     );
     await tx.$executeRawUnsafe(
       `INSERT INTO geo_names (id, kind, name, neighborhood, city, state, geog, bbox, size_m, area_id, refreshed_on)

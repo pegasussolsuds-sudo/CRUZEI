@@ -2,7 +2,7 @@ import { BadRequestException, Controller, Get, Query, UseGuards } from '@nestjs/
 import { Throttle } from '@nestjs/throttler';
 import type { GeoLabelResponse, GeoSearchResponse } from '@cruzei/shared-types';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { GeoService } from './geo.service';
+import { GeoService, type GeoCoverageResponse } from './geo.service';
 
 /** query repetida (?q=a&q=b) chega como array: só string conta */
 function str(v: unknown): string | undefined {
@@ -32,6 +32,15 @@ export class GeoController {
     const p = latLng(latRaw, lngRaw);
     if (!p) throw new BadRequestException('lat e lng são obrigatórios');
     return this.svc.label(p.lat, p.lng);
+  }
+
+  /** a região do centro do mapa tem lugares/ruas no catálogo? (busca vazia fora dela = "ainda não temos essa região") */
+  @Get('coverage')
+  @Throttle({ default: { ttl: 60_000, limit: 30 } })
+  coverage(@Query('lat') latRaw?: unknown, @Query('lng') lngRaw?: unknown): Promise<GeoCoverageResponse> {
+    const p = latLng(latRaw, lngRaw);
+    if (!p) throw new BadRequestException('lat e lng são obrigatórios');
+    return this.svc.coverage(p.lat, p.lng);
   }
 
   /** "Ir até lá": ruas, bairros, distritos e cidades pelo nome, em volta do centro do mapa */

@@ -8,8 +8,8 @@ Tabelas (migration `prisma/migrations/20260930120000_geo_catalog`):
 | tabela | o que é | id |
 |---|---|---|
 | `place_catalog` | lugar público (bar, balada, restaurante, parque, shopping…), um registro por lugar de cada fonte | `ovt:<gers>` · `osm:n123` / `osm:w123` / `osm:r123` |
-| `geo_areas` | polígono administrativo do OSM: município (`city`, nível 8), setor/distrito (`district`, 9), bairro (`neighborhood`, 10) | `osm:r123` |
-| `geo_names` | nome pra "ir até lá": `street` (trechos com o mesmo nome agrupados), `neighborhood`, `city`, `place` (distrito, vila) | `osm:r123` · `osm:n123` · `osm:st<menor way id>` |
+| `geo_areas` | polígono administrativo do OSM: município (`city`, nível 8), setor/distrito (`district`, 9), bairro (`neighborhood`, 10); fora do bbox, município do IBGE | `osm:r123` · `ibge:<código>` |
+| `geo_names` | nome pra "ir até lá": `street` (trechos com o mesmo nome agrupados), `neighborhood`, `city`, `place` (distrito, vila); cidades do Brasil inteiro (IBGE) | `osm:r123` · `osm:n123` · `osm:st<menor way id>` · `ibge:<código>` |
 
 Funções SQL: `f_unaccent(text)` (unaccent imutável) e `f_norm(text)` (minúsculas, sem acento, só `[a-z0-9 ]` — a mesma regra do
 `normalize()` do `places.ranking.ts`). `name_norm` é coluna gerada `f_norm(name)`, com índice GIN trigram.
@@ -32,7 +32,21 @@ npx ts-node --transpile-only scripts/geo/import.ts --only post # só refaz dupli
 
 # 3) pois antigos do Mapbox: mostra o que re-casaria (dry-run); grava só com --apply
 npx ts-node --transpile-only scripts/geo/rematch-mapbox-pois.ts
+
+# 4) municípios do Brasil inteiro (IBGE): "Cidade" no cabeçalho e "ir até lá" por cidade fora do bbox (~30 s; idempotente)
+npx ts-node --transpile-only scripts/geo/ibge-municipios.ts            # baixa o que faltar em data/geo (~63 MB) e carrega
+npx ts-node --transpile-only scripts/geo/ibge-municipios.ts --refetch  # baixa de novo (malha/nomes novos)
 ```
+
+**Municípios do IBGE** (`ibge-municipios.ts`): malha municipal 2022 (API de malhas v3, qualidade máxima) simplificada com
+`ST_SimplifyPreserveTopology` (0,001° ≈ 110 m, `--tolerance`; ~1,1 milhão de vértices, ~16 MB de geometria) →
+`geo_areas` (`ibge:<código>`, `city`, nível 8, UF); sede de cada município das Localidades 2022 → `geo_names` (`city`, ponto
+na sede, contexto = UF; sem sede, um ponto de dentro). Nomes atuais da API de localidades v1. Cidade que já veio do OSM com
+o mesmo `IBGE:GEOCODIGO` (Uberlândia, com os bairros) fica só com a do OSM, nos dois sentidos: o `import.ts` (passo areas)
+apaga o `ibge:` repetido e o `ibge-municipios.ts` pula o código que o OSM já tem; fora isso o `import.ts` não mexe em linha
+`ibge:`. A malha 2022 não tem Boa Esperança do Norte/MT (criada depois): o ponto fica no município de origem.
+O backend avisa no boot quando `NODE_ENV=production` e `PHOTON_URL` está vazio (rua/bairro só no bbox importado), e
+`GET /geo/coverage` diz ao app se a região tem lugares/ruas importados (fora dela o overlay mostra "ainda não temos").
 
 Bbox padrão: Uberlândia e arredores `-48.40,-19.02,-48.15,-18.82` (oeste,sul,leste,norte). Pra outra região, passe
 `--bbox` igual nos três scripts (o `import.ts` recusa arquivo baixado com outro bbox). Regiões diferentes convivem: o

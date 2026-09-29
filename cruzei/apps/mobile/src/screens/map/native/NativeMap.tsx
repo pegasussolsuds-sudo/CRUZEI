@@ -11,10 +11,11 @@
 // tema e tier mudam só as camadas (theme/).
 
 import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
-import { StyleSheet, View, type LayoutChangeEvent, type NativeSyntheticEvent } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type NativeSyntheticEvent } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   Camera,
+  LogManager,
   Map as MapView,
   type CameraRef,
   type InitialViewState,
@@ -25,7 +26,7 @@ import {
 } from '@maplibre/maplibre-react-native';
 
 import type { InitTier, MapCommand, MapEvent, MapTheme, PerfTier } from '../bridge';
-import { BaseTheme, HORIZON_COLOR, MAP_LIGHT, makeBaseStyle } from './theme';
+import { BaseTheme, HORIZON_COLOR, MAP_ATTRIBUTION, MAP_LIGHT, makeBaseStyle } from './theme';
 import { MapImages, MetchLayers } from './layers';
 import { useChannel, useChannelSelector } from './engine/channels';
 import { INITIAL_CAMERA } from './engine/camera';
@@ -39,7 +40,7 @@ interface Props {
   initTheme: MapTheme;
   initTier: InitTier;
   onEvent: (ev: MapEvent) => void;
-  /** distância do rodapé do mapa até o topo da lista recolhida: logo e ⓘ da atribuição ficam visíveis acima dela */
+  /** distância do rodapé do mapa até o topo da lista recolhida: o © dos créditos fica visível acima dela */
   ornamentBottom: number;
   accessibilityLabel?: string;
 }
@@ -47,6 +48,10 @@ interface Props {
 const INITIAL_VIEW: InitialViewState = { center: INITIAL_CAMERA.center, zoom: INITIAL_CAMERA.zoom, pitch: INITIAL_CAMERA.pitch, bearing: INITIAL_CAMERA.bearing };
 /** teto de fps do render nativo por tier (o painel do aparelho pode ser de 120 Hz) */
 const MAX_FPS: Record<PerfTier, number> = { high: 60, mid: 60, low: 45 };
+
+// tile cancelado ao mover o mapa é normal; o MLRN só rebaixa a variante "Canceled" e a do OkHttp ("stream was reset:
+// CANCEL") virava aviso na tela de dev. true = tratado, não loga
+LogManager.onLog((e) => e.tag === 'Mbgl-HttpRequest' && /cancel/i.test(e.message));
 /** névoa do horizonte: faixa do topo do mapa e opacidade no pitch máximo (60°) */
 const HAZE_HEIGHT = '20%';
 const HAZE_MAX = 0.8;
@@ -85,8 +90,28 @@ const HorizonHaze = memo(function HorizonHaze({ engine }: { engine: MapEngine })
   return <LinearGradient pointerEvents="none" colors={colors} style={[styles.haze, { opacity: HAZE_MAX * k }]} />;
 });
 
+/**
+ * Créditos do mapa: um "©" pequeno e translúcido na cor do tema no lugar do ⓘ nativo. A ODbL do OpenStreetMap e o
+ * OpenFreeMap exigem a atribuição visível; o botão recolhido que abre os créditos é a forma mínima aceita.
+ */
+const MapCredits = memo(function MapCredits({ engine, bottom }: { engine: MapEngine; bottom: number }) {
+  const theme = useChannelSelector(engine.ch, 'look', (l) => l.theme);
+  const onPress = useCallback(() => Alert.alert('Créditos do mapa', MAP_ATTRIBUTION), []);
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={16}
+      accessibilityRole="button"
+      accessibilityLabel="Créditos do mapa"
+      style={[styles.credits, { bottom: Math.round(Math.max(6, bottom)) }]}
+    >
+      <Text style={[styles.creditsText, { color: theme === 'day' ? '#1A1A2E' : '#FFFFFF' }]}>©</Text>
+    </Pressable>
+  );
+});
+
 /** a árvore do mapa em si: não recebe nada que mude à toa (rótulo de acessibilidade, callbacks da tela) */
-const MapTree = memo(function MapTree({ engine, mapStyle, ornamentBottom }: { engine: MapEngine; mapStyle: string; ornamentBottom: number }) {
+const MapTree = memo(function MapTree({ engine, mapStyle }: { engine: MapEngine; mapStyle: string }) {
   const mapRef = useRef<MapRef>(null);
   const camRef = useRef<CameraRef>(null);
   const tier = useChannelSelector(engine.ch, 'look', (l) => l.tier);
@@ -117,10 +142,6 @@ const MapTree = memo(function MapTree({ engine, mapStyle, ornamentBottom }: { en
     [engine],
   );
 
-  const ornaments = useMemo(() => {
-    const bottom = Math.round(Math.max(8, ornamentBottom));
-    return { logo: { bottom, left: 8 }, attribution: { bottom, right: 8 } };
-  }, [ornamentBottom]);
 
   return (
     <MapView
@@ -131,10 +152,9 @@ const MapTree = memo(function MapTree({ engine, mapStyle, ornamentBottom }: { en
       androidView="surface"
       compass={false}
       scaleBar={false}
-      logo
-      attribution
-      logoPosition={ornaments.logo}
-      attributionPosition={ornaments.attribution}
+      // sem a marca do MapLibre (a licença BSD não exige) e sem o ⓘ nativo: os créditos obrigatórios ficam no MapCredits
+      logo={false}
+      attribution={false}
       touchPitch
       touchRotate
       preferredFramesPerSecond={MAX_FPS[tier]}
@@ -176,8 +196,9 @@ export const NativeMap = memo(
 
     return (
       <View style={styles.fill} onLayout={onLayout} accessibilityLabel={accessibilityLabel}>
-        <MapTree engine={engine} mapStyle={styleRef.current} ornamentBottom={ornamentBottom} />
+        <MapTree engine={engine} mapStyle={styleRef.current} />
         <HorizonHaze engine={engine} />
+        <MapCredits engine={engine} bottom={ornamentBottom} />
       </View>
     );
   }),
@@ -186,4 +207,6 @@ export const NativeMap = memo(
 const styles = StyleSheet.create({
   fill: { ...StyleSheet.absoluteFill, backgroundColor: '#0A0A1A' },
   haze: { position: 'absolute', top: 0, left: 0, right: 0, height: HAZE_HEIGHT },
+  credits: { position: 'absolute', right: 10, paddingHorizontal: 4, paddingVertical: 2 },
+  creditsText: { fontSize: 12, fontWeight: '600', opacity: 0.45 },
 });

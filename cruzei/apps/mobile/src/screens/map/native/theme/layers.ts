@@ -36,10 +36,17 @@ export interface BaseLayerInput {
   /** false = primeira aplicação, sem transição (senão o mapa nasceria desbotando do fundo do JSON) */
   fade: boolean;
   /**
-   * true = nenhuma troca de tema/tier em andamento: a extrusão que não está em uso (sólida na noite high/mid, acesa de
-   * dia) sai por visibility 'none' e o nativo nem monta os buckets dela (memória; com cantos arredondados é ~5x)
+   * extrusões usadas desde a última configuração assentada, inclusive ela (a que saiu segue visível até a
+   * opacidade zerar). Omitido = assentado: a fora de uso (sólida na noite high/mid, acesa de dia) sai por
+   * visibility 'none' e o nativo nem monta os buckets dela (memória; com cantos arredondados é ~5x)
    */
-  settled: boolean;
+  trail?: BldUse;
+}
+
+/** extrusões dos prédios ligadas (visibility): sólida e com janelas acesas */
+export interface BldUse {
+  solid: boolean;
+  lit: boolean;
 }
 
 interface Transition {
@@ -53,10 +60,13 @@ export const FADE: Transition = { duration: 800, delay: 0 };
 export const DIP_MS = 320;
 const DIP: Transition = { duration: DIP_MS - 20, delay: 0 };
 const UP: Transition = { duration: 450, delay: 0 };
-/** depois do mergulho, quanto esperar pra desligar a extrusão que ficou com opacidade 0 */
-export const SETTLE_MS = UP.duration + 250;
 /** prédios aparecendo no boot (o growBuildings original tinha 900 ms) */
 const GROW: Transition = { duration: 900, delay: 0 };
+/**
+ * depois da última troca (mergulho terminado), quanto esperar pra desligar a extrusão que ficou com opacidade 0: o
+ * fade dela é o UP ou, se o tier trocar antes da 1ª troca de tema (sem fade), o GROW
+ */
+export const settleMs = (fade: boolean): number => (fade ? UP : GROW).duration + 250;
 /** opacidade dos prédios no fundo do mergulho */
 const DIP_LEVEL = 0.15;
 
@@ -180,6 +190,16 @@ function facadeExpr(theme: MapTheme): Expr {
 /** janelas acesas (fill-extrusion-pattern = 2 passadas + atlas): só high/mid e só entardecer/noite */
 const litMode = (theme: MapTheme, tier: PerfTier): boolean => theme !== 'day' && tier !== 'low';
 
+/**
+ * extrusões que a configuração usa: a do tema na tela (shown) e, no mergulho, a do tema alvo (monta os buckets antes
+ * de subir). Entardecer<->noite e high<->mid não mudam nenhuma das duas: a visibility fica como está.
+ */
+export function bldUse(theme: MapTheme, shown: MapTheme, tier: PerfTier): BldUse {
+  const to = litMode(theme, tier);
+  const on = litMode(shown, tier);
+  return { solid: !to || !on, lit: to || on };
+}
+
 // ---------- sombra projetada falsa ----------
 /** metros por px lógico no z16 na latitude de Uberlândia (tiles de 512 px) */
 const M_PER_PX_Z16 = (40075016.686 * Math.cos((18.9 * Math.PI) / 180)) / (512 * 65536);
@@ -209,7 +229,7 @@ const round2 = (v: number) => Math.round(v * 100) / 100;
 
 /** todas as camadas base, de baixo pra cima */
 export function buildBaseLayers(input: BaseLayerInput): BaseLayerSpec[] {
-  const { theme, shown, tier, fade, settled } = input;
+  const { theme, shown, tier, fade, trail } = input;
   const scale = Math.max(0, Math.min(1, input.scale));
   const C = BASE_COLORS[theme];
   const S = BASE_COLORS[shown];
@@ -224,8 +244,10 @@ export function buildBaseLayers(input: BaseLayerInput): BaseLayerSpec[] {
   const bldT = dipping ? DIP : scale <= 0 ? T0 : fade ? UP : GROW;
   const solidOn = dipping ? (litMode(shown, tier) ? 0 : DIP_LEVEL) : litMode(theme, tier) ? 0 : 1;
   const litOn = dipping ? (litMode(shown, tier) ? DIP_LEVEL : 0) : litMode(theme, tier) ? 1 : 0;
-  const solidVisible = !(settled && litMode(theme, tier));
-  const litVisible = midUp && !(settled && !litMode(theme, tier));
+  // liga só a extrusão que tem (ou ainda pode ter, saindo em fade) opacidade > 0
+  const use = bldUse(theme, shown, tier);
+  const solidVisible = use.solid || Boolean(trail?.solid);
+  const litVisible = use.lit || Boolean(trail?.lit);
   // o que acompanha os prédios no chão (sombras, flood light) entra junto no boot e depois segue o crossfade do tema
   const groundT = scale <= 0 ? T0 : fade ? t : GROW;
   const fx = (v: number) => v * appear;
@@ -498,7 +520,7 @@ export function buildBaseLayers(input: BaseLayerInput): BaseLayerSpec[] {
     omt('base-oneway', 'symbol', 'transportation', {
       minzoom: 16,
       filter: ['all', ['==', ['get', 'oneway'], 1], cls([...PRIMARY, ...SECONDARY, ...MINOR])],
-      layout: { 'symbol-placement': 'line', 'symbol-spacing': 90, 'icon-image': 'arrow', 'icon-size': 0.75, 'icon-rotation-alignment': 'map', 'icon-padding': 2 },
+      layout: { 'symbol-placement': 'line', 'symbol-spacing': 90, 'icon-image': 'arrow', 'icon-size': 0.75, 'icon-rotation-alignment': 'map', 'icon-padding': [2] },
       paint: paint({ 'icon-opacity': theme === 'day' ? 0.45 : 0.5 }, t),
     }),
 

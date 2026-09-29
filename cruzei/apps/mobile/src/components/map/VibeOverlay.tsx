@@ -5,8 +5,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { Easing, FadeIn, FadeInDown, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
+import { useQuery } from '@tanstack/react-query';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import type { CatalogPlace, PlaceCategoryKey, VibeFilter, VibePlace } from '@cruzei/shared-types';
+import { api } from '../../services/api';
 import { useVibe, vibeOrigin } from '../../hooks/useVibe';
 import { useGeocodeSearch, type GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { shouldSearchPlaces, usePlaceSearch } from '../../hooks/usePlaceSearch';
@@ -56,6 +58,10 @@ const EMPTY_TEXT: Record<VibeFilter, string> = {
   near: 'Sem a sua posição ainda: ativa a localização pra ver o que tá perto de você.',
 };
 const NO_ORIGIN_TEXT = 'Ativa a localização, arrasta o mapa ou busca um bairro pra ver a vibe.';
+// fora da região com catálogo (bares, bairros e ruas importados): vazio por falta de dado, não por nome errado
+const UNCOVERED_TEXT = 'Ainda não temos os lugares dessa região. Busca o nome de uma cidade pra ir até lá.';
+const UNCOVERED_GEO_TEXT = 'Ainda não temos as ruas e bairros dessa região.';
+const UNCOVERED_HINT = 'Ainda não temos os bares, bairros e ruas dessa região. Dá pra buscar uma cidade e ir até lá.';
 
 const GEO_ICON: Record<GeocodeResult['type'], keyof typeof Ionicons.glyphMap> = {
   place: 'business-outline',
@@ -73,6 +79,28 @@ function useDebounced(value: string, ms: number): string {
     return () => clearTimeout(id);
   }, [value, ms]);
   return v;
+}
+
+/** GET /geo/coverage (geo.service.ts no backend) */
+interface GeoCoverage {
+  covered: boolean;
+}
+
+/**
+ * A região do centro do mapa tem lugares/ruas no catálogo? Célula de 0,1° (~11 km): cache por região e a posição fina
+ * não sai do app. Backend sem a rota (ou erro) = sem aviso, fica o vazio de sempre.
+ */
+function useCoverage(center: { lat: number; lng: number } | null, enabled: boolean) {
+  const lat = center ? Math.round(center.lat * 10) / 10 : null;
+  const lng = center ? Math.round(center.lng * 10) / 10 : null;
+  return useQuery({
+    queryKey: ['geo', 'coverage', lat, lng],
+    enabled: enabled && lat != null && lng != null,
+    staleTime: 60 * 60_000,
+    gcTime: 6 * 60 * 60_000,
+    retry: 1,
+    queryFn: async ({ signal }) => (await api.get<GeoCoverage>('/geo/coverage', { signal, timeout: 8_000, params: { lat, lng } })).data,
+  });
 }
 
 /** altura do teclado no Android: com statusBarTranslucent o Modal não redimensiona sozinho */
@@ -150,6 +178,8 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
   const origin = vibeOrigin(filter, center, myLocation);
   const vibe = useVibe({ center, myLocation, filter, q: debounced, category, enabled: active, polling: !paused });
   const geo = useGeocodeSearch(debounced, center, active);
+  const coverage = useCoverage(center, active);
+  const uncovered = coverage.data?.covered === false;
   // busca genérica do catálogo (bares/baladas etc.) só roda com texto (>=2) OU chip de categoria ligado
   const wantPlaces = shouldSearchPlaces(debounced, category);
   const places = usePlaceSearch({ q: debounced, category, mapCenter: center, myLocation, enabled: active && wantPlaces });
@@ -249,15 +279,23 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
 
   if (!mounted) return null;
 
+  // lista vazia fora da cobertura (busca, chip ou "Tudo"): o aviso de região substitui o "não achei"
+  const uncoveredEmpty = Boolean(origin) && uncovered && !(places.isError && wantPlaces) && (wantPlaces || filter === 'all');
   const emptyText = !origin
     ? filter === 'near'
       ? EMPTY_TEXT.near
       : NO_ORIGIN_TEXT
     : places.isError && wantPlaces
       ? 'A busca de lugares falhou. Confere a internet e tenta de novo.'
-      : debounced
-        ? `Não achei "${debounced}" por aqui. Confere o nome ou arrasta o mapa pra outra região.`
-        : EMPTY_TEXT[filter];
+      : uncoveredEmpty
+        ? UNCOVERED_TEXT
+        : debounced
+          ? `Não achei "${debounced}" por aqui. Confere o nome ou arrasta o mapa pra outra região.`
+          : EMPTY_TEXT[filter];
+  const emptyEmoji = !origin ? '📍' : uncoveredEmpty ? '🗺️' : filter === 'hot' || filter === 'people' ? '😴' : '🔎';
+  // com o aviso de região na lista vazia, "nenhuma rua" repetiria o mesmo recado
+  const listShowsUncovered = uncoveredEmpty && items.length === 0 && !loading;
+  const geoFooter = showGeo && !(listShowsUncovered && geoResults.length === 0 && !geo.isPending);
 
   return (
     <Modal visible transparent animationType="none" statusBarTranslucent navigationBarTranslucent onRequestClose={onClose} onShow={() => inputRef.current?.focus()}>
@@ -364,19 +402,21 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                 </View>
               ) : (
                 <Animated.View entering={reduceMotion || !animateRows ? undefined : FadeIn.duration(200)} style={styles.empty}>
-                  <Text style={styles.emptyEmoji}>{!origin ? '📍' : filter === 'hot' || filter === 'people' ? '😴' : '🔎'}</Text>
+                  <Text style={styles.emptyEmoji}>{emptyEmoji}</Text>
                   <Text style={styles.emptyText}>{emptyText}</Text>
                 </Animated.View>
               )
             }
             ListFooterComponent={
-              showGeo ? (
+              geoFooter ? (
                 <View style={styles.geoSection}>
                   <Text style={styles.sectionTitle}>Bairros e ruas</Text>
                   {geo.isPending && geoResults.length === 0 ? (
                     <ActivityIndicator color={colors.gray[400]} style={{ marginTop: spacing.sm }} />
                   ) : geoResults.length === 0 ? (
-                    <Text style={styles.geoEmpty}>{geo.isError ? 'A busca de endereços falhou. Tenta de novo.' : `Nenhum bairro ou rua chamado "${debounced}".`}</Text>
+                    <Text style={styles.geoEmpty}>
+                      {geo.isError ? 'A busca de endereços falhou. Tenta de novo.' : uncovered ? UNCOVERED_GEO_TEXT : `Nenhum bairro ou rua chamado "${debounced}".`}
+                    </Text>
                   ) : (
                     geoResults.map((r, i) => (
                       <Animated.View key={r.id} entering={reduceMotion || !animateRows ? undefined : FadeInDown.delay(i * 40).duration(220)}>
@@ -405,8 +445,8 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
                     ))
                   )}
                 </View>
-              ) : vibe.data && origin ? (
-                <Text style={styles.footerHint}>Busca um bar, uma balada, um bairro ou uma rua. Ex.: "hub", "zenaide", "balada".</Text>
+              ) : vibe.data && origin && !listShowsUncovered ? (
+                <Text style={styles.footerHint}>{uncovered ? UNCOVERED_HINT : 'Busca um bar, uma balada, um bairro ou uma rua. Ex.: "hub", "zenaide", "balada".'}</Text>
               ) : null
             }
           />
