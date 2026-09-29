@@ -8,17 +8,20 @@ import { qk } from '@/api/keys';
 import { errorMessage, isHttpError } from '@/api/http';
 import { confirmationMatches, describeAudience, describeChannels, needsTypedConfirmation } from '@/lib/audience';
 import { CAMPAIGN_BODY_MAX, CAMPAIGN_TITLE_MAX, confirmCountFromError, hasErrors, validateComposer } from '@/lib/campaign';
-import { formatDateTime, formatNumber, formatTime } from '@/lib/format';
+import { eventWhenText } from '@/lib/events';
+import { formatDateTime, formatNumber } from '@/lib/format';
 import { AudienceEditor, AudiencePreview, ChannelsEditor, useAudiencePreview } from '@/components/campaign/AudienceEditor';
 import { NotificationPreview } from '@/components/campaign/NotificationPreview';
 import { SCHEDULE_NOW, ScheduleField, scheduleToIso, type ScheduleValue } from '@/components/campaign/ScheduleField';
+import { TestToMeButton } from '@/components/campaign/TestToMe';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { TextAreaField, TextField } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/Toast';
 
 function defaultBody(e: AdminEvent): string {
-  const when = new Date(e.startsAt).getTime() - Date.now() < 86_400_000 ? `Hoje às ${formatTime(e.startsAt)}` : `Dia ${new Date(e.startsAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit' })} às ${formatTime(e.startsAt)}`;
+  // dia de Brasília: "Hoje às", "Amanhã às", "Dia 03/10 às" ou "Rolando agora"
+  const when = eventWhenText(e);
   const where = e.venueName ?? e.address ?? e.city ?? '';
   return `${when}${where ? ` no ${where}` : ''}. Bora?`.slice(0, CAMPAIGN_BODY_MAX);
 }
@@ -53,7 +56,10 @@ export function AnnounceDialog({ event, open, onClose }: { event: AdminEvent; op
   const preview = useAudiencePreview(audience, open, event.id);
   // o servidor conta de novo na hora: se mudou desde a prévia, devolve 409 com o número certo
   const [serverCount, setServerCount] = useState<number | null>(null);
-  const count = serverCount ?? preview.data?.targetCount ?? null;
+  // o número do 409 vale pro público daquele envio: mexeu no público, volta a valer a prévia
+  useEffect(() => setServerCount(null), [audience]);
+  // só a contagem DESTE público (mudou e a prévia não assentou: null, e o botão espera)
+  const count = serverCount ?? preview.count;
   const bigAudience = count != null && (serverCount != null || needsTypedConfirmation(audience, count));
 
   const mutation = useMutation({
@@ -109,7 +115,8 @@ export function AnnounceDialog({ event, open, onClose }: { event: AdminEvent; op
             <Button variant="ghost" onClick={onClose}>
               Cancelar
             </Button>
-            <Button type="submit" variant="primary" disabled={count == null && !preview.isError}>
+            <TestToMeButton title={title} body={body} target={target} channels={channels} invalid={!!(errors.title || errors.body || errors.channels)} onInvalid={() => setShowErrors(true)} />
+            <Button type="submit" variant="primary" disabled={count == null} title={preview.settling ? 'Contando quem recebe…' : undefined}>
               Revisar envio
             </Button>
           </>

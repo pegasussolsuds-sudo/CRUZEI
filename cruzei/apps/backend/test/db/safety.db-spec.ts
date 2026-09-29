@@ -75,6 +75,8 @@ const moderation = new ModerationService(
   accounts as unknown as AccountStateService,
   gateway as unknown as ChatGateway,
   {} as PhotoModerationService,
+  // aviso da moderação: central + socket (push fora do teste)
+  { notify: async () => ({ notified: 1, pushSent: 0, pushFailed: 0 }) } as unknown as NotifyService,
 );
 const cards = new PublicUsersController(db, location as unknown as LocationService);
 const inbox = new InboxService(
@@ -774,3 +776,4 @@ describe('curtida × bloqueio (o Block é conferido de novo depois da trava do p
     }
   });
 });
+import type { NotifyService } from '../../src/modules/notifications/notify.service';

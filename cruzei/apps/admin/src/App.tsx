@@ -1,10 +1,11 @@
 import { lazy, type ReactNode } from 'react';
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router';
-import { Lock } from 'lucide-react';
+import { Lock, WifiOff } from 'lucide-react';
 import type { AdminPermission } from '@cruzei/shared-types';
 import { useAuth } from '@/auth/AuthProvider';
 import { hasPermission } from '@/lib/permissions';
 import { AppShell } from '@/components/layout/AppShell';
+import { Button } from '@/components/ui/Button';
 import { EmptyState, LoadingState } from '@/components/ui/States';
 import { PageHeader } from '@/components/ui/misc';
 import { LoginPage } from '@/pages/LoginPage';
@@ -21,9 +22,34 @@ const NotificationsPage = lazy(() => import('@/pages/notifications/Notifications
 const SupportPage = lazy(() => import('@/pages/support/SupportPage'));
 const AuditPage = lazy(() => import('@/pages/AuditPage'));
 
+/** sessão salva, mas o servidor não respondeu: nada de mandar pro login (a sessão continua valendo) */
+function OfflineScreen() {
+  const { notice, retry, logout } = useAuth();
+  return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24 }}>
+      <EmptyState
+        icon={<WifiOff size={22} />}
+        title="Sem conexão com o servidor"
+        text={notice ?? 'A API não respondeu. Sua sessão continua salva nesta aba.'}
+        action={
+          <div className="row row-wrap" style={{ justifyContent: 'center' }}>
+            <Button variant="primary" onClick={retry}>
+              Tentar de novo
+            </Button>
+            <Button variant="ghost" onClick={() => void logout()}>
+              Sair
+            </Button>
+          </div>
+        }
+      />
+    </div>
+  );
+}
+
 function RequireAuth() {
   const { status } = useAuth();
   const location = useLocation();
+  if (status === 'offline') return <OfflineScreen />;
   if (status === 'loading') {
     return (
       <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
@@ -72,6 +98,7 @@ function LoginRoute() {
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from;
   if (status === 'authenticated') return <Navigate to={from && from !== '/entrar' ? from : '/'} replace />;
+  if (status === 'offline') return <OfflineScreen />;
   return <LoginPage />;
 }
 

@@ -37,9 +37,12 @@ import {
   messageForUser,
   messagesForUser,
   normClientId,
+  supportOrder,
   threadForUser,
+  waitingSinceOf,
   welcomeText,
   type SupportMessageRow,
+  type SupportOrder,
   type SupportThreadRow,
 } from './support.mapper';
 
@@ -78,6 +81,9 @@ const MSG_SELECT = {
   clientId: true,
   createdAt: true,
 } as const;
+
+/** chave da fila "quem espera há mais tempo": desde quando espera (ou a última mensagem, se não está esperando) */
+const WAIT_KEY = Prisma.sql`COALESCE(w.since, t.last_message_at)`;
 
 /** notificação da resposta: prévia curta do texto */
 const preview = (body: string) => (body.length > 140 ? `${body.slice(0, 137)}…` : body);
@@ -219,35 +225,53 @@ export class SupportService {
 
   async listThreads(
     staff: AuthenticatedUser,
-    q: { status?: string; mine?: string; cursor?: string; limit?: unknown },
+    q: { status?: string; mine?: string; order?: string; cursor?: string; limit?: unknown },
   ): Promise<SupportThreadList> {
     const limit = pageSize(q.limit, 30, 100);
-    const where: Prisma.Sql[] = [];
+    const order = supportOrder(q.order);
+    const filters: Prisma.Sql[] = [];
     if (q.status === 'open' || q.status === 'pending' || q.status === 'resolved')
-      where.push(Prisma.sql`t.status = ${q.status}`);
-    else if (q.status !== 'all') where.push(Prisma.sql`t.status <> 'resolved'`);
+      filters.push(Prisma.sql`t.status = ${q.status}`);
+    else if (q.status !== 'all') filters.push(Prisma.sql`t.status <> 'resolved'`);
     if (q.mine === '1' || q.mine === 'true')
-      where.push(Prisma.sql`t.assigned_to = ${staff.id}::uuid`);
+      filters.push(Prisma.sql`t.assigned_to = ${staff.id}::uuid`);
+    const where = [...filters];
     const cur = decodeCursor(q.cursor, 2);
-    if (cur)
+    if (cur) {
+      const at = Prisma.sql`(${cursorTs(cur[0])}::timestamp AT TIME ZONE 'UTC')`;
       where.push(
-        Prisma.sql`(t.last_message_at, t.id) < ((${cursorTs(cur[0])}::timestamp AT TIME ZONE 'UTC'), ${cur[1]}::uuid)`,
+        order === 'oldest'
+          ? Prisma.sql`(${WAIT_KEY}, t.id) > (${at}, ${cur[1]}::uuid)`
+          : Prisma.sql`(t.last_message_at, t.id) < (${at}, ${cur[1]}::uuid)`,
       );
-    const rows = await this.summaryRows(where, limit + 1);
+    }
+    const cond = filters.length ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}` : Prisma.empty;
+    const [rows, total] = await Promise.all([
+      this.summaryRows(where, limit + 1, order),
+      // o total ignora o cursor: com status=open é o MESMO número do Painel (support.waitingStaff)
+      this.prisma.$queryRaw<
+        { n: number }[]
+      >`SELECT count(*)::int AS n FROM support_threads t ${cond}`,
+    ]);
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
     return {
       items: page.map((r) => this.summaryOf(r)),
-      nextCursor: rows.length > limit && last ? encodeCursor([last.cursor_at, last.id]) : null,
+      nextCursor:
+        rows.length > limit && last
+          ? encodeCursor([order === 'oldest' ? last.wait_cursor_at : last.cursor_at, last.id])
+          : null,
+      total: total[0]?.n ?? 0,
     };
   }
 
   async threadDetail(staff: AuthenticatedUser, id: string): Promise<SupportThreadDetail> {
     const s = await this.summary(id);
-    const [rows, ctx] = await Promise.all([
+    const [newest, ctx] = await Promise.all([
+      // as 1000 MAIS NOVAS (asc + take cortaria justamente as últimas numa conversa longa); a tela lê em ordem
       this.prisma.supportMessage.findMany({
         where: { threadId: id },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: 1000,
         select: MSG_SELECT,
       }),
@@ -267,6 +291,7 @@ export class SupportService {
                (SELECT count(*) FROM support_threads o WHERE o.user_id = u.id AND o.id <> ${id}::uuid)::int AS past
           FROM users u WHERE u.id = ${s.user.id}::uuid`,
     ]);
+    const rows = newest.reverse();
     const names = await this.namesOf(rows.map((r) => r.senderId));
     const c = ctx[0];
     return {
@@ -544,11 +569,17 @@ export class SupportService {
     return this.summaryOf(r);
   }
 
-  private summaryRows(where: Prisma.Sql[], limit: number) {
+  private summaryRows(where: Prisma.Sql[], limit: number, order: SupportOrder = 'recent') {
     const cond = where.length ? Prisma.sql`WHERE ${Prisma.join(where, ' AND ')}` : Prisma.empty;
+    const orderBy =
+      order === 'oldest'
+        ? Prisma.sql`${WAIT_KEY} ASC, t.id ASC`
+        : Prisma.sql`t.last_message_at DESC, t.id DESC`;
     return this.prisma.$queryRaw<SummaryDb[]>`
       SELECT t.id, t.status, t.created_at, t.last_message_at, t.staff_unread, t.first_response_at, t.assigned_to,
              to_char(t.last_message_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS cursor_at,
+             w.since AS waiting_since,
+             to_char(${WAIT_KEY} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS wait_cursor_at,
              u.id AS user_id, u.name AS user_name, u.premium_tier, u.premium_expires_at, u.account_status,
              (SELECT COALESCE(p.thumbnail_url, p.url) FROM photos p WHERE p.user_id = u.id
                ORDER BY p.is_main DESC, p.order_index ASC LIMIT 1) AS avatar_url,
@@ -562,8 +593,15 @@ export class SupportService {
            WHERE m.thread_id = t.id AND NOT m.internal
            -- prévia da fila: a última fala de gente (a de sistema, boas-vindas/encerramento, só se não houver nenhuma)
            ORDER BY (m.author = 'system'), m.created_at DESC LIMIT 1) lm ON true
+        LEFT JOIN LATERAL (
+          -- esperando desde: 1ª mensagem da pessoa depois da última resposta pública da equipe (índice thread_id, created_at)
+          SELECT min(m.created_at) AS since FROM support_messages m
+           WHERE m.thread_id = t.id AND m.author = 'user'
+             AND m.created_at > COALESCE((SELECT max(s.created_at) FROM support_messages s
+                                           WHERE s.thread_id = t.id AND s.author = 'staff' AND NOT s.internal),
+                                         '-infinity')) w ON true
         ${cond}
-       ORDER BY t.last_message_at DESC, t.id DESC
+       ORDER BY ${orderBy}
        LIMIT ${limit}`;
   }
 
@@ -592,6 +630,7 @@ export class SupportService {
       firstResponseMinutes: r.first_response_at
         ? Math.max(0, Math.round((r.first_response_at.getTime() - r.created_at.getTime()) / 60_000))
         : null,
+      waitingSince: waitingSinceOf(r.status, r.waiting_since),
     };
   }
 
@@ -609,6 +648,8 @@ export class SupportService {
 interface SummaryDb {
   id: string;
   cursor_at: string;
+  wait_cursor_at: string;
+  waiting_since: Date | null;
   status: string;
   created_at: Date;
   last_message_at: Date;

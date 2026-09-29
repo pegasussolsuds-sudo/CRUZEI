@@ -1,16 +1,33 @@
+import { isAtLeast18, normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { v4 as uuid } from 'uuid';
+
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
-import { SmsService } from './sms.service';
 import { AccountStateService } from '../account/account-state.service';
-import { isAtLeast18, normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
-import { v4 as uuid } from 'uuid';
+
+import { SmsService } from './sms.service';
+
+/** tipo do token: o refresh (30 dias) nunca vale como Bearer; o access (15 min) nunca renova sessão */
+export type TokenType = 'access' | 'refresh';
 
 export interface JwtPayload {
   sub: string; // userId
   phone?: string;
+  /** ausente = token emitido antes do tipo existir (aceito no /auth/refresh até vencer, pra ninguém cair) */
+  typ?: TokenType;
+}
+
+/** o refresh não autentica pedido nem socket (o segredo é o mesmo: sem isso o de 30 dias serviria de Bearer) */
+export function isRefreshPayload(p: Pick<JwtPayload, 'typ'> | null | undefined): boolean {
+  return p?.typ === 'refresh';
+}
+
+/** /auth/refresh só aceita refresh (ou token antigo, sem tipo); access mandado ali é recusado */
+export function canRenewWith(p: Pick<JwtPayload, 'typ'> | null | undefined): boolean {
+  return !!p && (p.typ === 'refresh' || p.typ === undefined);
 }
 
 @Injectable()
@@ -65,7 +82,10 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) throw new UnauthorizedException('Telefone já cadastrado');
     if (Number.isNaN(payload.birthDate.getTime()) || !isAtLeast18(payload.birthDate)) {
-      throw new BadRequestException({ error: 'underage', message: 'Precisa ter 18 anos ou mais pra usar o Metch' });
+      throw new BadRequestException({
+        error: 'underage',
+        message: 'Precisa ter 18 anos ou mais pra usar o Metch',
+      });
     }
     // sem código de SMS confirmado não existe conta: nada de cadastrar o número dos outros
     const proof = await this.redis.consumeSignupProof(phone);
@@ -82,9 +102,12 @@ export class AuthService {
         orientation: (payload.orientation ?? undefined) as never,
         lookingFor: (payload.lookingFor ?? 'unspecified') as never,
         // avatar inicial determinístico (seed = id → mesmo visual em qualquer cliente)
-        avatarConfig: randomAvatarConfig(id, { gender: payload.gender as 'female' | 'male' | 'non_binary' | 'other' }) as never,
+        avatarConfig: randomAvatarConfig(id, {
+          gender: payload.gender as 'female' | 'male' | 'non_binary' | 'other',
+        }) as never,
         // completude inicial: nome (10) + intenção definida (5) — resto vem de fotos/bio/interesses
-        profileCompleteness: 10 + (payload.lookingFor && payload.lookingFor !== 'unspecified' ? 5 : 0),
+        profileCompleteness:
+          10 + (payload.lookingFor && payload.lookingFor !== 'unspecified' ? 5 : 0),
         termsVersion: payload.termsVersion,
         termsAcceptedAt: new Date(),
       },
@@ -99,6 +122,7 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Refresh token inválido');
     }
+    if (!canRenewWith(payload)) throw new UnauthorizedException('Refresh token inválido');
     // fora do try: conta banida/suspensa responde 403 com o motivo (não "token inválido")
     return this.issueTokens(payload.sub, payload.phone);
   }
@@ -113,12 +137,14 @@ export class AuthService {
     // banida/suspensa não ganha token novo (login e refresh): 403 com o motivo, que o app mostra
     await this.accounts.assertActive(userId);
 
-    const payload: JwtPayload = { sub: userId, phone: phone ?? user.phone ?? undefined };
+    const base = { sub: userId, phone: phone ?? user.phone ?? undefined };
     const accessTtl = this.cfg.get<number>('jwt.accessTtl') ?? 900;
     const refreshTtl = this.cfg.get<number>('jwt.refreshTtl') ?? 2_592_000;
 
-    const token = this.jwt.sign(payload, { expiresIn: accessTtl });
-    const refreshToken = this.jwt.sign(payload, { expiresIn: refreshTtl });
+    const access: JwtPayload = { ...base, typ: 'access' };
+    const refresh: JwtPayload = { ...base, typ: 'refresh' };
+    const token = this.jwt.sign(access, { expiresIn: accessTtl });
+    const refreshToken = this.jwt.sign(refresh, { expiresIn: refreshTtl });
 
     return {
       user: { id: user.id, name: user.name, phone: user.phone, isNew: false },

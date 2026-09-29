@@ -1,7 +1,8 @@
 // Catálogo de lugares: busca, criar (com seletor no mapa), editar, ocultar/mostrar.
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { Eye, EyeOff, MapPinned, Pencil, Plus, Search } from 'lucide-react';
+import { CalendarDays, Eye, EyeOff, MapPinned, Pencil, Plus, Search } from 'lucide-react';
 import type { AdminPoi } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
@@ -85,23 +86,21 @@ export function AllPoisTab() {
               <ul className="list" aria-label="Lugares">
                 {items.map((p) => (
                   <li key={p.id}>
-                    <div
-                      className="place-item place-item-compact"
-                      data-selected={p.id === selected}
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={p.id === selected}
-                      onClick={() => setSelected(p.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelected(p.id);
-                        }
-                      }}
-                    >
+                    <div className="place-item place-item-compact" data-selected={p.id === selected} onClick={() => setSelected(p.id)}>
                       <div className="grow" style={{ minWidth: 0 }}>
                         <div className="row row-wrap">
-                          <span className="strong truncate">{p.name}</span>
+                          <button
+                            type="button"
+                            className="place-item-name strong truncate"
+                            aria-pressed={p.id === selected}
+                            aria-label={`Ver ${p.name} no mapa`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelected(p.id);
+                            }}
+                          >
+                            {p.name}
+                          </button>
                           {p.isPartner ? <Badge tone="gold">Parceiro</Badge> : null}
                           {p.eventId ? <Badge tone="premium">Evento</Badge> : null}
                           {p.hiddenAt ? <Badge tone="danger">Oculto</Badge> : null}
@@ -110,8 +109,15 @@ export function AllPoisTab() {
                           {poiCategoryLabel(p.category)} · {[p.address, p.city].filter(Boolean).join(' · ') || 'sem endereço'} · fonte {p.source}
                         </div>
                       </div>
-                      <span className="row" role="presentation" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-                        <Button size="sm" variant="ghost" iconOnly icon={<Pencil size={14} />} aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)} />
+                      <span className="row" onClick={(e) => e.stopPropagation()}>
+                        {p.eventId ? (
+                          // lugar de evento é espelho do evento (o servidor recusa editar aqui): edita o evento
+                          <Link to={`/eventos/${p.eventId}`} className="btn btn-ghost btn-sm" aria-label={`Editar evento de ${p.name}`}>
+                            <CalendarDays size={14} /> Editar evento
+                          </Link>
+                        ) : (
+                          <Button size="sm" variant="ghost" iconOnly icon={<Pencil size={14} />} aria-label={`Editar ${p.name}`} onClick={() => setEditing(p)} />
+                        )}
                         {p.hiddenAt ? (
                           <Button
                             size="sm"

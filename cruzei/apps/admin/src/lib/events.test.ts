@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AdminEvent } from '@cruzei/shared-types';
-import { EMPTY_EVENT_FORM, eventFormToPayload, eventPhase, eventToForm, validateEventForm } from './events';
+import { duplicateEventForm, EMPTY_EVENT_FORM, eventFormToPayload, eventPhase, eventToForm, eventWhenText, validateEventForm } from './events';
 import { addDays, fromLocalInput, localInputFromNow, toLocalInput } from './datetime';
 
 const NOW = Date.parse('2026-09-29T15:00:00Z'); // 12:00 em Brasília
@@ -114,5 +114,55 @@ describe('formulário', () => {
       coverUrl: ev.coverUrl,
       poiId: ev.poiId,
     });
+  });
+});
+
+describe('duplicar evento', () => {
+  it('mesmos dados, datas uma semana depois (mesma hora de Brasília)', () => {
+    const ev: AdminEvent = {
+      id: 'e1',
+      title: 'Festa',
+      description: null,
+      category: 'party',
+      status: 'published',
+      startsAt: '2026-10-01T23:00:00.000Z',
+      endsAt: '2026-10-02T04:00:00.000Z',
+      venueName: 'Galpão',
+      lat: -18.91,
+      lng: -48.27,
+      address: null,
+      city: 'Uberlândia',
+      coverUrl: null,
+      poiId: 'p1',
+      mapPoiId: '99',
+      createdBy: null,
+      createdAt: '2026-09-20T10:00:00.000Z',
+      publishedAt: '2026-09-21T10:00:00.000Z',
+      cancelledAt: null,
+      announcements: [],
+    };
+    const f = duplicateEventForm(ev);
+    expect(f.startsAt).toBe('2026-10-08T20:00');
+    expect(f.endsAt).toBe('2026-10-09T01:00');
+    expect(f).toMatchObject({ title: 'Festa', venueName: 'Galpão', poiId: 'p1', city: 'Uberlândia', category: 'party' });
+    expect(duplicateEventForm(ev, 1).startsAt).toBe('2026-10-02T20:00');
+  });
+});
+
+describe('texto de quando é o evento (aviso)', () => {
+  // NOW = 12:00 de 29/09 em Brasília
+  const at = (startsAt: string, endsAt = '2026-10-10T00:00:00Z') => eventWhenText({ startsAt, endsAt }, NOW);
+  it('compara o DIA em Brasília, não "menos de 24 h"', () => {
+    expect(at('2026-09-29T23:00:00Z')).toBe('Hoje às 20:00');
+    // 10 h de amanhã (menos de 24 h daqui): é amanhã, não hoje
+    expect(at('2026-09-30T13:00:00Z')).toBe('Amanhã às 10:00');
+    // 01:30 UTC do dia 30 = 22:30 do dia 29 em Brasília: ainda é hoje
+    expect(at('2026-09-30T01:30:00Z')).toBe('Hoje às 22:30');
+    // 23:30 de amanhã em Brasília
+    expect(at('2026-10-01T02:30:00Z')).toBe('Amanhã às 23:30');
+    expect(at('2026-10-03T22:00:00Z')).toBe('Dia 03/10 às 19:00');
+  });
+  it('já começou e não terminou: rolando agora', () => {
+    expect(at('2026-09-29T14:00:00Z', '2026-09-29T20:00:00Z')).toBe('Rolando agora');
   });
 });

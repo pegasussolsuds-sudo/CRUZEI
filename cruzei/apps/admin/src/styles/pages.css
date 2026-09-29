@@ -413,10 +413,23 @@
   background: var(--accent-soft);
   border-left-color: var(--accent);
 }
-.place-item:focus-visible {
+/* o nome é o botão de selecionar (teclado/leitor de tela); a linha inteira continua clicável com o mouse */
+.place-item-name {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.place-item-name:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: -2px;
-  border-radius: 0;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .place-item-compact {
   flex-direction: row;
@@ -659,6 +672,8 @@
   display: grid;
   grid-template-columns: 330px minmax(0, 1fr) 300px;
   height: calc(100vh - var(--topbar-h));
+  /* tablet/celular: 100vh inclui a barra do navegador e escondia o campo de resposta */
+  height: calc(100dvh - var(--topbar-h));
   min-height: 520px;
 }
 .support-queue {

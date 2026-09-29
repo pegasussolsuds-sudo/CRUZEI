@@ -13,6 +13,24 @@ export interface AuditTarget {
   id: string;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * id de alvo aceito no filtro: uuid (pessoa, evento, campanha, atendimento) ou número (lugar, sugestão). Uuid vai em
+ * minúsculas (é assim que fica gravado); qualquer outra coisa → null (a rota responde 400, não "nada encontrado").
+ */
+export function auditTargetId(raw: string | null | undefined): string | null {
+  const v = raw?.trim() ?? '';
+  if (UUID.test(v)) return v.toLowerCase();
+  if (/^\d{1,18}$/.test(v)) return v;
+  return null;
+}
+
+/** busca por trecho da ação ("ban" acha "moderation.ban"): ILIKE com % e _ escapados; o valor vai parametrizado */
+export function actionPattern(raw: string): string {
+  return `%${raw.trim().replace(/[%_\\]/g, '\\$&')}%`;
+}
+
 /**
  * Trilha do painel: as ações novas vão pro audit_log (append-only) com action 'admin.*' e metadata
  * { target: {kind, id}, detail, ... }. A leitura junta com moderation_actions (banir, suspender, fotos...).
@@ -60,8 +78,8 @@ export class AuditService {
     const where: Prisma.Sql[] = [];
     if (q.actorId) where.push(Prisma.sql`x.actor_id = ${q.actorId}::uuid`);
     if (q.targetId) where.push(Prisma.sql`x.target_id = ${q.targetId}`);
-    if (q.action)
-      where.push(Prisma.sql`x.action LIKE ${q.action.replace(/[%_\\]/g, '\\$&') + '%'}`);
+    // ações gravadas como 'moderation.ban', 'admin.event.publish'…: trecho em qualquer posição, sem diferenciar caixa
+    if (q.action?.trim()) where.push(Prisma.sql`x.action ILIKE ${actionPattern(q.action)}`);
     if (cur)
       where.push(
         Prisma.sql`(x.at, x.id) < ((${cursorTs(cur[0])}::timestamp AT TIME ZONE 'UTC'), ${cur[1]})`,

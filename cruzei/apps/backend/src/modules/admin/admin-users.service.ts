@@ -105,7 +105,13 @@ export class AdminUsersService {
   }
 
   /** filtros da busca (o mesmo WHERE pra página e pro total) */
-  private filters(q: { q?: string; status?: string; tier?: string; role?: string }): Prisma.Sql[] {
+  private filters(q: {
+    q?: string;
+    status?: string;
+    tier?: string;
+    role?: string;
+    reports?: string;
+  }): Prisma.Sql[] {
     const where: Prisma.Sql[] = [Prisma.sql`u.deleted_at IS NULL`];
     const text = q.q?.trim().slice(0, 100);
     if (text) {
@@ -125,6 +131,12 @@ export class AdminUsersService {
     if (q.role === 'user' || q.role === 'moderator' || q.role === 'admin') {
       where.push(Prisma.sql`u.role = ${q.role}::"UserRole"`);
     }
+    // com denúncia esperando decisão (a mesma conta da coluna reportsPending)
+    if (q.reports === 'pending') {
+      where.push(
+        Prisma.sql`EXISTS (SELECT 1 FROM reports r WHERE r.reported_id = u.id AND r.status = 'pending')`,
+      );
+    }
     const vigente = Prisma.sql`(u.premium_expires_at IS NULL OR u.premium_expires_at > (now() AT TIME ZONE 'UTC'))`;
     if (q.tier === 'free') where.push(Prisma.sql`(u.premium_tier = 'free' OR NOT ${vigente})`);
     else if (q.tier === 'premium' || q.tier === 'premium_plus') {
@@ -140,6 +152,7 @@ export class AdminUsersService {
       status?: string;
       tier?: string;
       role?: string;
+      reports?: string;
       cursor?: string;
       limit?: unknown;
     },

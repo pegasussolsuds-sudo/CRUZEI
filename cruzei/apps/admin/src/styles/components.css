@@ -560,6 +560,13 @@
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
+/* nome como link de verdade (ctrl/cmd+clique abre em outra aba) sem virar texto azul no meio da tabela */
+.table .user-link {
+  color: var(--text);
+}
+.table .user-link:hover {
+  text-decoration: underline;
+}
 .table .right {
   text-align: right;
 }

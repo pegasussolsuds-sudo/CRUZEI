@@ -1,8 +1,8 @@
-// Conversa ao vivo: mensagens, "digitando", nota interna, respostas rápidas, atribuir e resolver.
+// Conversa ao vivo: mensagens, "digitando", nota interna, respostas rápidas, atribuir/passar e resolver.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Clock, Lock, MessageSquareText, PanelRightOpen, RotateCcw, Send, UserMinus, UserPlus, Zap } from 'lucide-react';
+import { ArrowLeft, ArrowRightLeft, CheckCircle2, Clock, Lock, MessageSquareText, PanelRightOpen, RotateCcw, Send, UserMinus, UserPlus, Zap } from 'lucide-react';
 import {
   SUPPORT_EVENTS,
   SUPPORT_LIMITS,
@@ -17,14 +17,16 @@ import { qk } from '@/api/keys';
 import { errorMessage } from '@/api/http';
 import { useMe } from '@/auth/AuthProvider';
 import { formatShortDateTime, formatTime, TIME_ZONE } from '@/lib/format';
-import { isPendingMessage, mergeMessage, PENDING_PREFIX, QUICK_REPLIES } from '@/lib/support';
+import { closedWhileReplying, escGoesBackToQueue, isPendingMessage, mergeMessage, PENDING_PREFIX, QUICK_REPLIES, readDraft, writeDraft } from '@/lib/support';
 import { useDismiss } from '@/lib/hooks';
+import { ROLE_LABEL } from '@/lib/labels';
 import { useSocket, useSocketEvent } from '@/realtime/SocketProvider';
 import { useSupportLive } from '@/realtime/SupportLive';
 import { SupportStatusBadge } from '@/components/badges';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
-import { ErrorState, LoadingState } from '@/components/ui/States';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { ErrorState, LoadingState, Spinner } from '@/components/ui/States';
 import { useToast } from '@/components/ui/Toast';
 import { ContextPanel } from './ContextPanel';
 
@@ -39,31 +41,62 @@ function newClientId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `c${Date.now()}${Math.random().toString(36).slice(2)}`;
 }
 
+type Assignee = { id: string; name: string } | null;
+
 export function Conversation({ threadId }: { threadId: string }) {
   const me = useMe();
   const qc = useQueryClient();
   const toast = useToast();
-  const { socket } = useSocket();
+  const navigate = useNavigate();
+  const { socket, connected } = useSocket();
   const { setViewing, applyThread } = useSupportLive();
-  const [text, setText] = useState('');
+  // rascunho por atendimento: trocar de conversa e voltar não apaga o que estava escrito
+  const [text, setText] = useState(() => readDraft(threadId));
   const [internal, setInternal] = useState(false);
   const [userTyping, setUserTyping] = useState(false);
   const [showContext, setShowContext] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [passOpen, setPassOpen] = useState(false);
+  const [confirmTake, setConfirmTake] = useState(false);
+  /** encerrado por outra pessoa enquanto eu escrevia uma resposta: aviso visível até reabrir ou mandar */
+  const [closedUnderMe, setClosedUnderMe] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const quickRef = useRef<HTMLDivElement>(null);
+  const passRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const typingSent = useRef(false);
   const typingTimer = useRef<number | undefined>(undefined);
   const userTypingTimer = useRef<number | undefined>(undefined);
+  const selfClosing = useRef(false);
   useDismiss(quickRef, quickOpen, () => setQuickOpen(false));
+  useDismiss(passRef, passOpen, () => setPassOpen(false));
 
-  const detail = useQuery({ queryKey: qk.supportThread(threadId), queryFn: () => adminApi.supportThread(threadId), staleTime: 0 });
+  useEffect(() => writeDraft(threadId, text), [threadId, text]);
+
+  // socket caído: a conversa aberta se atualiza sozinha (a reconexão também busca tudo de novo)
+  const detail = useQuery({
+    queryKey: qk.supportThread(threadId),
+    queryFn: () => adminApi.supportThread(threadId),
+    staleTime: 0,
+    refetchInterval: connected ? false : 15_000,
+  });
   const t = detail.data;
   // atendimento encerrado só aceita nota interna (o servidor devolve 409 thread_resolved pra resposta)
   const noteOnly = t?.status === 'resolved';
   const asNote = internal || noteOnly;
+
+  // encerrado por outra pessoa com uma resposta pela metade: avisa (a mensagem vai como nota interna), nunca troca calado
+  const lastStatus = useRef<SupportThreadStatus | undefined>(t?.status);
+  const replyingRef = useRef(false);
+  replyingRef.current = !internal && !!text.trim();
+  useEffect(() => {
+    const next = t?.status;
+    if (closedWhileReplying(lastStatus.current, next, replyingRef.current) && !selfClosing.current) setClosedUnderMe(true);
+    if (next !== 'resolved') setClosedUnderMe(false);
+    if (next === 'resolved') selfClosing.current = false;
+    lastStatus.current = next;
+  }, [t?.status]);
 
   // abriu = leu: zera as não lidas na hora (listas) e avisa o servidor (POST /read → 'support:thread' pra equipe toda)
   const markRead = useCallback(() => {
@@ -85,6 +118,21 @@ export function Conversation({ threadId }: { threadId: string }) {
     setViewing(threadId);
     return () => setViewing(null);
   }, [threadId, setViewing]);
+
+  // Esc no tablet volta pra fila — só se não houver nada em andamento (texto, menus, contexto, foco num campo, diálogo)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !window.matchMedia('(max-width: 1023px)').matches) return;
+      const el = e.target instanceof HTMLElement ? e.target : null;
+      const typingInField = !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.isContentEditable);
+      const inDialog = !!el?.closest('dialog') || !!document.querySelector('dialog[open]');
+      const menuOpen = quickOpen || passOpen; // o Esc fecha o menu (useDismiss), não sai da conversa
+      if (escGoesBackToQueue({ text, quickOpen: menuOpen, contextOpen: showContext, typingInField, inDialog })) navigate('/suporte');
+      else if (showContext && !menuOpen && !typingInField && !inDialog) setShowContext(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [text, quickOpen, passOpen, showContext, navigate]);
 
   // "digitando" da pessoa (some sozinho se o "parou" se perder)
   useSocketEvent(SUPPORT_EVENTS.typing, (e) => {
@@ -169,6 +217,7 @@ export function Conversation({ threadId }: { threadId: string }) {
     };
     stickToBottom.current = true;
     setText('');
+    setClosedUnderMe(false);
     emitTyping(false);
     send.mutate(optimistic);
     inputRef.current?.focus();
@@ -177,10 +226,11 @@ export function Conversation({ threadId }: { threadId: string }) {
   const updateSummary = (s: SupportThreadSummary) => applyThread(s);
 
   const assign = useMutation({
-    mutationFn: (userId: string | null) => adminApi.supportAssign(threadId, { userId }),
-    onSuccess: (s, assigneeId) => {
+    mutationFn: (to: Assignee) => adminApi.supportAssign(threadId, { userId: to?.id ?? null }),
+    onSuccess: (s, to) => {
       if (s) updateSummary(s);
-      toast.success(assigneeId ? 'Atendimento com você' : 'Atribuição removida');
+      toast.success(!to ? 'Atribuição removida' : to.id === me.id ? 'Atendimento com você' : `Passado pra ${to.name}`);
+      setPassOpen(false);
       void qc.invalidateQueries({ queryKey: qk.supportThreadsAll });
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -188,14 +238,24 @@ export function Conversation({ threadId }: { threadId: string }) {
 
   const status = useMutation({
     mutationFn: (s: SupportThreadStatus) => adminApi.supportStatus(threadId, { status: s }),
+    onMutate: (s) => {
+      // eu mesmo encerrando: não é "encerrado por outra pessoa"
+      if (s === 'resolved') selfClosing.current = true;
+    },
     onSuccess: (s, next) => {
       if (s) updateSummary(s);
       toast.success(next === 'resolved' ? 'Atendimento resolvido' : next === 'pending' ? 'Marcado como pendente' : 'Atendimento reaberto');
       void qc.invalidateQueries({ queryKey: qk.supportThreadsAll });
       void qc.invalidateQueries({ queryKey: qk.supportLive });
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => {
+      selfClosing.current = false;
+      toast.error(errorMessage(e));
+    },
   });
+
+  // equipe pro "Passar pra…" (só quando o menu abre)
+  const staff = useQuery({ queryKey: qk.staff, queryFn: adminApi.staff, enabled: passOpen, staleTime: 5 * 60_000 });
 
   if (detail.isPending) {
     return (
@@ -213,7 +273,15 @@ export function Conversation({ threadId }: { threadId: string }) {
   }
 
   const mine = t.assignedTo?.id === me.id;
+  const withOther = !!t.assignedTo && !mine ? t.assignedTo : null;
   const over = text.length > SUPPORT_LIMITS.bodyMax;
+  const colleagues = (staff.data?.items ?? []).filter((p) => p.id !== me.id && p.id !== t.assignedTo?.id);
+
+  const takeForMe = () => {
+    // está com outra pessoa: confirma antes de tomar
+    if (withOther) setConfirmTake(true);
+    else assign.mutate({ id: me.id, name: me.name });
+  };
 
   return (
     <>
@@ -236,14 +304,44 @@ export function Conversation({ threadId }: { threadId: string }) {
           </div>
           <div className="row conv-actions">
             {mine ? (
-              <Button size="sm" variant="ghost" icon={<UserMinus size={14} />} loading={assign.isPending} onClick={() => assign.mutate(null)}>
+              <Button size="sm" variant="ghost" icon={<UserMinus size={14} />} loading={assign.isPending && assign.variables === null} onClick={() => assign.mutate(null)}>
                 Soltar
               </Button>
             ) : (
-              <Button size="sm" icon={<UserPlus size={14} />} loading={assign.isPending} onClick={() => assign.mutate(me.id)}>
+              <Button size="sm" icon={<UserPlus size={14} />} loading={assign.isPending && assign.variables?.id === me.id} onClick={takeForMe}>
                 Pegar pra mim
               </Button>
             )}
+            <div className="menu-wrap" ref={passRef}>
+              <Button size="sm" variant="ghost" icon={<ArrowRightLeft size={14} />} aria-haspopup="menu" aria-expanded={passOpen} onClick={() => setPassOpen((v) => !v)}>
+                Passar pra…
+              </Button>
+              {passOpen ? (
+                <div className="menu" role="menu" aria-label="Passar o atendimento pra">
+                  {staff.isPending ? (
+                    <div className="row small muted" style={{ padding: 12 }}>
+                      <Spinner /> Carregando a equipe…
+                    </div>
+                  ) : staff.isError ? (
+                    <div className="small text-danger" style={{ padding: 12 }}>
+                      {errorMessage(staff.error)}
+                    </div>
+                  ) : !colleagues.length ? (
+                    <div className="small muted" style={{ padding: 12 }}>
+                      Ninguém mais da equipe pra passar.
+                    </div>
+                  ) : (
+                    colleagues.map((p) => (
+                      <button key={p.id} type="button" role="menuitem" className="menu-item" disabled={assign.isPending} onClick={() => assign.mutate({ id: p.id, name: p.name })}>
+                        <Avatar name={p.name} size={24} />
+                        <span className="grow truncate">{p.name}</span>
+                        <span className="xsmall faint">{ROLE_LABEL[p.role]}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : null}
+            </div>
             {t.status === 'resolved' ? (
               <Button size="sm" icon={<RotateCcw size={14} />} loading={status.isPending} onClick={() => status.mutate('open')}>
                 Reabrir
@@ -320,6 +418,17 @@ export function Conversation({ threadId }: { threadId: string }) {
             submit();
           }}
         >
+          {closedUnderMe && noteOnly ? (
+            <div className="banner banner-warning" role="alert">
+              <div className="grow">
+                <div className="strong">Atendimento encerrado por outra pessoa da equipe enquanto você escrevia</div>
+                <div className="small">Sua mensagem vai como nota interna (só a equipe vê). Pra responder {t.user.name.split(' ')[0]}, reabra antes de mandar.</div>
+              </div>
+              <Button size="sm" icon={<RotateCcw size={14} />} loading={status.isPending} onClick={() => status.mutate('open')}>
+                Reabrir
+              </Button>
+            </div>
+          ) : null}
           <div className="composer-tools">
             <div className="segmented" role="radiogroup" aria-label="Tipo de mensagem">
               <button type="button" role="radio" aria-checked={!asNote} disabled={noteOnly} onClick={() => setInternal(false)} title={noteOnly ? 'Reabra o atendimento pra responder' : undefined}>
@@ -401,10 +510,20 @@ export function Conversation({ threadId }: { threadId: string }) {
             />
             <Button type="submit" variant={asNote ? 'secondary' : 'primary'} iconOnly icon={<Send size={16} />} aria-label={asNote ? 'Salvar nota' : 'Enviar'} disabled={!text.trim() || over} />
           </div>
-          {noteOnly ? <div className="xsmall faint">Atendimento encerrado: dá pra deixar nota interna. Pra responder a pessoa, reabra.</div> : null}
+          {noteOnly && !closedUnderMe ? <div className="xsmall faint">Atendimento encerrado: dá pra deixar nota interna. Pra responder a pessoa, reabra.</div> : null}
         </form>
       </section>
       <ContextPanel thread={t} open={showContext} onClose={() => setShowContext(false)} />
+      <ConfirmDialog
+        open={confirmTake}
+        onClose={() => setConfirmTake(false)}
+        tone="primary"
+        icon={<UserPlus size={20} />}
+        title={`Pegar o atendimento de ${withOther?.name ?? 'outra pessoa'}?`}
+        description={`Está com ${withOther?.name ?? 'outra pessoa da equipe'}. Ele passa pra você e a troca aparece pra equipe toda na fila.`}
+        confirmLabel="Pegar pra mim"
+        onConfirm={() => assign.mutateAsync({ id: me.id, name: me.name })}
+      />
     </>
   );
 }

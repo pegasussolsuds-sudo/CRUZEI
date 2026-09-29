@@ -24,12 +24,15 @@ export function sumPoints(points: readonly DailyPoint[]): number {
   return points.reduce((acc, p) => acc + p.n, 0);
 }
 
-/** soma dos últimos n dias contra os n anteriores; ratio null quando não há base */
+/** abaixo disso a porcentagem engana ("+3.500%" com 1 contra 36): não mostra variação */
+export const MIN_DELTA_BASE = 10;
+
+/** soma dos últimos n dias contra os n anteriores; ratio null quando a base é pequena demais pra comparar */
 export function periodDelta(points: readonly DailyPoint[], n = 7): { current: number; previous: number; ratio: number | null } {
   const sorted = [...points].sort((a, b) => a.day.localeCompare(b.day));
   const current = sumPoints(sorted.slice(-n));
   const previous = sumPoints(sorted.slice(-2 * n, -n));
-  return { current, previous, ratio: previous > 0 ? (current - previous) / previous : null };
+  return { current, previous, ratio: previous >= MIN_DELTA_BASE ? (current - previous) / previous : null };
 }
 
 export function average(points: readonly DailyPoint[]): number {

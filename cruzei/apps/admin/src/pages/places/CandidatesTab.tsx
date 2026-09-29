@@ -78,22 +78,20 @@ export function CandidatesTab() {
               <ul className="list" aria-label="Sugestões de lugar">
                 {items.map((c) => (
                   <li key={c.id}>
-                    <div
-                      className="place-item"
-                      data-selected={c.id === selected}
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={c.id === selected}
-                      onClick={() => setSelected(c.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelected(c.id);
-                        }
-                      }}
-                    >
+                    <div className="place-item" data-selected={c.id === selected} onClick={() => setSelected(c.id)}>
                       <div className="row row-wrap">
-                        <span className="strong">{c.name}</span>
+                        <button
+                          type="button"
+                          className="place-item-name strong"
+                          aria-pressed={c.id === selected}
+                          aria-label={`Ver ${c.name} no mapa`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelected(c.id);
+                          }}
+                        >
+                          {c.name}
+                        </button>
                         <span className="xsmall faint">{poiCategoryLabel(c.category)}</span>
                         <span className="spacer" />
                         <CandidateStatusBadge status={c.status} />
@@ -118,7 +116,7 @@ export function CandidatesTab() {
                         </span>
                         <span className="spacer" />
                         {c.status === 'pending' ? (
-                          <span className="row" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} role="presentation">
+                          <span className="row" onClick={(e) => e.stopPropagation()}>
                             <Button size="sm" variant="danger-soft" icon={<X size={14} />} onClick={() => setRejecting(c)}>
                               Recusar
                             </Button>

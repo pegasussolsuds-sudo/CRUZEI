@@ -1,14 +1,15 @@
-// Criar/editar evento: dados, datas (Brasília), capa, lugar (ligado a um lugar existente ou ponto no mapa).
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+// Criar/editar/duplicar evento: dados, datas (Brasília), capa, lugar (ligado a um lugar existente ou ponto no mapa).
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useBlocker, useNavigate, useParams, useSearchParams, type BlockerFunction } from 'react-router';
 import { useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import { ImageOff, Save } from 'lucide-react';
+import { ImageOff, LogOut, Save, Unlink } from 'lucide-react';
 import type { AdminEvent, AdminEventList, AdminPoi, EventCategory } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { errorMessage, isHttpError } from '@/api/http';
 import { localInputFromNow } from '@/lib/datetime';
 import {
+  duplicateEventForm,
   EMPTY_EVENT_FORM,
   EVENT_DESCRIPTION_MAX,
   EVENT_TITLE_MAX,
@@ -25,39 +26,48 @@ import { EventPhaseBadge } from '@/components/badges';
 import { MapPointField, PoiPicker } from '@/components/pickers';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { SelectField, TextAreaField, TextField } from '@/components/ui/Field';
 import { ErrorState, Skeleton } from '@/components/ui/States';
 import { PageHeader } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/Toast';
 import { EventActions } from './EventActions';
 
-export default function EventFormPage() {
-  const { id } = useParams();
+/** evento já visto (numa lista ou aberto antes) aparece na hora; o GET confirma em seguida */
+function useCachedEvent(id: string | null): AdminEvent | undefined {
   const qc = useQueryClient();
-  const isNew = !id;
-
-  // evento já visto numa lista aparece na hora (o GET confirma em seguida)
-  const cached = useMemo(() => {
+  return useMemo(() => {
     if (!id) return undefined;
+    const one = qc.getQueryData<AdminEvent>(qk.event(id));
+    if (one) return one;
     for (const [, data] of qc.getQueriesData<InfiniteData<AdminEventList>>({ queryKey: qk.eventsAll })) {
       const hit = data?.pages.flatMap((p) => p.items).find((e) => e.id === id);
       if (hit) return hit;
     }
     return undefined;
   }, [id, qc]);
+}
+
+export default function EventFormPage() {
+  const { id } = useParams();
+  const [params] = useSearchParams();
+  // /eventos/novo?duplicar=<id>: formulário novo preenchido a partir de outro evento
+  const duplicateOf = id ? null : params.get('duplicar');
+  const loadId = id ?? duplicateOf ?? null;
+  const cached = useCachedEvent(loadId);
 
   const event = useQuery({
-    queryKey: qk.event(id ?? ''),
-    queryFn: () => adminApi.event(id ?? ''),
-    enabled: !!id,
+    queryKey: qk.event(loadId ?? ''),
+    queryFn: () => adminApi.event(loadId ?? ''),
+    enabled: !!loadId,
     initialData: cached,
     initialDataUpdatedAt: 0,
   });
 
-  if (!isNew && !event.data) {
+  if (loadId && !event.data) {
     return (
       <div className="content">
-        <PageHeader title="Evento" back={{ to: '/eventos', label: 'Eventos' }} />
+        <PageHeader title={duplicateOf ? 'Duplicar evento' : 'Evento'} back={{ to: '/eventos', label: 'Eventos' }} />
         {event.isError ? (
           <div className="card">
             <ErrorState error={event.error} title={isHttpError(event.error, 404) ? 'Evento não encontrado' : undefined} onRetry={() => void event.refetch()} />
@@ -72,30 +82,63 @@ export default function EventFormPage() {
     );
   }
 
-  return <EventForm key={event.data?.id ?? 'novo'} event={event.data ?? null} />;
+  if (duplicateOf) return <EventForm key={`copia-${duplicateOf}`} event={null} copyFrom={event.data ?? null} />;
+  return <EventForm key={event.data?.id ?? 'novo'} event={event.data ?? null} copyFrom={null} />;
 }
 
-function EventForm({ event }: { event: AdminEvent | null }) {
+function EventForm({ event, copyFrom }: { event: AdminEvent | null; copyFrom: AdminEvent | null }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
   const [form, setForm] = useState<EventFormValues>(() =>
-    event ? eventToForm(event) : { ...EMPTY_EVENT_FORM, startsAt: localInputFromNow(24 * 60), endsAt: localInputFromNow(28 * 60) },
+    event
+      ? eventToForm(event)
+      : copyFrom
+        ? duplicateEventForm(copyFrom)
+        : { ...EMPTY_EVENT_FORM, startsAt: localInputFromNow(24 * 60), endsAt: localInputFromNow(28 * 60) },
   );
   const [poi, setPoi] = useState<AdminPoi | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [coverBroken, setCoverBroken] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  // cópia já nasce com conteúdo não salvo
+  const [dirty, setDirty] = useState(!!copyFrom);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
 
   useEffect(() => setCoverBroken(false), [form.coverUrl]);
 
-  // sair com alteração sem salvar: o navegador pergunta
+  // sair com alteração sem salvar: o navegador pergunta (fechar/recarregar a aba)…
   useEffect(() => {
     if (!dirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
+
+  // …e a navegação dentro do painel também (menu, voltar, links). Lê a ref: logo depois de salvar/apagar, o navigate
+  // da mesma hora já passa (o estado "dirty" só muda na próxima renderização)
+  const shouldBlock = useCallback<BlockerFunction>(
+    ({ currentLocation, nextLocation }) =>
+      dirtyRef.current && (currentLocation.pathname !== nextLocation.pathname || currentLocation.search !== nextLocation.search),
+    [],
+  );
+  const blocker = useBlocker(shouldBlock);
+  const leaving = useRef(false);
+  /** navegar sem perguntar (acabou de salvar ou apagar) */
+  const navigateClean = (to: string, replace = false) => {
+    dirtyRef.current = false;
+    navigate(to, { replace });
+  };
+
+  // lugar ligado: carrega pelo poiId (ao editar um evento ligado, o lugar aparece e dá pra desligar)
+  const linkedId = form.poiId;
+  const linked = useQuery({
+    queryKey: qk.poi(linkedId ?? ''),
+    queryFn: async () => (await adminApi.pois(linkedId ?? '')).items.find((p) => p.id === linkedId) ?? null,
+    enabled: !!linkedId && poi?.id !== linkedId,
+    staleTime: 60_000,
+  });
+  const shownPoi = !linkedId ? null : poi?.id === linkedId ? poi : (linked.data ?? null);
 
   const set = <K extends keyof EventFormValues>(k: K, v: EventFormValues[K]) => {
     setDirty(true);
@@ -113,11 +156,12 @@ function EventForm({ event }: { event: AdminEvent | null }) {
     },
     onSuccess: (saved) => {
       setDirty(false);
+      dirtyRef.current = false;
       qc.setQueryData(qk.event(saved.id), saved);
       void qc.invalidateQueries({ queryKey: qk.eventsAll });
       void qc.invalidateQueries({ queryKey: ['event-select'] });
       toast.success(event ? 'Evento salvo' : 'Rascunho criado. Publique quando estiver pronto.');
-      if (!event) navigate(`/eventos/${saved.id}`, { replace: true });
+      if (!event) navigateClean(`/eventos/${saved.id}`, true);
     },
   });
 
@@ -153,11 +197,18 @@ function EventForm({ event }: { event: AdminEvent | null }) {
   };
 
   const phase = event ? eventPhase(event) : null;
+  const poiHint = !linkedId
+    ? 'Liga o evento a um lugar que já está no mapa e preenche o endereço.'
+    : shownPoi
+      ? 'Ligado a esse lugar do Metch. Pra trocar, desligue e busque outro.'
+      : linked.isPending
+        ? 'Carregando o lugar ligado…'
+        : `Ligado a um lugar que não foi encontrado (id ${linkedId}). Desligue ou busque outro.`;
 
   return (
     <div className="content">
       <PageHeader
-        title={event ? event.title : 'Novo evento'}
+        title={event ? event.title : copyFrom ? `Novo evento (cópia de “${copyFrom.title}”)` : 'Novo evento'}
         tabTitle={event ? `${event.title} · Eventos` : 'Novo evento'}
         back={{ to: '/eventos', label: 'Eventos' }}
         sub={
@@ -170,11 +221,13 @@ function EventForm({ event }: { event: AdminEvent | null }) {
                 {event.publishedAt ? ` · publicado ${formatDateTime(event.publishedAt)}` : ''}
               </span>
             </span>
+          ) : copyFrom ? (
+            'Cópia com as datas uma semana depois. Confere tudo e salve: começa como rascunho.'
           ) : (
             'Começa como rascunho: só aparece no app depois de publicar.'
           )
         }
-        actions={event ? <EventActions event={event} size="md" beforePublish={beforePublish} /> : null}
+        actions={event ? <EventActions event={event} size="md" beforePublish={beforePublish} afterDelete={() => navigateClean('/eventos?aba=drafts')} /> : null}
       />
 
       {readOnly ? <div className="banner banner-warning">Evento cancelado: não dá mais pra editar.</div> : null}
@@ -258,12 +311,14 @@ function EventForm({ event }: { event: AdminEvent | null }) {
           <Card>
             <CardHead title="Onde" />
             <div className="card-body stack">
-              <PoiPicker
-                label="Lugar do Metch (opcional)"
-                value={poi}
-                onChange={pickPoi}
-                hint={form.poiId && !poi ? 'Ligado a um lugar existente. Busque outro pra trocar.' : 'Liga o evento a um lugar que já está no mapa e preenche o endereço.'}
-              />
+              <PoiPicker label="Lugar do Metch (opcional)" value={shownPoi} onChange={pickPoi} hint={poiHint} />
+              {linkedId ? (
+                <div>
+                  <Button size="sm" variant="ghost" icon={<Unlink size={14} />} onClick={() => pickPoi(null)}>
+                    Desligar do lugar
+                  </Button>
+                </div>
+              ) : null}
               <TextField label="Nome do local" maxLength={120} value={form.venueName} onChange={(e) => set('venueName', e.target.value)} placeholder="Ex.: Parque do Sabiá" />
               <MapPointField
                 label="Ponto no mapa"
@@ -303,6 +358,21 @@ function EventForm({ event }: { event: AdminEvent | null }) {
           </div>
         </fieldset>
       </form>
+
+      <ConfirmDialog
+        open={blocker.state === 'blocked'}
+        onClose={() => {
+          if (!leaving.current) blocker.reset?.();
+        }}
+        icon={<LogOut size={20} />}
+        title="Sair sem salvar?"
+        description="As alterações deste evento ainda não foram salvas e vão se perder."
+        confirmLabel="Sair sem salvar"
+        onConfirm={() => {
+          leaving.current = true;
+          blocker.proceed?.();
+        }}
+      />
     </div>
   );
 }

@@ -9,6 +9,17 @@ import type { PremiumTier } from './user';
 
 export type StaffRole = Extract<UserRole, 'admin' | 'moderator'>;
 
+/** GET /v1/admin/staff — a equipe (admin/moderador, conta ativa), pra "Passar pra…" no suporte. Ordem: nome */
+export interface AdminStaffMember {
+  id: string;
+  name: string;
+  role: StaffRole;
+}
+
+export interface AdminStaffList {
+  items: AdminStaffMember[];
+}
+
 /** GET /v1/admin/me — quem está logado no painel (403 se não for equipe) */
 export interface AdminMe {
   id: string;
@@ -65,7 +76,10 @@ export interface AdminStats {
 
 // ─────────────────────────── usuários ───────────────────────────
 
-/** GET /v1/admin/users?q=&status=&tier=&role=&cursor=&limit= (q: nome, telefone ou id) */
+/**
+ * GET /v1/admin/users?q=&status=&tier=&role=&reports=pending&cursor=&limit= (q: nome, telefone ou id;
+ * reports=pending: só quem tem denúncia esperando decisão)
+ */
 export interface AdminUserRow {
   id: string;
   name: string;

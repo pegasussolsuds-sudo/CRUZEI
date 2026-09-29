@@ -1,7 +1,9 @@
 import { PrismaClient } from '@prisma/client';
 
 import type { PrismaService } from '../../src/database/prisma.service';
+import { AdminPanelController } from '../../src/modules/admin/admin-panel.controller';
 import { AdminUsersService, NO_EXPIRY } from '../../src/modules/admin/admin-users.service';
+import type { StatsService } from '../../src/modules/admin/stats.service';
 import { ModerationService } from '../../src/modules/moderation/moderation.service';
 import type { PhotoModerationService } from '../../src/modules/moderation/photo-moderation.service';
 import { UsersService } from '../../src/modules/users/users.service';
@@ -39,6 +41,7 @@ const moderation = new ModerationService(
   asAccounts(accounts),
   asGateway(gateway),
   {} as PhotoModerationService,
+  notify,
 );
 const users = new UsersService(
   db,
@@ -188,6 +191,35 @@ describe('Premium manual', () => {
   });
 });
 
+describe('aviso da moderação', () => {
+  it('avisar: vai pra central, pro socket (alerta no app) e por push', async () => {
+    await prisma.deviceToken.create({
+      data: { userId, token: 'tok-aline-warn', platform: 'android' },
+    });
+    gateway.emitToUser.mockClear();
+    gateway.emitToUsers.mockClear();
+    await moderation.act({ id: adminId, role: 'admin' }, userId, {
+      action: 'warn',
+      reason: 'Mensagens ofensivas não são permitidas.',
+    });
+    const n = await prisma.notification.findFirstOrThrow({
+      where: { userId, type: 'moderation_warning' },
+    });
+    expect(n).toMatchObject({
+      title: 'Aviso da moderação',
+      body: 'Mensagens ofensivas não são permitidas.',
+    });
+    expect(push.sent.map((m) => m.payload.title)).toEqual(['Aviso da moderação']);
+    expect(emittedTo(gateway, userId, 'notification:new')).toHaveLength(1);
+    expect(emittedTo(gateway, userId, 'account_notice')).toEqual([
+      {
+        event: 'account_notice',
+        payload: { kind: 'warning', message: 'Mensagens ofensivas não são permitidas.' },
+      },
+    ]);
+  });
+});
+
 describe('papéis', () => {
   it('promove e rebaixa: estado da conta invalidado, sala da equipe atualizada, auditoria', async () => {
     const row = await svc.setRole(actor(adminId, 'admin'), userId, 'moderator');
@@ -270,5 +302,56 @@ describe('busca e ficha', () => {
     } while (cursor);
     expect(seen).toHaveLength(8);
     expect(new Set(seen).size).toBe(8);
+  });
+});
+
+describe('denúncias pendentes, auditoria e equipe', () => {
+  it('filtro "com denúncias pendentes"; a ficha traz a situação de cada denúncia e o papel', async () => {
+    const other = (await newUser(prisma, 'Beto')).id;
+    await prisma.report.createMany({
+      data: [
+        { reporterId: other, reportedId: userId, reason: 'spam' },
+        { reporterId: other, reportedId: modId, reason: 'fake', status: 'dismissed' },
+      ],
+    });
+    const pending = await svc.list(actor(adminId, 'admin'), { reports: 'pending' });
+    expect(pending.items.map((u) => u.id)).toEqual([userId]);
+    expect(pending.total).toBe(1);
+    expect(pending.items[0].reportsPending).toBe(1);
+
+    const d = await svc.detail(actor(adminId, 'admin'), modId);
+    expect(d.reportsPending).toBe(0);
+    expect(d.moderation.reports.map((r) => r.status)).toEqual(['dismissed']);
+    expect(d.moderation.user.role).toBe('moderator');
+    // fila de moderação: o resumo leva o papel (o painel esconde ações que o servidor recusaria)
+    const q = await moderation.queue();
+    expect(q.reports.map((g) => [g.user.id, g.user.role])).toEqual([[userId, 'user']]);
+  });
+
+  it('auditoria: ação por trecho e sem caixa ("warn" acha moderation.warn); alvo pelo id', async () => {
+    await moderation.act({ id: modId, role: 'moderator' }, userId, {
+      action: 'warn',
+      reason: 'Calma aí',
+    });
+    await svc.setRole(actor(adminId, 'admin'), userId, 'moderator');
+    expect((await audit.list({ action: 'warn' })).items.map((i) => i.action)).toEqual([
+      'moderation.warn',
+    ]);
+    expect((await audit.list({ action: 'USER.ROLE' })).items.map((i) => i.action)).toEqual([
+      'admin.user.role',
+    ]);
+    // curinga digitado é texto: nenhuma ação tem "%"
+    expect((await audit.list({ action: '%' })).items).toHaveLength(0);
+    expect((await audit.list({ targetId: userId })).items).toHaveLength(2);
+  });
+
+  it('GET /admin/staff: só a equipe ativa, por nome', async () => {
+    const banned = (await newUser(prisma, 'Ze Mod', { role: 'moderator' })).id;
+    await prisma.user.update({ where: { id: banned }, data: { accountStatus: 'banned' } });
+    const panel = new AdminPanelController(db, {} as StatsService, audit);
+    expect((await panel.staff()).items).toEqual([
+      { id: modId, name: 'Mari Mod', role: 'moderator' },
+      { id: adminId, name: 'Monteiro', role: 'admin' },
+    ]);
   });
 });

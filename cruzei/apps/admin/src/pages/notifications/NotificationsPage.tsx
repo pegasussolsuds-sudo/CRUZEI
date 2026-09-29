@@ -14,6 +14,7 @@ import { formatDateTime, formatNumber } from '@/lib/format';
 import { AudienceEditor, AudiencePreview, ChannelsEditor, useAudiencePreview } from '@/components/campaign/AudienceEditor';
 import { NotificationPreview } from '@/components/campaign/NotificationPreview';
 import { SCHEDULE_NOW, ScheduleField, scheduleToIso, type ScheduleValue } from '@/components/campaign/ScheduleField';
+import { TestToMeButton } from '@/components/campaign/TestToMe';
 import { EventSelect, PoiPicker } from '@/components/pickers';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
@@ -79,7 +80,10 @@ export default function NotificationsPage() {
   const preview = useAudiencePreview(audience);
   // o servidor conta de novo na hora de enviar: se mudou, ele devolve 409 com o número certo
   const [serverCount, setServerCount] = useState<number | null>(null);
-  const count = serverCount ?? preview.data?.targetCount ?? null;
+  // o número do 409 vale pro público daquele envio: mexeu no público, volta a valer a prévia
+  useEffect(() => setServerCount(null), [audience]);
+  // só a contagem DESTE público (mudou e a prévia não assentou: null, e o botão espera)
+  const count = serverCount ?? preview.count;
   const big = count != null && (serverCount != null || needsTypedConfirmation(audience, count));
 
   const send = useMutation({
@@ -200,7 +204,8 @@ export default function NotificationsPage() {
 
             <div className="form-actions">
               <span className="small faint grow">Você revisa tudo antes de enviar.</span>
-              <Button type="submit" variant="primary" icon={<Send size={16} />} disabled={count == null && !preview.isError}>
+              <TestToMeButton title={title} body={body} target={target} channels={channels} invalid={!!(errors.title || errors.body || errors.channels || errors.target)} onInvalid={() => setShowErrors(true)} />
+              <Button type="submit" variant="primary" icon={<Send size={16} />} disabled={count == null} title={preview.settling ? 'Contando quem recebe…' : undefined}>
                 Revisar e enviar
               </Button>
             </div>
@@ -210,7 +215,7 @@ export default function NotificationsPage() {
             <NotificationPreview title={title} body={body} target={target} />
             <AudiencePreview preview={preview} channels={channels} />
             <div className="small muted">
-              <Smartphone size={13} aria-hidden="true" /> Dica: mande primeiro pra “Uma pessoa” (você mesmo) pra ver como chega.
+              <Smartphone size={13} aria-hidden="true" /> Dica: use “Mandar teste pra mim” pra ver no seu celular como chega antes de enviar.
             </div>
           </aside>
         </form>

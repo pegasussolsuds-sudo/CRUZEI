@@ -51,16 +51,20 @@ class StatusDto {
 export class AdminSupportController {
   constructor(private readonly svc: SupportService) {}
 
-  /** SupportThreadList: ?status=open|pending|resolved|all (padrão: não resolvidos) &mine=1 &cursor= */
+  /**
+   * SupportThreadList: ?status=open|pending|resolved|all (padrão: não resolvidos) &mine=1 &cursor=
+   * &order=oldest (quem espera há mais tempo primeiro; padrão: última mensagem mais recente)
+   */
   @Get()
   list(
     @CurrentUser() me: AuthenticatedUser,
     @Query('status') status?: string,
     @Query('mine') mine?: string,
+    @Query('order') order?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.svc.listThreads(me, { status, mine, cursor, limit });
+    return this.svc.listThreads(me, { status, mine, order, cursor, limit });
   }
 
   @Get(':id')

@@ -270,3 +270,50 @@ describe('suporte — travas', () => {
     expect((await svc.assign(thread.id, null)).assignedTo).toBeNull();
   });
 });
+
+describe('suporte — fila por espera e conversa longa', () => {
+  it('order=oldest: quem espera há mais tempo primeiro (insistir não joga pro fim); total = abertos', async () => {
+    const bia = (await newUser(prisma, 'Bia')).id;
+    const caio = (await newUser(prisma, 'Caio')).id;
+    const me = actor(agentId, 'moderator');
+    const a = await svc.sendFromUser(userId, 'primeiro');
+    const b = await svc.sendFromUser(bia, 'segundo');
+    const c = await svc.sendFromUser(caio, 'terceiro');
+    await svc.sendFromUser(userId, 'alguém?'); // última mensagem mais nova, mas espera desde a primeira
+
+    const oldest = await svc.listThreads(me, { status: 'open', order: 'oldest' });
+    expect(oldest.items.map((t) => t.id)).toEqual([a.thread.id, b.thread.id, c.thread.id]);
+    expect(oldest.total).toBe(3);
+    expect(oldest.items[0].waitingSince).toBe(a.message.createdAt);
+    expect((await svc.listThreads(me, { status: 'open' })).items[0].id).toBe(a.thread.id);
+
+    // respondeu: vira pendente, não espera mais e o total dos abertos cai
+    await svc.sendFromStaff(me, b.thread.id, { body: 'oi Bia' });
+    const pend = await svc.listThreads(me, { status: 'pending' });
+    expect(pend.items.map((t) => [t.id, t.waitingSince])).toEqual([[b.thread.id, null]]);
+    expect((await svc.listThreads(me, { status: 'open', order: 'oldest' })).total).toBe(2);
+
+    // paginação pela espera percorre na mesma ordem
+    const p1 = await svc.listThreads(me, { status: 'open', order: 'oldest', limit: 1 });
+    const p2 = await svc.listThreads(me, {
+      status: 'open',
+      order: 'oldest',
+      limit: 1,
+      cursor: p1.nextCursor ?? undefined,
+    });
+    expect([...p1.items, ...p2.items].map((t) => t.id)).toEqual([a.thread.id, c.thread.id]);
+    expect(p2.nextCursor).toBeNull();
+  });
+
+  it('conversa longa: o detalhe traz as 1000 mais NOVAS, em ordem', async () => {
+    const { thread } = await svc.sendFromUser(userId, 'começo');
+    await prisma.$executeRaw`
+      INSERT INTO support_messages (thread_id, sender_id, author, body, internal, created_at)
+      SELECT ${thread.id}::uuid, ${userId}::uuid, 'user', 'msg ' || g, false, now() + g * interval '1 second'
+        FROM generate_series(1, 1005) g`;
+    const detail = await svc.threadDetail(actor(agentId, 'moderator'), thread.id);
+    expect(detail.messages).toHaveLength(1000);
+    expect(detail.messages[0].body).toBe('msg 6');
+    expect(detail.messages[999].body).toBe('msg 1005');
+  });
+});

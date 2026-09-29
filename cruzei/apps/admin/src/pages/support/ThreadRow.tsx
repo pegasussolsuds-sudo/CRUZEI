@@ -25,7 +25,7 @@ export function ThreadRow({ thread: t, active, meId }: { thread: SupportThreadSu
         </span>
         <span className="xsmall faint truncate">
           {t.assignedTo ? (t.assignedTo.id === meId ? 'com você' : `com ${t.assignedTo.name}`) : 'sem atribuição'}
-          {waiting && !t.staffUnread ? ' · esperando resposta' : ''}
+          {t.waitingSince ? ` · esperando ${formatRelative(t.waitingSince)}` : waiting && !t.staffUnread ? ' · esperando resposta' : ''}
         </span>
       </span>
     </Link>

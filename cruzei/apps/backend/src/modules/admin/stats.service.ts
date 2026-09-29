@@ -75,8 +75,10 @@ export class StatsService {
         SELECT count(*) FILTER (WHERE deleted_at IS NULL)::int AS total,
                count(*) FILTER (WHERE deleted_at IS NULL AND created_at > ${NOW_UTC} - interval '24 hours')::int AS new24h,
                count(*) FILTER (WHERE deleted_at IS NULL AND created_at > ${NOW_UTC} - interval '7 days')::int AS new7d,
-               count(*) FILTER (WHERE deleted_at IS NULL AND last_active_at > ${NOW_UTC} - interval '24 hours')::int AS active24h,
-               count(*) FILTER (WHERE deleted_at IS NULL AND last_active_at > ${NOW_UTC} - interval '7 days')::int AS active7d,
+               -- ativos = entraram no app (login/renovação do token, registro de acesso): a MESMA fonte do gráfico
+               -- "Pessoas ativas" — last_active_at dava outro número (e qualquer chamada de teste mexia nele)
+               (SELECT count(DISTINCT user_id) FROM access_logs WHERE created_at > ${NOW_UTC} - interval '24 hours')::int AS active24h,
+               (SELECT count(DISTINCT user_id) FROM access_logs WHERE created_at > ${NOW_UTC} - interval '7 days')::int AS active7d,
                count(*) FILTER (WHERE deleted_at IS NULL AND premium_tier = 'premium'
                                   AND (premium_expires_at IS NULL OR premium_expires_at > ${NOW_UTC}))::int AS premium,
                count(*) FILTER (WHERE deleted_at IS NULL AND premium_tier = 'premium_plus'

@@ -56,7 +56,8 @@ export function PoiPicker({ value, onChange, label = 'Lugar', error, hint }: { v
       label={label}
       placeholder="Buscar lugar pelo nome"
       cacheKey="pois"
-      search={async (q) => (await adminApi.pois(q)).items}
+      // só o que está no mapa: oculto não serve de lugar (nem o lugar-espelho de outro evento)
+      search={async (q) => (await adminApi.pois(q, null, '0')).items.filter((p) => !p.eventId)}
       getId={(p) => p.id}
       value={value}
       onChange={onChange}
@@ -109,17 +110,22 @@ export function EventSelect({ value, onChange, error }: { value: string | null; 
   );
 }
 
-/** ponto no mapa + campo de coordenadas (dá pra colar "-18.91, -48.27" ou usar só o teclado) */
+/**
+ * ponto no mapa + campo de coordenadas (dá pra colar "-18.91, -48.27" ou usar só o teclado).
+ * readOnly: só mostra (ex.: raio em volta do evento, centro fixo) — sem clique, arraste nem campo de coordenadas.
+ */
 export function MapPointField({
   value,
   onChange,
+  readOnly,
   label = 'Onde',
   error,
   height = 320,
   circleRadiusM,
 }: {
   value: LatLng | null;
-  onChange: (p: LatLng) => void;
+  onChange?: (p: LatLng) => void;
+  readOnly?: boolean;
   label?: string;
   error?: string | null;
   height?: number;
@@ -139,8 +145,25 @@ export function MapPointField({
       return;
     }
     setTextError(null);
-    onChange(p);
+    onChange?.(p);
   };
+
+  const editable = !readOnly && !!onChange;
+  if (!editable) {
+    return (
+      <div className="field">
+        <span className="field-label">{label}</span>
+        <LazyMap
+          ariaLabel={label}
+          picked={value}
+          height={height}
+          circle={value && circleRadiusM ? { center: value, radiusM: circleRadiusM } : null}
+          overlay={value ? formatLatLng(value) : undefined}
+        />
+        <span className="field-hint">O centro é fixo: o ponto do evento. Mude só o raio.</span>
+      </div>
+    );
+  }
 
   return (
     <div className="field">

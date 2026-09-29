@@ -7,7 +7,7 @@ import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { useCursorQuery } from '@/api/useCursorQuery';
 import { formatDateTime, formatRelative } from '@/lib/format';
-import { AUDIT_TARGET_LABEL } from '@/lib/labels';
+import { AUDIT_TARGET_LABEL, auditActionLabel } from '@/lib/labels';
 import { useDebouncedValue } from '@/lib/hooks';
 import { RoleBadge } from '@/components/badges';
 import { Button } from '@/components/ui/Button';
@@ -31,6 +31,8 @@ function targetLink(t: NonNullable<AdminAuditEntry['target']>): string | null {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** alvo: uuid (pessoa, evento, campanha, atendimento) ou número (lugar, sugestão de lugar) — mesma regra do servidor */
+const TARGET_ID = (v: string) => UUID.test(v) || /^\d{1,18}$/.test(v);
 
 export default function AuditPage() {
   const [action, setAction] = useState('');
@@ -43,7 +45,7 @@ export default function AuditPage() {
   };
   // id pela metade não vai pro servidor (ele espera o id inteiro)
   const actorOk = !filters.actorId || UUID.test(filters.actorId);
-  const targetOk = !filters.targetId || UUID.test(filters.targetId);
+  const targetOk = !filters.targetId || TARGET_ID(filters.targetId);
   const query = { action: filters.action, actorId: actorOk ? filters.actorId : '', targetId: targetOk ? filters.targetId : '' };
 
   const list = useCursorQuery(qk.audit(query), (cursor) => adminApi.audit({ ...query, cursor }));
@@ -56,7 +58,7 @@ export default function AuditPage() {
       <div className="toolbar" role="search">
         <div className="input-with-icon">
           <Search size={16} aria-hidden="true" />
-          <input className="input" placeholder="Ação (ex.: ban, premium, campaign)" aria-label="Filtrar por ação" value={action} onChange={(e) => setAction(e.target.value)} />
+          <input className="input" placeholder="Ação: um trecho (ex.: ban, premium, campaign)" aria-label="Filtrar por ação (qualquer trecho)" value={action} onChange={(e) => setAction(e.target.value)} />
         </div>
         <input
           className="input num"
@@ -70,7 +72,7 @@ export default function AuditPage() {
         <input
           className="input num"
           style={{ width: 300 }}
-          placeholder="id do alvo"
+          placeholder="id do alvo (uuid ou número do lugar)"
           aria-label="Filtrar por id do alvo"
           aria-invalid={!targetOk || undefined}
           value={targetId}
@@ -90,7 +92,12 @@ export default function AuditPage() {
           </Button>
         ) : null}
       </div>
-      {!actorOk || !targetOk ? <div className="small text-warning">Cole o id completo (formato uuid) pra filtrar por pessoa ou alvo.</div> : null}
+      {!actorOk || !targetOk ? (
+        <div className="small text-warning">
+          {!actorOk ? 'Cole o id completo (uuid) de quem fez. ' : ''}
+          {!targetOk ? 'Alvo: cole o id completo (uuid) ou o número do lugar.' : ''}
+        </div>
+      ) : null}
 
       <div className="card">
         {list.isPending ? (
@@ -134,8 +141,8 @@ export default function AuditPage() {
                           )}
                         </td>
                         <td>
-                          <button type="button" className="chip num" onClick={() => setAction(a.action)} title="Filtrar por essa ação">
-                            {a.action}
+                          <button type="button" className="chip" onClick={() => setAction(a.action)} title={`${a.action} — filtrar por essa ação`}>
+                            {auditActionLabel(a.action)}
                           </button>
                         </td>
                         <td>

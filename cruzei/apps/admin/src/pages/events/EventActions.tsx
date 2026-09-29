@@ -1,8 +1,8 @@
-// Ações de evento (publicar, cancelar, apagar rascunho, avisar) com confirmação — na lista e no formulário.
+// Ações de evento (publicar, cancelar, apagar rascunho, avisar, duplicar) com confirmação — na lista e no formulário.
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { Ban, Megaphone, Rocket, Trash2 } from 'lucide-react';
+import { Ban, CopyPlus, Megaphone, Rocket, Trash2 } from 'lucide-react';
 import type { AdminEvent } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
@@ -55,6 +55,9 @@ export function EventActions({ event, size = 'sm', afterDelete, beforePublish }:
           Apagar
         </Button>
       ) : null}
+      <Button size={size} variant="ghost" icon={<CopyPlus size={14} />} onClick={() => navigate(`/eventos/novo?duplicar=${encodeURIComponent(event.id)}`)} title="Abre um evento novo com os mesmos dados e as datas uma semana depois">
+        Duplicar
+      </Button>
 
       <ConfirmDialog
         open={pending === 'publish'}

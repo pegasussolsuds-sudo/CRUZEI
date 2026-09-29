@@ -20,8 +20,12 @@ export const qk = {
   campaigns: ['campaigns'] as const,
   preview: (audience: CampaignAudience) => ['campaign-preview', audience] as const,
   audit: (p: Omit<AuditParams, 'cursor'>) => ['audit', p] as const,
+  /** tudo do suporte (fila, conversas, contagem): reconexão do socket busca de novo */
+  supportAll: ['support'] as const,
   supportThreads: (filter: SupportFilter) => ['support', 'threads', filter] as const,
   supportThreadsAll: ['support', 'threads'] as const,
   supportThread: (id: string) => ['support', 'thread', id] as const,
   supportLive: ['support', 'live'] as const,
+  staff: ['staff'] as const,
+  poi: (id: string) => ['places', 'poi', id] as const,
 };

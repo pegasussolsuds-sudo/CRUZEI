@@ -1,5 +1,5 @@
-// Fila do suporte ao vivo: filtros, ordem, contagem de quem espera e mescla de mensagens do socket.
-import type { SupportMessage, SupportThreadSummary } from '@cruzei/shared-types';
+// Fila do suporte ao vivo: filtros, ordem, contagem de quem espera, mescla de mensagens do socket e rascunhos.
+import type { SupportMessage, SupportThreadStatus, SupportThreadSummary } from '@cruzei/shared-types';
 
 export type SupportFilter = 'open' | 'pending' | 'resolved' | 'mine';
 
@@ -9,6 +9,13 @@ export const SUPPORT_FILTERS: readonly { key: SupportFilter; label: string }[] =
   { key: 'resolved', label: 'Resolvidos' },
   { key: 'mine', label: 'Meus' },
 ];
+
+/** ordem da lista: Abertos = quem espera há mais tempo primeiro (order=oldest no servidor); o resto, a mais recente */
+export type SupportOrder = 'recent' | 'oldest';
+
+export function filterOrder(filter: SupportFilter): SupportOrder {
+  return filter === 'open' ? 'oldest' : 'recent';
+}
 
 export function threadMatchesFilter(t: SupportThreadSummary, filter: SupportFilter, meId: string | null): boolean {
   if (filter === 'mine') return !!meId && t.assignedTo?.id === meId && t.status !== 'resolved';
@@ -20,14 +27,19 @@ export function isWaitingStaff(t: SupportThreadSummary): boolean {
   return t.status === 'open' && (t.staffUnread > 0 || t.lastMessage?.author === 'user');
 }
 
-export function countWaiting(threads: Iterable<SupportThreadSummary>): number {
-  let n = 0;
-  for (const t of threads) if (isWaitingStaff(t)) n++;
-  return n;
+/** desde quando espera (o servidor calcula); sem isso, a última mensagem */
+function waitKey(t: SupportThreadSummary): number {
+  return Date.parse(t.waitingSince ?? t.lastMessageAt);
 }
 
-/** quem espera primeiro; dentro de cada grupo, o mais recente em cima */
-export function sortThreads(list: readonly SupportThreadSummary[]): SupportThreadSummary[] {
+/**
+ * 'recent': quem espera primeiro; dentro de cada grupo, o mais recente em cima.
+ * 'oldest' (Abertos): quem espera há mais tempo em cima — a mesma ordem do servidor.
+ */
+export function sortThreads(list: readonly SupportThreadSummary[], order: SupportOrder = 'recent'): SupportThreadSummary[] {
+  if (order === 'oldest') {
+    return [...list].sort((a, b) => waitKey(a) - waitKey(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
   return [...list].sort((a, b) => {
     const wa = isWaitingStaff(a) ? 1 : 0;
     const wb = isWaitingStaff(b) ? 1 : 0;
@@ -45,20 +57,63 @@ export function upsertThread(
 ): SupportThreadSummary[] {
   const rest = list.filter((t) => t.id !== thread.id);
   if (!threadMatchesFilter(thread, filter, meId)) return rest.length === list.length ? [...list] : rest;
-  return sortThreads([...rest, thread]);
+  return sortThreads([...rest, thread], filterOrder(filter));
 }
 
-/** mesma coisa pra lista paginada (useInfiniteQuery): sai de todas as páginas e, se ainda cabe no filtro, entra na primeira */
+/**
+ * Mesma coisa pra lista paginada (useInfiniteQuery). Mais recente primeiro: sai de todas as páginas e entra na
+ * primeira. Quem espera há mais tempo primeiro (Abertos): fica na página onde estava; se é novo, entra na última
+ * carregada (o novo é quem espera há menos tempo).
+ */
 export function upsertThreadInPages<P extends { items: SupportThreadSummary[] }>(
   pages: readonly P[],
   thread: SupportThreadSummary,
   filter: SupportFilter,
   meId: string | null,
 ): P[] {
+  const at = pages.findIndex((p) => p.items.some((t) => t.id === thread.id));
   const cleaned = pages.map((p) => ({ ...p, items: p.items.filter((t) => t.id !== thread.id) }));
   if (!threadMatchesFilter(thread, filter, meId) || !cleaned.length) return cleaned;
-  const [first, ...rest] = cleaned;
-  return [{ ...(first as P), items: sortThreads([thread, ...(first as P).items]) }, ...rest];
+  const order = filterOrder(filter);
+  const target = order === 'oldest' ? (at >= 0 ? at : cleaned.length - 1) : 0;
+  return cleaned.map((p, i) => (i === target ? { ...p, items: sortThreads([thread, ...p.items], order) } : p));
+}
+
+// ─── quem está esperando (topo, barra lateral, título da aba) ───
+
+/**
+ * Abertos conhecidos + o total do servidor (status open: a mesma conta do Painel). A lista pode ter só a 1ª página;
+ * o total é o número de verdade e os eventos do socket o ajustam na hora até a próxima busca.
+ */
+export interface LiveQueue {
+  open: ReadonlyMap<string, SupportThreadSummary>;
+  total: number;
+}
+
+export const EMPTY_LIVE_QUEUE: LiveQueue = { open: new Map(), total: 0 };
+
+export function seedLiveQueue(items: readonly SupportThreadSummary[], total: number): LiveQueue {
+  const open = new Map(items.filter((t) => t.status === 'open').map((t) => [t.id, t]));
+  return { open, total: Math.max(total, open.size) };
+}
+
+/**
+ * 'support:thread' na fila ao vivo. `recheck`: saiu dos abertos um atendimento que não estava na lista carregada —
+ * pode ou não ter sido aberto (o total do servidor sabe): quem chama busca de novo.
+ */
+export function applyToLiveQueue(q: LiveQueue, thread: SupportThreadSummary): { queue: LiveQueue; recheck: boolean } {
+  const known = q.open.has(thread.id);
+  if (thread.status === 'open') {
+    const open = new Map(q.open);
+    open.set(thread.id, thread);
+    return { queue: { open, total: known ? q.total : q.total + 1 }, recheck: false };
+  }
+  if (known) {
+    const open = new Map(q.open);
+    open.delete(thread.id);
+    return { queue: { open, total: Math.max(0, q.total - 1) }, recheck: false };
+  }
+  return { queue: q, recheck: q.total > q.open.size };
 }
 
 /**
@@ -86,6 +141,39 @@ export function applyMessageToSummary<T extends SupportThreadSummary>(t: T, msg:
     lastMessageAt: msg.createdAt,
     staffUnread: msg.author === 'user' && !viewing ? t.staffUnread + 1 : msg.author === 'staff' ? 0 : t.staffUnread,
   };
+}
+
+// ─── conversa ───
+
+/**
+ * Rascunho por atendimento (trocar de conversa não apaga o que estava sendo escrito). Só na memória desta aba:
+ * some ao recarregar — texto de atendimento não fica guardado no navegador.
+ */
+const drafts = new Map<string, string>();
+
+export function readDraft(threadId: string): string {
+  return drafts.get(threadId) ?? '';
+}
+
+export function writeDraft(threadId: string, text: string): void {
+  if (text.trim()) drafts.set(threadId, text);
+  else drafts.delete(threadId);
+}
+
+/**
+ * Esc no tablet volta pra fila — mas nunca por cima de algo em andamento: texto digitado, respostas rápidas ou
+ * contexto abertos, foco num campo de texto, ou um diálogo aberto (o Esc é dele).
+ */
+export function escGoesBackToQueue(s: { text: string; quickOpen: boolean; contextOpen: boolean; typingInField: boolean; inDialog: boolean }): boolean {
+  return !s.text.trim() && !s.quickOpen && !s.contextOpen && !s.typingInField && !s.inDialog;
+}
+
+/**
+ * Atendimento encerrado (por outra pessoa) enquanto uma RESPOSTA estava sendo escrita: o envio vira nota interna e
+ * a tela precisa avisar (nunca trocar calada).
+ */
+export function closedWhileReplying(prev: SupportThreadStatus | undefined, next: SupportThreadStatus | undefined, replying: boolean): boolean {
+  return replying && prev !== undefined && prev !== 'resolved' && next === 'resolved';
 }
 
 /** respostas rápidas (o atendente ainda revisa antes de mandar) */

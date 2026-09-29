@@ -30,6 +30,7 @@ export function AccountMenu() {
       <button
         type="button"
         className="account-btn"
+        aria-label={`Menu da conta, ${me.name}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => {

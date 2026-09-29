@@ -1,6 +1,6 @@
 // Usuários: busca + filtros (na URL, dá pra compartilhar o link) e paginação por cursor.
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { Flag, Search, UserX } from 'lucide-react';
 import type { AccountStatus, PremiumTier, UserRole } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
@@ -26,9 +26,13 @@ export default function UsersPage() {
   const status = (params.get('status') ?? '') as AccountStatus | '';
   const tier = (params.get('tier') ?? '') as PremiumTier | '';
   const role = (params.get('role') ?? '') as UserRole | '';
+  const reports: 'pending' | '' = params.get('denuncias') === 'pendentes' ? 'pending' : '';
 
+  // a partir da URL de AGORA (window.location): dois filtros trocados em seguida não trazem de volta o que foi limpo.
+  // O `params` da renderização — e até a forma funcional do setSearchParams, que o react-router resolve com ele —
+  // ainda é o de antes do 1º filtro, e o 2º reescrevia a URL velha
   const setParam = (key: string, value: string) => {
-    const next = new URLSearchParams(params);
+    const next = new URLSearchParams(window.location.search);
     if (value) next.set(key, value);
     else next.delete(key);
     setParams(next, { replace: true });
@@ -51,16 +55,16 @@ export default function UsersPage() {
     }
   }, [q]); // só quando a busca digitada assenta
 
-  const filters = { q, status, tier, role, limit: PAGE };
+  const filters = { q, status, tier, role, reports, limit: PAGE };
   const list = useCursorQuery(qk.users(filters), (cursor, signal) => adminApi.users({ ...filters, cursor }, signal));
 
   const rows = list.data?.pages.flatMap((p) => p.items) ?? [];
   const total = list.data?.pages[0]?.total ?? null;
-  const filtered = !!(q || status || tier || role);
+  const filtered = !!(q || status || tier || role || reports);
 
   return (
     <div className="content">
-      <PageHeader title="Usuários" sub={total != null ? `${formatNumber(total)} ${filtered ? 'encontradas' : 'contas no Metch'}` : 'Todo mundo que tem conta no Metch'} />
+      <PageHeader title="Usuários" sub={total != null ? `${formatNumber(total)} ${filtered ? (total === 1 ? 'encontrada' : 'encontradas') : total === 1 ? 'conta no Metch' : 'contas no Metch'}` : 'Todo mundo que tem conta no Metch'} />
 
       <div className="toolbar" role="search">
         <div className="input-with-icon">
@@ -91,6 +95,16 @@ export default function UsersPage() {
             </option>
           ))}
         </select>
+        <Button
+          size="sm"
+          variant={reports ? 'primary' : 'secondary'}
+          icon={<Flag size={14} />}
+          aria-pressed={!!reports}
+          onClick={() => setParam('denuncias', reports ? '' : 'pendentes')}
+          title="Só quem tem denúncia esperando decisão"
+        >
+          Com denúncias pendentes
+        </Button>
         {filtered ? (
           <Button
             variant="ghost"
@@ -134,19 +148,21 @@ export default function UsersPage() {
                     <tr
                       key={u.id}
                       className="clickable"
-                      tabIndex={0}
-                      onClick={() => navigate(`/usuarios/${u.id}`)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') navigate(`/usuarios/${u.id}`);
+                      // clique na linha abre a ficha (atalho do mouse); o teclado e o ctrl/cmd+clique usam o link do nome
+                      onClick={(e) => {
+                        if ((e.target as HTMLElement).closest('a, button')) return;
+                        if (e.ctrlKey || e.metaKey || e.shiftKey) window.open(`/usuarios/${u.id}`, '_blank', 'noopener');
+                        else navigate(`/usuarios/${u.id}`);
                       }}
-                      aria-label={`Abrir ficha de ${u.name}`}
                     >
                       <td>
                         <div className="row-3">
                           <Avatar name={u.name} url={u.avatarUrl} premium={u.premiumTier !== 'free'} />
                           <div style={{ minWidth: 0 }}>
                             <div className="row">
-                              <span className="strong truncate">{u.name}</span>
+                              <Link to={`/usuarios/${u.id}`} className="strong truncate user-link" title={`Abrir ficha de ${u.name}`}>
+                                {u.name}
+                              </Link>
                               {u.age ? <span className="faint small">{u.age}</span> : null}
                               <RoleBadge role={u.role} />
                             </div>

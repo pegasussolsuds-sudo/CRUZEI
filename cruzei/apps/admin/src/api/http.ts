@@ -1,7 +1,7 @@
 // Cliente HTTP do painel: Bearer em memória, 1 refresh automático no 401 (compartilhado entre pedidos
 // simultâneos) e erro com a mensagem pt-BR que o backend já manda.
 import type { RefreshResponse } from '@cruzei/shared-types';
-import { buildQuery, messageFromBody, type QueryParams } from '@/lib/query';
+import { buildQuery, messageFromBody, refreshOutcome, type QueryParams } from '@/lib/query';
 import { session } from './session';
 
 /** vazio em dev (proxy do Vite); em produção pode apontar pra API em outro domínio */
@@ -47,6 +47,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export const OFFLINE_MESSAGE = 'Sem conexão com o servidor. Confere se a API está no ar.';
+
 const DEFAULT_MESSAGES: Record<number, string> = {
   400: 'Confere os dados e tenta de novo.',
   401: 'Sua sessão expirou. Entre de novo.',
@@ -71,7 +73,7 @@ async function send(path: string, opts: RequestOptions): Promise<Response> {
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    throw new HttpError(0, 'Sem conexão com o servidor. Confere se a API está no ar.');
+    throw new HttpError(0, OFFLINE_MESSAGE);
   }
 }
 
@@ -101,19 +103,27 @@ async function parse<T>(res: Response): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-let refreshing: Promise<boolean> | null = null;
+/** renovação: 'ok'; 'denied' = sessão encerrada (401/403); 'unavailable' = sem rede/servidor fora (a sessão fica) */
+export type RenewResult = { kind: 'ok' } | { kind: 'denied' } | { kind: 'unavailable'; error: HttpError };
+
+let renewing: Promise<RenewResult> | null = null;
 
 /** troca o refresh token por um access novo; um só pedido mesmo com várias chamadas ao mesmo tempo */
-export function refreshAccessToken(): Promise<boolean> {
-  refreshing ??= doRefresh().finally(() => {
-    refreshing = null;
+export function renewSession(): Promise<RenewResult> {
+  renewing ??= doRefresh().finally(() => {
+    renewing = null;
   });
-  return refreshing;
+  return renewing;
 }
 
-async function doRefresh(): Promise<boolean> {
+/** atalho pra quem só quer saber se deu certo (socket) */
+export async function refreshAccessToken(): Promise<boolean> {
+  return (await renewSession()).kind === 'ok';
+}
+
+async function doRefresh(): Promise<RenewResult> {
   const refreshToken = session.getRefreshToken();
-  if (!refreshToken) return false;
+  if (!refreshToken) return { kind: 'denied' };
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/auth/refresh`, {
@@ -123,26 +133,32 @@ async function doRefresh(): Promise<boolean> {
     });
   } catch {
     // sem rede: não derruba a sessão, o próximo pedido tenta de novo
-    return false;
+    return { kind: 'unavailable', error: new HttpError(0, OFFLINE_MESSAGE) };
   }
-  if (!res.ok) {
-    const err = await toError(res);
-    // 403 aqui = conta suspensa/banida (a mensagem do servidor explica)
-    session.end(res.status === 403 ? err.message : 'Sua sessão expirou. Entre de novo.');
-    return false;
+  const outcome = refreshOutcome(res.status);
+  if (outcome === 'ok') {
+    const data = (await res.json()) as RefreshResponse;
+    session.setTokens(data.token, data.refreshToken);
+    return { kind: 'ok' };
   }
-  const data = (await res.json()) as RefreshResponse;
-  session.setTokens(data.token, data.refreshToken);
-  return true;
+  const err = await toError(res);
+  if (outcome === 'unavailable') return { kind: 'unavailable', error: err }; // 5xx, 429…: a sessão continua
+  // 403 aqui = conta suspensa/banida (a mensagem do servidor explica)
+  session.end(res.status === 403 ? err.message : 'Sua sessão expirou. Entre de novo.');
+  return { kind: 'denied' };
 }
 
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const res = await send(path, opts);
   if (res.status === 401 && opts.auth !== false) {
-    if (session.getRefreshToken() && (await refreshAccessToken())) {
-      return parse<T>(await send(path, opts));
+    if (!session.getRefreshToken()) {
+      session.end('Sua sessão expirou. Entre de novo.');
+      return parse<T>(res);
     }
-    if (!session.getRefreshToken()) session.end('Sua sessão expirou. Entre de novo.');
+    const r = await renewSession();
+    if (r.kind === 'ok') return parse<T>(await send(path, opts));
+    // servidor fora na hora de renovar: o erro é "sem conexão", não "sessão expirou" (e a sessão fica)
+    if (r.kind === 'unavailable') throw r.error;
   }
   return parse<T>(res);
 }

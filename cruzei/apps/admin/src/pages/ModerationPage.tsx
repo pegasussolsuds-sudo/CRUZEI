@@ -2,11 +2,13 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { Ban, BellRing, CheckCheck, ChevronRight, Flag, ImageOff, PauseCircle, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Ban, BellRing, CheckCheck, ChevronRight, Flag, ImageOff, PauseCircle, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react';
 import type { ModerationDecision, ModerationReportGroup } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
+import { useMe } from '@/auth/AuthProvider';
 import { formatRelative, formatShortDateTime } from '@/lib/format';
+import { canModerateAccount } from '@/lib/permissions';
 import { REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, URGENT_REASONS } from '@/lib/labels';
 import { AccountStatusBadge } from '@/components/badges';
 import { ModerationActionDialog } from '@/components/moderation/ModerationActionDialog';
@@ -116,8 +118,11 @@ export default function ModerationPage() {
 }
 
 function ReportGroupCard({ group, onAct }: { group: ModerationReportGroup; onAct: (a: ModerationDecision) => void }) {
+  const me = useMe();
   const u = group.user;
   const urgent = group.reports.some((r) => URGENT_REASONS.has(r.reason));
+  // mesma regra da ficha (e do servidor): conta da equipe só admin modera; a própria, ninguém
+  const canModerate = canModerateAccount(me, u);
   return (
     <article className="card report-group" data-urgent={urgent}>
       <header className="report-group-head">
@@ -155,22 +160,30 @@ function ReportGroupCard({ group, onAct }: { group: ModerationReportGroup; onAct
         ))}
       </ul>
       <footer className="card-foot row-wrap">
-        <Button size="sm" icon={<CheckCheck size={14} />} onClick={() => onAct('dismiss')}>
-          Dispensar
-        </Button>
-        <Button size="sm" icon={<BellRing size={14} />} onClick={() => onAct('warn')}>
-          Avisar
-        </Button>
-        {u.accountStatus === 'active' ? (
-          <Button size="sm" variant="danger-soft" icon={<PauseCircle size={14} />} onClick={() => onAct('suspend')}>
-            Suspender
-          </Button>
-        ) : null}
-        {u.accountStatus !== 'banned' ? (
-          <Button size="sm" variant="danger-soft" icon={<Ban size={14} />} onClick={() => onAct('ban')}>
-            Banir
-          </Button>
-        ) : null}
+        {canModerate ? (
+          <>
+            <Button size="sm" icon={<CheckCheck size={14} />} onClick={() => onAct('dismiss')}>
+              Dispensar
+            </Button>
+            <Button size="sm" icon={<BellRing size={14} />} onClick={() => onAct('warn')}>
+              Avisar
+            </Button>
+            {u.accountStatus === 'active' ? (
+              <Button size="sm" variant="danger-soft" icon={<PauseCircle size={14} />} onClick={() => onAct('suspend')}>
+                Suspender
+              </Button>
+            ) : null}
+            {u.accountStatus !== 'banned' ? (
+              <Button size="sm" variant="danger-soft" icon={<Ban size={14} />} onClick={() => onAct('ban')}>
+                Banir
+              </Button>
+            ) : null}
+          </>
+        ) : (
+          <span className="small faint row">
+            <ShieldOff size={14} /> {me.id === u.id ? 'Denúncia contra a sua conta: outra pessoa da equipe decide.' : 'Conta da equipe: só um admin decide.'}
+          </span>
+        )}
       </footer>
     </article>
   );

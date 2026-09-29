@@ -12,6 +12,7 @@ import type {
   AdminPoi,
   AdminPoiList,
   AdminPoiReportList,
+  AdminStaffList,
   AdminStats,
   AdminUserDetail,
   AdminUserList,
@@ -67,6 +68,8 @@ export interface UserListParams {
   status?: AccountStatus | '';
   tier?: PremiumTier | '';
   role?: UserRole | '';
+  /** 'pending': só quem tem denúncia esperando decisão */
+  reports?: 'pending' | '';
   cursor?: string | null;
   limit?: number;
 }
@@ -89,7 +92,10 @@ export interface SupportListParams {
   status?: SupportThreadStatus | 'all';
   /** só os atribuídos a mim */
   mine?: boolean;
+  /** 'oldest': quem espera há mais tempo primeiro (padrão: última mensagem mais recente) */
+  order?: 'oldest';
   cursor?: string | null;
+  limit?: number;
 }
 
 const enc = encodeURIComponent;
@@ -102,12 +108,14 @@ export const authApi = {
 
 export const adminApi = {
   me: () => request<AdminMe>('/admin/me'),
+  /** a equipe (admin/moderador ativos), pro "Passar pra…" do suporte */
+  staff: () => request<AdminStaffList>('/admin/staff'),
   stats: () => request<AdminStats>('/admin/stats'),
 
   // usuários
   users: (p: UserListParams, signal?: AbortSignal) =>
     request<AdminUserList>('/admin/users', {
-      query: { q: p.q, status: p.status, tier: p.tier, role: p.role, cursor: p.cursor, limit: p.limit },
+      query: { q: p.q, status: p.status, tier: p.tier, role: p.role, reports: p.reports, cursor: p.cursor, limit: p.limit },
       signal,
     }),
   user: (id: string) => request<AdminUserDetail>(`/admin/users/${enc(id)}`),
@@ -158,7 +166,9 @@ export const adminApi = {
 
   // suporte
   supportThreads: (p: SupportListParams) =>
-    request<SupportThreadList>('/admin/support/threads', { query: { status: p.status, mine: p.mine ? '1' : undefined, cursor: p.cursor } }),
+    request<SupportThreadList>('/admin/support/threads', {
+      query: { status: p.status, mine: p.mine ? '1' : undefined, order: p.order, cursor: p.cursor, limit: p.limit },
+    }),
   supportThread: (id: string) => request<SupportThreadDetail>(`/admin/support/threads/${enc(id)}`),
   supportSend: (id: string, body: StaffSupportSendPayload) =>
     request<SupportMessage>(`/admin/support/threads/${enc(id)}/messages`, { method: 'POST', body }),

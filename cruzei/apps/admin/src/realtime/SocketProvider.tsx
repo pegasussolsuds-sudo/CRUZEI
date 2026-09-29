@@ -1,8 +1,10 @@
 // Socket do painel (mesmo gateway do app). Só abre pra quem atende o suporte.
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { io, type Socket } from 'socket.io-client';
 import type { ClientToServerEvents, ServerToClientEvents } from '@cruzei/shared-types';
 import { refreshAccessToken, SOCKET_ORIGIN } from '@/api/http';
+import { qk } from '@/api/keys';
 import { session } from '@/api/session';
 import { useAuth } from '@/auth/AuthProvider';
 import { hasPermission } from '@/lib/permissions';
@@ -24,6 +26,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const enabled = status === 'authenticated' && hasPermission(me, 'support');
   const [value, setValue] = useState<SocketContextValue>({ socket: null, connected: false });
   const retries = useRef(0);
+  const qc = useQueryClient();
 
   useEffect(() => {
     if (!enabled) return;
@@ -34,9 +37,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
     setValue({ socket: s, connected: false });
 
+    let connectedBefore = false;
     s.on('connect', () => {
       retries.current = 0;
       setValue({ socket: s, connected: true });
+      // reconexão: o que chegou com o socket caído não vem de novo — fila, conversas e contagem buscam do servidor
+      if (connectedBefore) void qc.invalidateQueries({ queryKey: qk.supportAll });
+      connectedBefore = true;
     });
     s.on('disconnect', () => setValue({ socket: s, connected: false }));
     s.on('connect_error', (err) => {
@@ -61,7 +68,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       s.disconnect();
       setValue({ socket: null, connected: false });
     };
-  }, [enabled]);
+  }, [enabled, qc]);
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
 }

@@ -185,7 +185,7 @@ export function MapView({ ariaLabel, markers, onMarkerClick, picked, onPick, cir
       return;
     }
     if (!pickRef.current) {
-      const el = pinElement('Ponto escolhido (arraste pra ajustar)', '#7FFF00');
+      const el = pinElement(onPickRef.current ? 'Ponto escolhido (arraste pra ajustar)' : 'Ponto marcado', '#7FFF00');
       el.dataset.selected = 'true';
       const mk = new maplibregl.Marker({ element: el, anchor: 'bottom-left', offset: [-3, 3], draggable: !!onPickRef.current });
       mk.on('dragend', () => {
@@ -199,6 +199,11 @@ export function MapView({ ariaLabel, markers, onMarkerClick, picked, onPick, cir
     const b = map.getBounds();
     if (!b.contains([picked.lng, picked.lat])) map.easeTo({ center: [picked.lng, picked.lat], duration: 300 });
   }, [picked?.lat, picked?.lng]);
+
+  // só arrasta quando dá pra escolher ponto (mapa só de leitura: o alfinete fica parado)
+  useEffect(() => {
+    pickRef.current?.setDraggable(!!onPick);
+  }, [onPick, picked?.lat, picked?.lng]);
 
   // centro pedido de fora (ex.: evento escolhido)
   useEffect(() => {

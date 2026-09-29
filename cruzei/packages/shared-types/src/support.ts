@@ -75,6 +75,11 @@ export interface SupportThreadSummary {
   lastMessageAt: string;
   /** minutos até a 1ª resposta da equipe (null = ainda sem resposta) */
   firstResponseMinutes: number | null;
+  /**
+   * desde quando a pessoa espera a equipe (ISO): a 1ª mensagem dela depois da última resposta pública. null = não
+   * está esperando (atendimento pendente/resolvido, ou reaberto sem mensagem nova)
+   */
+  waitingSince: string | null;
 }
 
 /** GET /v1/admin/support/threads/:id */
@@ -92,12 +97,15 @@ export interface SupportThreadDetail extends SupportThreadSummary {
 }
 
 /**
- * GET /v1/admin/support/threads?status=&mine=1&cursor= — status: open | pending | resolved | all
- * (sem status = os não resolvidos, open + pending). Ordem: última mensagem mais recente primeiro.
+ * GET /v1/admin/support/threads?status=&mine=1&order=&cursor= — status: open | pending | resolved | all
+ * (sem status = os não resolvidos, open + pending). Ordem: última mensagem mais recente primeiro; order=oldest = quem
+ * espera há mais tempo primeiro (waitingSince, ou a última mensagem de quem não está esperando).
  */
 export interface SupportThreadList {
   items: SupportThreadSummary[];
   nextCursor: string | null;
+  /** quantos atendimentos batem o filtro (sem paginação). status=open: o mesmo número do Painel (support.waitingStaff) */
+  total: number;
 }
 
 /**

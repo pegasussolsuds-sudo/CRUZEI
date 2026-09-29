@@ -183,6 +183,17 @@ describe('ChatGateway — autenticação (mantida)', () => {
     expect(await inRoom(`user:${A}`)).toEqual([A]);
     expect(gateway.isOnline(A)).toBe(true);
   });
+
+  it('refresh token (mesmo segredo, 30 dias) não abre socket; access com tipo abre', async () => {
+    const refresh = jwt.sign({ sub: B, typ: 'refresh' }, { secret: SECRET });
+    expect((await connectError({ token: refresh })).message).toBe('unauthorized');
+    const access = client({ token: jwt.sign({ sub: B, typ: 'access' }, { secret: SECRET }) });
+    await new Promise<void>((resolve, reject) => {
+      access.on('connect', () => resolve());
+      access.on('connect_error', reject);
+    });
+    expect(await inRoom(`user:${B}`)).toEqual([B]);
+  });
 });
 
 describe('ChatGateway — emissores (só o par, nada de broadcast global)', () => {

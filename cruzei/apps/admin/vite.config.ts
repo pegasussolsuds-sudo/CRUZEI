@@ -32,6 +32,10 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: 5180,
       strictPort: true,
+      // o vite reinicia sozinho quando o próprio config muda: com o git reescrevendo o arquivo (troca de branch), ele
+      // relia o config pela metade e voltava SEM ele — porta 5173, sem o alias '@' e sem o proxy (o painel "quebrava").
+      // Mudou o config? Reinicie o dev server na mão.
+      watch: { ignored: ['**/vite.config.*'] },
       proxy: {
         '/v1': { target, changeOrigin: true },
         '/uploads': { target, changeOrigin: true },

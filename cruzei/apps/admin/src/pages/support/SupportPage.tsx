@@ -1,12 +1,12 @@
 // Suporte ao vivo: fila | conversa em tempo real | contexto da pessoa.
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useState } from 'react';
+import { useParams } from 'react-router';
 import { Headphones, Inbox } from 'lucide-react';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { useCursorQuery } from '@/api/useCursorQuery';
 import { useMe } from '@/auth/AuthProvider';
-import { SUPPORT_FILTERS, type SupportFilter } from '@/lib/support';
+import { filterOrder, SUPPORT_FILTERS, type SupportFilter } from '@/lib/support';
 import { readPref, writePref } from '@/lib/prefs';
 import { useSupportLive } from '@/realtime/SupportLive';
 import { useSocket } from '@/realtime/SocketProvider';
@@ -23,7 +23,6 @@ function isFilter(v: string): v is SupportFilter {
 export default function SupportPage() {
   usePageTitle('Suporte');
   const { threadId } = useParams();
-  const navigate = useNavigate();
   const me = useMe();
   const { connected, socket } = useSocket();
   const { waiting } = useSupportLive();
@@ -38,21 +37,14 @@ export default function SupportPage() {
 
   const list = useCursorQuery(
     qk.supportThreads(filter),
-    (cursor) => adminApi.supportThreads(filter === 'mine' ? { mine: true, cursor } : { status: filter, cursor }),
+    // Abertos: quem espera há mais tempo primeiro (a mesma ordem que a atualização ao vivo mantém)
+    (cursor) =>
+      adminApi.supportThreads(filter === 'mine' ? { mine: true, cursor } : { status: filter, order: filterOrder(filter) === 'oldest' ? 'oldest' : undefined, cursor }),
     // socket caiu: a fila se atualiza sozinha de 20 em 20 s
     { refetchInterval: connected ? false : 20_000 },
   );
   const threads = list.data?.pages.flatMap((p) => p.items) ?? [];
-
-  // Esc volta pra fila no tablet
-  useEffect(() => {
-    if (!threadId) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && window.matchMedia('(max-width: 1023px)').matches) navigate('/suporte');
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [threadId, navigate]);
+  // (Esc no tablet: a conversa decide, porque sabe se há texto, menu ou contexto abertos)
 
   return (
     <div className="support" data-has-thread={!!threadId}>
@@ -66,7 +58,10 @@ export default function SupportPage() {
               {socket ? (connected ? 'ao vivo' : 'reconectando') : 'offline'}
             </span>
           </div>
-          <div className="small muted">{waiting ? `${waiting} ${waiting === 1 ? 'pessoa esperando' : 'pessoas esperando'} resposta` : 'Ninguém esperando agora'}</div>
+          <div className="small muted">
+            {waiting ? `${waiting} ${waiting === 1 ? 'pessoa esperando' : 'pessoas esperando'} resposta` : 'Ninguém esperando agora'}
+            {filter === 'open' && threads.length > 1 ? ' · quem espera há mais tempo em cima' : ''}
+          </div>
           <Segmented<SupportFilter> label="Filtrar fila" value={filter} onChange={setFilter} options={SUPPORT_FILTERS.map((f) => ({ value: f.key, label: f.label }))} />
         </header>
         <div className="support-queue-list">

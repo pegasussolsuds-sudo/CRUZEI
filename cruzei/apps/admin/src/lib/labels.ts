@@ -9,11 +9,14 @@ import type {
   EventStatus,
   PhotoStatus,
   PremiumTier,
+  AdminSubscriptionRow,
   ReportReason,
   ReportSource,
+  ReportStatus,
   SupportThreadStatus,
   UserRole,
 } from '@cruzei/shared-types';
+import { formatDate, isNoExpiry } from './format';
 
 export const ACCOUNT_STATUS_LABEL: Record<AccountStatus, string> = {
   active: 'Ativa',
@@ -63,6 +66,28 @@ export const REPORT_SOURCE_LABEL: Record<ReportSource, string> = {
   map: 'mapa',
   likes: 'curtidas',
 };
+
+/** situação da denúncia (a ficha mostra o histórico: pendentes e decididas) */
+export const REPORT_STATUS_LABEL: Record<ReportStatus, string> = {
+  pending: 'Pendente',
+  reviewing: 'Em análise',
+  resolved: 'Teve ação',
+  dismissed: 'Dispensada',
+};
+
+/** pendente/em análise ainda esperam decisão (a mesma conta do reportsPending do servidor inclui só 'pending') */
+export function isOpenReport(status: ReportStatus): boolean {
+  return status === 'pending' || status === 'reviewing';
+}
+
+export type SubscriptionState = 'active' | 'cancelled' | 'expired';
+
+/** situação de uma assinatura do histórico: cancelada (com a data), vencida ou ativa */
+export function subscriptionState(s: Pick<AdminSubscriptionRow, 'cancelledAt' | 'expiresAt'>, now: number = Date.now()): { state: SubscriptionState; label: string } {
+  if (s.cancelledAt) return { state: 'cancelled', label: `cancelada em ${formatDate(s.cancelledAt)}` };
+  if (!isNoExpiry(s.expiresAt) && Date.parse(s.expiresAt) <= now) return { state: 'expired', label: 'vencida' };
+  return { state: 'active', label: 'ativa' };
+}
 
 export const CANDIDATE_STATUS_LABEL: Record<CandidateStatus, string> = {
   pending: 'Aguardando',
@@ -154,7 +179,41 @@ const MODERATION_ACTION_LABEL: Record<string, string> = {
   review_hold: 'Segurada pra revisão',
 };
 
+/** ações do painel gravadas na auditoria (admin.*) */
+const ADMIN_ACTION_LABEL: Record<string, string> = {
+  'admin.campaign.send': 'Campanha enviada',
+  'admin.campaign.schedule': 'Campanha agendada',
+  'admin.campaign.cancel': 'Campanha cancelada',
+  'admin.event.create': 'Evento criado',
+  'admin.event.update': 'Evento editado',
+  'admin.event.publish': 'Evento publicado',
+  'admin.event.cancel': 'Evento cancelado',
+  'admin.event.delete': 'Rascunho de evento apagado',
+  'admin.event.announce': 'Aviso de evento',
+  'admin.place.approve': 'Sugestão aprovada',
+  'admin.place.reject': 'Sugestão recusada',
+  'admin.place.reports_dismiss': 'Denúncias de lugar descartadas',
+  'admin.place.reports_hide': 'Lugar oculto por denúncia',
+  'admin.poi.create': 'Lugar criado',
+  'admin.poi.update': 'Lugar editado',
+  'admin.poi.hide': 'Lugar oculto',
+  'admin.poi.unhide': 'Lugar de volta ao mapa',
+  'admin.user.premium_grant': 'Premium dado',
+  'admin.user.premium_remove': 'Premium tirado',
+  'admin.user.role': 'Papel alterado',
+};
+
+/** ação da auditoria em português: admin.* pela tabela, moderation.* pelo rótulo do histórico; desconhecida fica crua */
+export function auditActionLabel(action: string): string {
+  if (ADMIN_ACTION_LABEL[action]) return ADMIN_ACTION_LABEL[action];
+  if (action.startsWith('moderation.')) return moderationActionLabel(action.slice('moderation.'.length));
+  return action;
+}
+
 export function moderationActionLabel(action: string): string {
+  // suspensão grava o prazo junto: "suspend:3" (dias) ou "suspend:revisao" (até alguém reativar)
+  const m = /^suspend:(\d+|revisao)$/.exec(action);
+  if (m) return m[1] === 'revisao' ? 'Suspensão até revisão' : `Suspensão por ${m[1]} ${m[1] === '1' ? 'dia' : 'dias'}`;
   return MODERATION_ACTION_LABEL[action] ?? action.replace(/_/g, ' ');
 }
 

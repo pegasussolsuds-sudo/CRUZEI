@@ -108,3 +108,31 @@ export function targetError(t: NotificationTarget | null): string | null {
 export function formatAudienceCount(n: number): string {
   return n === 1 ? '1 pessoa' : `${formatNumber(n)} pessoas`;
 }
+
+/** mesmo público (campo a campo; a ordem das chaves não importa) */
+export function sameAudience(a: CampaignAudience, b: CampaignAudience): boolean {
+  switch (a.kind) {
+    case 'city':
+      return b.kind === 'city' && a.city === b.city;
+    case 'radius':
+      return b.kind === 'radius' && a.lat === b.lat && a.lng === b.lng && a.radiusM === b.radiusM;
+    case 'user':
+      return b.kind === 'user' && a.userId === b.userId;
+    default:
+      return a.kind === b.kind;
+  }
+}
+
+/**
+ * Número de pessoas pra confirmar o envio: só quando a prévia é DESTE público. Enquanto o público muda (debounce) ou a
+ * contagem nova não chegou (a tela ainda mostra a anterior), null — e o botão de revisar/enviar espera.
+ */
+export function previewCount(
+  current: CampaignAudience,
+  settled: CampaignAudience,
+  data: { targetCount: number } | undefined,
+  isPlaceholder: boolean,
+): number | null {
+  if (!data || isPlaceholder || !sameAudience(current, settled)) return null;
+  return data.targetCount;
+}

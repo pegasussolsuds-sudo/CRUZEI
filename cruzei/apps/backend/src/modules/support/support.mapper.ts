@@ -117,3 +117,18 @@ export function normClientId(raw: unknown): string | null {
   const v = raw.trim();
   return /^[\w-]{1,64}$/.test(v) ? v : null;
 }
+
+/** ordem da fila da equipe: 'oldest' = quem espera há mais tempo primeiro (aba Abertos); padrão, última mensagem */
+export type SupportOrder = 'recent' | 'oldest';
+
+export function supportOrder(raw: unknown): SupportOrder {
+  return raw === 'oldest' ? 'oldest' : 'recent';
+}
+
+/**
+ * Desde quando a pessoa espera a equipe: a 1ª mensagem dela depois da última resposta pública da equipe (o SQL traz
+ * esse horário). Só vale com o atendimento aberto — pendente/resolvido não está esperando ninguém da equipe.
+ */
+export function waitingSinceOf(status: string, since: Date | null): string | null {
+  return status === 'open' && since ? since.toISOString() : null;
+}

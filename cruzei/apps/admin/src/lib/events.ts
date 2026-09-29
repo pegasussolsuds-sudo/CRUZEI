@@ -145,3 +145,29 @@ export function eventToForm(e: AdminEvent): EventFormValues {
     poiId: e.poiId,
   };
 }
+
+/** "Duplicar evento": o formulário novo já preenchido, com as datas N dias pra frente (padrão: a mesma hora na semana seguinte) */
+export function duplicateEventForm(e: AdminEvent, days = 7): EventFormValues {
+  const shift = (iso: string) => {
+    const t = Date.parse(iso);
+    return Number.isFinite(t) ? new Date(t + days * 86_400_000).toISOString() : iso;
+  };
+  return { ...eventToForm(e), startsAt: toLocalInput(shift(e.startsAt)), endsAt: toLocalInput(shift(e.endsAt)) };
+}
+
+/**
+ * Texto de quando é o evento pro aviso: compara o DIA em Brasília (não "menos de 24 h"), então 23 h de hoje pra
+ * 10 h de amanhã é "Amanhã". Já começou (e não terminou): "Rolando agora".
+ */
+export function eventWhenText(e: Pick<AdminEvent, 'startsAt' | 'endsAt'>, now: number = Date.now()): string {
+  const start = Date.parse(e.startsAt);
+  const end = Date.parse(e.endsAt);
+  if (Number.isFinite(start) && start <= now && (!Number.isFinite(end) || end > now)) return 'Rolando agora';
+  const day = (t: number) => toLocalInput(new Date(t).toISOString()).slice(0, 10);
+  const hour = toLocalInput(e.startsAt).slice(11, 16);
+  const startDay = day(start);
+  if (startDay === day(now)) return `Hoje às ${hour}`;
+  if (startDay === day(now + 86_400_000)) return `Amanhã às ${hour}`;
+  const [, m, d] = startDay.split('-');
+  return `Dia ${d}/${m} às ${hour}`;
+}

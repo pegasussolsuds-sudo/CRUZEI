@@ -23,6 +23,7 @@ import { RequirePermission, StaffGuard } from './staff.guard';
 export class AdminUsersController {
   constructor(private readonly svc: AdminUsersService) {}
 
+  /** ?q= nome/telefone/id · status · tier · role · reports=pending (só com denúncia esperando decisão) */
   @Get()
   @RequirePermission('users.read')
   list(
@@ -31,10 +32,11 @@ export class AdminUsersController {
     @Query('status') status?: string,
     @Query('tier') tier?: string,
     @Query('role') role?: string,
+    @Query('reports') reports?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.svc.list(me, { q, status, tier, role, cursor, limit });
+    return this.svc.list(me, { q, status, tier, role, reports, cursor, limit });
   }
 
   /** AdminUserDetail (+ os campos de ModerationUserDetail no nível de cima, pra tela de moderação do celular) */

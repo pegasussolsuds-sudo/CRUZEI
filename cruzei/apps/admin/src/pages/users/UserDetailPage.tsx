@@ -26,7 +26,7 @@ import { qk } from '@/api/keys';
 import { isHttpError } from '@/api/http';
 import { useMe } from '@/auth/AuthProvider';
 import { formatDate, formatDateTime, formatNumber, formatRelative, formatShortDateTime, isNoExpiry } from '@/lib/format';
-import { moderationActionLabel, platformLabel, REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, TIER_LABEL, URGENT_REASONS } from '@/lib/labels';
+import { isOpenReport, moderationActionLabel, platformLabel, REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, REPORT_STATUS_LABEL, subscriptionState, TIER_LABEL, URGENT_REASONS } from '@/lib/labels';
 import { canChangeRole, canModerateAccount, hasPermission } from '@/lib/permissions';
 import { AccountStatusBadge, PhotoStatusBadge, RoleBadge, SupportStatusBadge, TierBadge } from '@/components/badges';
 import { ModerationActionDialog } from '@/components/moderation/ModerationActionDialog';
@@ -75,7 +75,8 @@ export default function UserDetailPage() {
   const u = user.data;
   const mod = u.moderation;
   const canModerate = canModerateAccount(me, u);
-  const pendingReports = mod.reports.length;
+  // o número do servidor (só as pendentes): a lista da ficha é o histórico, com as já decididas
+  const pendingReports = u.reportsPending;
   const openThread = u.supportThreads.find((t) => t.status !== 'resolved') ?? u.supportThreads[0] ?? null;
 
   const open = (action: ModerationDecision) => setDialog({ kind: 'action', action });
@@ -103,7 +104,7 @@ export default function UserDetailPage() {
               {mod.user.reviewHoldAt ? <Badge tone="warning">Em revisão desde {formatDate(mod.user.reviewHoldAt)}</Badge> : null}
               {pendingReports ? (
                 <Badge tone="danger" icon={<Flag />}>
-                  {pendingReports} {pendingReports === 1 ? 'denúncia' : 'denúncias'}
+                  {pendingReports} {pendingReports === 1 ? 'denúncia pendente' : 'denúncias pendentes'}
                 </Badge>
               ) : null}
             </div>
@@ -223,20 +224,22 @@ function Photos({ u, canModerate }: { u: AdminUserDetail; canModerate: boolean }
 }
 
 function Reports({ u }: { u: AdminUserDetail }) {
+  // histórico (até 50): pendentes e já decididas, cada uma com a situação
   const reports = u.moderation.reports;
   return (
     <Card>
-      <CardHead title="Denúncias pendentes" icon={<Flag size={16} />}>
-        <span className="small faint num">{reports.length}</span>
+      <CardHead title="Denúncias recebidas" icon={<Flag size={16} />}>
+        <span className="small faint num">{u.reportsPending ? `${u.reportsPending} pendente${u.reportsPending === 1 ? '' : 's'} · ${reports.length} no total` : reports.length}</span>
       </CardHead>
       {!reports.length ? (
-        <EmptyState compact icon={<CheckCheck size={22} />} title="Nenhuma denúncia pendente" />
+        <EmptyState compact icon={<CheckCheck size={22} />} title="Nenhuma denúncia contra essa conta" />
       ) : (
         <ul className="list">
           {reports.map((r) => (
-            <li key={r.id} className="report-item">
+            <li key={r.id} className="report-item" data-open={isOpenReport(r.status)}>
               <div className="row row-wrap">
                 <Badge tone={URGENT_REASONS.has(r.reason) ? 'danger' : 'warning'}>{REPORT_REASON_LABEL[r.reason]}</Badge>
+                <Badge tone={isOpenReport(r.status) ? 'outline' : 'neutral'}>{REPORT_STATUS_LABEL[r.status]}</Badge>
                 {r.context?.source ? <span className="xsmall faint">pelo {REPORT_SOURCE_LABEL[r.context.source]}</span> : null}
                 <span className="spacer" />
                 <span className="xsmall faint">{formatShortDateTime(r.createdAt)}</span>
@@ -306,7 +309,9 @@ function History({ u }: { u: AdminUserDetail }) {
                   <span className="xsmall faint">{formatDateTime(a.createdAt)}</span>
                 </div>
                 {a.note ? <p className="small muted pre-wrap">{a.note}</p> : null}
-                <div className="xsmall faint">{a.moderatorId ? <Link to={`/usuarios/${a.moderatorId}`}>por alguém da equipe</Link> : 'automático'}</div>
+                <div className="xsmall faint">
+                  {a.moderatorId ? <Link to={`/usuarios/${a.moderatorId}`}>por {a.moderatorName ?? 'alguém da equipe'}</Link> : 'automático'}
+                </div>
               </div>
             </li>
           ))}
@@ -347,7 +352,7 @@ function Counts({ u }: { u: AdminUserDetail }) {
   const items: { label: string; value: number; icon: ReactNode }[] = [
     { label: 'Curtidas dadas', value: u.counts.likesSent, icon: <Heart size={14} /> },
     { label: 'Curtidas recebidas', value: u.counts.likesReceived, icon: <Heart size={14} /> },
-    { label: 'Matches', value: u.counts.mutualLikes, icon: <Zap size={14} /> },
+    { label: 'Curtidas mútuas', value: u.counts.mutualLikes, icon: <Zap size={14} /> },
     { label: 'Conversas', value: u.counts.conversations, icon: <MessageCircle size={14} /> },
     { label: 'Mensagens enviadas', value: u.counts.messagesSent, icon: <MessageCircle size={14} /> },
     { label: 'Bloqueada por', value: u.counts.blocksReceived, icon: <UserX size={14} /> },
@@ -383,20 +388,23 @@ function Plan({ u }: { u: AdminUserDetail }) {
           <p className="small faint">Nenhuma assinatura registrada.</p>
         ) : (
           <ul className="list">
-            {u.subscriptions.map((s) => (
-              <li key={s.id} className="sub-item">
-                <div className="row">
-                  <span className="strong">{TIER_LABEL[s.tier]}</span>
-                  <Badge tone={s.platform === 'manual' ? 'gold' : 'outline'}>{platformLabel(s.platform)}</Badge>
-                  {s.cancelledAt ? <Badge tone="danger">Cancelada</Badge> : null}
-                </div>
-                <div className="xsmall faint">
-                  {formatDate(s.startsAt)} → {isNoExpiry(s.expiresAt) ? 'sem vencimento' : formatDate(s.expiresAt)}
-                  {s.grantedBy ? ` · por ${s.grantedBy.name}` : ''}
-                </div>
-                {s.note ? <div className="small muted">{s.note}</div> : null}
-              </li>
-            ))}
+            {u.subscriptions.map((s) => {
+              const st = subscriptionState(s);
+              return (
+                <li key={s.id} className="sub-item">
+                  <div className="row">
+                    <span className="strong">{TIER_LABEL[s.tier]}</span>
+                    <Badge tone={s.platform === 'manual' ? 'gold' : 'outline'}>{platformLabel(s.platform)}</Badge>
+                    <Badge tone={st.state === 'active' ? 'success' : st.state === 'cancelled' ? 'danger' : 'neutral'}>{st.label}</Badge>
+                  </div>
+                  <div className="xsmall faint">
+                    {formatDate(s.startsAt)} → {isNoExpiry(s.expiresAt) ? 'sem vencimento' : formatDate(s.expiresAt)}
+                    {s.grantedBy ? ` · por ${s.grantedBy.name}` : ''}
+                  </div>
+                  {s.note ? <div className="small muted">{s.note}</div> : null}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

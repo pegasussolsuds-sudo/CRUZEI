@@ -59,7 +59,7 @@ interface QueueShortcut {
 
 function queues(s: AdminStats): QueueShortcut[] {
   return [
-    { key: 'reports', label: 'Denúncias', hint: 'pessoas denunciadas esperando decisão', count: s.moderation.reportsPending, to: '/moderacao', icon: <Flag size={18} />, perm: 'users.moderate', urgent: true },
+    { key: 'reports', label: 'Denúncias', hint: 'denúncias esperando decisão', count: s.moderation.reportsPending, to: '/moderacao', icon: <Flag size={18} />, perm: 'users.moderate', urgent: true },
     { key: 'photos', label: 'Fotos em análise', hint: 'a análise automática pediu olho humano', count: s.moderation.photosPending, to: '/moderacao?aba=fotos', icon: <ImageOff size={18} />, perm: 'users.moderate' },
     { key: 'hold', label: 'Contas em revisão', hint: 'seguradas até alguém olhar', count: s.moderation.reviewHold, to: '/moderacao', icon: <ShieldAlert size={18} />, perm: 'users.moderate' },
     { key: 'candidates', label: 'Sugestões de lugar', hint: '"Pôr no Metch" da galera', count: s.places.candidatesPending, to: '/lugares', icon: <MapPinPlus size={18} />, perm: 'places' },
@@ -170,7 +170,7 @@ export default function DashboardPage() {
             <div className="kpi-grid">
               <Kpi icon={<MessageCircle size={16} />} label="Mensagens" value={formatCompact(s.activity.messages24h)} />
               <Kpi icon={<Heart size={16} />} label="Curtidas" value={formatCompact(s.activity.likes24h)} />
-              <Kpi icon={<Zap size={16} className="text-gold" />} label="Matches" tone="gold" value={formatCompact(s.activity.mutualLikes24h)} />
+              <Kpi icon={<Zap size={16} className="text-gold" />} label="Curtidas mútuas" tone="gold" value={formatCompact(s.activity.mutualLikes24h)} />
               <Kpi icon={<UserPlus size={16} />} label="Conversas novas" value={formatCompact(s.activity.conversationsNew24h)} />
             </div>
           </section>

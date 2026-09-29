@@ -4,6 +4,8 @@ import {
   messageForUser,
   messagesForUser,
   normClientId,
+  supportOrder,
+  waitingSinceOf,
   welcomeText,
   type SupportMessageRow,
 } from './support.mapper';
@@ -90,5 +92,22 @@ describe('clientId', () => {
     expect(normClientId('a'.repeat(65))).toBeNull();
     expect(normClientId("x'; drop")).toBeNull();
     expect(normClientId(5)).toBeNull();
+  });
+});
+
+describe('fila por espera', () => {
+  it('ordem: só "oldest" muda; o resto é a de sempre (última mensagem primeiro)', () => {
+    expect(supportOrder('oldest')).toBe('oldest');
+    expect(supportOrder('recent')).toBe('recent');
+    expect(supportOrder(undefined)).toBe('recent');
+    expect(supportOrder("oldest'; drop")).toBe('recent');
+  });
+
+  it('esperando desde: só atendimento aberto com mensagem da pessoa sem resposta', () => {
+    const since = new Date('2026-09-29T10:00:00Z');
+    expect(waitingSinceOf('open', since)).toBe('2026-09-29T10:00:00.000Z');
+    expect(waitingSinceOf('open', null)).toBeNull();
+    expect(waitingSinceOf('pending', since)).toBeNull();
+    expect(waitingSinceOf('resolved', since)).toBeNull();
   });
 });

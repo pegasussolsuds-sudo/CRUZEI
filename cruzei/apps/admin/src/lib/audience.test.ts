@@ -8,6 +8,8 @@ import {
   describeChannels,
   describeTarget,
   needsTypedConfirmation,
+  previewCount,
+  sameAudience,
   targetError,
 } from './audience';
 
@@ -55,5 +57,27 @@ describe('canais e destino', () => {
     expect(targetError({ kind: 'event', eventId: '' })).not.toBeNull();
     expect(targetError({ kind: 'place', poiId: 'p1' })).toBeNull();
     expect(targetError(null)).toBeNull();
+  });
+});
+
+describe('prévia assentada (contagem pra confirmar o envio)', () => {
+  const radius = { kind: 'radius' as const, lat: -18.9, lng: -48.2, radiusM: 3000 };
+  it('mesmo público campo a campo', () => {
+    expect(sameAudience(radius, { ...radius })).toBe(true);
+    expect(sameAudience(radius, { ...radius, radiusM: 3100 })).toBe(false);
+    expect(sameAudience({ kind: 'city', city: 'Uberlândia' }, { kind: 'city', city: 'Uberlândia' })).toBe(true);
+    expect(sameAudience({ kind: 'city', city: 'Uberlândia' }, { kind: 'city', city: 'Uberaba' })).toBe(false);
+    expect(sameAudience({ kind: 'all' }, { kind: 'premium' })).toBe(false);
+    expect(sameAudience({ kind: 'user', userId: 'a' }, { kind: 'user', userId: 'a' })).toBe(true);
+  });
+
+  it('só conta quando a prévia é deste público: mexeu (debounce) ou é a anterior (placeholder) → null', () => {
+    const data = { targetCount: 1834 };
+    expect(previewCount(radius, radius, data, false)).toBe(1834);
+    // arrastou o raio e o debounce ainda não passou
+    expect(previewCount({ ...radius, radiusM: 5000 }, radius, data, false)).toBeNull();
+    // assentou, mas a contagem nova ainda não chegou (a tela mostra a anterior)
+    expect(previewCount(radius, radius, data, true)).toBeNull();
+    expect(previewCount(radius, radius, undefined, false)).toBeNull();
   });
 });

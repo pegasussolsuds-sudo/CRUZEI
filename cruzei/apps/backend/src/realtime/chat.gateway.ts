@@ -18,7 +18,7 @@ import { Server, Socket } from 'socket.io';
 import { processesSharingResources } from '../config/runtime';
 import { PrismaService } from '../database/prisma.service';
 import { AccountStateService } from '../modules/account/account-state.service';
-import type { JwtPayload } from '../modules/auth/auth.service';
+import { isRefreshPayload, type JwtPayload } from '../modules/auth/auth.service';
 import { RedisService } from '../redis/redis.service';
 
 import {
@@ -94,6 +94,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       } catch {
         return next(new Error('unauthorized'));
       }
+      // refresh token (30 dias, mesmo segredo) não abre socket: só o access
+      if (isRefreshPayload(payload)) return next(new Error('unauthorized'));
       // conta banida/suspensa/excluída não conecta: o erro leva o código (account_banned…) e o motivo pro app
       this.accounts
         .blockedReason(payload.sub)

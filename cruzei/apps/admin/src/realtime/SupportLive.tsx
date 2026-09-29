@@ -7,14 +7,14 @@ import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { useAuth } from '@/auth/AuthProvider';
 import { hasPermission } from '@/lib/permissions';
-import { applyMessageToSummary, countWaiting, mergeMessage, SUPPORT_FILTERS, upsertThreadInPages } from '@/lib/support';
+import { applyMessageToSummary, applyToLiveQueue, EMPTY_LIVE_QUEUE, mergeMessage, seedLiveQueue, SUPPORT_FILTERS, upsertThreadInPages, type LiveQueue } from '@/lib/support';
 import { readPref, writePref } from '@/lib/prefs';
 import { useSocketEvent } from './SocketProvider';
 import { playChime, unlockAudioOnFirstGesture } from './chime';
 
 interface SupportLiveValue {
   enabled: boolean;
-  /** atendimentos abertos esperando a equipe */
+  /** atendimentos abertos esperando a equipe (o número do servidor: o mesmo do Painel) */
   waiting: number;
   /** mensagens que chegaram com a aba escondida */
   unseen: number;
@@ -42,30 +42,38 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
   const enabled = hasPermission(me, 'support');
   const meId = me?.id ?? null;
   const viewing = useRef<string | null>(null);
-  const [live, setLive] = useState<Map<string, SupportThreadSummary>>(() => new Map());
+  const [live, setLive] = useState<LiveQueue>(EMPTY_LIVE_QUEUE);
   const [unseen, setUnseen] = useState(0);
   const [soundOn, setSoundOnState] = useState(() => readPref('sound', 'on') !== 'off');
 
-  // semente: os abertos agora; o socket mantém daí em diante (e o refetch periódico cobre queda do socket)
+  // semente: os abertos agora + o TOTAL do servidor (a lista vem paginada; o número não); o socket mantém daí em
+  // diante e o refetch periódico cobre queda do socket
   const seed = useQuery({
     queryKey: qk.supportLive,
-    queryFn: () => adminApi.supportThreads({ status: 'open' }),
+    queryFn: () => adminApi.supportThreads({ status: 'open', limit: 100 }),
     enabled,
     refetchInterval: 60_000,
     staleTime: 20_000,
   });
 
   useEffect(() => {
-    if (seed.data) setLive(new Map(seed.data.items.map((t) => [t.id, t])));
+    if (seed.data) setLive(seedLiveQueue(seed.data.items, seed.data.total));
   }, [seed.data]);
+
+  // saiu dos abertos alguém fora da lista carregada: o total do servidor confirma (uma busca por rajada)
+  const recheckTimer = useRef<number | undefined>(undefined);
+  const recheck = useCallback(() => {
+    window.clearTimeout(recheckTimer.current);
+    recheckTimer.current = window.setTimeout(() => void qc.invalidateQueries({ queryKey: qk.supportLive }), 1000);
+  }, [qc]);
+  useEffect(() => () => window.clearTimeout(recheckTimer.current), []);
 
   const applyThread = useCallback(
     (thread: SupportThreadSummary) => {
-      setLive((m) => {
-        const next = new Map(m);
-        if (thread.status === 'open') next.set(thread.id, thread);
-        else next.delete(thread.id);
-        return next;
+      setLive((q) => {
+        const r = applyToLiveQueue(q, thread);
+        if (r.recheck) recheck();
+        return r.queue;
       });
       for (const f of SUPPORT_FILTERS) {
         qc.setQueryData<InfiniteData<SupportThreadList, string | null>>(qk.supportThreads(f.key), (old) =>
@@ -74,7 +82,7 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
       }
       qc.setQueryData<SupportThreadDetail>(qk.supportThread(thread.id), (old) => (old ? { ...old, ...thread } : old));
     },
-    [qc, meId],
+    [qc, meId, recheck],
   );
 
   useSocketEvent(SUPPORT_EVENTS.thread, ({ thread }) => {
@@ -88,15 +96,15 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
       old ? { ...applyMessageToSummary(old, message, isViewing), messages: mergeMessage(old.messages, message) } : old,
     );
     // resumo provisório até o 'support:thread' do servidor chegar
-    setLive((m) => {
-      const t = m.get(threadId);
-      if (!t) return m;
-      const next = new Map(m);
-      next.set(threadId, applyMessageToSummary(t, message, isViewing));
-      return next;
+    setLive((q) => {
+      const t = q.open.get(threadId);
+      if (!t) return q;
+      const open = new Map(q.open);
+      open.set(threadId, applyMessageToSummary(t, message, isViewing));
+      return { ...q, open };
     });
     if (message.author === 'user') {
-      if (!live.has(threadId)) void qc.invalidateQueries({ queryKey: qk.supportLive });
+      if (!live.open.has(threadId)) recheck();
       if (document.hidden) setUnseen((n) => n + 1);
       if (soundOn && !isViewing) playChime();
     }
@@ -121,7 +129,7 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
     viewing.current = threadId;
   }, []);
 
-  const waiting = useMemo(() => countWaiting(live.values()), [live]);
+  const waiting = live.total;
 
   const value = useMemo<SupportLiveValue>(
     () => ({ enabled, waiting: enabled ? waiting : 0, unseen, soundOn, setSoundOn, setViewing, applyThread }),

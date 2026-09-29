@@ -84,7 +84,8 @@ export function UserSearch() {
               e.preventDefault();
               setActive((a) => Math.max(a - 1, 0));
             } else if (e.key === 'Enter') {
-              const pick = items[active];
+              // só abre um resultado se ele é DESTA busca: digitando rápido, a lista ainda é a do texto anterior
+              const pick = text.trim() === q ? items[active] : undefined;
               if (pick) {
                 e.preventDefault();
                 go(pick.id);

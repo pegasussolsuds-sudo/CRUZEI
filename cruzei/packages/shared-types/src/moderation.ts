@@ -73,8 +73,13 @@ export const ACCOUNT_BLOCKED_ERRORS = ['account_banned', 'account_suspended'] as
 
 // ---- fila de moderação ----
 
+/** situação da denúncia: pending/reviewing esperam decisão; resolved = teve ação (aviso, suspensão…); dismissed = dispensada */
+export type ReportStatus = 'pending' | 'reviewing' | 'resolved' | 'dismissed';
+
 export interface ModerationReport {
   id: string;
+  /** a ficha traz o histórico (até 50): pendentes e já decididas */
+  status: ReportStatus;
   reason: ReportReason;
   description: string | null;
   reporterId: string | null;
@@ -93,6 +98,8 @@ export interface ModerationUserSummary {
   suspendedUntil: string | null;
   reviewHoldAt: string | null;
   createdAt: string;
+  /** conta da equipe só um admin modera (e ninguém modera a própria): o painel esconde as ações */
+  role: UserRole;
 }
 
 export interface ModerationReportGroup {
@@ -127,10 +134,17 @@ export interface ModerationMessage {
 }
 
 export interface ModerationUserDetail {
-  user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null; role: UserRole };
+  user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null };
   photos: { id: string; url: string; status: PhotoStatus; isMain: boolean; rejectReason: string | null }[];
   reports: ModerationReport[];
-  actions: { action: string; note: string | null; moderatorId: string | null; createdAt: string }[];
+  actions: {
+    action: string;
+    note: string | null;
+    moderatorId: string | null;
+    /** nome de quem decidiu (null = automático ou conta apagada) */
+    moderatorName?: string | null;
+    createdAt: string;
+  }[];
   /** conversas citadas nas denúncias (só essas): últimas mensagens de cada uma */
   conversations: { conversationId: string; otherUserId: string; messages: ModerationMessage[] }[];
 }

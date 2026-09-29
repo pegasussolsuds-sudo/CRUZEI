@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { AdminMe } from '@cruzei/shared-types';
 import { confirmCountFromError, hasErrors, openRate, pushSuccessRate, validateComposer } from './campaign';
 import { canChangeRole, canModerateAccount, firstAllowedPath, hasPermission, visibleNav } from './permissions';
-import { buildQuery, messageFromBody } from './query';
+import { isOpenReport, REPORT_STATUS_LABEL, subscriptionState } from './labels';
+import { buildQuery, messageFromBody, refreshOutcome } from './query';
 import { fillDays, periodDelta, sumPoints } from './stats';
 
 const admin: AdminMe = {
@@ -44,11 +45,29 @@ describe('query string e erros da API', () => {
     expect(buildQuery(undefined)).toBe('');
   });
 
-  it('mensagem do Nest: texto ou lista', () => {
+  it('mensagem do Metch (pt-BR) passa; a do framework, em inglês, vira a padrão do painel', () => {
     expect(messageFromBody({ message: 'Só a moderação acessa' })).toBe('Só a moderação acessa');
-    expect(messageFromBody({ message: ['title muito longo', 'body vazio'] })).toBe('title muito longo · body vazio');
+    expect(messageFromBody({ message: 'Você não pode moderar a própria conta', error: 'Bad Request' })).toBe('Você não pode moderar a própria conta');
+    // class-validator (lista) e pipes do Nest: inglês
+    expect(messageFromBody({ message: ['limit must be a number', 'property x should not exist'], error: 'Bad Request' })).toBeNull();
+    expect(messageFromBody({ message: 'Validation failed (uuid is expected)', error: 'Bad Request' })).toBeNull();
+    expect(messageFromBody({ message: 'Cannot GET /v1/admin/nada' })).toBeNull();
+    expect(messageFromBody({ message: 'Unauthorized' })).toBeNull();
+    expect(messageFromBody({ message: 'Forbidden resource' })).toBeNull();
     expect(messageFromBody({ message: '' })).toBeNull();
     expect(messageFromBody(null)).toBeNull();
+  });
+
+  it('renovar a sessão: só 401/403 encerram; sem rede, 5xx e 429 mantêm', () => {
+    expect(refreshOutcome(200)).toBe('ok');
+    expect(refreshOutcome(201)).toBe('ok');
+    expect(refreshOutcome(401)).toBe('denied');
+    expect(refreshOutcome(403)).toBe('denied');
+    expect(refreshOutcome('network')).toBe('unavailable');
+    expect(refreshOutcome(500)).toBe('unavailable');
+    expect(refreshOutcome(502)).toBe('unavailable');
+    expect(refreshOutcome(503)).toBe('unavailable');
+    expect(refreshOutcome(429)).toBe('unavailable');
   });
 });
 
@@ -75,10 +94,15 @@ describe('séries do painel', () => {
   });
 
   it('variação da semana', () => {
-    const pts = Array.from({ length: 14 }, (_, i) => ({ day: `2026-09-${String(i + 10).padStart(2, '0')}`, n: i < 7 ? 1 : 2 }));
-    expect(sumPoints(pts)).toBe(21);
-    expect(periodDelta(pts, 7)).toEqual({ current: 14, previous: 7, ratio: 1 });
+    const pts = Array.from({ length: 14 }, (_, i) => ({ day: `2026-09-${String(i + 10).padStart(2, '0')}`, n: i < 7 ? 2 : 4 }));
+    expect(sumPoints(pts)).toBe(42);
+    expect(periodDelta(pts, 7)).toEqual({ current: 28, previous: 14, ratio: 1 });
     expect(periodDelta(pts.slice(7), 7).ratio).toBeNull();
+  });
+
+  it('base pequena não vira porcentagem absurda (+3.500%)', () => {
+    const pts = Array.from({ length: 14 }, (_, i) => ({ day: `2026-09-${String(i + 10).padStart(2, '0')}`, n: i === 0 ? 1 : i >= 7 ? 5 : 0 }));
+    expect(periodDelta(pts, 7)).toEqual({ current: 35, previous: 1, ratio: null });
   });
 });
 
@@ -104,4 +128,37 @@ it('409 confirm_required traz o número que o servidor quer', () => {
   expect(confirmCountFromError(409, { error: 'thread_conflict', message: 'x' })).toBeNull();
   expect(confirmCountFromError(400, { error: 'confirm_required', targetCount: 1 })).toBeNull();
   expect(confirmCountFromError(409, null)).toBeNull();
+});
+
+describe('ficha do usuário', () => {
+  const NOW = Date.parse('2026-09-29T15:00:00Z');
+  it('situação de cada assinatura do histórico', () => {
+    expect(subscriptionState({ cancelledAt: null, expiresAt: '2026-10-29T15:00:00Z' }, NOW)).toEqual({ state: 'active', label: 'ativa' });
+    expect(subscriptionState({ cancelledAt: null, expiresAt: '2026-09-01T15:00:00Z' }, NOW)).toEqual({ state: 'expired', label: 'vencida' });
+    expect(subscriptionState({ cancelledAt: null, expiresAt: '2099-12-31T23:59:59.000Z' }, NOW).state).toBe('active');
+    const c = subscriptionState({ cancelledAt: '2026-09-10T12:00:00Z', expiresAt: '2026-10-29T15:00:00Z' }, NOW);
+    expect(c.state).toBe('cancelled');
+    expect(c.label).toMatch(/^cancelada em 10 set 2026$/);
+  });
+
+  it('situação da denúncia', () => {
+    expect(REPORT_STATUS_LABEL.dismissed).toBe('Dispensada');
+    expect(isOpenReport('pending')).toBe(true);
+    expect(isOpenReport('reviewing')).toBe(true);
+    expect(isOpenReport('resolved')).toBe(false);
+    expect(isOpenReport('dismissed')).toBe(false);
+  });
+});
+
+describe('rótulos da auditoria e do histórico', () => {
+  it('ações do painel e da moderação em português; desconhecida fica crua', async () => {
+    const { auditActionLabel, moderationActionLabel } = await import('./labels');
+    expect(auditActionLabel('admin.user.premium_grant')).toBe('Premium dado');
+    expect(auditActionLabel('moderation.suspend:3')).toBe('Suspensão por 3 dias');
+    expect(auditActionLabel('moderation.suspend:1')).toBe('Suspensão por 1 dia');
+    expect(auditActionLabel('moderation.suspend:revisao')).toBe('Suspensão até revisão');
+    expect(auditActionLabel('moderation.ban')).toBe('Banimento');
+    expect(auditActionLabel('algo.novo')).toBe('algo.novo');
+    expect(moderationActionLabel('auto_hold')).toBe('Segurada pra revisão (automático)');
+  });
 });
