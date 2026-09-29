@@ -4,14 +4,21 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ModerationActionPayload, ModerationDecision, ModerationUserDetail } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { reasonLabel } from './ModerationScreen';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ModerationUser'>;
 
-const SOURCE_LABEL: Record<string, string> = { profile: 'pelo perfil', chat: 'pelo chat', matches: 'pela lista de matches', map: 'pelo mapa', likes: 'pelas curtidas' };
+const SOURCE_LABEL: Record<string, string> = {
+  profile: 'pelo perfil',
+  chat: 'pelo chat',
+  inbox: 'pela lista de Mensagens',
+  requests: 'pelas solicitações',
+  map: 'pelo mapa',
+  likes: 'pelas curtidas',
+};
 const ACTION_LABEL: Record<string, string> = {
   auto_hold: 'fora da descoberta',
   dismiss: 'denúncias dispensadas',
@@ -34,7 +41,7 @@ const ACTIONS: { action: ModerationDecision; days?: number; label: string; confi
   { action: 'warn', label: 'Advertir', confirm: 'A pessoa recebe um aviso com o motivo escrito acima.' },
   { action: 'suspend', days: 7, label: 'Suspender 7 dias', confirm: 'A pessoa perde o acesso por 7 dias e sai do mapa na hora.', danger: true },
   { action: 'suspend', label: 'Suspender até revisão', confirm: 'A pessoa perde o acesso até alguém da moderação reabilitar.', danger: true },
-  { action: 'ban', label: 'Banir', confirm: 'Banimento definitivo: a pessoa perde o acesso, os matches fecham e o número não cria outra conta.', danger: true },
+  { action: 'ban', label: 'Banir', confirm: 'Banimento definitivo: a pessoa perde o acesso, as conversas dela são arquivadas e o número não cria outra conta.', danger: true },
   { action: 'reinstate', label: 'Reabilitar conta', confirm: 'Tira suspensão, banimento e a retenção fora da descoberta.' },
 ];
 
@@ -124,13 +131,13 @@ export function ModerationUserScreen({ route, navigation }: Props) {
         ))}
 
         {d.conversations.map((c) => (
-          <View key={c.matchId}>
+          <View key={c.conversationId}>
             <Text style={styles.section}>conversa denunciada</Text>
             <View style={styles.card}>
               {c.messages.length === 0 ? <Text style={styles.muted}>Sem mensagens.</Text> : null}
               {c.messages.map((m) => (
                 <Text key={m.id} style={styles.msg}>
-                  <Text style={{ fontWeight: '700', color: m.senderId === u.id ? colors.danger : colors.gray[600] }}>
+                  <Text style={{ fontFamily: fontFamily.bodyBold, color: m.senderId === u.id ? colors.danger : colors.gray[600] }}>
                     {m.senderId === u.id ? u.name : 'outra pessoa'}:
                   </Text>{' '}
                   {m.content ?? `[${m.messageType}]`}
@@ -194,7 +201,7 @@ const styles = StyleSheet.create({
   photo: { width: 120, height: 150, borderRadius: radius.md, backgroundColor: colors.gray[200] },
   badge: { ...typography.caption, color: colors.gray[600], marginTop: 2 },
   card: { backgroundColor: colors.white, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm, gap: 2 },
-  cardTitle: { ...typography.body, fontWeight: '700', color: colors.black },
+  cardTitle: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },
   cardText: { ...typography.body, color: colors.gray[800], marginTop: spacing.xs },
   msg: { ...typography.bodySmall, color: colors.gray[800], paddingVertical: 2 },
   history: { ...typography.caption, color: colors.gray[600], paddingVertical: 2 },
@@ -212,5 +219,5 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   action: { paddingVertical: spacing.sm + 2, paddingHorizontal: spacing.md, borderRadius: 999, borderWidth: 1, borderColor: colors.gray[300], backgroundColor: colors.white },
   actionDanger: { backgroundColor: colors.danger, borderColor: colors.danger },
-  actionText: { ...typography.bodySmall, fontWeight: '700', color: colors.black },
+  actionText: { ...typography.bodySmall, fontFamily: fontFamily.bodyBold, color: colors.black },
 });

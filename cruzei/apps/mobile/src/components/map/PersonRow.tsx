@@ -8,6 +8,7 @@ import { LiveDot } from '../animated/LiveDot';
 import { PressScale } from '../animated/PressScale';
 import { IdentityBubble } from '../identity/IdentityBubble';
 import { resolveAvatar } from '../../avatar';
+import { likeStatusOf } from '../../hooks/useInbox';
 
 export interface PersonRowProps {
   user: NearbyUser;
@@ -61,7 +62,7 @@ function PersonRowInner({ user, band, onPress, pressHint = 'Mostra no mapa', onL
             <Ionicons name="glasses" size={22} color={colors.white} />
           </View>
         ) : (
-          <IdentityBubble photoUrl={user.mapPhotoUrl} avatar={avatar} size={PHOTO} name={user.name} ring="none" badge={user.matchId ? 'match' : user.isNew ? 'new' : null} accessible={false} />
+          <IdentityBubble photoUrl={user.mapPhotoUrl} avatar={avatar} size={PHOTO} name={user.name} ring="none" badge={likeStatusOf(user) === 'MUTUAL' ? 'match' : user.isNew ? 'new' : null} accessible={false} />
         )}
       </View>
 

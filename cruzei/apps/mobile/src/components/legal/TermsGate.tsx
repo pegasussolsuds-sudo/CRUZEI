@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { LEGAL_VERSION, type LegalSlug } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
 import { LegalDocView } from './LegalDocView';
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
   title: { ...typography.h2, color: colors.black },
   text: { ...typography.body, color: colors.gray[700], lineHeight: 22 },
   btn: { backgroundColor: colors.primary, borderRadius: radius.lg, paddingVertical: spacing.md + 2, alignItems: 'center' },
-  btnText: { ...typography.body, fontWeight: '700', color: colors.black },
+  btnText: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },
   readerSafe: { flex: 1, backgroundColor: colors.background },
   readerHeader: {
     flexDirection: 'row',

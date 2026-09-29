@@ -1,4 +1,5 @@
 // Segurança e moderação: denúncia, bloqueio, estado da conta, fila dos moderadores e documentos legais.
+import type { AvatarConfig } from './avatar';
 
 /** motivos de denúncia de pessoa (a ordem é a da lista no app) */
 export const REPORT_REASONS = [
@@ -15,7 +16,18 @@ export const REPORT_REASONS = [
 export type ReportReason = (typeof REPORT_REASONS)[number];
 
 /** de onde a denúncia saiu (a moderação usa pra achar a conversa ou a foto) */
-export type ReportSource = 'profile' | 'chat' | 'matches' | 'map' | 'likes';
+export type ReportSource = 'profile' | 'chat' | 'inbox' | 'requests' | 'map' | 'likes';
+/** origens aceitas no POST /reports e /users/:id/report */
+export const REPORT_SOURCES: readonly ReportSource[] = ['profile', 'chat', 'inbox', 'requests', 'map', 'likes'];
+
+/** type (e não interface): vai direto pro Json do Prisma, que exige índice implícito */
+export type ReportContext = {
+  source: ReportSource;
+  /** conversa denunciada (a moderação lê as últimas mensagens dela) */
+  conversationId?: string;
+  messageId?: string;
+  photoId?: string;
+};
 
 export interface ReportPayload {
   userId: string;
@@ -23,8 +35,11 @@ export interface ReportPayload {
   description?: string;
   /** bloqueia a pessoa junto (padrão no app: sim) */
   block?: boolean;
-  context?: { source: ReportSource; matchId?: string; messageId?: string; photoId?: string };
+  context?: ReportContext;
 }
+
+/** corpo do POST /users/:id/report (o alvo vem na rota) */
+export type UserReportPayload = Omit<ReportPayload, 'userId'>;
 
 export interface ReportResult {
   id: string;
@@ -37,7 +52,8 @@ export interface BlockedUser {
   id: string;
   reason: string | null;
   createdAt: string;
-  user: { id: string; name: string; mainPhotoUrl: string | null };
+  /** bloqueio esconde perfil E foto: vem só nome + avatar (mainPhotoUrl sempre null) */
+  user: { id: string; name: string; avatar: AvatarConfig; mainPhotoUrl: null };
 }
 
 export type UserRole = 'user' | 'moderator' | 'admin';
@@ -116,7 +132,7 @@ export interface ModerationUserDetail {
   reports: ModerationReport[];
   actions: { action: string; note: string | null; moderatorId: string | null; createdAt: string }[];
   /** conversas citadas nas denúncias (só essas): últimas mensagens de cada uma */
-  conversations: { matchId: string; otherUserId: string; messages: ModerationMessage[] }[];
+  conversations: { conversationId: string; otherUserId: string; messages: ModerationMessage[] }[];
 }
 
 export type ModerationDecision = 'dismiss' | 'warn' | 'suspend' | 'ban' | 'reinstate';
@@ -135,8 +151,8 @@ export interface ModerationActionPayload {
 
 export type LegalSlug = 'termos' | 'privacidade' | 'seguranca-infantil';
 
-/** versão vigente dos Termos + Política (o aceite grava esta string) */
-export const LEGAL_VERSION = '1.0';
+/** versão vigente dos Termos + Política (o aceite grava esta string; mudou → o app pede novo aceite). 1.1: mensagem sem match (Principal/Solicitações), fim das 48 h */
+export const LEGAL_VERSION = '1.1';
 export const LEGAL_EFFECTIVE_DATE = '2026-09-29';
 
 export interface LegalDocMeta {

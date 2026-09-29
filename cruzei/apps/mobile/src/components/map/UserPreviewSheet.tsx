@@ -7,6 +7,7 @@ import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile'
 import { proximityBandLabel } from '@cruzei/shared-utils';
 import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import { api } from '../../services/api';
+import type { ConversationFlag, LikeFlags } from '../../hooks/useInbox';
 import { resolveAvatar } from '../../avatar';
 import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
 import { IdentityBubble } from '../identity/IdentityBubble';
@@ -19,7 +20,8 @@ import { presenceLabel } from './PersonRow';
 export const USER_SHEET_FRACTION = 0.56;
 const SNAP_POINTS: string[] = ['56%'];
 
-interface UserCardLite {
+// likeStatus/conversation do cartão público completam o que o /nearby ainda não trouxe
+interface UserCardLite extends LikeFlags, ConversationFlag {
   bio: string | null;
   interests: string[];
   photos: { url: string; thumbnailUrl?: string | null; isMain: boolean }[];
@@ -36,21 +38,24 @@ export interface UserPreviewSheetProps {
   band: ProximityBand | null;
   liked: boolean;
   waved: boolean;
-  matchId: string | null;
+  /** os dois se curtiram */
+  mutual: boolean;
+  /** conversa do par, se já existe (null → "Mensagem" abre o chat em rascunho) */
+  conversationId: string | null;
   onLike: (user: NearbyUser) => void;
   onWave: (user: NearbyUser) => void;
-  onChat: (matchId: string, user: NearbyUser) => void;
+  onChat: (user: NearbyUser, conversationId: string | null) => void;
   onOpenProfile: (user: NearbyUser) => void;
   onClose: () => void;
 }
 
 /**
  * Perfil rápido no mapa (doc §5/§20): bottom sheet escuro com o avatar, distância aproximada, status,
- * interesses e as ações Curtir / Acenar (ou Match / Conversar). O mapa continua visível atrás —
+ * interesses e as ações Curtir / Acenar / Mensagem (ou Match / Conversar). O mapa continua visível atrás —
  * sensação de continuidade do mundo. O perfil completo (fotos) fica um toque adiante.
  */
 export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSheetProps>(function UserPreviewSheet(
-  { user, band, liked, waved, matchId, onLike, onWave, onChat, onOpenProfile, onClose },
+  { user, band, liked, waved, mutual, conversationId, onLike, onWave, onChat, onOpenProfile, onClose },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -89,6 +94,8 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
   const cardMain = card.data?.photos?.find((p) => p.isMain) ?? card.data?.photos?.[0];
   const photo = user?.mapPhotoUrl ?? cardMain?.thumbnailUrl ?? null;
   const interests = card.data?.interests?.slice(0, 4) ?? [];
+  const isMutual = mutual || card.data?.likeStatus === 'MUTUAL';
+  const convId = conversationId ?? card.data?.conversation?.id ?? null;
 
   return (
     <BottomSheet
@@ -118,8 +125,8 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
                   name={user.name}
                   accessible={false}
                   online={user.isOnline}
-                  ring={matchId ? 'match' : user.isBoosted ? 'boost' : user.isOnline ? 'online' : 'default'}
-                  badge={matchId ? 'match' : user.isNew ? 'new' : null}
+                  ring={isMutual ? 'match' : user.isBoosted ? 'boost' : user.isOnline ? 'online' : 'default'}
+                  badge={isMutual ? 'match' : user.isNew ? 'new' : null}
                   style={styles.bubble}
                 />
                 <View style={styles.bubbleTail} pointerEvents="none" />
@@ -167,27 +174,31 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
             ) : null}
 
             <View style={styles.actions}>
-              {matchId ? (
+              {isMutual ? (
                 <>
-                  <View style={[styles.action, styles.actionMatch]} accessibilityLabel="Vocês deram match">
+                  <View style={[styles.action, styles.actionMatch]} accessibilityLabel="Vocês se curtiram">
                     <Text style={styles.actionMatchText}>🔥 Match</Text>
                   </View>
-                  <ScaleOnPress onPress={() => onChat(matchId, user)} accessibilityRole="button" accessibilityLabel="Conversar" style={[styles.action, styles.actionPrimary]} glowColor={colors.primary}>
+                  <ScaleOnPress onPress={() => onChat(user, convId)} accessibilityRole="button" accessibilityLabel="Conversar" style={[styles.action, styles.actionPrimary]} glowColor={colors.primary}>
                     <Text style={styles.actionPrimaryText}>💬 Conversar</Text>
                   </ScaleOnPress>
                 </>
               ) : (
                 <>
+                  {/* três ações + fechar em 360 dp: ícone em cima e rótulo embaixo (lado a lado o "Mensagem" não cabe) */}
                   <ScaleOnPress
                     onPress={() => onLike(user)}
                     disabled={liked}
                     accessibilityRole="button"
                     accessibilityState={{ disabled: liked }}
                     accessibilityLabel={liked ? 'Você já curtiu' : 'Curtir'}
-                    style={[styles.action, liked ? styles.actionDone : styles.actionPrimary]}
+                    style={[styles.action, styles.actionStack, liked ? styles.actionDone : styles.actionPrimary]}
                     glowColor={liked ? undefined : colors.primary}
                   >
-                    <Text style={liked ? styles.actionDoneText : styles.actionPrimaryText}>{liked ? '❤️ Curtido' : '❤️ Curtir'}</Text>
+                    <Text style={styles.actionEmoji}>❤️</Text>
+                    <Text style={liked ? styles.actionDoneText : styles.actionPrimaryText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                      {liked ? 'Curtido' : 'Curtir'}
+                    </Text>
                   </ScaleOnPress>
                   <ScaleOnPress
                     onPress={() => onWave(user)}
@@ -195,10 +206,27 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
                     accessibilityRole="button"
                     accessibilityState={{ disabled: waved }}
                     accessibilityLabel={waved ? 'Você já acenou hoje' : 'Acenar'}
-                    style={[styles.action, styles.actionGhost, ...(waved ? [styles.actionDone] : [])]}
+                    style={[styles.action, styles.actionStack, styles.actionGhost, ...(waved ? [styles.actionDone] : [])]}
                   >
-                    <Text style={waved ? styles.actionDoneText : styles.actionGhostText}>{waved ? '👋 Acenou' : '👋 Acenar'}</Text>
+                    <Text style={styles.actionEmoji}>👋</Text>
+                    <Text style={waved ? styles.actionDoneText : styles.actionGhostText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                      {waved ? 'Acenou' : 'Acenar'}
+                    </Text>
                   </ScaleOnPress>
+                  {/* anônimo não recebe mensagem (o servidor também recusa) */}
+                  {!user.isAnonymous ? (
+                    <ScaleOnPress
+                      onPress={() => onChat(user, convId)}
+                      accessibilityRole="button"
+                      accessibilityLabel={convId ? `Abrir conversa com ${user.name}` : `Mandar mensagem pra ${user.name}`}
+                      style={[styles.action, styles.actionStack, styles.actionGhost]}
+                    >
+                      <Text style={styles.actionEmoji}>💬</Text>
+                      <Text style={styles.actionGhostText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+                        {convId ? 'Conversa' : 'Mensagem'}
+                      </Text>
+                    </ScaleOnPress>
+                  ) : null}
                 </>
               )}
               <ScaleOnPress onPress={() => sheetRef.current?.close()} accessibilityRole="button" accessibilityLabel="Fechar" style={styles.closeBtn}>
@@ -248,6 +276,8 @@ const styles = StyleSheet.create({
   chipText: { ...typography.caption, color: colors.white },
   actions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   action: { flex: 1, minHeight: 48, borderRadius: radius.full, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
+  actionStack: { minHeight: 56, borderRadius: radius.lg, paddingHorizontal: 2, paddingVertical: 6, gap: 2 },
+  actionEmoji: { fontSize: 16, lineHeight: 20 },
   actionPrimary: { backgroundColor: colors.primary },
   actionPrimaryText: { ...typography.label, color: colors.black },
   actionGhost: { borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.35)' },

@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { INBOX_EVENTS } from '@cruzei/shared-types';
 import type {
+  ConversationRemovedPayload,
   ModerationActionPayload,
   ModerationQueue,
   ModerationReport,
@@ -15,6 +17,7 @@ import { RedisService } from '../../redis/redis.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { AccountStateService, blockedBody } from '../account/account-state.service';
 import { PhotoModerationService } from './photo-moderation.service';
+import { lockPair } from '../inbox/inbox.queries';
 
 const SUMMARY_SELECT = {
   id: true,
@@ -132,23 +135,28 @@ export class ModerationService {
       this.prisma.report.findMany({ where: { reportedId: userId }, orderBy: { createdAt: 'desc' }, take: 50 }),
       this.prisma.moderationAction.findMany({ where: { targetUserId: userId }, orderBy: { createdAt: 'desc' }, take: 50 }),
     ]);
-    // só as conversas citadas nas denúncias (a política de privacidade avisa que a moderação pode lê-las)
-    const matchIds = [
+    // só as conversas citadas nas denúncias (a política de privacidade avisa que a moderação pode lê-las).
+    const conversationIds = [
       ...new Set(
         reports
-          .map((r) => (r.context as { matchId?: string } | null)?.matchId)
-          .filter((id): id is string => typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id)),
+          .map((r) => {
+            const c = r.context as { conversationId?: string } | null;
+            return c?.conversationId;
+          })
+          .filter((id): id is string => typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id))
+          .map((id) => id.toLowerCase()),
       ),
     ].slice(0, 5);
-    const conversations = [];
-    for (const matchId of matchIds) {
-      const m = await this.prisma.match.findUnique({ where: { id: matchId }, select: { userAId: true, userBId: true } });
-      if (!m || (m.userAId !== userId && m.userBId !== userId)) continue;
-      const msgs = await this.prisma.message.findMany({ where: { matchId }, orderBy: { createdAt: 'desc' }, take: 40 });
+    const conversations: ModerationUserDetail['conversations'] = [];
+    for (const conversationId of conversationIds) {
+      const c = await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { userLowId: true, userHighId: true } });
+      // só conversa da pessoa denunciada (o contexto vem do app de quem denunciou)
+      if (!c || (c.userLowId !== userId && c.userHighId !== userId)) continue;
+      const msgs = await this.prisma.message.findMany({ where: { conversationId }, orderBy: { createdAt: 'desc' }, take: 40 });
       conversations.push({
-        matchId,
-        otherUserId: m.userAId === userId ? m.userBId : m.userAId,
-        messages: msgs.reverse().map((x) => ({ id: x.id, senderId: x.senderId, content: x.content, messageType: x.messageType, createdAt: x.createdAt.toISOString() })),
+        conversationId,
+        otherUserId: c.userLowId === userId ? c.userHighId : c.userLowId,
+        messages: msgs.reverse().map((x) => ({ id: x.id, senderId: x.senderId, content: x.body, messageType: x.messageType, createdAt: x.createdAt.toISOString() })),
       });
     }
     const summaryRow = { ...u, photos: u.photos.filter((p) => p.isMain).concat(u.photos).slice(0, 1) } as SummaryRow;
@@ -203,7 +211,7 @@ export class ModerationService {
           data: { accountStatus: 'banned', suspendedUntil: null, moderationReason: reason, reviewHoldAt: null },
         });
         await this.resolveReports(targetId, moderator.id, 'resolved', 'ban');
-        await this.closeMatches(targetId);
+        await this.archiveConversations(targetId);
         // o número fica preso à conta banida (users.phone é único): não dá pra se cadastrar de novo com ele.
         // Quando existir exclusão de conta, ela precisa manter o banimento (hash do telefone).
         await this.cutAccess(targetId, blockedBody({ status: 'banned', until: null, reason }));
@@ -252,16 +260,32 @@ export class ModerationService {
     this.gateway.disconnectUser(userId, reason);
   }
 
-  private async closeMatches(userId: string) {
-    const active = await this.prisma.match.findMany({
-      where: { status: { in: ['active', 'expired'] }, OR: [{ userAId: userId }, { userBId: userId }] },
-      select: { id: true, userAId: true, userBId: true },
-    });
-    if (!active.length) return;
-    await this.prisma.match.updateMany({ where: { id: { in: active.map((m) => m.id) } }, data: { status: 'unmatched' } });
-    for (const m of active) {
-      this.gateway.closeMatch(m.id, [m.userAId, m.userBId]);
-      await this.redis.invalidateProfile(m.userAId === userId ? m.userBId : m.userAId);
+  /**
+   * banimento: todas as conversas da pessoa são arquivadas PROS DOIS lados e as não lidas zeram (somem do inbox e das
+   * solicitações de quem conversava com ela). Like e Message ficam (a moderação ainda lê). Eventos depois do commit.
+   */
+  private async archiveConversations(userId: string) {
+    const convs = await this.prisma.$transaction(async (tx) => {
+      // só as que ainda aparecem pra alguém (repetir o banimento não gera evento de novo)
+      const open = await tx.conversation.findMany({
+        where: { OR: [{ userLowId: userId }, { userHighId: userId }], members: { some: { archivedAt: null } } },
+        select: { id: true, userLowId: true, userHighId: true },
+      });
+      if (!open.length) return open;
+      // a trava de cada par (a mesma do InboxService, em ordem de id): um envio em andamento termina antes e o
+      // próximo já vê a conta banida (404) — ninguém desarquiva depois daqui
+      for (const c of [...open].sort((a, b) => (a.id < b.id ? -1 : 1))) await lockPair(tx, c.userLowId, c.userHighId);
+      const ids = open.map((c) => c.id);
+      await tx.conversationMember.updateMany({ where: { conversationId: { in: ids } }, data: { unreadCount: 0 } });
+      await tx.conversationMember.updateMany({ where: { conversationId: { in: ids }, archivedAt: null }, data: { archivedAt: new Date() } });
+      return open;
+    }, { timeout: 30_000 }); // quem tem centenas de conversas: uma trava por par cabe no prazo
+    for (const c of convs) {
+      const pair = [c.userLowId, c.userHighId];
+      const payload: ConversationRemovedPayload = { conversationId: c.id };
+      this.gateway.emitToUsers(pair, INBOX_EVENTS.conversationRemoved, payload);
+      this.gateway.removeFromConversation(c.id, pair);
+      await this.redis.invalidateProfile(c.userLowId === userId ? c.userHighId : c.userLowId);
     }
   }
 

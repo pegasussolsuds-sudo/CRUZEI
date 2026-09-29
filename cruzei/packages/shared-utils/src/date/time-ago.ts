@@ -14,12 +14,3 @@ export function timeAgo(date: Date | string): string {
   if (diff < MS_DAY * 7) return `há ${Math.floor(diff / MS_DAY)} dias`;
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
-
-export function formatChatExpiry(expiresAt: Date | string): string {
-  const d = typeof expiresAt === 'string' ? new Date(expiresAt) : expiresAt;
-  const hoursLeft = Math.max(0, Math.floor((d.getTime() - Date.now()) / MS_HOUR));
-  if (hoursLeft <= 0) return 'expirado';
-  if (hoursLeft === 1) return '1 hora pra acabar';
-  if (hoursLeft < 24) return `${hoursLeft} horas pra acabar`;
-  return `${Math.floor(hoursLeft / 24)}d ${hoursLeft % 24}h`;
-}

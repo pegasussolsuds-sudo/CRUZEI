@@ -23,6 +23,7 @@ import Animated, {
 
 import { api, toApiError } from '../../services/api';
 import { useMyLocation } from '../../hooks/useMyLocation';
+import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
@@ -79,11 +80,11 @@ export function LikesScreen() {
   });
 
   // Fila derivada de cada carga: sem anônimos (não dá pra curtir quem não se revelou),
-  // sem quem já curti / já deu match, e sem quem acabei de passar/curtir aqui
+  // sem quem já curti (sozinho ou os dois), e sem quem acabei de passar/curtir aqui
   const queue = useMemo(
     () =>
       (nearbyQuery.data?.users ?? []).filter(
-        (u) => !u.isAnonymous && !u.likedByMe && !u.matchId && !acted.has(u.id),
+        (u) => !u.isAnonymous && !iLiked(likeStatusOf(u)) && !acted.has(u.id),
       ),
     [nearbyQuery.data, acted],
   );
@@ -112,17 +113,17 @@ export function LikesScreen() {
           return;
         }
         const res = await likeMutation.mutateAsync({ userId: card.id, isSuper: action === 'super' });
-        if (res.isMatch && res.matchId) {
+        if (res.isMutual) {
           setMatch({
-            matchId: res.matchId,
             userId: card.id,
             name: card.name,
             photo: card.mainPhotoUrl,
             avatar: card.avatar ?? null,
-            context: res.context ?? null,
+            // a curtida mútua promove a conversa do par (se já existia) pra principal
+            conversationId: res.promotedConversationIds[0] ?? card.conversation?.id ?? null,
             band: card.proximityBand ?? null,
           });
-          qc.invalidateQueries({ queryKey: ['matches'] });
+          qc.invalidateQueries({ queryKey: inboxKeys.all });
         }
       } catch (err) {
         setError(toApiError(err).message);

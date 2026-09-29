@@ -20,6 +20,7 @@ import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
 import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
 import { cleanupLegacyMapbox } from './services/legacyMapboxCleanup';
+import { applyConversationNew, applyMessageNew, applyPromoted, applyRead, applyRemoved, inboxKeys } from './hooks/useInbox';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
@@ -96,23 +97,21 @@ export function App() {
     (async () => {
       const socket = await connectSocket();
       if (!socket || !active) return;
-      // (re)conectou: o que chegou enquanto o socket estava fora não virou evento — atualiza a lista uma vez
+      // (re)conectou: o que chegou enquanto o socket estava fora não virou evento — atualiza Mensagens uma vez
       socket.on('connect', () => {
-        queryClient.invalidateQueries({ queryKey: ['matches'] });
+        queryClient.invalidateQueries({ queryKey: inboxKeys.all });
+        queryClient.invalidateQueries({ queryKey: ['conversation'] });
+        queryClient.invalidateQueries({ queryKey: ['messages'] });
       });
-      socket.on('match_created', () => {
-        queryClient.invalidateQueries({ queryKey: ['matches'] });
-        queryClient.invalidateQueries({ queryKey: ['me'] });
-      });
-      socket.on('message_received', () => {
-        queryClient.invalidateQueries({ queryKey: ['matches'] });
-      });
+      // Mensagens: o evento traz o estado do servidor (unread, pasta, promoção); o cache só troca a conversa de lugar
+      socket.on('message:new', (p) => applyMessageNew(queryClient, p));
+      socket.on('conversation:new', (p) => applyConversationNew(queryClient, p));
+      socket.on('conversation:promoted', (p) => applyPromoted(queryClient, p));
+      socket.on('message:read', (p) => applyRead(queryClient, p, useAuthStore.getState().user?.id));
+      // bloqueio, arquivamento ou moderação: a conversa some da lista na hora (o chat aberto fecha sozinho)
+      socket.on('conversation:removed', ({ conversationId }) => applyRemoved(queryClient, conversationId));
       socket.on('like_received', () => {
         queryClient.invalidateQueries({ queryKey: ['me'] });
-      });
-      // bloqueio, match desfeito ou moderação: a conversa some da lista na hora (o chat aberto fecha sozinho)
-      socket.on('match_closed', () => {
-        queryClient.invalidateQueries({ queryKey: ['matches'] });
       });
       socket.on('account_blocked', (data) => {
         const b = asAccountBlocked(data);

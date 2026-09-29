@@ -63,16 +63,18 @@ Explicamos em detalhe na seção 3.
 
 ### 2.5 Interações
 
-- **Dados:** curtidas e supercurtidas, perfis que você dispensa, matches (com a frase de contexto), mensagens do chat (texto, data, hora e confirmação de leitura), acenos e bloqueios (com o motivo, se você informar).
-- **Para quê:** fazer o app funcionar e limitar abusos, como o número de curtidas por dia.
+- **Dados:** curtidas e supercurtidas, perfis que você dispensa, conversas (quem começou, se estão na Principal ou em Solicitações e desde quando, quantas mensagens você ainda não leu e se você arquivou ou silenciou), mensagens (texto, data, hora, confirmação de leitura e avisos do próprio app, como "Vocês se curtiram"), acenos e bloqueios (com o motivo, se você informar).
+- **Para quê:** fazer o app funcionar, separar as conversas entre Principal e Solicitações e limitar abusos, como o número de curtidas e de conversas novas por dia e de mensagens por minuto.
 - **Base legal:** execução do contrato (art. 7º, V) e legítimo interesse na segurança (art. 7º, IX).
 - A pessoa que você curtiu pode ficar sabendo da curtida.
-- As mensagens de um chat são vistas só pelas duas pessoas do match. A exceção está na seção 2.6.
+- Quem consegue ver seu perfil pode mandar mensagem para você. A conversa chega nas suas Solicitações, com o nome e a foto principal (ou o avatar) de quem mandou e o começo da mensagem. Ela passa para a Principal quando você responde, quando você a move para lá ou quando vocês se curtem.
+- Enquanto a conversa está nas suas Solicitações, quem mandou não vê a confirmação de leitura.
+- As mensagens de uma conversa são vistas só pelas duas pessoas que participam dela. A exceção está na seção 2.6.
 
 ### 2.6 Denúncias e moderação
 
 - **Dados:** denúncias que você faz ou recebe (motivo, descrição, de onde a denúncia saiu e a conversa ou foto citada), resultado da análise das fotos, decisões de moderação (advertência, suspensão, banimento, motivo e prazo) e a situação da conta.
-- **Leitura de conversa denunciada:** quando alguém denuncia a partir de um chat, a equipe de moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
+- **Leitura de conversa denunciada:** quando alguém denuncia a partir de uma conversa, inclusive em Solicitações, a equipe de moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
 - **Para quê:** proteger as pessoas, fazer valer os Termos, prevenir fraudes, proteger crianças e adolescentes, cumprir a lei e nos defender em processos.
 - **Base legal:** legítimo interesse na segurança dos usuários (art. 7º, IX), execução do contrato para fazer valer os Termos (art. 7º, V), cumprimento de obrigação legal (art. 7º, II), exercício regular de direitos (art. 7º, VI) e, em emergências, proteção da vida ou da integridade física (art. 7º, VII).
 - O acesso da equipe de moderação é restrito. Os moderadores veem seu telefone mascarado, não o número completo.
@@ -127,7 +129,7 @@ Explicamos na seção 4.
 ### 3.2 O que guardamos
 
 1. **Posição atual exata.** Fica no nosso servidor de presença e serve para calcular quem está a até 350 metros e se você está numa área privada. Junto com ela guardamos o lugar público em que você está, se houver, e desde quando você está na mesma área. Cada atualização substitui a anterior. A posição é apagada 2 horas depois da última atualização.
-2. **Histórico arredondado.** Quando sua posição muda e, se você fica parado, a cada poucos minutos, guardamos um registro com as coordenadas arredondadas para 3 casas decimais (cerca de 110 metros), o código de uma área de cerca de 1,2 km por 0,6 km, a precisão do GPS, a cidade e o estado informados pelo aparelho, o lugar público em que você estava (se houver), a data e a hora, e se você estava anônimo ou numa área privada. Ele serve só para gerar a frase de contexto do match e para decidir se um chat pode ser renovado. Nenhuma função do app mostra esse histórico a ninguém, nem a você. Os registros são apagados automaticamente cerca de 3 dias depois. Como a limpeza roda uma vez por dia, um registro pode durar até 4 dias.
+2. **Histórico arredondado.** Quando sua posição muda e, se você fica parado, a cada poucos minutos, guardamos um registro com as coordenadas arredondadas para 3 casas decimais (cerca de 110 metros), o código de uma área de cerca de 1,2 km por 0,6 km, a precisão do GPS, a cidade e o estado informados pelo aparelho, o lugar público em que você estava (se houver), a data e a hora, e se você estava anônimo ou numa área privada. Ele serve só para gerar a frase de contexto do match e para calcular o movimento dos lugares públicos do mapa (quem está em cada lugar agora, quantas pessoas são e se o movimento está crescendo), sempre com as regras da seção 3.3. Nenhuma função do app mostra esse histórico a ninguém, nem a você. Os registros são apagados automaticamente cerca de 3 dias depois. Como a limpeza roda uma vez por dia, um registro pode durar até 4 dias.
 3. **Áreas privadas que você cadastra.** Guardamos o nome que você deu (como "Casa"), o raio (de 50 a 1.000 metros) e o ponto central, que é a sua posição no momento do cadastro. São até 5 áreas. O app mostra só o nome e o raio; o ponto central nunca é mostrado, nem para você. Ficam guardadas até você apagar a área ou excluir a conta.
 4. **Residência aprendida.** Entre meia-noite e 6h (horário de Brasília), guardamos só a área de cerca de 150 metros em que você está e a data. Se a mesma área aparecer em 3 noites diferentes, ela e as áreas vizinhas passam a esconder você, como uma área privada. Esses registros duram 45 dias a partir da última noite registrada. Também contamos, sem identificar ninguém, quantas residências existem em cada área, para que ruas residenciais não virem "lugares" no mapa.
 5. **Sinal de multidão.** Explicamos na seção 3.4.
@@ -213,7 +215,7 @@ O OpenFreeMap trata esses dados conforme os [termos do OpenFreeMap](https://open
 
 **Não vendemos seus dados** e não os compartilhamos para publicidade.
 
-- **Outras pessoas no app:** veem só o que está descrito nas seções 2.3 e 3.3. As mensagens de um chat são vistas pelas duas pessoas do match.
+- **Outras pessoas no app:** veem só o que está descrito nas seções 2.3 e 3.3. As mensagens de uma conversa são vistas pelas duas pessoas que participam dela.
 - **Provedores de nuvem:** hospedam nossos servidores, bancos de dados e as fotos.
 - **Provedor de envio de SMS:** recebe seu número e o código de confirmação para entregar o SMS.
 - **OpenFreeMap:** entrega as partes do mapa, como explicado na seção 3.5.
@@ -242,8 +244,8 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 - **Áreas privadas:** até você apagar a área ou excluir a conta.
 - **Sinal de multidão:** 4 dias.
 - **Pedidos e confirmações de lugares:** até 14 dias. Avisos de "não é lugar público": cerca de 3 dias. Denúncias de lugares: 30 dias.
-- **Curtidas, dispensas, matches e bloqueios:** enquanto a conta existir.
-- **Mensagens do chat:** enquanto a conta existir. O chat fecha depois de 48 horas, mas as mensagens não são apagadas quando ele fecha.
+- **Curtidas, dispensas, conversas e bloqueios:** enquanto a conta existir.
+- **Mensagens:** enquanto a conta existir. As conversas não expiram. Quando uma conversa é arquivada, por exemplo por um bloqueio, as mensagens não são apagadas.
 - **Acenos:** 24 horas.
 - **Denúncias e registros de moderação** (decisões e motivos): pelo tempo necessário para a segurança da plataforma e para cumprir obrigações legais, mesmo depois da exclusão da conta.
 - **Número de telefone de conta banida:** enquanto for necessário para impedir que a pessoa crie outra conta com ele.

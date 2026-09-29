@@ -16,10 +16,11 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { ReportReason, ReportResult, ReportSource } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
+import { applyRemoved, archiveConversation, inboxKeys } from '../../hooks/useInbox';
 import { EMERGENCY_NUMBERS, REASON_OPTIONS, URGENT_REASONS } from './reasons';
 
 export interface SafetyTarget {
@@ -27,7 +28,10 @@ export interface SafetyTarget {
   name: string;
 }
 
-export type SafetyOutcome = 'reported' | 'blocked' | 'unmatched';
+export type SafetyOutcome = 'reported' | 'blocked' | 'archived';
+
+/** de onde veio a ação (a moderação usa pra achar a conversa ou a foto); 'inbox' e 'requests' = lista de Mensagens */
+export type SafetySource = ReportSource | 'inbox' | 'requests';
 
 type Step = 'menu' | 'reasons' | 'details' | 'done';
 
@@ -35,21 +39,75 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   target: SafetyTarget | null;
-  /** com match: aparece "Desfazer match" e a denúncia leva a conversa pra moderação */
-  matchId?: string | null;
-  source: ReportSource;
-  /** depois de bloquear/desfazer/denunciar-e-bloquear a tela costuma sair (a pessoa sumiu) */
+  /** com conversa: aparece "Arquivar conversa" e a denúncia leva a conversa pra moderação */
+  conversationId?: string | null;
+  source: SafetySource;
+  /** 'reasons' abre direto em "Qual é o problema?" (botão Denunciar das solicitações) */
+  initialStep?: 'menu' | 'reasons';
+  /** depois de bloquear/arquivar/denunciar-e-bloquear a tela costuma sair (a pessoa sumiu) */
   onDone?: (outcome: SafetyOutcome) => void;
 }
 
+/** atualiza o que mostra a pessoa depois de bloquear/denunciar/arquivar */
+function refreshAfterSafety(qc: QueryClient, userId: string, conversationId?: string | null) {
+  if (conversationId) applyRemoved(qc, conversationId);
+  qc.invalidateQueries({ queryKey: inboxKeys.all });
+  qc.invalidateQueries({ queryKey: inboxKeys.withUser(userId) });
+  qc.invalidateQueries({ queryKey: ['nearby'] });
+  qc.invalidateQueries({ queryKey: ['blocks'] });
+  qc.invalidateQueries({ queryKey: ['user', userId] });
+}
+
 /**
- * Menu de segurança de uma pessoa: denunciar (motivo → detalhes → pronto), bloquear e desfazer match.
+ * "Bloquear" com confirmação (POST /users/:id/block), sem abrir a folha: usado no menu, no chat e nas solicitações.
+ * O bloqueio esconde perfil e foto, zera o não lido e arquiva a conversa pros dois (o servidor avisa pelo socket).
+ */
+export function askBlock({
+  target,
+  source,
+  conversationId,
+  qc,
+  onBusy,
+  onBlocked,
+}: {
+  target: SafetyTarget;
+  source: SafetySource;
+  conversationId?: string | null;
+  qc: QueryClient;
+  onBusy?: (busy: boolean) => void;
+  onBlocked: () => void;
+}) {
+  const name = target.name || 'essa pessoa';
+  Alert.alert(`Bloquear ${name}?`, `${name} não vai mais te ver no mapa nem conseguir falar com você. A pessoa não é avisada.`, [
+    { text: 'Cancelar', style: 'cancel' },
+    {
+      text: 'Bloquear',
+      style: 'destructive',
+      onPress: async () => {
+        onBusy?.(true);
+        try {
+          await api.post(`/users/${target.id}/block`, { reason: `bloqueio pelo ${source}` });
+          onBusy?.(false);
+          onBlocked();
+          // só depois que a tela reagiu: atualizar antes derrubava o cartão por baixo ("não disponível")
+          setTimeout(() => refreshAfterSafety(qc, target.id, conversationId), 400);
+        } catch (e) {
+          onBusy?.(false);
+          Alert.alert('Não deu pra bloquear', toApiError(e).message);
+        }
+      },
+    },
+  ]);
+}
+
+/**
+ * Menu de segurança de uma pessoa: denunciar (motivo → detalhes → pronto), bloquear e arquivar a conversa.
  * Modal simples (sem Reanimated por linha: listas com animação por item derrubavam o app no Moto).
  */
-export function SafetySheet({ visible, onClose, target, matchId, source, onDone }: Props) {
+export function SafetySheet({ visible, onClose, target, conversationId, source, initialStep = 'menu', onDone }: Props) {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const [step, setStep] = useState<Step>('menu');
+  const [step, setStep] = useState<Step>(initialStep);
   const [reason, setReason] = useState<ReportReason | null>(null);
   const [details, setDetails] = useState('');
   const [alsoBlock, setAlsoBlock] = useState(true);
@@ -58,67 +116,53 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
 
   useEffect(() => {
     if (!visible) return;
-    setStep('menu');
+    setStep(initialStep);
     setReason(null);
     setDetails('');
     setAlsoBlock(true);
     setResult(null);
     setBusy(false);
-  }, [visible]);
+  }, [visible, initialStep]);
 
   if (!target) return null;
   const name = target.name || 'essa pessoa';
-
-  const refreshLists = () => {
-    qc.invalidateQueries({ queryKey: ['matches'] });
-    qc.invalidateQueries({ queryKey: ['nearby'] });
-    qc.invalidateQueries({ queryKey: ['blocks'] });
-    qc.invalidateQueries({ queryKey: ['user', target.id] });
-  };
 
   const finish = (outcome: SafetyOutcome) => {
     onClose();
     onDone?.(outcome);
     // só depois que a folha fechou: atualizar antes derrubava o cartão por baixo ("não disponível") e sumia com a
     // confirmação da denúncia junto
-    setTimeout(refreshLists, 400);
+    setTimeout(() => refreshAfterSafety(qc, target.id, outcome === 'reported' ? null : conversationId), 400);
   };
 
-  const block = () => {
-    Alert.alert(`Bloquear ${name}?`, `${name} não vai mais te ver no mapa nem conseguir falar com você. A pessoa não é avisada.`, [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Bloquear',
-        style: 'destructive',
-        onPress: async () => {
-          setBusy(true);
-          try {
-            await api.post('/blocks', { userId: target.id, reason: `bloqueio pelo ${source}` });
-            finish('blocked');
-          } catch (e) {
-            setBusy(false);
-            Alert.alert('Não deu pra bloquear', toApiError(e).message);
-          }
-        },
+  const block = () =>
+    askBlock({
+      target,
+      source,
+      conversationId,
+      qc,
+      onBusy: setBusy,
+      onBlocked: () => {
+        onClose();
+        onDone?.('blocked');
       },
-    ]);
-  };
+    });
 
-  const unmatch = () => {
-    if (!matchId) return;
-    Alert.alert('Desfazer o match?', `A conversa com ${name} some pra vocês dois.`, [
+  const archive = () => {
+    if (!conversationId) return;
+    Alert.alert('Arquivar a conversa?', `A conversa com ${name} sai da sua lista de Mensagens. A pessoa não é avisada.`, [
       { text: 'Cancelar', style: 'cancel' },
       {
-        text: 'Desfazer',
+        text: 'Arquivar',
         style: 'destructive',
         onPress: async () => {
           setBusy(true);
           try {
-            await api.delete(`/matches/${matchId}`);
-            finish('unmatched');
+            await archiveConversation(qc, conversationId);
+            finish('archived');
           } catch (e) {
             setBusy(false);
-            Alert.alert('Não deu pra desfazer', toApiError(e).message);
+            Alert.alert('Não deu pra arquivar', toApiError(e).message);
           }
         },
       },
@@ -129,12 +173,11 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
     if (!reason) return;
     setBusy(true);
     try {
-      const res = await api.post<ReportResult>('/reports', {
-        userId: target.id,
+      const res = await api.post<ReportResult>(`/users/${target.id}/report`, {
         reason,
         description: details.trim() || undefined,
         block: alsoBlock,
-        context: { source, ...(matchId ? { matchId } : {}) },
+        context: { source, ...(conversationId ? { conversationId } : {}) },
       });
       setResult(res.data);
       setStep('done');
@@ -164,7 +207,9 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
               <Text style={styles.title}>{name}</Text>
               <Action icon="flag-outline" label={`Denunciar ${name}`} hint="A moderação analisa. A pessoa não sabe quem denunciou." onPress={() => setStep('reasons')} danger />
               <Action icon="ban-outline" label={`Bloquear ${name}`} hint="Some do seu mapa e não fala mais com você" onPress={block} />
-              {matchId ? <Action icon="heart-dislike-outline" label="Desfazer match" hint="A conversa some pros dois" onPress={unmatch} /> : null}
+              {conversationId ? (
+                <Action icon="archive-outline" label="Arquivar conversa" hint="Sai da sua lista de Mensagens. A pessoa não é avisada" onPress={archive} />
+              ) : null}
               <Pressable onPress={close} style={styles.cancel} accessibilityRole="button">
                 <Text style={styles.cancelText}>Cancelar</Text>
               </Pressable>
@@ -174,7 +219,7 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
 
           {step === 'reasons' ? (
             <>
-              <StepHeader title="Qual é o problema?" onBack={() => setStep('menu')} />
+              <StepHeader title="Qual é o problema?" onBack={() => (initialStep === 'reasons' ? onClose() : setStep('menu'))} />
               <ScrollView style={styles.reasons} contentContainerStyle={{ paddingBottom: spacing.sm }}>
                 {REASON_OPTIONS.map((o) => (
                   <Pressable
@@ -222,7 +267,7 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
                   accessibilityLabel={`Bloquear ${name} também`}
                 />
               </View>
-              {matchId ? <Text style={styles.note}>A moderação vai poder ler esta conversa pra analisar a denúncia.</Text> : null}
+              {conversationId ? <Text style={styles.note}>A moderação vai poder ler esta conversa pra analisar a denúncia.</Text> : null}
               <Pressable
                 onPress={submit}
                 disabled={busy}
@@ -307,10 +352,10 @@ const styles = StyleSheet.create({
   title: { ...typography.h3, color: colors.black, marginBottom: spacing.md },
   action: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md },
   actionIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
-  actionLabel: { ...typography.body, fontWeight: '600', color: colors.black },
+  actionLabel: { ...typography.body, fontFamily: fontFamily.bodySemiBold, color: colors.black },
   actionHint: { ...typography.caption, color: colors.gray[500], marginTop: 2 },
   cancel: { alignItems: 'center', paddingVertical: spacing.lg, marginTop: spacing.xs },
-  cancelText: { ...typography.body, color: colors.gray[600], fontWeight: '600' },
+  cancelText: { ...typography.body, color: colors.gray[600], fontFamily: fontFamily.bodySemiBold },
   busy: { position: 'absolute', top: spacing.lg, right: spacing.lg },
   pressed: { opacity: 0.6 },
   stepHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
@@ -339,7 +384,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginTop: spacing.lg },
-  switchLabel: { ...typography.body, fontWeight: '600', color: colors.black },
+  switchLabel: { ...typography.body, fontFamily: fontFamily.bodySemiBold, color: colors.black },
   switchHint: { ...typography.caption, color: colors.gray[500], marginTop: 2 },
   note: { ...typography.caption, color: colors.gray[500], marginTop: spacing.md },
   submit: {
@@ -349,7 +394,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md + 2,
     alignItems: 'center',
   },
-  submitText: { ...typography.body, fontWeight: '700', color: colors.white },
+  submitText: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.white },
   doneIcon: {
     alignSelf: 'center',
     width: 56,
@@ -362,7 +407,7 @@ const styles = StyleSheet.create({
   },
   doneText: { ...typography.body, color: colors.gray[700], textAlign: 'center' },
   urgent: { marginTop: spacing.lg, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.gray[100], gap: spacing.xs },
-  urgentTitle: { ...typography.bodySmall, fontWeight: '700', color: colors.black, marginBottom: spacing.xs },
+  urgentTitle: { ...typography.bodySmall, fontFamily: fontFamily.bodyBold, color: colors.black, marginBottom: spacing.xs },
   phone: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.md, paddingVertical: spacing.xs },
   phoneNumber: { ...typography.h4, color: colors.danger, minWidth: 44 },
   phoneLabel: { ...typography.bodySmall, color: colors.gray[700], flex: 1 },

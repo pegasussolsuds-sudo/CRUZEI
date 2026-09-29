@@ -17,7 +17,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Onboarding'>;
 const PROOFS = [
   { icon: 'map-outline', text: 'Vê no mapa quem esteve onde você esteve' },
   { icon: 'eye-off-outline', text: 'Modo anônimo pra olhar sem aparecer' },
-  { icon: 'chatbubble-ellipses-outline', text: 'Match com contexto — nunca mais "oi"' },
+  { icon: 'chatbubble-ellipses-outline', text: 'Puxe conversa com quem cruzou seu caminho' },
 ] as const;
 
 /**
@@ -58,7 +58,7 @@ export function WelcomeScreen() {
 
           <SlideInView from="up" distance={18} delay={1200} style={{ marginTop: spacing.md }}>
             <Text style={styles.subtitle}>
-              O Metch mostra quem esteve no mesmo lugar que você. Match só rola quando o encontro é possível.
+              O Metch mostra quem esteve no mesmo lugar que você. Curtiu? Manda mensagem.
             </Text>
           </SlideInView>
 

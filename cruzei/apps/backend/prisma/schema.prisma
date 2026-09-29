@@ -51,6 +51,9 @@ model User {
   blocksReceived        Block[]               @relation("Blocked")
   blocksMade            Block[]               @relation("Blocker")
   boosts                Boost[]
+  conversationsAsLow    Conversation[]        @relation("ConversationUserLow")
+  conversationsAsHigh   Conversation[]        @relation("ConversationUserHigh")
+  conversationMembers   ConversationMember[]
   dataDeletionRequests  DataDeletionRequest[]
   deviceTokens          DeviceToken[]
   likesReceived         Like[]                @relation("Liked")
@@ -227,6 +230,8 @@ model Like {
   @@map("likes")
 }
 
+/// CONGELADO desde a inbox (migration 20261001000000_inbox): ninguém lê nem grava. Cada match virou a Conversation
+/// do par com o mesmo id; a tabela e o enum MatchStatus saem numa migration posterior.
 model Match {
   id            String      @id @default(uuid()) @db.Uuid
   userAId       String      @map("user_a_id") @db.Uuid
@@ -241,7 +246,6 @@ model Match {
   poi           POI?        @relation("PoiMatches", fields: [poiId], references: [id])
   userA         User        @relation("UserA", fields: [userAId], references: [id], onDelete: Cascade)
   userB         User        @relation("UserB", fields: [userBId], references: [id], onDelete: Cascade)
-  messages      Message[]
 
   @@unique([userAId, userBId])
   @@index([userAId, matchedAt(sort: Desc)])
@@ -251,22 +255,69 @@ model Match {
   @@map("matches")
 }
 
-model Message {
-  id             String      @id @default(uuid()) @db.Uuid
-  matchId        String      @map("match_id") @db.Uuid
-  senderId       String      @map("sender_id") @db.Uuid
-  content        String?
-  messageType    MessageType @default(text) @map("message_type")
-  mediaUrl       String?     @map("media_url") @db.VarChar(500)
-  mediaExpiresAt DateTime?   @map("media_expires_at") @db.Timestamp(6)
-  lat            Decimal?    @db.Decimal(10, 8)
-  lng            Decimal?    @db.Decimal(11, 8)
-  readAt         DateTime?   @map("read_at") @db.Timestamp(6)
-  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
-  expiresAt      DateTime?   @map("expires_at") @db.Timestamp(6)
-  match          Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  sender         User        @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+/// Conversa do par (uma por par: userLowId < userHighId, CHECK conv_pair_order na migration). O chat nunca é bloqueado:
+/// a pasta só muda ONDE aparece. Pasta GRAVADA: promotedAt != null = principal (curtida mútua, resposta dos dois lados
+/// ou "mover pra principal"); é permanente. Regras em src/modules/inbox/routing.ts.
+model Conversation {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userLowId      String               @map("user_low_id") @db.Uuid
+  userHighId     String               @map("user_high_id") @db.Uuid
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamp(6)
+  lastMessageAt  DateTime?            @map("last_message_at") @db.Timestamp(6)
+  promotedAt     DateTime?            @map("promoted_at") @db.Timestamp(6)
+  /// 'mutual' | 'bounce' | 'manual' (CHECK conv_promoted_reason_chk na migration)
+  promotedReason String?              @map("promoted_reason") @db.VarChar(16)
+  userLow        User                 @relation("ConversationUserLow", fields: [userLowId], references: [id], onDelete: Cascade)
+  userHigh       User                 @relation("ConversationUserHigh", fields: [userHighId], references: [id], onDelete: Cascade)
+  members        ConversationMember[]
+  messages       Message[]
 
+  @@unique([userLowId, userHighId], map: "conv_pair_uq")
+  @@index([userHighId], map: "idx_conversations_user_high")
+  @@index([lastMessageAt(sort: Desc)], map: "idx_conv_last_msg")
+  @@map("conversations")
+}
+
+/// A linha de cada pessoa na conversa. unreadCount é contador transacional (CHECK >= 0; o app nunca calcula).
+/// archivedAt != null = fora do inbox dessa pessoa (bloqueio, banimento, "arquivar conversa").
+/// Índice parcial idx_conv_members_user (user_id) WHERE archived_at IS NULL: só na migration (o Prisma 5 não modela).
+model ConversationMember {
+  conversationId String       @map("conversation_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  role           MemberRole
+  unreadCount    Int          @default(0) @map("unread_count")
+  isMuted        Boolean      @default(false) @map("is_muted")
+  archivedAt     DateTime?    @map("archived_at") @db.Timestamp(6)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@map("conversation_members")
+}
+
+model Message {
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @map("conversation_id") @db.Uuid
+  /// congelado: só as mensagens de antes da inbox têm (sem FK); sai junto com a tabela matches
+  matchId        String?      @map("match_id") @db.Uuid
+  senderId       String       @map("sender_id") @db.Uuid
+  body           String?      @map("content")
+  messageType    MessageType  @default(text) @map("message_type")
+  /// mensagem de sistema (ex.: 'mutual_like'); no máximo uma de cada tipo por conversa; null nas normais
+  systemKind     String?      @map("system_kind") @db.VarChar(32)
+  mediaUrl       String?      @map("media_url") @db.VarChar(500)
+  mediaExpiresAt DateTime?    @map("media_expires_at") @db.Timestamp(6)
+  lat            Decimal?     @db.Decimal(10, 8)
+  lng            Decimal?     @db.Decimal(11, 8)
+  readAt         DateTime?    @map("read_at") @db.Timestamp(6)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
+  expiresAt      DateTime?    @map("expires_at") @db.Timestamp(6)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  // NULLs são distintos no Postgres: as mensagens normais (systemKind nulo) não colidem
+  @@unique([conversationId, systemKind], map: "uq_messages_conv_system_kind")
+  @@index([conversationId, createdAt(sort: Desc)], map: "idx_messages_conv_created")
   @@index([matchId, createdAt(sort: Desc)])
   @@index([senderId])
   @@map("messages")
@@ -482,6 +533,14 @@ enum MatchStatus {
   expired
   unmatched
   blocked
+}
+
+/// papel na conversa: REQUESTER mandou a 1ª mensagem; Solicitações é só de quem RECEBEU (RECIPIENT)
+enum MemberRole {
+  REQUESTER
+  RECIPIENT
+
+  @@map("member_role")
 }
 
 enum MessageType {

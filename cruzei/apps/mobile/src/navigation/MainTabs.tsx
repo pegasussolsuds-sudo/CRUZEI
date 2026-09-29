@@ -2,23 +2,20 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { MapScreen } from '../screens/map/MapScreen';
 import { LikesScreen } from '../screens/likes/LikesScreen';
 import { PaywallScreen } from '../screens/paywall/PaywallScreen';
-import { MatchesStack, type MatchesStackParamList } from './MatchesStack';
+import { InboxStack, type InboxStackParamList } from './InboxStack';
 import { ProfileStack, type ProfileStackParamList } from './ProfileStack';
-import { api } from '../services/api';
-import { matchesPollMs } from '../services/socket';
+import { inboxBadge, useInboxCounts } from '../hooks/useInbox';
 import { colors } from '@cruzei/ui-mobile';
-import type { Match } from '@cruzei/shared-types';
 
 export type MainTabParamList = {
   Map: undefined;
   Likes: undefined;
-  Matches: NavigatorScreenParams<MatchesStackParamList>;
+  Inbox: NavigatorScreenParams<InboxStackParamList>;
   Paywall: undefined;
   Profile: NavigatorScreenParams<ProfileStackParamList>;
 };
@@ -28,13 +25,9 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 export function MainTabs() {
   // iPhone com home indicator: soma o inset (no Android sem edge-to-edge é 0 → mesmo layout de antes)
   const insets = useSafeAreaInsets();
-  // badge de não lidas na aba Matches (mesma query da lista → sem request extra)
-  const matches = useQuery({
-    queryKey: ['matches', { limit: 100 }],
-    queryFn: async () => (await api.get<Match[]>('/matches', { params: { limit: 100 } })).data,
-    refetchInterval: matchesPollMs,
-  });
-  const unread = (matches.data ?? []).reduce((n, m) => n + (m.unreadCount ?? 0), 0);
+  // badge da aba Mensagens: contagem do servidor (principal com não lidas + solicitações), nunca somada no app
+  const counts = useInboxCounts();
+  const badge = inboxBadge(counts.data);
 
   return (
     <Tab.Navigator
@@ -59,12 +52,13 @@ export function MainTabs() {
       <Tab.Screen name="Map" component={MapScreen} options={{ tabBarLabel: 'Mapa' }} />
       <Tab.Screen name="Likes" component={LikesScreen} options={{ tabBarLabel: 'Curtidas' }} />
       <Tab.Screen
-        name="Matches"
-        component={MatchesStack}
+        name="Inbox"
+        component={InboxStack}
         options={{
-          tabBarLabel: 'Matches',
-          tabBarBadge: unread > 0 ? unread : undefined,
+          tabBarLabel: 'Mensagens',
+          tabBarBadge: badge > 0 ? (badge > 99 ? '99+' : badge) : undefined,
           tabBarBadgeStyle: { backgroundColor: colors.primary, color: colors.black, fontWeight: '800' },
+          tabBarAccessibilityLabel: badge > 0 ? `Mensagens, ${badge} novas` : 'Mensagens',
         }}
       />
       <Tab.Screen name="Paywall" component={PaywallScreen} options={{ tabBarLabel: 'Premium' }} />
@@ -76,7 +70,7 @@ export function MainTabs() {
 const ICONS: Record<string, string> = {
   Map: 'map',
   Likes: 'heart',
-  Matches: 'chatbubble',
+  Inbox: 'chatbubble',
   Paywall: 'diamond',
   Profile: 'person',
 };

@@ -27,9 +27,10 @@ export interface MeState {
 
 /**
  * pessoa como vai pro mapa: NearbyUser + chave do avatar (o motor busca as camadas em avatarDefs[avatarKey]),
- * nome curto do rótulo ("Leonardo S.") e a foto (thumbnail) da bolha de identidade — null = só avatar.
+ * nome curto do rótulo ("Leonardo S."), a foto (thumbnail) da bolha de identidade — null = só avatar — e se os dois
+ * se curtiram (anel magenta + selo ♥; calculado no app a partir do likeStatus do /nearby).
  */
-export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null; mapPosition: MapPosition };
+export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null; mapPosition: MapPosition; mutual: boolean };
 
 /** { avatarKey: { l: camadas, p: pivôs do rig } } — só as chaves que o mapa ainda não conhece */
 export type AvatarDefs = Record<string, { l: AvatarLayer[]; p: AvatarRig }>;

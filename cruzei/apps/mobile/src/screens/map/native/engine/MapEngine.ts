@@ -166,7 +166,8 @@ interface FigUser {
   isOnline: boolean;
   photo: string | null;
   isNew: boolean;
-  matchId: string | null;
+  /** os dois se curtiram (anel magenta + selo ♥) */
+  mutual: boolean;
   pos: LngLat;
 }
 
@@ -1068,7 +1069,7 @@ export class MapEngine {
     const ranked: { id: string; d: number }[] = [];
     for (const u of users) {
       if (!u?.mapPosition) continue;
-      const pinned = u.id === this.selected || u.id === this.momentUserId || u.isBoosted || Boolean(u.matchId);
+      const pinned = u.id === this.selected || u.id === this.momentUserId || u.isBoosted || Boolean(u.mutual);
       const dx = (u.mapPosition.lng - ref[0]) * k;
       const dy = u.mapPosition.lat - ref[1];
       ranked.push({ id: u.id, d: pinned ? -1 : dx * dx + dy * dy });
@@ -1144,7 +1145,7 @@ export class MapEngine {
       o.ring = '#FFD700';
       o.glow = 'rgba(255,215,0,0.5)';
     }
-    if (u.matchId) {
+    if (u.mutual) {
       o.ring = '#FF1493';
       o.badge = 'match';
     } else if (u.isNew) o.badge = 'new';
@@ -1508,7 +1509,7 @@ export class MapEngine {
         isOnline: Boolean(raw.isOnline),
         photo: raw.photo ?? null,
         isNew: Boolean(raw.isNew),
-        matchId: raw.matchId ?? null,
+        mutual: Boolean(raw.mutual),
         pos: to,
       };
       next.set(u.id, u);
@@ -1678,7 +1679,7 @@ export class MapEngine {
       isOnline: true,
       photo: me.photoUrl || null,
       isNew: false,
-      matchId: null,
+      mutual: false,
       pos: [me.lng, me.lat],
     };
     const f = this.figOf('me');

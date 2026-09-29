@@ -44,12 +44,17 @@ export class UsersService {
         photos: { orderBy: { orderIndex: 'asc' } },
         userInterests: { include: { interest: true } },
         seals: true,
-        _count: { select: { likesReceived: true, matchesAsA: true, matchesAsB: true } },
+        _count: { select: { likesReceived: true } },
       },
     });
     if (!user || user.deletedAt) throw new NotFoundException('Usuário não encontrado');
 
-    const matchesCount = (user._count.matchesAsA ?? 0) + (user._count.matchesAsB ?? 0);
+    // "matches" do perfil = pares com curtida mútua (não existe mais o estado match; as duas linhas de likes bastam)
+    const [mutual] = await this.prisma.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM likes a
+       WHERE a.liker_id = ${userId}::uuid
+         AND EXISTS (SELECT 1 FROM likes b WHERE b.liker_id = a.liked_id AND b.liked_id = a.liker_id)`;
+    const matchesCount = mutual?.n ?? 0;
 
     // assinatura vencida → itens premium do avatar caem pro default (salva só se mudou)
     let avatarConfig: unknown = user.avatarConfig;

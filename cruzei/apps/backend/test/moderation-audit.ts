@@ -1,14 +1,15 @@
 // Auditoria de segurança/moderação contra o backend LIGADO (dev, PHOTO_MODERATION=manual):
 //   pnpm exec ts-node test/moderation-audit.ts [http://127.0.0.1:3000]
 // Cria contas descartáveis (+55 34 98888-00xx), exercita cadastro com aceite, documentos legais, fotos em análise,
-// denúncia (inclusive exploração infantil), fila da moderação, suspensão, banimento, bloqueio e mídia no chat.
+// denúncia (inclusive exploração infantil), fila da moderação, suspensão, banimento, bloqueio (some da inbox dos
+// dois), mídia no chat e o que o cartão público revela (likeStatus + conversa do par).
 // Imprime PASS/FAIL por teste, apaga as contas no fim e sai com 1 se algum falhar.
 import 'dotenv/config';
 import * as os from 'node:os';
 import * as jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
-import { io as ioClient } from 'socket.io-client';
+import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { LEGAL_VERSION } from '@cruzei/shared-types';
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:3000';
@@ -58,6 +59,35 @@ function socketError(tok: string): Promise<string> {
     setTimeout(() => done('timeout'), 6000);
   });
 }
+/** socket conectado (null se não conectar em 5 s) */
+function socketOf(tok: string): Promise<ClientSocket | null> {
+  return new Promise((resolve) => {
+    const s = ioClient(BASE, { transports: ['websocket'], auth: { token: tok }, reconnection: false, timeout: 5000 });
+    s.on('connect', () => resolve(s));
+    s.on('connect_error', () => resolve(null));
+    setTimeout(() => resolve(s.connected ? s : null), 5000);
+  });
+}
+/** primeiro payload do evento (null se não vier no prazo) */
+function eventOnce<T>(s: ClientSocket | null, event: string, ms = 5000): Promise<T | null> {
+  return new Promise((resolve) => {
+    if (!s) return resolve(null);
+    const t = setTimeout(() => resolve(null), ms);
+    s.once(event, (d: T) => {
+      clearTimeout(t);
+      resolve(d);
+    });
+  });
+}
+/** ack do join_conversation ({ok} ou {ok:false, code}); null sem resposta */
+async function joinConversation(s: ClientSocket | null, conversationId: string) {
+  if (!s) return null;
+  return (await s
+    .timeout(3000)
+    .emitWithAck('join_conversation', { conversationId })
+    .catch(() => null)) as { ok: boolean; code?: number } | null;
+}
+type ConvList = { items?: { id: string; unreadCount: number }[] };
 
 async function mkUser(n: number, name: string, extra: Record<string, unknown> = {}) {
   const phone = `${PHONE_PREFIX}${String(n).padStart(2, '0')}`;
@@ -162,15 +192,19 @@ async function main() {
   const rejected = ((xMe.json as { photos?: { status: string; rejectReason: string | null }[] }).photos ?? []).find((p) => p.status === 'rejected');
   report('5b foto recusada: o dono vê o motivo', reject.status === 201 && rejected?.rejectReason === 'Nudez ou conteúdo sexual', `recusar ${reject.status}, motivo=${rejected?.rejectReason}`);
 
-  // 6 — denúncia: valida alvo, soma repetida, e exploração infantil tira da descoberta na hora
-  const self = await call(y.tok, 'POST', '/reports', { userId: y.id, reason: 'spam' });
-  const ghost = await call(y.tok, 'POST', '/reports', { userId: '00000000-0000-4000-8000-000000000000', reason: 'spam' });
-  const r1 = await call(y.tok, 'POST', '/reports', { userId: x.id, reason: 'harassment', description: 'me xingou', context: { source: 'profile' } });
+  // 6 — denúncia: valida alvo, soma repetida, e exploração infantil tira da descoberta na hora.
+  //     POST /users/:id/report (rota nova, alvo na rota) e POST /reports (alias) caem no mesmo serviço
+  const convYX = await call(y.tok, 'POST', '/conversations', { toUserId: x.id, body: 'oi', clientId: 'teste-denuncia-0' });
+  const convYXId = (convYX.json as { conversation?: { id: string } }).conversation?.id ?? '';
+  const self = await call(y.tok, 'POST', `/users/${y.id}/report`, { reason: 'spam' });
+  const ghost = await call(y.tok, 'POST', '/users/00000000-0000-4000-8000-000000000000/report', { reason: 'spam' });
+  const badSource = await call(y.tok, 'POST', `/users/${x.id}/report`, { reason: 'spam', context: { source: 'feed' } });
+  const r1 = await call(y.tok, 'POST', `/users/${x.id}/report`, { reason: 'harassment', description: 'me xingou', context: { source: 'chat', conversationId: convYXId } });
   const r2 = await call(y.tok, 'POST', '/reports', { userId: x.id, reason: 'threat', description: 'ameaçou' });
   report(
-    '6 denúncia: própria conta 400, alvo inexistente 404, repetida soma',
-    self.status === 400 && ghost.status === 404 && r1.status === 201 && (r2.json as { merged?: boolean }).merged === true,
-    `própria ${self.status}, inexistente ${ghost.status}, 1ª ${r1.status}, 2ª merged=${(r2.json as { merged?: boolean }).merged}`,
+    '6 denúncia: própria conta 400, alvo inexistente 404, origem inválida 400, repetida soma (rota nova + alias)',
+    convYX.status === 201 && self.status === 400 && ghost.status === 404 && badSource.status === 400 && r1.status === 201 && (r2.json as { merged?: boolean }).merged === true,
+    `conversa ${convYX.status}, própria ${self.status}, inexistente ${ghost.status}, origem inválida ${badSource.status}, 1ª ${r1.status}, 2ª merged=${(r2.json as { merged?: boolean }).merged}`,
   );
   const r3 = await call(z.tok, 'POST', '/reports', { userId: x.id, reason: 'child_safety', block: true });
   const held = await prisma.user.findUnique({ where: { id: x.id }, select: { reviewHoldAt: true } });
@@ -183,7 +217,15 @@ async function main() {
     `denúncia ${r3.status} (bloqueou: ${(r3.json as { blocked?: boolean }).blocked}), hold=${Boolean(held?.reviewHoldAt)}, cartão ${card3.status}, fila prioridade=${group?.priority} denunciantes=${group?.distinctReporters}`,
   );
   const detail = await call(mod.tok, 'GET', `/admin/users/${x.id}`);
-  report('6c detalhe pra moderação (telefone mascarado)', detail.status === 200 && /•/.test(String((detail.json as { user?: { phoneMasked?: string } }).user?.phoneMasked)), `phone=${(detail.json as { user?: { phoneMasked?: string } }).user?.phoneMasked}`);
+  // a conversa citada na denúncia (context.conversationId) aparece pro moderador com as mensagens
+  const reported = ((detail.json as { conversations?: { conversationId: string; otherUserId: string; messages: unknown[] }[] }).conversations ?? []).find(
+    (c) => c.conversationId === convYXId,
+  );
+  report(
+    '6c detalhe pra moderação (telefone mascarado, conversa denunciada)',
+    detail.status === 200 && /•/.test(String((detail.json as { user?: { phoneMasked?: string } }).user?.phoneMasked)) && reported?.otherUserId === y.id && reported.messages.length >= 1,
+    `phone=${(detail.json as { user?: { phoneMasked?: string } }).user?.phoneMasked}, conversa=${Boolean(reported)} (${reported?.messages.length ?? 0} msgs)`,
+  );
 
   // 7 — dispensar: denúncias arquivadas e a pessoa volta pra descoberta
   const dismiss = await call(mod.tok, 'POST', `/admin/users/${x.id}/action`, { action: 'dismiss', note: 'teste' });
@@ -206,60 +248,134 @@ async function main() {
   const meBack = await call(x.tok, 'GET', '/me');
   report('8b reabilitar devolve o acesso; moderar a si mesmo é recusado', reinst.status === 201 && meBack.status === 200 && self2.status === 400, `reabilitar ${reinst.status}, /me ${meBack.status}, a si mesmo ${self2.status}`);
 
-  // 9 — match + bloqueio: chat fecha, perfil some, mensagem recusada; desbloquear deixa o par "desfeito"
-  await call(y.tok, 'POST', '/likes', { userId: z.id });
-  const lk = await call(z.tok, 'POST', '/likes', { userId: y.id });
-  const matchId = (lk.json as { matchId?: string }).matchId ?? (await prisma.match.findFirst({ where: { OR: [{ userAId: y.id, userBId: z.id }, { userAId: z.id, userBId: y.id }] }, select: { id: true } }))?.id ?? '';
-  const closedEvent = new Promise<boolean>((resolve) => {
-    const s = ioClient(BASE, { transports: ['websocket'], auth: { token: z.tok }, reconnection: false });
-    s.on('match_closed', (d: { matchId: string }) => {
-      s.close();
-      resolve(d.matchId === matchId);
-    });
-    setTimeout(() => {
-      s.close();
-      resolve(false);
-    }, 5000);
-    s.on('connect', async () => {
-      await call(y.tok, 'POST', '/blocks', { userId: z.id });
-    });
-  });
-  const gotClosed = await closedEvent;
-  const zMatch = await call(z.tok, 'GET', `/matches/${matchId}`);
-  const zMsg = await call(z.tok, 'POST', `/matches/${matchId}/messages`, { content: 'oi?', clientId: 'teste-bloqueio-1' });
+  // 9 — solicitação + bloqueio: some dos DOIS lados na hora (conversation:removed pros dois, sala do chat
+  //     fechada), perfil e envio com 404, unread zerado, Like/Message intactos; desbloquear NÃO desarquiva
+  const opened = await call(z.tok, 'POST', '/conversations', { toUserId: y.id, body: 'oi, tudo bem?', clientId: 'teste-bloqueio-0' });
+  const conversationId = (opened.json as { conversation?: { id: string } }).conversation?.id ?? '';
+  const yReqBefore = await call(y.tok, 'GET', '/inbox/requests');
+  const inReqBefore = ((yReqBefore.json as ConvList).items ?? []).find((c) => c.id === conversationId);
+  const [zSock, ySock] = await Promise.all([socketOf(z.tok), socketOf(y.tok)]);
+  const joined = await joinConversation(zSock, conversationId);
+  const removedEvents = Promise.all([zSock, ySock].map((s) => eventOnce<{ conversationId: string }>(s, 'conversation:removed')));
+  const pairLikes = { OR: [{ likerId: y.id, likedId: z.id }, { likerId: z.id, likedId: y.id }] };
+  const likesBefore = await prisma.like.count({ where: pairLikes });
+  const msgsBefore = await prisma.message.count({ where: { conversationId } });
+  const blk = await call(y.tok, 'POST', `/users/${z.id}/block`, { reason: 'teste' });
+  const [zRemoved, yRemoved] = await removedEvents;
+  const rejoin = await joinConversation(zSock, conversationId);
+  zSock?.close();
+  ySock?.close();
+  const zConv = await call(z.tok, 'GET', `/conversations/${conversationId}`);
+  const zMsg = await call(z.tok, 'POST', `/conversations/${conversationId}/messages`, { body: 'oi?', clientId: 'teste-bloqueio-1' });
+  const zCard = await call(z.tok, 'GET', `/users/${y.id}`);
+  const yCard = await call(y.tok, 'GET', `/users/${z.id}`);
+  const lists = await Promise.all(
+    ([[y.tok, '/inbox'], [y.tok, '/inbox/requests'], [z.tok, '/inbox'], [z.tok, '/inbox/requests']] as const).map(([t, p]) => call(t, 'GET', p)),
+  );
+  const listed = lists.some((l) => ((l.json as ConvList).items ?? []).some((c) => c.id === conversationId));
+  const members = await prisma.conversationMember.findMany({ where: { conversationId }, select: { archivedAt: true, unreadCount: true } });
+  const likesAfter = await prisma.like.count({ where: pairLikes });
+  const msgsAfter = await prisma.message.count({ where: { conversationId } });
   report(
-    '9 bloquear fecha o chat na hora (evento, 404 no match, mensagem recusada)',
-    Boolean(matchId) && gotClosed && zMatch.status === 404 && zMsg.status === 400,
-    `match=${Boolean(matchId)}, evento match_closed=${gotClosed}, GET match ${zMatch.status}, mensagem ${zMsg.status}`,
+    '9 bloquear tira a conversa dos dois na hora (evento pros dois, sala fechada, 404, unread 0)',
+    opened.status === 201 &&
+      Boolean(conversationId) &&
+      inReqBefore?.unreadCount === 1 &&
+      joined?.ok === true &&
+      blk.status < 300 &&
+      zRemoved?.conversationId === conversationId &&
+      yRemoved?.conversationId === conversationId &&
+      rejoin?.ok === false &&
+      rejoin.code === 4003 &&
+      zConv.status === 404 &&
+      zMsg.status === 404 &&
+      zCard.status === 404 &&
+      yCard.status === 404 &&
+      lists.every((l) => l.status === 200) &&
+      !listed &&
+      members.length === 2 &&
+      members.every((m) => m.archivedAt && m.unreadCount === 0) &&
+      likesAfter === likesBefore &&
+      msgsAfter === msgsBefore,
+    `abrir ${opened.status}, nas solicitações de Y antes: unread=${inReqBefore?.unreadCount}, join=${JSON.stringify(joined)}, bloquear ${blk.status}, ` +
+      `conversation:removed Z=${zRemoved?.conversationId === conversationId} Y=${yRemoved?.conversationId === conversationId}, rejoin=${JSON.stringify(rejoin)}, ` +
+      `GET conversa ${zConv.status}, mensagem ${zMsg.status}, cartões ${zCard.status}/${yCard.status}, listas ${lists.map((l) => l.status).join('/')} (aparece: ${listed}), ` +
+      `membros=${JSON.stringify(members.map((m) => ({ arq: Boolean(m.archivedAt), unread: m.unreadCount })))}, likes ${likesBefore}→${likesAfter}, msgs ${msgsBefore}→${msgsAfter}`,
+  );
+  // lista de bloqueados: nome + avatar, nunca a foto; bloquear de novo não cria outra linha
+  const again = await call(y.tok, 'POST', `/users/${z.id}/block`, {});
+  const blockedList = await call(y.tok, 'GET', '/blocks');
+  const blockedRows = (blockedList.json as unknown as { user: { id: string; avatar?: unknown; mainPhotoUrl: string | null } }[]) ?? [];
+  const zRow = Array.isArray(blockedRows) ? blockedRows.filter((b) => b.user.id === z.id) : [];
+  report(
+    '9c lista de bloqueados sem foto e bloqueio repetido idempotente',
+    again.status === 201 && blockedList.status === 200 && zRow.length === 1 && zRow[0].user.mainPhotoUrl === null && Boolean(zRow[0].user.avatar),
+    `de novo ${again.status}, lista ${blockedList.status}, linhas de Z=${zRow.length}, foto=${zRow[0]?.user.mainPhotoUrl}, avatar=${Boolean(zRow[0]?.user.avatar)}`,
   );
   await call(y.tok, 'DELETE', `/blocks/${z.id}`);
-  const st = await prisma.match.findUnique({ where: { id: matchId }, select: { status: true } });
-  report('9b desbloquear deixa o match "desfeito" (dá pra dar match de novo)', st?.status === 'unmatched', `status=${st?.status}`);
+  const afterUnblock = await prisma.conversationMember.findMany({ where: { conversationId }, select: { archivedAt: true } });
+  const yReqAfter = await call(y.tok, 'GET', '/inbox/requests');
+  const backInList = ((yReqAfter.json as ConvList).items ?? []).some((c) => c.id === conversationId);
+  report(
+    '9b desbloquear não desarquiva (só volta com mensagem nova)',
+    afterUnblock.length === 2 && afterUnblock.every((m) => m.archivedAt) && !backInList,
+    `arquivada pros dois=${afterUnblock.every((m) => m.archivedAt)}, de volta nas solicitações=${backInList}`,
+  );
 
   // 10 — mídia no chat desligada (não passa pela moderação de fotos)
-  const media = await call(y.tok, 'POST', `/matches/${matchId}/messages/media`, { type: 'photo_temp', mediaUrl: `${BASE}/uploads/x.jpg`, clientId: 'm1' });
-  report('10 mídia no chat desligada', media.status === 403 && media.json.error === 'media_disabled', `status ${media.status} ${media.json.error}`);
+  const w = await mkUser(6, 'Wanda');
+  const convW = await call(y.tok, 'POST', '/conversations', { toUserId: w.id, body: 'oi', clientId: 'teste-midia-0' });
+  const convWId = (convW.json as { conversation?: { id: string } }).conversation?.id ?? '';
+  const media = await call(y.tok, 'POST', `/conversations/${convWId}/media`, { type: 'photo_temp', mediaUrl: `${BASE}/uploads/x.jpg`, clientId: 'm1' });
+  report('10 mídia no chat desligada', convW.status === 201 && media.status === 403 && media.json.error === 'media_disabled', `conversa ${convW.status}, mídia ${media.status} ${media.json.error}`);
 
-  // 11 — banimento: perde acesso, login e refresh recusados com o motivo; matches fecham
+  // 11 — banimento: perde acesso, login e refresh recusados com o motivo; conversas arquivadas pros dois lados
   await call(x.tok, 'POST', '/likes', { userId: y.id });
   await call(y.tok, 'POST', '/likes', { userId: x.id });
+  const convX = await call(x.tok, 'POST', '/conversations', { toUserId: y.id, body: 'oi', clientId: 'teste-ban-0' });
+  const convXId = (convX.json as { conversation?: { id: string } }).conversation?.id ?? '';
+  const yBanSock = await socketOf(y.tok);
+  const yBanRemoved = eventOnce<{ conversationId: string }>(yBanSock, 'conversation:removed');
   const ban = await call(mod.tok, 'POST', `/admin/users/${x.id}/action`, { action: 'ban', reason: 'Exploração infantil confirmada' });
+  const gotBanRemoved = (await yBanRemoved)?.conversationId === convXId;
+  yBanSock?.close();
   const meBan = await call(x.tok, 'GET', '/me');
   const lan = `${lanBase()}/v1`;
   const rc2 = await call(null, 'POST', '/auth/request-code', { phone: x.phone }, lan);
   const loginBan = await call(null, 'POST', '/auth/login', { phone: x.phone, code: (rc2.json as { devCode?: string }).devCode }, lan);
   const refreshBan = await call(null, 'POST', '/auth/refresh', { refreshToken: jwt.sign({ sub: x.id, phone: x.phone }, process.env.JWT_SECRET as string, { expiresIn: '30d' }) });
-  const openMatches = await prisma.match.count({ where: { status: 'active', OR: [{ userAId: x.id }, { userBId: x.id }] } });
+  const xConvs = await prisma.conversationMember.findMany({ where: { conversation: { OR: [{ userLowId: x.id }, { userHighId: x.id }] } }, select: { archivedAt: true } });
+  const openConvs = xConvs.filter((m) => !m.archivedAt).length;
   report(
-    '11 banimento: /me, login e refresh recusados; matches fechados',
-    ban.status === 201 && meBan.status === 403 && meBan.json.error === 'account_banned' && loginBan.status === 403 && loginBan.json.error === 'account_banned' && refreshBan.status === 403 && openMatches === 0,
-    `/me ${meBan.status} ${meBan.json.error}, login ${loginBan.status} ${loginBan.json.error}, refresh ${refreshBan.status}, matches ativos=${openMatches}`,
+    '11 banimento: /me, login e refresh recusados; conversas arquivadas (evento pro outro lado)',
+    ban.status === 201 && meBan.status === 403 && meBan.json.error === 'account_banned' && loginBan.status === 403 && loginBan.json.error === 'account_banned' && refreshBan.status === 403 && convX.status === 201 && xConvs.length > 0 && openConvs === 0 && gotBanRemoved,
+    `/me ${meBan.status} ${meBan.json.error}, login ${loginBan.status} ${loginBan.json.error}, refresh ${refreshBan.status}, conversa ${convX.status}, membros ativos=${openConvs}/${xConvs.length}, conversation:removed=${gotBanRemoved}`,
   );
   const cardBan = await call(y.tok, 'GET', `/users/${x.id}`);
   const likeBan = await call(z.tok, 'POST', '/likes', { userId: x.id });
   report('11b banida some do cartão e não recebe curtida', cardBan.status === 404 && likeBan.status === 404, `cartão ${cardBan.status}, curtida ${likeBan.status}`);
   const trail = await prisma.moderationAction.findMany({ where: { targetUserId: x.id }, select: { action: true } });
   report('11c trilha da moderação registrada', ['auto_hold', 'dismiss', 'suspend:7', 'reinstate', 'ban', 'photo_approve', 'photo_reject'].every((a) => trail.some((t) => t.action === a)), trail.map((t) => t.action).join(', '));
+
+  // 12 — cartão público: "já te curtiu" (RECEIVED) só sai do servidor pra Premium+; a conversa do par vem com a
+  //      pasta de quem vê (Y abriu a conversa do teste 10: principal pra Y, solicitação pra W); nada de "match"
+  type Card = { likeStatus?: string; likedMe?: boolean; conversation?: { id: string; folder: string } | null; match?: unknown };
+  await call(w.tok, 'POST', '/likes', { userId: y.id });
+  const yFree = await call(y.tok, 'GET', `/users/${w.id}`);
+  await prisma.user.update({ where: { id: y.id }, data: { premiumTier: 'premium_plus', premiumExpiresAt: new Date(Date.now() + 86_400_000) } });
+  const yPlus = await call(y.tok, 'GET', `/users/${w.id}`);
+  const wCard = await call(w.tok, 'GET', `/users/${y.id}`);
+  const yf = yFree.json as Card;
+  const yp = yPlus.json as Card;
+  const wc = wCard.json as Card;
+  report(
+    '12 cartão: RECEIVED só pra Premium+, conversa com a pasta de quem vê, sem match',
+    yf.likeStatus === 'NONE' && yf.likedMe === false && yp.likeStatus === 'RECEIVED' && yp.likedMe === true &&
+      yp.conversation?.id === convWId && yp.conversation.folder === 'inbox' &&
+      wc.likeStatus === 'SENT' && wc.conversation?.id === convWId && wc.conversation.folder === 'requests' &&
+      !('match' in yf) && !('match' in wc),
+    `Y grátis=${yf.likeStatus}/${yf.likedMe}, Y Premium+=${yp.likeStatus}/${yp.likedMe}, conversa Y=${yp.conversation?.folder}, W=${wc.likeStatus} conversa=${wc.conversation?.folder}`,
+  );
 }
 
 main()

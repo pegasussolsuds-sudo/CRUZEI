@@ -1,6 +1,6 @@
 import type { LegalSlug, ProximityBand } from '@cruzei/shared-types';
 import React, { useCallback, useState } from 'react';
-import { NavigationContainer, useNavigationContainerRef, type NavigatorScreenParams } from '@react-navigation/native';
+import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View } from 'react-native';
@@ -25,6 +25,7 @@ import { TermsGate } from '../components/legal/TermsGate';
 import { useAccountBlockStore } from '../stores/accountBlock';
 import { useMapTheme } from '../hooks/useMapTheme';
 import { MainTabs, type MainTabParamList } from './MainTabs';
+import { navigationRef } from './navigationRef';
 import { colors } from '@cruzei/ui-mobile';
 
 export type RootStackParamList = {
@@ -57,7 +58,7 @@ const lightHeader = {
   contentStyle: { backgroundColor: colors.background },
 } as const;
 
-// rotas com fundo/header escuro (inclusive aninhadas: Paywall é aba, Chat está no MatchesStack) → ícones claros na status bar
+// rotas com fundo/header escuro (inclusive aninhadas: Paywall é aba, Chat está no InboxStack) → ícones claros na status bar
 const DARK_ROUTES = new Set(['UserCard', 'Boost', 'AvatarSetup', 'PhotoUpload', 'Paywall', 'Chat']);
 
 export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
@@ -65,7 +66,8 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   const isLoading = useAuthStore((s) => s.isLoading);
   const onboardingStep = useAuthStore((s) => s.onboardingStep);
   const blocked = useAccountBlockStore((s) => s.blocked);
-  const navRef = useNavigationContainerRef<RootStackParamList>();
+  // ref única (navigationRef): helpers como openChat navegam de fora das telas
+  const navRef = navigationRef;
   const [routeName, setRouteName] = useState<string | undefined>();
   const syncRoute = useCallback(() => setRouteName(navRef.getCurrentRoute()?.name), [navRef]);
   const { theme: mapTheme } = useMapTheme();

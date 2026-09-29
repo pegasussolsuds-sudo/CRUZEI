@@ -10,27 +10,27 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import type { NavigationProp } from '@react-navigation/native';
 
 import type { AvatarConfig, ProximityBand } from '@cruzei/shared-types';
 import { proximityBandLabel } from '@cruzei/shared-utils';
 import { useAuthStore } from '../stores/auth';
 import { resolveAvatar } from '../avatar';
 import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
-import type { MainTabParamList } from '../navigation/MainTabs';
+import { openChat } from '../navigation/openChat';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from './animated';
 import { CruzeiAvatar } from './avatar/CruzeiAvatar';
 import { BRAND } from '../brand';
 
+/** curtida mútua (os dois se curtiram): a celebração e o atalho pro chat */
 export interface MatchInfo {
-  matchId: string;
+  /** id da pessoa (abre o chat e é a seed do avatar quando ela ainda não personalizou) */
+  userId: string;
   name: string;
   /** foto principal (legado — o card agora mostra avatares) */
   photo: string | null;
   context?: string | null;
-  /** id da pessoa: seed do avatar quando ela ainda não personalizou (cai no matchId se faltar) */
-  userId?: string;
+  /** conversa do par, se já existe (a curtida mútua a promoveu pra principal); sem ela o chat abre em rascunho */
+  conversationId?: string | null;
   avatar?: AvatarConfig | null;
   /** faixa de proximidade no momento do match (nunca metros) */
   band?: ProximityBand | null;
@@ -64,22 +64,16 @@ export interface MatchModalProps {
  * API pública: <MatchModal match={info | null} onClose={...} onViewOnMap={...} />
  */
 export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
-  const nav = useNavigation<NavigationProp<MainTabParamList>>();
   const me = useAuthStore((s) => s.user);
 
   if (!match) return null;
   const myAvatar = resolveAvatar(me?.avatar, me?.id ?? 'me', me?.gender);
-  const theirAvatar = resolveAvatar(match.avatar, match.userId ?? match.matchId);
+  const theirAvatar = resolveAvatar(match.avatar, match.userId);
 
-  const openChat = () => {
+  // pelo Main (raiz): funciona tanto do mapa (aba) quanto do cartão (pilha raiz); sem conversa ainda, abre em rascunho
+  const onOpenChat = () => {
     onClose();
-    // initial:false → MatchesList fica embaixo na pilha e o chat ganha botão de voltar
-    // pelo Main (raiz): funciona tanto do mapa (aba) quanto do cartão (pilha raiz); pop volta pro Main em vez de empilhar
-    (nav as unknown as { navigate: (name: string, params: object, options: { pop: boolean }) => void }).navigate(
-      'Main',
-      { screen: 'Matches', params: { screen: 'Chat', initial: false, params: { matchId: match.matchId, name: match.name } } },
-      { pop: true },
-    );
+    openChat({ id: match.userId, name: match.name, avatar: match.avatar ?? null }, match.conversationId);
   };
 
   const viewOnMap = onViewOnMap
@@ -91,14 +85,14 @@ export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
 
   return (
     <Modal visible transparent statusBarTranslucent navigationBarTranslucent animationType="fade" onRequestClose={onClose}>
-      {/* key = matchId → cada match novo remonta a celebração e roda todas as entradas do zero */}
+      {/* key = pessoa → cada match novo remonta a celebração e roda todas as entradas do zero */}
       <Celebration
-        key={match.matchId}
+        key={match.userId}
         match={match}
         myAvatar={myAvatar}
         theirAvatar={theirAvatar}
         onClose={onClose}
-        onOpenChat={openChat}
+        onOpenChat={onOpenChat}
         onViewOnMap={viewOnMap}
       />
     </Modal>

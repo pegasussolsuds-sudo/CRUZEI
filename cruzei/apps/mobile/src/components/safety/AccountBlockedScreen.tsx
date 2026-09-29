@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import type { AccountBlockedError } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { BRAND } from '../../brand';
 import { useAccountBlockStore } from '../../stores/accountBlock';
 import { useAuthStore } from '../../stores/auth';
@@ -87,12 +87,12 @@ const styles = StyleSheet.create({
   reasonLabel: { ...typography.caption, color: 'rgba(250,250,250,0.6)', textTransform: 'uppercase', letterSpacing: 1 },
   reasonText: { ...typography.body, color: colors.white, marginTop: 4 },
   hint: { ...typography.bodySmall, color: 'rgba(250,250,250,0.7)', marginTop: spacing.md, lineHeight: 20 },
-  email: { color: colors.white, fontWeight: '700' },
+  email: { color: colors.white, fontFamily: fontFamily.bodyBold },
   actions: { gap: spacing.sm, paddingBottom: spacing.lg },
   btn: { borderRadius: radius.lg, paddingVertical: spacing.md + 2, alignItems: 'center' },
   primary: { backgroundColor: colors.primary },
   outline: { borderWidth: 1, borderColor: 'rgba(250,250,250,0.4)' },
-  btnText: { ...typography.body, fontWeight: '700', color: colors.white },
+  btnText: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.white },
   link: { alignItems: 'center', paddingVertical: spacing.md },
   linkText: { ...typography.body, color: 'rgba(250,250,250,0.7)' },
 });

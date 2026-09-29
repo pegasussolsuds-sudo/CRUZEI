@@ -39,6 +39,8 @@ import { SafetySheet } from '../../components/safety/SafetySheet';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { openChat } from '../../navigation/openChat';
+import { inboxKeys, likeStatusOf, useConversationWith, type ConversationFlag, type LikeFlags } from '../../hooks/useInbox';
 import type { AvatarConfig, LikeResult, LookingFor, PremiumTier, SealType, UserSeal, ProximityBand } from '@cruzei/shared-types';
 import { timeAgo, proximityBandLabel } from '@cruzei/shared-utils';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
@@ -51,7 +53,8 @@ interface UserCardPhoto {
   isMain: boolean;
 }
 
-interface UserCardData {
+// likeStatus + conversation (novo) e likedByMe/likedMe (antigos) vêm de LikeFlags/ConversationFlag
+interface UserCardData extends LikeFlags, ConversationFlag {
   id: string;
   name: string;
   age: number | null;
@@ -65,9 +68,6 @@ interface UserCardData {
   lastActiveAt: string | null;
   /** faixa de proximidade (só enquanto a pessoa é descoberta por mim) — nunca metros */
   proximityBand: ProximityBand | null;
-  likedByMe: boolean;
-  likedMe: boolean;
-  match: { id: string; context: string | null } | null;
   /** avatar Cruzei (null/ausente → determinístico pelo id) */
   avatar?: AvatarConfig | null;
 }
@@ -99,7 +99,8 @@ const LOOKING_FOR: Record<LookingFor, string | null> = {
   unspecified: null,
 };
 
-const FOOTER_H = 112;
+// rodapé: linha de curtir (ou a pílula) + botão de mensagem
+const FOOTER_H = 176;
 
 // Material icons (24x24) — desenhados em Skia, sem asset
 const HEART_SVG =
@@ -169,8 +170,13 @@ export function UserCardScreen() {
   const mainPhoto = photos[0]?.url ?? null;
   // null = a pessoa desligou 'mostrar distância' ou não está descoberta por mim agora: não cair no valor do mapa
   const distance = formatDistance(user ? user.proximityBand : bandParam);
-  const alreadyMatched = user?.match ?? null;
-  const alreadyLiked = user?.likedByMe ?? false;
+  const [mutualNow, setMutualNow] = useState(false);
+  const likeStatus = user ? likeStatusOf(user) : 'NONE';
+  const mutual = mutualNow || likeStatus === 'MUTUAL';
+  const alreadyLiked = likeStatus === 'SENT';
+  // conversa do par: vem no cartão ({id, folder}); servidor sem o campo → pergunta direto (GET /conversations/with)
+  const lookup = useConversationWith(userId, Boolean(user) && user?.conversation === undefined);
+  const conversationId = user?.conversation !== undefined ? (user.conversation?.id ?? null) : (lookup.data?.id ?? null);
 
   const fireBurst = useCallback(
     (kind: BurstKind) => {
@@ -199,25 +205,25 @@ export function UserCardScreen() {
         const res = await likeMutation.mutateAsync(isSuper);
         setSent(isSuper ? 'super' : 'like');
         qc.invalidateQueries({ queryKey: ['nearby'] });
-        if (res.isMatch && res.matchId) {
-          qc.invalidateQueries({ queryKey: ['matches'] });
+        // sem voltar sozinho: depois de curtir dá pra mandar mensagem daqui mesmo
+        if (res.isMutual) {
+          setMutualNow(true);
+          qc.invalidateQueries({ queryKey: inboxKeys.all });
+          qc.invalidateQueries({ queryKey: inboxKeys.withUser(user.id) });
           setMatch({
-            matchId: res.matchId,
             userId: user.id,
             name: user.name,
             photo: mainPhoto,
             avatar: user.avatar ?? null,
-            context: res.context ?? null,
+            conversationId: res.promotedConversationIds[0] ?? conversationId,
             band: user.proximityBand ?? null,
           });
-        } else {
-          setTimeout(() => nav.goBack(), 1100);
         }
       } catch (err) {
         setActionError(toApiError(err).message);
       }
     },
-    [bandParam, fireBurst, likeMutation, mainPhoto, nav, qc, sent, user],
+    [conversationId, fireBurst, likeMutation, mainPhoto, qc, sent, user],
   );
 
   const onPass = useCallback(() => {
@@ -228,15 +234,11 @@ export function UserCardScreen() {
     nav.goBack();
   }, [nav, qc, user]);
 
-  const openChat = useCallback(() => {
-    if (!user || !alreadyMatched) return;
-    // v7: navigate não volta mais pra tela que já está na pilha — { pop: true } volta pro Main em vez de empilhar outro
-    nav.navigate(
-      'Main',
-      { screen: 'Matches', params: { screen: 'Chat', initial: false, params: { matchId: alreadyMatched.id, name: user.name } } } as never,
-      { pop: true },
-    );
-  }, [alreadyMatched, nav, user]);
+  // sem conversa ainda o chat abre em rascunho: a 1ª mensagem cria (e vai pras solicitações dela se não houver curtida mútua)
+  const onOpenChat = useCallback(() => {
+    if (!user) return;
+    openChat({ id: user.id, name: user.name, avatar: user.avatar ?? null }, conversationId);
+  }, [conversationId, user]);
 
   // ── estados de carregamento/erro ──
   if (userQuery.isLoading) {
@@ -360,17 +362,17 @@ export function UserCardScreen() {
         {/* ── folha de conteúdo ── */}
         {/* a sheet cresce até o fim da tela pra não aparecer o fundo escuro ao rolar */}
         <View style={[styles.sheet, { flexGrow: 1, paddingBottom: FOOTER_H + insets.bottom + spacing.xl }]}>
-          {alreadyMatched ? (
+          {mutual ? (
             <SlideInView from="left" distance={40} delay={120} springPreset="soft">
               <View style={styles.contextBox}>
                 <Text style={styles.contextEmoji}>💫</Text>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.contextEyebrow}>deu match</Text>
-                  <Text style={styles.contextText}>{alreadyMatched.context ?? 'Vocês se cruzaram por aqui 💚'}</Text>
+                  <Text style={styles.contextEyebrow}>vocês se curtiram</Text>
+                  <Text style={styles.contextText}>A conversa de vocês fica na principal 💚</Text>
                 </View>
               </View>
             </SlideInView>
-          ) : user.likedMe ? (
+          ) : likeStatus === 'RECEIVED' ? (
             <SlideInView from="left" distance={40} delay={120} springPreset="soft">
               <View style={[styles.contextBox, styles.likedMeBox]}>
                 <Text style={styles.contextEmoji}>👀</Text>
@@ -457,9 +459,9 @@ export function UserCardScreen() {
         visible={safetyOpen}
         onClose={() => setSafetyOpen(false)}
         target={{ id: user.id, name: user.name }}
-        matchId={alreadyMatched?.id ?? null}
+        conversationId={conversationId}
         source="profile"
-        // bloqueou/desfez/denunciou-e-bloqueou: a pessoa sumiu, o cartão não faz mais sentido
+        // bloqueou/arquivou/denunciou-e-bloqueou: o cartão não faz mais sentido
         onDone={(outcome) => (outcome === 'reported' ? undefined : nav.goBack())}
       />
 
@@ -472,20 +474,7 @@ export function UserCardScreen() {
           style={StyleSheet.absoluteFill}
         />
         {actionError ? <Text style={styles.actionError}>{actionError}</Text> : null}
-        {alreadyMatched ? (
-          <SlideInView from="up" distance={30} delay={200} springPreset="soft" style={styles.footerRow}>
-            <ScaleOnPress
-              onPress={openChat}
-              glowColor={colors.secondary}
-              style={styles.chatBtn}
-              accessibilityRole="button"
-              accessibilityLabel={`Mandar mensagem pra ${user.name}`}
-            >
-              <Ionicons name="chatbubble-ellipses" size={20} color={colors.white} />
-              <Text style={styles.chatBtnText}>Mandar mensagem</Text>
-            </ScaleOnPress>
-          </SlideInView>
-        ) : sent || alreadyLiked ? (
+        {mutual ? null : sent || alreadyLiked ? (
           <FadeInView fromY={12} style={styles.footerRow}>
             <View style={styles.sentPill}>
               <Text style={styles.sentText}>
@@ -540,6 +529,21 @@ export function UserCardScreen() {
             </View>
           </SlideInView>
         )}
+        {/* mensagem sempre à mão (o chat nunca é bloqueado); com curtida mútua vira o botão principal */}
+        <SlideInView from="up" distance={30} delay={mutual ? 200 : 260} springPreset="soft" style={styles.footerRow}>
+          <ScaleOnPress
+            onPress={onOpenChat}
+            glowColor={colors.secondary}
+            style={mutual ? styles.chatBtn : styles.msgBtn}
+            accessibilityRole="button"
+            accessibilityLabel={conversationId ? `Abrir conversa com ${user.name}` : `Mandar mensagem pra ${user.name}`}
+          >
+            <Ionicons name={conversationId ? 'chatbubbles' : 'chatbubble-ellipses'} size={20} color={colors.white} />
+            <Text style={styles.chatBtnText} numberOfLines={1}>
+              {conversationId ? 'Abrir conversa' : 'Mandar mensagem'}
+            </Text>
+          </ScaleOnPress>
+        </SlideInView>
       </View>
 
       {burst ? (
@@ -930,7 +934,7 @@ const styles = StyleSheet.create({
   sealText: { ...typography.label, color: colors.gray[500] },
   sealTextDone: { color: colors.black },
 
-  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingTop: spacing.xl, alignItems: 'center' },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingTop: spacing.xl, alignItems: 'center', gap: spacing.md },
   footerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xl, width: '100%' },
   btn: btnBase,
   btnPass: { backgroundColor: colors.white, borderWidth: 2, borderColor: colors.danger },
@@ -939,14 +943,28 @@ const styles = StyleSheet.create({
   chatBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: spacing.sm,
     backgroundColor: colors.secondary,
     borderRadius: radius.full,
-    height: 56,
+    minHeight: 56,
+    maxWidth: '100%',
     paddingHorizontal: spacing.xxl,
     ...shadows.medium,
   },
-  chatBtnText: { ...typography.label, color: colors.white, fontSize: 16 },
+  msgBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.black,
+    borderRadius: radius.full,
+    minHeight: 50,
+    maxWidth: '100%',
+    paddingHorizontal: spacing.xl,
+    ...shadows.medium,
+  },
+  chatBtnText: { ...typography.label, color: colors.white, fontSize: 16, flexShrink: 1 },
   sentPill: { backgroundColor: colors.black, borderRadius: radius.full, paddingHorizontal: spacing.xl, height: 48, justifyContent: 'center' },
   sentText: { ...typography.label, color: colors.primary, fontSize: 15 },
   actionError: { ...typography.bodySmall, color: colors.danger, textAlign: 'center', marginBottom: spacing.sm, paddingHorizontal: spacing.lg },

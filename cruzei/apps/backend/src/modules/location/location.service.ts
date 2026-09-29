@@ -6,7 +6,9 @@ import type { Redis } from 'ioredis';
 import { CANDIDATE_INVALIDATION_CHANNEL, RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
 import { distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
-import type { PlaceKind, PlacePrompt } from '@cruzei/shared-types';
+import type { ConversationRef, PlaceKind, PlacePrompt } from '@cruzei/shared-types';
+import type { LikeStatus } from '../inbox/routing';
+import { loadPeerSocial, type PeerSocialRow } from './peer-social';
 import { ExpiringCache, SaturatedError, Semaphore, TtlMemo, chunk, historySignature, matchesHomeCells, planCellReload, selectTop, triageForDiscovery } from './hot-path';
 import { PoiIndex } from './poi-index';
 import { HISTORY_QUEUE, HISTORY_QUEUE_MAX, LAST_ACTIVE_PENDING, accuracyForDb, type QueuedHistory } from './location-writes';
@@ -124,7 +126,10 @@ export interface DiscoveryUserDto {
   isBoosted: boolean;
   avatar: unknown;
   likedByMe: boolean;
-  matchId: string | null;
+  /** status da curtida do meu ponto de vista (RECEIVED só pra Premium+) */
+  likeStatus: LikeStatus;
+  /** conversa do par não arquivada por mim */
+  conversation: ConversationRef | null;
 }
 
 export interface DiscoveryResult {
@@ -633,21 +638,12 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     hiddenCount += rest;
     const chosen = top.map((k) => k.s);
 
-    // 4) enriquecimento social (boost, curtida, match) — consultas pequenas e indexadas pelo MEU id (antes: três IN
-    //    com os 300 mostrados, a maior parte da CPU da descoberta ia pro motor do Prisma montando e lendo essas listas)
+    // 4) enriquecimento social (boost, curtida nos dois sentidos, conversa do par) — uma consulta com os mostrados num
+    //    parâmetro de array só (antes: IN do Prisma com os 300 mostrados, a maior parte da CPU ia pro motor montando listas)
     const now = new Date();
-    const [boosted, likes, matches] = chosen.length
-      ? await Promise.all([
-          this.activeBoosts(),
-          this.prisma.like.findMany({ where: { likerId: requesterId }, select: { likedId: true } }),
-          this.prisma.match.findMany({
-            where: { status: 'active', OR: [{ userAId: requesterId }, { userBId: requesterId }] },
-            select: { id: true, userAId: true, userBId: true },
-          }),
-        ])
-      : [new Set<string>(), [], []];
-    const liked = new Set(likes.map((l) => l.likedId));
-    const matchByUser = new Map(matches.map((m) => [m.userAId === requesterId ? m.userBId : m.userAId, m.id]));
+    const [boosted, social] = chosen.length
+      ? await Promise.all([this.activeBoosts(), loadPeerSocial(this.prisma, requesterId, chosen.map((c) => c.u.id))])
+      : [new Set<string>(), new Map<string, PeerSocialRow>()];
     const newSince = now.getTime() - NEW_USER_MS;
 
     const users: DiscoveryUserDto[] = chosen
@@ -669,8 +665,9 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
         isVerified: u.isVerified,
         isBoosted: boosted.has(u.id),
         avatar: avatarOrFallback(u),
-        likedByMe: liked.has(u.id),
-        matchId: matchByUser.get(u.id) ?? null,
+        likedByMe: social.get(u.id)?.likedByMe ?? false,
+        likeStatus: social.get(u.id)?.likeStatus ?? 'NONE',
+        conversation: social.get(u.id)?.conversation ?? null,
       }));
 
     return { users, hiddenCount, radiusM, me: { discoverable: myReason === null, hiddenReason: myReason, placePrompt } };

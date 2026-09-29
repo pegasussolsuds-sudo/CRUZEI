@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { BRAND } from '../../brand';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { EMERGENCY_NUMBERS } from '../../components/safety/reasons';
@@ -48,8 +48,9 @@ export function HelpScreen() {
         <Text style={styles.section}>denunciar e bloquear</Text>
         <View style={styles.card}>
           <Text style={styles.body}>
-            No perfil de alguém ou no chat, toque em <Text style={styles.bold}>⋯</Text>. Na lista de matches, segure a conversa. Dali
-            você denuncia, bloqueia ou desfaz o match. Quem você denuncia não sabe que foi você.
+            No perfil de alguém ou no chat, toque em <Text style={styles.bold}>⋯</Text>. Em Mensagens, segure a conversa. Dali
+            você denuncia, bloqueia ou arquiva a conversa. Nas solicitações, Bloquear e Denunciar ficam direto em cada uma. Quem
+            você denuncia não sabe que foi você.
           </Text>
           <LinkRow icon="ban-outline" label="Pessoas bloqueadas" onPress={() => nav.navigate('BlockedUsers')} last />
         </View>
@@ -119,7 +120,7 @@ const styles = StyleSheet.create({
   rowHint: { ...typography.bodySmall, color: colors.gray[600], marginTop: 2 },
   note: { ...typography.caption, color: colors.gray[500], paddingVertical: spacing.sm },
   body: { ...typography.body, color: colors.gray[800], lineHeight: 22, paddingVertical: spacing.sm },
-  bold: { fontWeight: '700', color: colors.black },
+  bold: { fontFamily: fontFamily.bodyBold, color: colors.black },
   tip: { flexDirection: 'row', gap: spacing.sm },
   tipDot: { ...typography.body, color: colors.gray[400], paddingVertical: spacing.sm },
   phone: { ...typography.h4, color: colors.danger, minWidth: 44 },

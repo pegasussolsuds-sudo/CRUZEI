@@ -5,6 +5,7 @@ import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-
 import { PrismaService } from '../../database/prisma.service';
 import { LocationService } from '../location/location.service';
 import { avatarOrFallback } from '../../common/avatar';
+import { loadPeerSocial } from '../location/peer-social';
 
 // Cartão público de outro usuário (tela UserCard). Nunca expõe telefone/e-mail/posição/distância.
 // Localização de terceiros só como FAIXA de proximidade e lugar, e só enquanto a pessoa é descoberta por quem
@@ -55,14 +56,9 @@ export class PublicUsersController {
       }
     }
 
-    const [likedByMe, likedMe, match] = await Promise.all([
-      this.prisma.like.findUnique({ where: { likerId_likedId: { likerId: me.id, likedId: id } }, select: { id: true } }),
-      this.prisma.like.findUnique({ where: { likerId_likedId: { likerId: id, likedId: me.id } }, select: { id: true } }),
-      this.prisma.match.findFirst({
-        where: { OR: [{ userAId: me.id, userBId: id }, { userAId: id, userBId: me.id }], status: 'active' },
-        select: { id: true, contextText: true },
-      }),
-    ]);
+    // curtida nos dois sentidos + conversa do par (a mesma consulta do /nearby); RECEIVED só pra Premium+
+    const social = (await loadPeerSocial(this.prisma, me.id, [id])).get(id);
+    const likeStatus = social?.likeStatus ?? 'NONE';
 
     return {
       id: u.id,
@@ -80,9 +76,11 @@ export class PublicUsersController {
       premiumTier: u.premiumTier,
       lastActiveAt: u.lastActiveAt.toISOString(),
       proximityBand,
-      likedByMe: Boolean(likedByMe),
-      likedMe: Boolean(likedMe), // só é revelado pra Premium+ no app (o cliente decide)
-      match: match ? { id: match.id, context: match.contextText } : null,
+      likedByMe: social?.likedByMe ?? false,
+      // derivado do likeStatus já filtrado: fora do Premium+ só vem true quando é mútuo (o servidor decide, não o app)
+      likedMe: likeStatus === 'RECEIVED' || likeStatus === 'MUTUAL',
+      likeStatus,
+      conversation: social?.conversation ?? null,
     };
   }
 

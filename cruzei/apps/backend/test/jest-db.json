@@ -1,0 +1,14 @@
+{
+  "rootDir": "..",
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/src/$1",
+    "^@cruzei/shared-types$": "<rootDir>/../../packages/shared-types/src",
+    "^@cruzei/shared-utils$": "<rootDir>/../../packages/shared-utils/src"
+  },
+  "testRegex": "test/db/.*\\.db-spec\\.ts$",
+  "transform": { "^.+\\.ts$": "ts-jest" },
+  "setupFiles": ["<rootDir>/test/db/env.ts"],
+  "testEnvironment": "node",
+  "maxWorkers": 1,
+  "testTimeout": 30000
+}

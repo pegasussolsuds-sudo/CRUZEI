@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, type AppStateStatus, BackHandler, type LayoutChangeEvent, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useIsFocused, useNavigation, type NavigationProp } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
-import type { MainTabParamList } from '../../navigation/MainTabs';
+import { openChat } from '../../navigation/openChat';
 import { Ionicons } from '@expo/vector-icons';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { runOnJS, useAnimatedReaction, useSharedValue } from 'react-native-reanimated';
@@ -18,6 +18,7 @@ import { useLocationStore } from '../../stores/location';
 import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
 import { useDiscoveryHints } from '../../hooks/useDiscoveryHints';
+import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
 import { useAuthStore } from '../../stores/auth';
 import { useBootStore } from '../../stores/boot';
 import { useMapPerfStore } from '../../stores/mapPerf';
@@ -39,7 +40,7 @@ import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand,
 import { NativeMap, type NativeMapHandle } from './native/NativeMap';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
-import type { AvatarConfig, DiscoveryResponse, MapPosition, CatalogPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
+import type { AvatarConfig, DiscoveryResponse, LikeResult, MapPosition, CatalogPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
 import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
@@ -68,10 +69,9 @@ const QUEUEABLE: ReadonlySet<CommandName> = new Set<CommandName>(['burst']);
 const TIER_BELOW: Record<PerfTier, PerfTier | null> = { high: 'mid', mid: 'low', low: null };
 const TIER_ABOVE: Record<PerfTier, PerfTier | null> = { low: 'mid', mid: 'high', high: null };
 
-interface LikeResponse {
-  isMatch: boolean;
-  matchId?: string;
-  context?: string | null;
+/** conversa do par que o /nearby manda (null = não há ou arquivei) */
+function conversationIdOf(u: NearbyUser | null): string | null {
+  return u?.conversation?.id ?? null;
 }
 
 interface WaveResponse {
@@ -254,13 +254,13 @@ export function MapScreen() {
   headerHRef.current = headerH;
   const lastBottomRef = useRef(0);
   const rootNav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const tabNav = useNavigation<NavigationProp<MainTabParamList>>();
   const [poiFilter, setPoiFilter] = useState<PoiFilter | null>(null);
   const [groupFilter, setGroupFilter] = useState<GroupFilter | null>(null);
   const [passed, setPassed] = useState<ReadonlySet<string>>(() => new Set());
   const [likedIds, setLikedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [wavedIds, setWavedIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [localMatches, setLocalMatches] = useState<ReadonlyMap<string, string>>(() => new Map());
+  // curtida mútua feita nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
+  const [localMutual, setLocalMutual] = useState<ReadonlySet<string>>(() => new Set());
   const [match, setMatch] = useState<MatchInfo | null>(null);
   const [moment, setMoment] = useState<{ name: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -312,15 +312,12 @@ export function MapScreen() {
     for (const u of raw) bands.set(u.id, u.proximityBand);
     const sorted = raw
       .filter((u) => !passed.has(u.id))
-      // match feito nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
-      .map((u) => {
-        const local = localMatches.get(u.id);
-        return local && u.matchId !== local ? { ...u, matchId: local } : u;
-      })
+      // curtida mútua feita nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
+      .map((u): NearbyUser => (localMutual.has(u.id) && u.likeStatus !== 'MUTUAL' ? { ...u, likeStatus: 'MUTUAL' } : u))
       .sort((a, b) => proximityRank(bands.get(a.id)) - proximityRank(bands.get(b.id)))
       .slice(0, MAX_USERS);
     return { users: sorted, pois: poisQuery.data ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
-  }, [nearbyQuery.data, poisQuery.data, passed, localMatches]);
+  }, [nearbyQuery.data, poisQuery.data, passed, localMutual]);
 
   // servidor sem minha presença (TTL venceu / push falhou): republica uma vez por transição, em vez de ficar invisível
   const repushedRef = useRef(false);
@@ -351,7 +348,14 @@ export function MapScreen() {
         .map((u) => {
           const cfg = resolveAvatar(u.avatar, u.id);
           // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
-          return { ...u, avatarKey: keyOf(cfg), aura: cfg.aura, label: formatMapName(u.name), photo: u.mapPhotoUrl ?? null };
+          return {
+            ...u,
+            avatarKey: keyOf(cfg),
+            aura: cfg.aura,
+            label: formatMapName(u.name),
+            photo: u.mapPhotoUrl ?? null,
+            mutual: likeStatusOf(u) === 'MUTUAL',
+          };
         }),
     [users],
   );
@@ -366,8 +370,9 @@ export function MapScreen() {
   useEffect(() => {
     if (selectedPoiId == null) pendingFocus.current = null;
   }, [selectedPoiId]);
-  const selectedMatchId = selectedUser ? (localMatches.get(selectedUser.id) ?? selectedUser.matchId ?? null) : null;
-  const selectedLiked = selectedUser ? likedIds.has(selectedUser.id) || Boolean(selectedUser.likedByMe) : false;
+  const selectedMutual = selectedUser ? likeStatusOf(selectedUser) === 'MUTUAL' : false;
+  const selectedConversationId = conversationIdOf(selectedUser);
+  const selectedLiked = selectedUser ? likedIds.has(selectedUser.id) || iLiked(likeStatusOf(selectedUser)) : false;
 
   // pessoas "nesse lugar": só quem o SERVIDOR diz que está lá (presença no lugar; sem cálculo por coordenada aqui)
   const placePeople = useMemo(() => {
@@ -805,35 +810,32 @@ export function MapScreen() {
   const like = useCallback(
     async (u: NearbyUser, isSuper = false) => {
       if (u.isAnonymous) return;
-      // já curtiu / já deu match: o servidor devolveria o like antigo e o app celebraria de novo (ou fingiria "enviada")
-      if (u.matchId || localMatches.has(u.id)) {
-        showToast(`Vocês já deram match com ${u.name} 🔥`);
+      // já curtiu / já se curtiram: o servidor devolveria o like antigo e o app celebraria de novo (ou fingiria "enviada")
+      const status = likeStatusOf(u);
+      if (status === 'MUTUAL' || localMutual.has(u.id)) {
+        showToast(`Você e ${u.name} já se curtiram 🔥`);
         return;
       }
-      if (u.likedByMe || likedIds.has(u.id)) {
+      if (iLiked(status) || likedIds.has(u.id)) {
         showToast(`Você já curtiu ${u.name} 💚`);
         return;
       }
       if (likingRef.current.has(u.id)) return; // toque duplo: um POST só
       likingRef.current.add(u.id);
       try {
-        const res = await api.post<LikeResponse>('/likes', { userId: u.id, isSuper });
+        const res = await api.post<LikeResult>('/likes', { userId: u.id, isSuper });
         setLikedIds((prev) => addTo(prev, u.id));
         send(cmd.emote(u.id, 'like')); // a pessoa reage no mapa
-        if (res.data.isMatch && res.data.matchId) {
-          const matchId = res.data.matchId;
-          setLocalMatches((prev) => {
-            const next = new Map(prev);
-            next.set(u.id, matchId);
-            return next;
-          });
+        if (res.data.isMutual) {
+          setLocalMutual((prev) => addTo(prev, u.id));
+          // a curtida mútua promove a conversa do par pra principal (se já existia)
+          qc.invalidateQueries({ queryKey: inboxKeys.all });
           const info: MatchInfo = {
-            matchId,
             userId: u.id,
             name: u.name,
             photo: u.mainPhotoUrl,
             avatar: u.avatar ?? null,
-            context: res.data.context,
+            conversationId: res.data.promotedConversationIds[0] ?? conversationIdOf(u),
             band: bandById.get(u.id) ?? null,
           };
           playMoment(u.id, u.name, info);
@@ -843,14 +845,13 @@ export function MapScreen() {
         } else {
           showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
         }
-        qc.invalidateQueries({ queryKey: ['matches'] });
       } catch (err) {
         showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
       } finally {
         likingRef.current.delete(u.id);
       }
     },
-    [qc, send, showToast, bandById, playMoment, likedIds, localMatches],
+    [qc, send, showToast, bandById, playMoment, likedIds, localMutual],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
@@ -894,14 +895,11 @@ export function MapScreen() {
     },
     [rootNav, bandById],
   );
-  const onChat = useCallback(
-    (matchId: string, u: NearbyUser) => {
-      setSelected(null);
-      // initial:false → a lista de matches fica embaixo na pilha e o chat ganha botão de voltar
-      tabNav.navigate('Matches', { screen: 'Chat', initial: false, params: { matchId, name: u.name } } as never);
-    },
-    [tabNav],
-  );
+  // "Mensagem"/"Conversar" da sheet: sem conversa ainda, o chat abre em rascunho (a 1ª mensagem cria)
+  const onChat = useCallback((u: NearbyUser, conversationId: string | null) => {
+    setSelected(null);
+    openChat({ id: u.id, name: u.name, avatar: u.avatar ?? null }, conversationId);
+  }, []);
   // fechou o modal: se outro match ficou na fila, toca o momento dele agora
   const onMatchClosed = useCallback(() => {
     setMatch(null);
@@ -1248,7 +1246,8 @@ export function MapScreen() {
         band={selectedUser ? (bandById.get(selectedUser.id) ?? null) : null}
         liked={selectedLiked}
         waved={selectedUser ? wavedIds.has(selectedUser.id) : false}
-        matchId={selectedMatchId}
+        mutual={selectedMutual}
+        conversationId={selectedConversationId}
         onLike={onLike}
         onWave={onWave}
         onChat={onChat}

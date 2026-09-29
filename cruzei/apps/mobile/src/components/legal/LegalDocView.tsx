@@ -3,7 +3,7 @@ import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, Vi
 import { useQuery } from '@tanstack/react-query';
 import type { LegalDoc, LegalSlug } from '@cruzei/shared-types';
 import { parseMiniMarkdown, type MdInline } from '@cruzei/shared-utils';
-import { colors, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
 
 /** texto legal vindo do servidor (mesma fonte das páginas públicas /legal/:slug), renderizado nativo */
@@ -84,13 +84,13 @@ const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   h1: { ...typography.h2, color: colors.black, marginBottom: spacing.xs },
   h2: { ...typography.h4, color: colors.black, marginTop: spacing.xl, marginBottom: spacing.sm },
-  h3: { ...typography.body, fontWeight: '700', color: colors.black, marginTop: spacing.lg, marginBottom: spacing.xs },
+  h3: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black, marginTop: spacing.lg, marginBottom: spacing.xs },
   p: { ...typography.body, color: colors.gray[800], lineHeight: 23, marginBottom: spacing.sm },
-  bold: { fontWeight: '700', color: colors.black },
+  bold: { fontFamily: fontFamily.bodyBold, color: colors.black },
   link: { color: '#B3006A', textDecorationLine: 'underline' },
   list: { marginBottom: spacing.sm },
   item: { flexDirection: 'row', gap: spacing.sm, paddingRight: spacing.sm },
   bullet: { ...typography.body, color: colors.gray[500], width: 18, lineHeight: 23 },
   retry: { paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, borderRadius: 999, backgroundColor: colors.black },
-  retryText: { ...typography.body, color: colors.white, fontWeight: '600' },
+  retryText: { ...typography.body, color: colors.white, fontFamily: fontFamily.bodySemiBold },
 });

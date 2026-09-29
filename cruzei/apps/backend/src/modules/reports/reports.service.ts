@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
-import { REPORT_REASONS, type ReportPayload, type ReportReason, type ReportResult } from '@cruzei/shared-types';
+import { REPORT_REASONS, REPORT_SOURCES, type ReportContext, type ReportPayload, type ReportReason, type ReportResult } from '@cruzei/shared-types';
 import { PrismaService } from '../../database/prisma.service';
 import { BlocksService } from '../blocks/blocks.service';
 import { ModerationService } from '../moderation/moderation.service';
@@ -20,7 +20,7 @@ export const REPORT_PRIORITY: Record<ReportReason, number> = {
 
 /** pessoas diferentes denunciando em 7 dias → sai da descoberta até a revisão */
 export const HOLD_DISTINCT_REPORTERS = 3;
-const SOURCES = new Set(['profile', 'chat', 'matches', 'map', 'likes']);
+const SOURCES = new Set<string>(REPORT_SOURCES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
@@ -89,10 +89,11 @@ export class ReportsService {
   }
 }
 
-function sanitizeContext(c: ReportPayload['context'] | undefined): ReportPayload['context'] | null {
+/** só campos conhecidos e uuids válidos */
+export function sanitizeContext(c: ReportPayload['context'] | undefined): ReportContext | null {
   if (!c || typeof c !== 'object' || !SOURCES.has(c.source)) return null;
-  const out: NonNullable<ReportPayload['context']> = { source: c.source };
-  if (typeof c.matchId === 'string' && UUID.test(c.matchId)) out.matchId = c.matchId;
+  const out: ReportContext = { source: c.source };
+  if (typeof c.conversationId === 'string' && UUID.test(c.conversationId)) out.conversationId = c.conversationId.toLowerCase();
   if (typeof c.messageId === 'string' && UUID.test(c.messageId)) out.messageId = c.messageId;
   if (typeof c.photoId === 'string' && UUID.test(c.photoId)) out.photoId = c.photoId;
   return out;

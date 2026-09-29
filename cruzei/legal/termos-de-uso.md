@@ -65,12 +65,16 @@ Fale com a gente pelo e-mail {{EMAIL_SUPORTE}}.
 - **Áreas privadas:** você cadastra até 5 lugares (como casa, trabalho ou faculdade) onde ninguém descobre você.
 - Você também escolhe se mostra sua idade e sua foto no mapa, e se o seu perfil mostra a faixa de proximidade e o lugar onde você está.
 
-### Curtidas, match e chat
+### Curtidas, match e mensagens
 
 - Você pode curtir, supercurtir ou dispensar perfis. Quando duas pessoas se curtem, dá match.
 - A pessoa que você curtiu pode ficar sabendo da curtida.
-- Existem limites de uso para evitar abuso, como um número máximo de curtidas por dia.
-- Com o match, abre um chat de mensagens de texto por 48 horas. Depois disso, o chat fecha e vocês não conseguem mais trocar mensagens por ele.
+- Existem limites de uso para evitar abuso, como um número máximo de curtidas e de conversas novas por dia e de mensagens por minuto.
+- Você pode mandar mensagem de texto para qualquer pessoa cujo perfil você consegue ver no app. Não precisa de match. Quem está no modo anônimo ou com o perfil pausado não recebe conversas novas.
+- Para quem recebe, a conversa chega em **Solicitações**. Ela passa para a caixa **Principal** quando essa pessoa responde, quando ela move a conversa para a Principal ou quando vocês se curtem. Depois disso, a conversa fica na Principal.
+- Quem manda a primeira mensagem já vê a conversa na própria caixa Principal, com o aviso "aguardando resposta". Até a outra pessoa responder, dá para mandar no máximo 3 mensagens.
+- Enquanto a conversa está nas suas Solicitações, você pode ler as mensagens sem que a outra pessoa veja a confirmação de leitura.
+- As conversas não expiram nem fecham com o tempo.
 - No match, o app pode mostrar uma frase como "Vocês se cruzaram no [lugar]" ou "Vocês estiveram perto hoje". Nunca mostra metros.
 - Você pode acenar para quem está descobrindo agora. Cada pessoa pode receber um aceno seu a cada 24 horas.
 
@@ -100,16 +104,17 @@ Condutas graves fora do app também contam. Se soubermos de ameaça ou violênci
 
 ### Denunciar e bloquear
 
-- Você pode denunciar e bloquear pelo perfil da pessoa, pelo chat e pela lista de matches.
+- Você pode denunciar e bloquear pelo perfil da pessoa, pela conversa e pela lista de mensagens, inclusive em Solicitações.
 - Os motivos de denúncia incluem assédio, perfil falso, golpe, spam, conteúdo impróprio, ameaça, menor de idade e exploração ou abuso infantil.
-- O bloqueio vale na hora e para os dois lados: vocês deixam de se ver no app e o match, se existir, é encerrado. A pessoa bloqueada não recebe aviso de que foi bloqueada.
+- O bloqueio vale na hora e para os dois lados: vocês deixam de ver o perfil e as fotos um do outro, e a conversa, se existir, é arquivada e sai da lista de mensagens dos dois. Ninguém consegue começar uma conversa nova enquanto o bloqueio existir. A pessoa bloqueada não recebe aviso de que foi bloqueada.
+- Desbloquear, por si só, não traz a conversa arquivada de volta.
 - Não contamos à pessoa denunciada quem fez a denúncia.
 - Em perigo agora? Ligue 190.
 
 ### O que a moderação analisa
 
 - A denúncia é analisada por nossa equipe de moderação, que pode ver o perfil, as fotos (inclusive as recusadas), as denúncias e as decisões anteriores sobre a conta.
-- Quando a denúncia é feita a partir de um chat, a moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
+- Quando a denúncia é feita a partir de uma conversa, inclusive em Solicitações, a moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
 
 ### O que pode acontecer
 
@@ -205,7 +210,7 @@ O Metch **não verifica antecedentes criminais** e não confirma a identidade da
 - Você pode parar de usar o Metch quando quiser.
 - Para excluir a conta, envie o pedido para {{EMAIL_PRIVACIDADE}}, informando o número de telefone da conta. Podemos pedir que você confirme que a conta é sua. Respondemos em até 15 dias.
 - Enquanto o pedido é atendido, você pode pausar o perfil ou ligar o modo anônimo.
-- A exclusão apaga seu perfil, suas fotos, curtidas, matches e mensagens. Guardamos apenas o que a lei ou a segurança exigem, como explica a Política de Privacidade.
+- A exclusão apaga seu perfil, suas fotos, curtidas, conversas e mensagens. Guardamos apenas o que a lei ou a segurança exigem, como explica a Política de Privacidade.
 - Se tiver assinatura, cancele também na loja.
 
 ### Por nós

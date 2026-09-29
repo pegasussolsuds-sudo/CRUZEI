@@ -48,7 +48,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     const order = [
       'auditLog', 'dataDeletionRequest', 'deviceToken', 'notification',
       'boost', 'subscription', 'report', 'block', 'seal',
-      'visit', 'message', 'match', 'like', 'poisCheckin',
+      'visit', 'message', 'conversationMember', 'conversation', 'match', 'like', 'poisCheckin',
       'location', 'userInterest', 'photo', 'poi', 'user',
     ];
     for (const model of order) {

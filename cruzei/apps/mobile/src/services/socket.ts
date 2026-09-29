@@ -89,11 +89,11 @@ export function getSocket(): CruzeiSocket | null {
 }
 
 /**
- * Intervalo do polling da lista de matches: com o socket conectado, match novo e mensagem chegam por evento
- * (App.tsx invalida a lista) e o polling é só rede de segurança — 2 min; sem socket, 30 s.
+ * Intervalo do polling das Mensagens (listas e contagem da aba): com o socket conectado, conversa nova, mensagem e
+ * promoção chegam por evento (App.tsx acerta o cache) e o polling é só rede de segurança — 2 min; sem socket, 30 s.
  * Com dezenas de milhares de pessoas no app, o polling de 30 s em TODAS as telas era a rota mais chamada do servidor.
  */
-export function matchesPollMs(): number {
+export function inboxPollMs(): number {
   return socket?.connected ? 120_000 : 30_000;
 }
 

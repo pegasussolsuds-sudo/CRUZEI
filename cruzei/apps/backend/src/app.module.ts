@@ -21,9 +21,9 @@ import { LocationModule } from './modules/location/location.module';
 import { PoisModule } from './modules/pois/pois.module';
 import { PlacesModule } from './modules/places/places.module';
 import { GeoModule } from './modules/geo/geo.module';
-import { MatchesModule } from './modules/matches/matches.module';
+import { LikesModule } from './modules/likes/likes.module';
+import { InboxModule } from './modules/inbox/inbox.module';
 import { WavesModule } from './modules/waves/waves.module';
-import { MessagesModule } from './modules/messages/messages.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AnonymousModule } from './modules/anonymous/anonymous.module';
 import { SafetyModule } from './modules/safety/safety.module';
@@ -59,7 +59,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
 
     // Rate limiting global (ThrottlerGuard em APP_GUARD, abaixo) — endpoints sensíveis apertam com @Throttle.
     // default 600/min por usuário: vários usuários atrás do mesmo NAT (bar, faculdade, CGNAT do 4G) e o app
-    // chama nearby a cada 45 s + pois + boosts + matches; 100/min derrubava gente legítima.
+    // chama nearby a cada 45 s + pois + boosts + inbox; 100/min derrubava gente legítima.
     // Contagem no Redis (O(1), vale entre processos) — o storage em memória do pacote era O(N) por requisição.
     ThrottlerModule.forRootAsync({
       inject: [RedisService],
@@ -72,7 +72,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
       }),
     }),
 
-    // Cron jobs (cleanup, expiração de matches etc.) — num processo só quando o backend roda em cluster
+    // Cron jobs (limpezas: anônimo grátis, pausa, retenção de posições) — num processo só quando o backend roda em cluster
     ...(isCronWorker() ? [ScheduleModule.forRoot()] : []),
 
     // Bull (fila de notificações)
@@ -93,9 +93,9 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     PoisModule,
     PlacesModule,
     GeoModule,
-    MatchesModule,
+    LikesModule,
+    InboxModule,
     WavesModule,
-    MessagesModule,
     NotificationsModule,
     AnonymousModule,
     SafetyModule,

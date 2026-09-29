@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { LegalSlug } from '@cruzei/shared-types';
-import { colors, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, spacing, typography } from '@cruzei/ui-mobile';
 
 /** "Li e aceito os Termos de Uso e a Política de privacidade" — caixa obrigatória no fim do cadastro e no novo aceite */
 export function TermsCheck({
@@ -48,5 +48,5 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, paddingVertical: spacing.sm },
   box: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   text: { ...typography.bodySmall, flex: 1, lineHeight: 20 },
-  link: { fontWeight: '700', textDecorationLine: 'underline' },
+  link: { fontFamily: fontFamily.bodyBold, textDecorationLine: 'underline' },
 });

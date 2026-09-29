@@ -1,11 +1,13 @@
 import React from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BlockedUser } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
+import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { resolveAvatar } from '../../avatar';
 
 /** quem eu bloqueei (e desbloquear) */
 export function BlockedUsersScreen() {
@@ -21,7 +23,7 @@ export function BlockedUsersScreen() {
   });
 
   const confirm = (b: BlockedUser) =>
-    Alert.alert(`Desbloquear ${b.user.name}?`, 'Vocês voltam a se ver no mapa quando estiverem perto. O match antigo não volta.', [
+    Alert.alert(`Desbloquear ${b.user.name}?`, 'Vocês voltam a se ver no mapa quando estiverem perto. A conversa antiga continua arquivada.', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Desbloquear', onPress: () => unblock.mutate(b.user.id) },
     ]);
@@ -47,13 +49,14 @@ export function BlockedUsersScreen() {
         }
         renderItem={({ item }) => (
           <View style={styles.row}>
-            {item.user.mainPhotoUrl ? (
-              <Image source={{ uri: item.user.mainPhotoUrl }} style={styles.photo} />
-            ) : (
-              <View style={[styles.photo, styles.noPhoto]}>
-                <Ionicons name="person" size={20} color={colors.gray[400]} />
-              </View>
-            )}
+            {/* bloqueio esconde perfil e foto: aqui só o avatar */}
+            <CruzeiAvatar
+              config={resolveAvatar(item.user.avatar ?? null, item.user.id)}
+              mode="bust"
+              size={44}
+              backgroundColor={colors.gray[100]}
+              accessibilityLabel={`Avatar de ${item.user.name}`}
+            />
             <View style={{ flex: 1 }}>
               <Text style={styles.name}>{item.user.name}</Text>
               <Text style={styles.when}>bloqueado em {new Date(item.createdAt).toLocaleDateString('pt-BR')}</Text>
@@ -79,12 +82,10 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   content: { padding: spacing.lg, gap: spacing.sm, flexGrow: 1 },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, backgroundColor: colors.white, borderRadius: radius.lg, padding: spacing.md },
-  photo: { width: 44, height: 44, borderRadius: 22 },
-  noPhoto: { backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
-  name: { ...typography.body, fontWeight: '600', color: colors.black },
+  name: { ...typography.body, fontFamily: fontFamily.bodySemiBold, color: colors.black },
   when: { ...typography.caption, color: colors.gray[500] },
   btn: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: 999, borderWidth: 1, borderColor: colors.gray[300] },
-  btnText: { ...typography.bodySmall, fontWeight: '600', color: colors.black },
+  btnText: { ...typography.bodySmall, fontFamily: fontFamily.bodySemiBold, color: colors.black },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingTop: spacing.xxxl },
   emptyText: { ...typography.body, color: colors.gray[500] },
 });

@@ -29,6 +29,14 @@ export interface LocationUpdateResponse {
 }
 
 import type { AvatarConfig } from './avatar';
+import type { ConversationRef, LikeStatus } from './conversation';
+
+/** relação social com quem consulta, no cartão público (GET /users/:id) e no /nearby */
+export interface PeerSocial {
+  /** RECEIVED ("já te curtiu") só pra Premium+ com assinatura vigente; pros outros vem NONE */
+  likeStatus: LikeStatus;
+  conversation: ConversationRef | null;
+}
 
 /** 🟢 muito perto (≤100 m) · 🟢 perto (≤250 m) · 🟡 na região (≤350 m) */
 export type ProximityBand = 'very_near' | 'near' | 'region';
@@ -64,9 +72,12 @@ export interface NearbyUser {
   poi?: { id: number; name: string } | null;
   /** avatar Cruzei (null → o app gera um determinístico a partir do id) */
   avatar?: AvatarConfig | null;
-  /** curtida/ match já existentes com quem consulta (pra sheet mostrar 'Curtido' / 'Match') */
+  /** eu já curti essa pessoa (pra sheet mostrar 'Curtido') */
   likedByMe?: boolean;
-  matchId?: string | null;
+  /** status da curtida do MEU ponto de vista; RECEIVED só chega pra Premium+ (senão vem NONE) */
+  likeStatus?: LikeStatus;
+  /** conversa do par, se existe e não está arquivada por mim (o botão vira "Abrir conversa") */
+  conversation?: ConversationRef | null;
 }
 
 export interface DiscoveryResponse {

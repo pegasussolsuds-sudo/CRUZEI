@@ -44,7 +44,7 @@ Toque em **Denunciar** e escolha **"Exploração ou abuso infantil"**. A opção
 
 - no perfil da pessoa;
 - no chat;
-- na lista de matches.
+- na lista de Mensagens, inclusive em Solicitações.
 
 Por padrão, a pessoa denunciada também fica bloqueada para você.
 
@@ -79,7 +79,7 @@ Evitamos compartilhar com a pessoa denunciada detalhes que possam prejudicar uma
 - Moderação de todas as fotos novas, com estimativa de idade aparente e revisão humana nos casos duvidosos.
 - O chat do app aceita só mensagens de texto.
 - Ninguém vê a posição exata nem a distância exata de outra pessoa. A descoberta vai até 350 metros e esconde as pessoas nas suas áreas privadas e residências.
-- Bloqueio e denúncia disponíveis no perfil, no chat e na lista de matches.
+- Bloqueio e denúncia disponíveis no perfil, no chat e na lista de Mensagens (Principal e Solicitações).
 - Limites de uso contra abuso e contas automatizadas.
 
 ## 8. Ponto de contato designado

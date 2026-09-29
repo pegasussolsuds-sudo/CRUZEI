@@ -168,7 +168,7 @@ export function ProfileScreen() {
     ]);
 
   const pause = () =>
-    Alert.alert('Pausar perfil', 'Você some do mapa e das curtidas por 24h. Seus matches continuam.', [
+    Alert.alert('Pausar perfil', 'Você some do mapa e das curtidas por 24h. Suas conversas continuam.', [
       { text: 'Cancelar', style: 'cancel' },
       {
         text: 'Pausar 24h',

@@ -42,7 +42,7 @@ export function clusterWorkerIndex(env: NodeJS.ProcessEnv = process.env): number
 }
 
 /**
- * Crons (@nestjs/schedule) rodam em UM processo só — senão cada worker expiraria matches / purgaria locations em dobro.
+ * Crons (@nestjs/schedule) rodam em UM processo só — senão cada worker purgaria locations / despausaria perfis em dobro.
  * IS_CRON_WORKER explícito vence (o primário do cluster marca só o worker 1; em vários hosts, marque 1 e desligue os
  * outros com IS_CRON_WORKER=0). Sem marcação: processo único roda, worker de cluster não roda.
  */

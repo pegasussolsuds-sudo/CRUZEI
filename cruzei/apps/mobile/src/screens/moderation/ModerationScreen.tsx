@@ -5,7 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ModerationPhoto, ModerationQueue, ModerationReportGroup } from '@cruzei/shared-types';
-import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { api, toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { REASON_OPTIONS } from '../../components/safety/reasons';
@@ -145,19 +145,19 @@ const styles = StyleSheet.create({
   tabs: { flexDirection: 'row', gap: spacing.sm, padding: spacing.lg, paddingBottom: spacing.sm },
   tab: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: 999, backgroundColor: colors.gray[100] },
   tabActive: { backgroundColor: colors.black },
-  tabText: { ...typography.bodySmall, fontWeight: '600', color: colors.black },
+  tabText: { ...typography.bodySmall, fontFamily: fontFamily.bodySemiBold, color: colors.black },
   list: { padding: spacing.lg, gap: spacing.md, flexGrow: 1 },
   empty: { ...typography.body, color: colors.gray[500], textAlign: 'center', marginTop: spacing.xxxl },
   card: { backgroundColor: colors.white, borderRadius: radius.lg, overflow: 'hidden' },
   groupRow: { flexDirection: 'row', gap: spacing.md, padding: spacing.md, alignItems: 'center' },
   thumb: { width: 52, height: 52, borderRadius: 26 },
-  name: { ...typography.body, fontWeight: '700', color: colors.black },
-  reasons: { ...typography.bodySmall, fontWeight: '600' },
+  name: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },
+  reasons: { ...typography.bodySmall, fontFamily: fontFamily.bodySemiBold },
   muted: { ...typography.caption, color: colors.gray[500] },
   photo: { width: '100%', aspectRatio: 1, backgroundColor: colors.gray[200] },
   row: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   btn: { flex: 1, paddingVertical: spacing.sm + 2, borderRadius: radius.md, alignItems: 'center' },
   approve: { backgroundColor: colors.primary },
   reject: { backgroundColor: colors.danger },
-  btnText: { ...typography.body, fontWeight: '700', color: colors.black },
+  btnText: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },
 });
