@@ -40,7 +40,7 @@
       }
     },
     "patchedDependencies": {
-      "@rnmapbox/maps@10.3.5": "patches/@rnmapbox__maps@10.3.5.patch"
+      "@maplibre/maplibre-react-native@11.4.0": "patches/@maplibre__maplibre-react-native@11.4.0.patch"
     }
   }
 }

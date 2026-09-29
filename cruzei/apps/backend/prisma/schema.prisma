@@ -578,3 +578,76 @@ model AccessLog {
   @@index([userId, createdAt(sort: Desc)], map: "idx_access_logs_user")
   @@map("access_logs")
 }
+
+// ---------- catálogo geográfico próprio (migration 20260930120000_geo_catalog; dados: scripts/geo) ----------
+// Colunas PostGIS entram como Unsupported (o Prisma não cria linha nesses modelos: quem escreve é o import em SQL).
+// name_norm é coluna GERADA (f_norm(name)): só leitura. Busca: name_norm % f_norm($q), índices GIN trgm + GiST na migration.
+
+/// lugar público da cidade (Overture Places + OSM); o mesmo lugar em duas fontes aponta pro canônico via dupOf
+model PlaceCatalog {
+  id              String                                 @id @db.VarChar(80)
+  source          String                                 @db.VarChar(16)
+  name            String                                 @db.VarChar(255)
+  nameNorm        String?                                @map("name_norm")
+  kind            String                                 @db.VarChar(20)
+  chip            String?                                @db.VarChar(12)
+  confidence      Float?                                 @db.Real
+  geog            Unsupported("geography(Point, 4326)")
+  neighborhood    String?                                @db.VarChar(100)
+  city            String?                                @db.VarChar(100)
+  state           String?                                @db.Char(2)
+  address         String?                                @db.VarChar(500)
+  phone           String?                                @db.VarChar(40)
+  website         String?                                @db.VarChar(500)
+  socials         Json?
+  openingHours    String?                                @map("opening_hours")
+  rawCategory     String?                                @map("raw_category") @db.VarChar(80)
+  searchable      Boolean                                @default(true)
+  dupOf           String?                                @map("dup_of") @db.VarChar(80)
+  altIds          String[]                               @default([]) @map("alt_ids")
+  altNames        String[]                               @default([]) @map("alt_names")
+  sourceUpdatedOn DateTime?                              @map("source_updated_on") @db.Date
+  refreshedOn     DateTime                               @map("refreshed_on") @db.Date
+  goneOn          DateTime?                              @map("gone_on") @db.Date
+
+  @@index([kind], map: "place_catalog_kind_idx")
+  @@map("place_catalog")
+}
+
+/// polígono administrativo do OSM: município (city), setor/distrito (district), bairro (neighborhood)
+model GeoArea {
+  id           String                                 @id @db.VarChar(40)
+  name         String                                 @db.VarChar(150)
+  nameNorm     String?                                @map("name_norm")
+  adminLevel   Int?                                   @map("admin_level") @db.SmallInt
+  kind         String                                 @db.VarChar(12)
+  districtType String?                                @map("district_type") @db.VarChar(20)
+  parentId     String?                                @map("parent_id") @db.VarChar(40)
+  city         String?                                @db.VarChar(100)
+  state        String?                                @db.Char(2)
+  ibgeCode     String?                                @map("ibge_code") @db.VarChar(12)
+  geom         Unsupported("geometry(MultiPolygon, 4326)")
+  refreshedOn  DateTime                               @map("refreshed_on") @db.Date
+
+  @@index([kind, adminLevel], map: "geo_areas_kind_idx")
+  @@map("geo_areas")
+}
+
+/// nome pra "ir até lá": rua (trechos agrupados), bairro, cidade, localidade (place)
+model GeoName {
+  id           String                                 @id @db.VarChar(40)
+  kind         String                                 @db.VarChar(12)
+  name         String                                 @db.VarChar(200)
+  nameNorm     String?                                @map("name_norm")
+  neighborhood String?                                @db.VarChar(100)
+  city         String?                                @db.VarChar(100)
+  state        String?                                @db.Char(2)
+  geog         Unsupported("geography(Point, 4326)")
+  bbox         Float[]                                @default([])
+  sizeM        Float?                                 @map("size_m") @db.Real
+  areaId       String?                                @map("area_id") @db.VarChar(40)
+  refreshedOn  DateTime                               @map("refreshed_on") @db.Date
+
+  @@index([kind, city], map: "geo_names_kind_city_idx")
+  @@map("geo_names")
+}

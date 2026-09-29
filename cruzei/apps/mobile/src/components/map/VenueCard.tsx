@@ -4,14 +4,14 @@ import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, formatApproxDistance } from '@cruzei/shared-utils';
-import type { MapboxPlace, PlaceSuggestResponse } from '@cruzei/shared-types';
+import type { CatalogPlace, PlaceSuggestResponse } from '@cruzei/shared-types';
 import { usePlaceSuggest } from '../../hooks/usePlaceContrib';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PressScale } from '../animated/PressScale';
 import { placeKindMeta } from './placeKinds';
 
 export interface VenueCardProps {
-  place: MapboxPlace;
+  place: CatalogPlace;
   /** minha posição, pra "a X de você" */
   me: { lat: number; lng: number } | null;
   onClose: () => void;
@@ -22,7 +22,7 @@ export interface VenueCardProps {
 }
 
 /** abre o app de navegação do aparelho (o usuário escolhe qual) no lugar */
-async function openDirections(place: MapboxPlace): Promise<void> {
+async function openDirections(place: CatalogPlace): Promise<void> {
   const { latitude: lat, longitude: lng, name } = place;
   const label = encodeURIComponent(name);
   const native = Platform.select({

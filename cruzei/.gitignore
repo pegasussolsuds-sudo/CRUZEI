@@ -28,3 +28,6 @@ apps/backend/uploads/
 # logs de dev
 apps/backend/backend.log
 apps/mobile/metro.log
+
+# dados geográficos baixados pelo scripts/geo (Overture/OSM; ~27 MB, refaz com os scripts)
+apps/backend/data/geo/

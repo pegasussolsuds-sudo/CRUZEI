@@ -1,6 +1,6 @@
 // Cache das imagens do mapa nativo em disco, endereçado por conteúdo.
 // O motor pede cada imagem por uma CHAVE estável que descreve tudo o que muda o desenho
-// (ex.: 'fig|<avatarKey>|<sig>|pose...|v3'); o store devolve o PNG no disco pro <Images> do rnmapbox.
+// (ex.: 'fig|<avatarKey>|<sig>|pose...|v3'); o store devolve o PNG no disco pro <Images> do MLRN.
 //   - Por que disco: o <Images> do Android só carrega imagem por URI (Fresco). De brinde o arquivo sobrevive
 //     entre sessões — a segunda abertura do mapa quase não desenha nada.
 //   - Por que o nome é hash da chave: o Fresco guarda o bitmap pela URI; conteúdo novo precisa de nome novo.
@@ -102,7 +102,7 @@ export function mapImageFileName(key: string): string {
   return hex8(a) + hex8(b) + '-' + n.toString(36) + '.png';
 }
 
-/** 'file:///data/.../x.png' → '/data/.../x.png' (o rnmapbox trata '/' como arquivo local; com 'file://' loga erro) */
+/** 'file:///data/.../x.png' → '/data/.../x.png' (o DownloadMapImageTask do MLRN vira caminho com '/' em file:// e carrega pelo Fresco) */
 function toPath(uri: string): string {
   let p = uri.startsWith('file://') ? uri.slice(7) : uri;
   try {

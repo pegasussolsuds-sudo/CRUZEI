@@ -1,8 +1,9 @@
 // Paletas Day/Dusk/Night do mapa (docs 06/17) e a luz 3D "assada" nas cores.
 //
 // O WebView ligava luzes v3 (map.setLights: ambiente + direcional, mapbox-html.ts:254-259) que multiplicavam a cor de
-// fundo, fill, line, circle e prédios — é o que deixava a noite escura e roxa. O @rnmapbox/maps não expõe setLights,
-// então a mesma conta roda aqui, uma vez por tema, e o BaseTheme já manda a cor final pro estilo.
+// fundo, fill, line, circle e prédios — é o que deixava a noite escura e roxa. O MapLibre não tem essas luzes (a luz
+// clássica dele só afeta extrusões), então a mesma conta roda aqui, uma vez por tema, e ./colors já sai com a cor final
+// do chão. Os prédios usam a luz do MapLibre (MAP_LIGHT em ./style) e não passam por aqui.
 //
 // Fórmula = shader do GL JS v3.7 (_prelude_lighting.glsl: apply_lighting_with_emission_ground + calculateGroundRadiance):
 //   ambienteLin = cor_ambiente^2.2 * intensidade; direcionalLin = cor_dir^2.2 * intensidade

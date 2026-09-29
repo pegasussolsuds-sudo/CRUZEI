@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import Animated, { Easing, FadeIn, FadeInDown, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
-import type { MapboxPlace, PlaceCategoryKey, VibeFilter, VibePlace } from '@cruzei/shared-types';
+import type { CatalogPlace, PlaceCategoryKey, VibeFilter, VibePlace } from '@cruzei/shared-types';
 import { useVibe, vibeOrigin } from '../../hooks/useVibe';
 import { useGeocodeSearch, type GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { shouldSearchPlaces, usePlaceSearch } from '../../hooks/usePlaceSearch';
@@ -14,7 +14,7 @@ import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PressScale } from '../animated/PressScale';
 import { VibePlaceRow } from './VibePlaceRow';
-import { MapboxPlaceRow } from './MapboxPlaceRow';
+import { CatalogPlaceRow } from './CatalogPlaceRow';
 import { BRAND } from '../../brand';
 
 export interface VibeOverlayProps {
@@ -26,8 +26,8 @@ export interface VibeOverlayProps {
   /** app em background / tela fora de foco: para a atualização periódica */
   paused?: boolean;
   onClose: () => void;
-  /** POI do app (Cruzei) ou do Mapbox Search Box — o tipo discrimina a fonte */
-  onPickPlace: (place: VibePlace | MapboxPlace) => void;
+  /** POI do app (Metch) ou lugar do catálogo da cidade — o tipo discrimina a fonte */
+  onPickPlace: (place: VibePlace | CatalogPlace) => void;
   onPickGeocode: (result: GeocodeResult) => void;
 }
 
@@ -92,7 +92,7 @@ function useKeyboardHeight(): number {
 
 /**
  * Overlay "Onde tá a vibe": busca + filtros rápidos + ranking ao vivo dos lugares (gente agora, tendência,
- * eventos) e, ao digitar, lugares/bairros/ruas do Mapbox pra levar a câmera até lá.
+ * eventos) e, ao digitar, lugares/bairros/ruas do catálogo pra levar a câmera até lá.
  * Modal por cima do mapa; entra deslizando de cima, sai em fade. Fecha com o botão do sistema.
  */
 export function VibeOverlay({ visible, center, myLocation, paused = false, onClose, onPickPlace, onPickGeocode }: VibeOverlayProps) {
@@ -150,15 +150,15 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
   const origin = vibeOrigin(filter, center, myLocation);
   const vibe = useVibe({ center, myLocation, filter, q: debounced, category, enabled: active, polling: !paused });
   const geo = useGeocodeSearch(debounced, center, active);
-  // busca genérica do Mapbox (bares/baladas etc.) só roda com texto (>=2) OU chip de categoria ligado
+  // busca genérica do catálogo (bares/baladas etc.) só roda com texto (>=2) OU chip de categoria ligado
   const wantPlaces = shouldSearchPlaces(debounced, category);
   const places = usePlaceSearch({ q: debounced, category, mapCenter: center, myLocation, enabled: active && wantPlaces });
   const vibePlaces = origin ? (vibe.data?.places ?? []) : [];
-  const mapboxPlaces = wantPlaces ? (places.data?.places ?? []) : [];
-  // dedupe simples: POI do Mapbox a < 30 m de um POI do app some (o app ganha, porque tem "vibe")
-  const dedupMapbox: typeof mapboxPlaces = useMemo(() => {
-    if (mapboxPlaces.length === 0 || vibePlaces.length === 0) return mapboxPlaces;
-    return mapboxPlaces.filter((m) => {
+  const cityPlaces = wantPlaces ? (places.data?.places ?? []) : [];
+  // dedupe simples: lugar do catálogo a < 30 m de um POI do app some (o app ganha, porque tem "vibe")
+  const dedupCity: typeof cityPlaces = useMemo(() => {
+    if (cityPlaces.length === 0 || vibePlaces.length === 0) return cityPlaces;
+    return cityPlaces.filter((m) => {
       for (const v of vibePlaces) {
         const dLat = (v.latitude - m.latitude) * 111_000;
         const meanLat = ((v.latitude + m.latitude) / 2) * (Math.PI / 180);
@@ -168,10 +168,10 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapboxPlaces, vibePlaces]);
+  }, [cityPlaces, vibePlaces]);
   const geoResults = geo.data ?? [];
   // bairros e ruas: com lugar encontrado, a seção só aparece se tiver resultado (sem "nenhuma rua" como ruído)
-  const showGeo = debounced.trim().length >= 3 && (geoResults.length > 0 || dedupMapbox.length === 0);
+  const showGeo = debounced.trim().length >= 3 && (geoResults.length > 0 || dedupCity.length === 0);
   // dados "emprestados" da consulta anterior enquanto a nova carrega: mostra carregando, nunca um vazio falso
   const loading = Boolean(origin) && (vibe.isPending || vibe.isPlaceholderData || (wantPlaces && places.isPending));
 
@@ -179,7 +179,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
     if (query.length > 0) setAnimateRows(false);
   }, [query]);
   const pickPlace = useCallback(
-    (p: VibePlace | MapboxPlace) => {
+    (p: VibePlace | CatalogPlace) => {
       fastClose.current = true;
       onPickPlace(p);
     },
@@ -211,10 +211,10 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
     return parts.length > 0 ? parts.join(' · ') : 'a cidade tá quieta agora';
   }, [vibe.data, origin]);
 
-  // lista unificada: POIs do Cruzei (com "vibe") + POIs do Mapbox (genéricos), separados por cabeçalho de seção
+  // lista unificada: POIs do Cruzei (com "vibe") + lugares do catálogo (genéricos), separados por cabeçalho de seção
   type Row =
     | { kind: 'cruzei'; place: VibePlace }
-    | { kind: 'mapbox'; place: MapboxPlace }
+    | { kind: 'city'; place: CatalogPlace }
     | { kind: 'section'; key: string; title: string };
   const items: Row[] = useMemo(() => {
     const list: Row[] = [];
@@ -222,12 +222,12 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
       list.push({ kind: 'section', key: 'cruzei', title: `Ao vivo no ${BRAND.name} · ${vibePlaces.length}` });
       for (const p of vibePlaces) list.push({ kind: 'cruzei', place: p });
     }
-    if (dedupMapbox.length > 0) {
-      list.push({ kind: 'section', key: 'mapbox', title: `${debounced.trim() || category ? 'Na cidade' : 'Por perto'} · ${dedupMapbox.length}` });
-      for (const p of dedupMapbox) list.push({ kind: 'mapbox', place: p });
+    if (dedupCity.length > 0) {
+      list.push({ kind: 'section', key: 'city', title: `${debounced.trim() || category ? 'Na cidade' : 'Por perto'} · ${dedupCity.length}` });
+      for (const p of dedupCity) list.push({ kind: 'city', place: p });
     }
     return list;
-  }, [vibePlaces, dedupMapbox, debounced, category]);
+  }, [vibePlaces, dedupCity, debounced, category]);
 
   const renderItem = useCallback(
     ({ item, index }: { item: Row; index: number }) => {
@@ -241,7 +241,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
       // re-index só dentro da própria seção pra animação em cascata não pular
       const idx = index;
       if (item.kind === 'cruzei') return <VibePlaceRow place={item.place} index={idx} onPress={pickPlace} animate={animateRows} />;
-      return <MapboxPlaceRow place={item.place} index={idx} onPress={pickPlace} animate={animateRows} />;
+      return <CatalogPlaceRow place={item.place} index={idx} onPress={pickPlace} animate={animateRows} />;
     },
     [pickPlace, animateRows],
   );

@@ -12,7 +12,6 @@ import * as Haptics from 'expo-haptics';
 
 import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
-import { config } from '../../config';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { pushLocation } from '../../services/location';
 import { useLocationStore } from '../../stores/location';
@@ -40,7 +39,7 @@ import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand,
 import { NativeMap, type NativeMapHandle } from './native/NativeMap';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
-import type { AvatarConfig, DiscoveryResponse, MapPosition, MapboxPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
+import type { AvatarConfig, DiscoveryResponse, MapPosition, CatalogPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
 import { BRAND } from '../../brand';
 
 const HOT_MIN = 5;
@@ -139,7 +138,7 @@ export function MapScreen() {
   const myAvatar = useMemo(() => resolveAvatar(me?.avatar ?? null, me?.id ?? 'me', me?.gender ?? null), [me?.avatar, me?.id, me?.gender]);
   const myAvatarKey = keyOf(myAvatar);
 
-  // ---------- mapa nativo (@rnmapbox/maps) ----------
+  // ---------- mapa nativo (MapLibre, tiles do OpenFreeMap: sem token) ----------
   // tier e tema iniciais são lidos só na montagem; promoção de tier e troca de tema ao vivo vão por setTier/setTheme.
   // `mapKey` só remonta o mapa depois de um erro fatal de carregamento (não há mapa na tela); vivo, ele nunca é recriado.
   const [initTier] = useState<InitTier>(() => useMapPerfStore.getState().tier);
@@ -151,14 +150,7 @@ export function MapScreen() {
   const stateCmds = useRef(new Map<CommandName, MapCommand>());
   const oneShots = useRef<MapCommand[]>([]);
   const [mapReady, setMapReady] = useState(false);
-  const [mapError, setMapError] = useState<string | null>(config.mapboxToken ? null : 'o mapa não tá disponível agora');
-
-  useEffect(() => {
-    if (__DEV__ && !config.mapboxToken) {
-      // eslint-disable-next-line no-console
-      console.warn('[map] EXPO_PUBLIC_MAPBOX_TOKEN não configurado — o mapa não vai carregar');
-    }
-  }, []);
+  const [mapError, setMapError] = useState<string | null>(null);
 
   const inject = useCallback((c: MapCommand) => {
     mapRef.current?.run(c);
@@ -253,7 +245,7 @@ export function MapScreen() {
   const [vibeOpen, setVibeOpen] = useState(false);
   const [pickedPoi, setPickedPoi] = useState<POI | null>(null);
   // lugar da cidade (bar, balada…) escolhido na busca: pino no mapa até fechar; o card some com toque no mapa e volta tocando no pino
-  const [venue, setVenue] = useState<MapboxPlace | null>(null);
+  const [venue, setVenue] = useState<CatalogPlace | null>(null);
   const [venueCardOpen, setVenueCardOpen] = useState(false);
   const pendingFocus = useRef<number | null>(null);
   // altura real do header (barra de busca + linha da localização + banners): o mapa e o cartão do match se guiam por ela
@@ -978,7 +970,7 @@ export function MapScreen() {
 
   const onFocusPoi = useCallback((poiId: number) => send(cmd.focusPoi(poiId)), [send]);
   const showVenue = useCallback(
-    (m: MapboxPlace) => {
+    (m: CatalogPlace) => {
       const pin: PinPayload = { id: m.id, lat: m.latitude, lng: m.longitude, name: m.name, emoji: placeKindMeta(m.kind).emoji, nightlife: m.nightlife };
       setVenue(m);
       setVenueCardOpen(true);
@@ -1040,15 +1032,15 @@ export function MapScreen() {
   const closeVibe = useCallback(() => setVibeOpen(false), []);
   // lugar escolhido na busca: câmera vai até lá, a sheet do lugar abre na hora e o destaque no mapa vem quando o recorte carregar
   const onPickVibePlace = useCallback(
-    (place: VibePlace | MapboxPlace) => {
+    (place: VibePlace | CatalogPlace) => {
       setVibeOpen(false);
       setSelected(null);
       setGroupFilter(null);
       setPoiFilter(null);
-      // POI do Cruzei tem `id` numérico e existe no `poisRef` (vem do /pois/nearby); Mapbox tem `source: 'mapbox'`
+      // POI do Cruzei tem `id` numérico e existe no `poisRef` (vem do /pois/nearby); lugar da cidade (busca) tem `source`
       const v: VibePlace | null = 'source' in place ? null : place;
       if (!v) {
-        const m = place as MapboxPlace; // sem v = lugar da cidade (tem source)
+        const m = place as CatalogPlace; // sem v = lugar da cidade (tem source)
         setPickedPoi(null);
         setSelectedPoiId(null);
         pendingFocus.current = null;
@@ -1071,7 +1063,7 @@ export function MapScreen() {
     },
     [send, showVenue, clearVenue, venue],
   );
-  // bairro/rua/cidade do Mapbox: só leva a câmera (o recorte de lugares e pessoas re-centraliza sozinho)
+  // bairro/rua/cidade da busca: só leva a câmera (o recorte de lugares e pessoas re-centraliza sozinho)
   const onPickGeocode = useCallback(
     (r: GeocodeResult) => {
       setVibeOpen(false);
@@ -1117,24 +1109,23 @@ export function MapScreen() {
   }, [poiFilter, users]);
 
   const floatBottom = (previewFraction != null ? Math.round(containerH * previewFraction) : listSheetH(sheetIndex)) + spacing.sm;
-  // logo e atribuição do Mapbox (obrigatórios pelos termos) logo acima da lista recolhida
+  // logo do MapLibre e ⓘ da atribuição (OpenFreeMap © OpenMapTiles, dados do OpenStreetMap: obrigatória pela ODbL) logo
+  // acima da lista recolhida
   const ornamentBottom = listSheetH(0) + 6;
   const peopleCount = users.length;
   const listLoading = Boolean(queryCenter) && (nearbyQuery.isPending || nearbyQuery.isPlaceholderData);
 
   return (
     <View style={styles.container} onLayout={onLayout}>
-      {config.mapboxToken ? (
-        <NativeMap
-          key={mapKey}
-          ref={mapRef}
-          initTheme={themeRef.current}
-          initTier={initTier}
-          onEvent={onMapEvent}
-          ornamentBottom={ornamentBottom}
-          accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
-        />
-      ) : null}
+      <NativeMap
+        key={mapKey}
+        ref={mapRef}
+        initTheme={themeRef.current}
+        initTier={initTier}
+        onEvent={onMapEvent}
+        ornamentBottom={ornamentBottom}
+        accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
+      />
 
       <MapHeader
         lat={queryCenter?.lat ?? null}
@@ -1196,11 +1187,9 @@ export function MapScreen() {
           <View style={styles.notice} accessibilityRole="alert">
             <Ionicons name="warning-outline" size={20} color={colors.warning} />
             <Text style={styles.noticeText}>Ops, {mapError}. Bora tentar de novo?</Text>
-            {config.mapboxToken ? (
-              <Pressable onPress={retryMap} accessibilityRole="button" accessibilityLabel="Tentar de novo" style={styles.noticeBtn}>
-                <Text style={styles.noticeAction}>Tentar de novo</Text>
-              </Pressable>
-            ) : null}
+            <Pressable onPress={retryMap} accessibilityRole="button" accessibilityLabel="Tentar de novo" style={styles.noticeBtn}>
+              <Text style={styles.noticeAction}>Tentar de novo</Text>
+            </Pressable>
           </View>
         ) : null}
 

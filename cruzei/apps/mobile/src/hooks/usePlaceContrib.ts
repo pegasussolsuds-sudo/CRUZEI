@@ -5,24 +5,24 @@ import { api, toApiError } from '../services/api';
 // Contribuições pra descoberta de lugares (a galera ajuda a pôr lugares no mapa). O servidor responde sempre do
 // mesmo jeito — nunca diz quem mais pediu, quantos, nem por que ainda não entrou.
 
-/** lugares do Mapbox já pedidos nesta sessão (o card reaberto mostra "Pedido enviado") */
+/** lugares do catálogo já pedidos nesta sessão (o card reaberto mostra "Pedido enviado") */
 const requested = new Set<string>();
 
 export type SuggestState = 'idle' | 'sending' | 'sent';
 
-export function wasRequested(mapboxId: string): boolean {
-  return requested.has(mapboxId);
+export function wasRequested(placeId: string): boolean {
+  return requested.has(placeId);
 }
 
 /** "📌 Pôr no Metch" num lugar da busca. `onDone` recebe a resposta (ativo → focar no mapa; pendente → agradecer). */
-export function usePlaceSuggest(mapboxId: string, onDone: (res: PlaceSuggestResponse) => void, onError: (message: string) => void) {
-  const [state, setState] = useState<SuggestState>(() => (requested.has(mapboxId) ? 'sent' : 'idle'));
+export function usePlaceSuggest(placeId: string, onDone: (res: PlaceSuggestResponse) => void, onError: (message: string) => void) {
+  const [state, setState] = useState<SuggestState>(() => (requested.has(placeId) ? 'sent' : 'idle'));
   const suggest = useCallback(async () => {
     if (state !== 'idle') return;
     setState('sending');
     try {
-      const res = (await api.post<PlaceSuggestResponse>('/pois/suggest', { mapboxId })).data;
-      if (res.status === 'pending') requested.add(mapboxId);
+      const res = (await api.post<PlaceSuggestResponse>('/pois/suggest', { placeId })).data;
+      if (res.status === 'pending') requested.add(placeId);
       setState(res.status === 'pending' ? 'sent' : 'idle');
       onDone(res);
     } catch (e) {
@@ -30,7 +30,7 @@ export function usePlaceSuggest(mapboxId: string, onDone: (res: PlaceSuggestResp
       const err = toApiError(e);
       onError(err.status === 429 ? 'Calma aí: tenta de novo mais tarde' : err.status && err.status < 500 ? err.message : 'Não deu agora. Tenta de novo já já');
     }
-  }, [mapboxId, onDone, onError, state]);
+  }, [placeId, onDone, onError, state]);
   return { state, suggest };
 }
 

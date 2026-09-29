@@ -1,105 +1,45 @@
-import type { MapboxPlace, PlaceCategoryKey, PlaceKind } from '@cruzei/shared-types';
+import type { CatalogPlace, PlaceCategoryKey, PlaceKind } from '@cruzei/shared-types';
 
 /**
- * Regras puras da busca de lugares (sem rede): categorias do Mapbox, tipo do lugar, variação de grafia e ranking.
- * Ficam separadas do service pra serem testadas sem chamar a API.
+ * Regras puras da busca de lugares (sem banco): tipos de cada chip, intenção, variação de grafia e ranking.
+ * Ficam separadas do service pra serem testadas sem Postgres. O tipo de cada lugar já vem pronto do catálogo
+ * (scripts/geo/taxonomy.ts classifica a categoria do Overture/OSM na importação).
  */
 
-/** categorias do Mapbox que importam num app de encontro: noite, comer e beber, eventos */
-export const VIBE_CATEGORIES = [
-  'bar',
-  'nightlife',
-  'nightclub',
-  'pub',
-  'lounge',
-  'brewery',
-  'music_venue',
-  'concert_hall',
-  'event_space',
-  'entertainment',
-  'restaurant',
-  'fast_food',
-  'cafe',
-  'coffee_shop',
-  'food_and_drink',
-] as const;
-
-/** lugares de encontro fora da noite (parque, shopping, teatro, faculdade…) */
-export const SOCIAL_CATEGORIES = [
-  'park',
-  'garden',
-  'shopping_mall',
-  'theatre',
-  'cinema',
-  'museum',
-  'art_gallery',
-  'stadium',
-  'university',
-  'college',
-  'tourist_attraction',
-  'beach',
-  'zoo',
-  'plaza',
-] as const;
-
-/** chip do overlay → categorias do Mapbox usadas na navegação por categoria */
-export const CHIP_TO_MAPBOX: Record<PlaceCategoryKey, string[]> = {
-  bar: ['nightclub', 'bar', 'pub', 'lounge'],
-  restaurant: ['restaurant', 'fast_food'],
-  cafe: ['cafe', 'coffee_shop'],
+/** chip do overlay → tipos do catálogo que entram na navegação por categoria */
+export const CHIP_KINDS: Record<PlaceCategoryKey, PlaceKind[]> = {
+  bar: ['nightclub', 'pub', 'bar', 'cocktail', 'brewery', 'lounge', 'nightlife'],
+  restaurant: ['restaurant', 'fastfood'],
+  cafe: ['cafe'],
   park: ['park'],
-  shopping: ['shopping_mall'],
-  show: ['music_venue', 'concert_hall', 'theatre', 'nightclub'],
+  shopping: ['mall'],
+  show: ['music', 'theatre', 'nightclub', 'events'],
   beach: ['beach'],
-  museum: ['museum', 'art_gallery'],
+  museum: ['museum', 'gallery'],
 };
-
-/** feature do Search Box (/forward e /category) — só os campos que usamos */
-export interface SearchBoxFeature {
-  geometry?: { coordinates?: [number, number] };
-  properties?: {
-    name?: string;
-    mapbox_id?: string;
-    feature_type?: string;
-    address?: string;
-    full_address?: string;
-    place_formatted?: string;
-    poi_category_ids?: string[];
-    coordinates?: { latitude?: number; longitude?: number };
-    context?: {
-      neighborhood?: { name?: string };
-      locality?: { name?: string };
-      place?: { name?: string };
-      region?: { name?: string; region_code?: string };
-    };
-  };
-}
 
 // ---------- intenção e filtro ----------
 
 /**
- * Palavra genérica de rolê ("balada", "bar", "comer"…) não é nome de lugar: vira navegação pela categoria
- * (os mais perto primeiro), junto com o que tiver esse nome.
+ * Palavra genérica de rolê ("balada", "bar", "comer"…) não é nome de lugar: vira navegação pelos tipos
+ * (os mais perto primeiro), junto com o que tiver esse nome e for de um tipo aceito.
  */
-const INTENTS: [RegExp, string[], PlaceKind[]][] = [
-  [/^(baladas?|boates?|night|noitada|festas?|roles?|dancar|danca)$/, ['nightclub', 'music_venue'], ['nightclub', 'music', 'nightlife', 'pub']],
-  [/^(bar|bares|botecos?|butecos?|pubs?|choperias?|cervejarias?|drinks?)$/, ['bar', 'pub', 'brewery'], ['bar', 'pub', 'cocktail', 'brewery', 'lounge', 'nightclub', 'nightlife']],
+const INTENTS: [RegExp, browse: PlaceKind[], accept: PlaceKind[]][] = [
+  // casa de show só pelo nome: no Overture muita página de músico vem como music_venue
+  [/^(baladas?|boates?|night|noitada|festas?|roles?|dancar|danca)$/, ['nightclub'], ['nightclub', 'music', 'nightlife', 'pub']],
+  [/^(bar|bares|botecos?|butecos?|pubs?|choperias?|cervejarias?|drinks?)$/, ['bar', 'pub', 'brewery', 'cocktail'], ['bar', 'pub', 'cocktail', 'brewery', 'lounge', 'nightclub', 'nightlife']],
   [/^(restaurantes?|comer|comida|jantar|almoco|almocar)$/, ['restaurant'], ['restaurant', 'fastfood']],
-  [/^(cafes?|cafeterias?)$/, ['cafe', 'coffee_shop'], ['cafe']],
+  [/^(cafes?|cafeterias?)$/, ['cafe'], ['cafe']],
   [/^(parques?|pracas?)$/, ['park'], ['park']],
-  [/^(shoppings?)$/, ['shopping_mall'], ['mall']],
-  [/^(shows?|ao vivo|musica ao vivo|teatros?)$/, ['music_venue', 'concert_hall', 'theatre'], ['music', 'theatre', 'events']],
+  [/^(shoppings?)$/, ['mall'], ['mall']],
+  [/^(shows?|ao vivo|musica ao vivo|teatros?)$/, ['music', 'theatre'], ['music', 'theatre', 'events']],
 ];
 
-/** palavra de rolê → categorias do Mapbox pra navegar + tipos de lugar aceitos no resultado */
-export function intentOf(q: string): { categories: string[]; kinds: PlaceKind[] } | null {
+/** palavra de rolê → tipos pra navegar (browse) + tipos aceitos entre os que têm a palavra no nome (kinds) */
+export function intentOf(q: string): { browse: PlaceKind[]; kinds: PlaceKind[] } | null {
   const n = normalize(q);
-  for (const [re, categories, kinds] of INTENTS) if (re.test(n)) return { categories, kinds };
+  for (const [re, browse, kinds] of INTENTS) if (re.test(n)) return { browse, kinds };
   return null;
-}
-
-export function intentCategories(q: string): string[] | null {
-  return intentOf(q)?.categories ?? null;
 }
 
 /** anúncio de acompanhante, massagem, motel e afins não entra na busca de um app de encontros */
@@ -109,82 +49,9 @@ export function isBlocked(name: string): boolean {
   return BLOCKED.test(normalize(name));
 }
 
-// ---------- tipo do lugar ----------
-
-/** ordem importa: a primeira categoria que casar define o tipo (balada antes de bar, bar antes de "comes e bebes") */
-const KIND_RULES: [mapboxId: string, kind: PlaceKind, chip: PlaceCategoryKey | null][] = [
-  ['nightclub', 'nightclub', 'bar'],
-  ['pub', 'pub', 'bar'],
-  ['bar', 'bar', 'bar'],
-  ['brewery', 'brewery', 'bar'],
-  ['cocktail_bar', 'cocktail', 'bar'],
-  ['lounge', 'lounge', 'bar'],
-  ['music_venue', 'music', 'show'],
-  ['concert_hall', 'music', 'show'],
-  ['theatre', 'theatre', 'show'],
-  ['cinema', 'cinema', 'show'],
-  ['event_space', 'events', 'show'],
-  ['nightlife', 'nightlife', 'bar'],
-  ['cafe', 'cafe', 'cafe'],
-  ['coffee_shop', 'cafe', 'cafe'],
-  ['coffee', 'cafe', 'cafe'],
-  ['fast_food', 'fastfood', 'restaurant'],
-  ['restaurant', 'restaurant', 'restaurant'],
-  ['food_and_drink', 'restaurant', 'restaurant'],
-  ['food', 'restaurant', 'restaurant'],
-  ['park', 'park', 'park'],
-  ['garden', 'park', 'park'],
-  ['shopping_mall', 'mall', 'shopping'],
-  ['museum', 'museum', 'museum'],
-  ['art_gallery', 'gallery', 'museum'],
-  ['beach', 'beach', 'beach'],
-  ['stadium', 'stadium', null],
-  ['university', 'campus', null],
-  ['college', 'campus', null],
-  ['tourist_attraction', 'landmark', null],
-  ['entertainment', 'entertainment', 'show'],
-];
-
 /** tipos que contam como "noite" (a UI destaca e o ranking favorece) */
 const NIGHTLIFE_KINDS: ReadonlySet<PlaceKind> = new Set<PlaceKind>(['nightclub', 'pub', 'bar', 'cocktail', 'brewery', 'lounge', 'music', 'nightlife']);
 const OUTING_KINDS: ReadonlySet<PlaceKind> = new Set<PlaceKind>(['events', 'theatre', 'cinema', 'entertainment', 'restaurant', 'cafe', 'fastfood']);
-
-/**
- * O Mapbox às vezes classifica casa noturna como "espaço de eventos" (ex.: "Liv Pub"). Quando a categoria é genérica,
- * o nome decide: "pub", "bar", "club", "balada"…
- */
-const NAME_HINTS: [RegExp, PlaceKind][] = [
-  [/\b(balada|boate|club|clube|night)\b/, 'nightclub'],
-  [/\bpub\b/, 'pub'],
-  [/\b(bar|boteco|buteco|choperia|chopp|botequim)\b/, 'bar'],
-  [/\b(drinks?|cocktails?)\b/, 'cocktail'],
-  [/\b(cervejaria|beer|brewery)\b/, 'brewery'],
-];
-const GENERIC_KINDS: ReadonlySet<PlaceKind> = new Set<PlaceKind>(['events', 'entertainment', 'nightlife', 'other']);
-
-export function kindOf(categoryIds: readonly string[] | undefined, name: string): { kind: PlaceKind; category: PlaceCategoryKey | null } {
-  const ids = new Set(categoryIds ?? []);
-  let kind: PlaceKind = 'other';
-  let category: PlaceCategoryKey | null = null;
-  for (const [id, k, chip] of KIND_RULES) {
-    if (ids.has(id)) {
-      kind = k;
-      category = chip;
-      break;
-    }
-  }
-  if (GENERIC_KINDS.has(kind)) {
-    const n = normalize(name);
-    for (const [re, k] of NAME_HINTS) {
-      if (re.test(n)) {
-        kind = k;
-        category = 'bar';
-        break;
-      }
-    }
-  }
-  return { kind, category };
-}
 
 export function isNightlife(kind: PlaceKind): boolean {
   return NIGHTLIFE_KINDS.has(kind);
@@ -192,11 +59,11 @@ export function isNightlife(kind: PlaceKind): boolean {
 
 // ---------- texto ----------
 
-/** minúsculas, sem acento, espaços simples */
+/** minúsculas, sem acento, espaços simples (a mesma regra do f_norm() do banco) */
 export function normalize(s: string): string {
   return s
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
@@ -227,7 +94,7 @@ function collapseDoubles(w: string): string {
 /**
  * Até `max` grafias alternativas, na ordem: última palavra sem a letra final ("live" → "liv") e, pra cada palavra com
  * letra dobrada, a busca com só aquela palavra simplificada ("olli pizza" → "oli pizza"; a outra palavra fica como está,
- * senão "pizza" viraria "piza"). Cada grafia custa uma consulta ao Mapbox (cacheada), por isso o teto.
+ * senão "pizza" viraria "piza"). Cada grafia vira mais um termo da mesma consulta no banco, por isso o teto.
  */
 export function spellingVariants(q: string, max = 3): string[] {
   const base = words(normalize(q));
@@ -278,83 +145,136 @@ export function haversineMeters(la1: number, lo1: number, la2: number, lo2: numb
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-// ---------- feature → lugar ----------
+// ---------- linha do catálogo → lugar ----------
 
-export function toPlace(f: SearchBoxFeature, center: { lat: number; lng: number } | null): MapboxPlace | null {
-  const p = f.properties;
-  const name = p?.name?.trim();
-  const id = p?.mapbox_id;
-  const lat = p?.coordinates?.latitude ?? f.geometry?.coordinates?.[1];
-  const lng = p?.coordinates?.longitude ?? f.geometry?.coordinates?.[0];
+/** linha do place_catalog como a busca lê (só os campos que usamos) */
+export interface CatalogRow {
+  id: string;
+  name: string;
+  kind: string;
+  chip: string | null;
+  /** Overture 0..1; só OSM = 0.6 */
+  confidence: number | null;
+  /** o OSM também tem o lugar (fonte OSM ou id osm: entre os duplicados) */
+  osm_confirmed: boolean;
+  lat: number;
+  lng: number;
+  address: string | null;
+  neighborhood: string | null;
+  city: string | null;
+  state: string | null;
+  alt_names: string[] | null;
+}
+
+/** lugar + o que só o ranking usa (não vai pro app) */
+export interface Hit {
+  place: CatalogPlace;
+  /** 0..1: confiança da fonte, com piso quando o OSM confirma o lugar */
+  trust: number;
+  /** nomes do mesmo lugar em outras fontes ("Bar do Rubinho" pro "Rubinho's Bar") */
+  altNames: string[];
+}
+
+/** confiança usada no ranking: sem sinal = 0.5; confirmado pelo OSM = pelo menos 0.7 ("Nash Pub" tem 0.10 no Overture) */
+export function trustOf(confidence: number | null, osmConfirmed: boolean): number {
+  const c = confidence == null || !Number.isFinite(confidence) ? 0.5 : Math.min(1, Math.max(0, confidence));
+  return osmConfirmed ? Math.max(c, 0.7) : c;
+}
+
+export function toHit(r: CatalogRow, center: { lat: number; lng: number } | null): Hit | null {
+  const name = r.name?.trim();
   if (!name || isBlocked(name)) return null;
-  if (!id || typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  const { kind, category } = kindOf(p?.poi_category_ids, name);
-  const ctx = p?.context;
-  const city = ctx?.place?.name ?? ctx?.locality?.name ?? null;
-  const state = ctx?.region?.region_code ?? ctx?.region?.name ?? null;
-  const neighborhood = ctx?.neighborhood?.name ?? (ctx?.locality?.name && ctx.locality.name !== city ? ctx.locality.name : null);
-  const street = p?.address?.trim() || null;
-  const address = street ? [street, neighborhood, city].filter(Boolean).join(', ') : (p?.full_address ?? p?.place_formatted ?? null);
+  if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) return null;
+  const kind = r.kind as PlaceKind;
+  const category = r.chip && Object.prototype.hasOwnProperty.call(CHIP_KINDS, r.chip) ? (r.chip as PlaceCategoryKey) : null;
+  const street = r.address?.trim() || null;
   return {
-    id: `mbx:${id}`,
-    name,
-    category,
-    kind,
-    nightlife: isNightlife(kind),
-    address,
-    neighborhood,
-    city,
-    state,
-    latitude: lat,
-    longitude: lng,
-    distanceM: center ? haversineMeters(center.lat, center.lng, lat, lng) : 0,
-    source: 'mapbox',
+    place: {
+      id: r.id,
+      name,
+      category,
+      kind,
+      nightlife: isNightlife(kind),
+      address: street ? [street, r.neighborhood, r.city].filter(Boolean).join(', ') : null,
+      neighborhood: r.neighborhood,
+      city: r.city,
+      state: r.state,
+      latitude: r.lat,
+      longitude: r.lng,
+      distanceM: center ? haversineMeters(center.lat, center.lng, r.lat, r.lng) : 0,
+      source: 'catalog',
+    },
+    trust: trustOf(r.confidence, r.osm_confirmed),
+    altNames: (r.alt_names ?? []).filter((n) => n && n !== name),
   };
 }
 
 // ---------- ranking ----------
 
-export interface Ranked {
-  place: MapboxPlace;
-  score: number;
+/** melhor casamento entre o nome e os nomes alternativos do mesmo lugar */
+function bestNameScore(h: Hit, q: string, variants: string | string[] | null): number {
+  let s = nameScore(h.place.name, q, variants);
+  for (const n of h.altNames) s = Math.max(s, nameScore(n, q, variants));
+  return s;
 }
 
 /**
- * Nota final = casamento do nome + tipo (noite pesa mais) − distância − "fora da vibe".
- * `order` é a posição que o Mapbox deu (desempate estável).
+ * Busca por texto: lugar de tipo "outro" (loja, serviço, clínica) só entra com cada palavra digitada inteira no nome
+ * ("drogasil" acha a farmácia; "liv" não traz "Live Odontologia"). Mesmo assim ele fica atrás dos lugares de rolê.
  */
-export function scorePlace(place: MapboxPlace, q: string, variants: string | string[] | null, order: number): number {
-  let s = q ? nameScore(place.name, q, variants) : 50;
+export function keepForText(h: Hit, q: string): boolean {
+  if (h.place.kind !== 'other') return true;
+  const qw = words(normalize(q));
+  return qw.length > 0 && [h.place.name, ...h.altNames].some((n) => {
+    const nw = words(normalize(n));
+    return qw.every((w) => nw.includes(w));
+  });
+}
+
+/**
+ * Nota final = casamento do nome + tipo (noite pesa mais) + confiança − distância − "fora da vibe".
+ * `order` é a posição que a consulta deu (desempate estável; só as 10 primeiras posições pesam).
+ */
+export function scorePlace(h: Hit, q: string, variants: string | string[] | null, order: number): number {
+  const place = h.place;
+  let s = q ? bestNameScore(h, q, variants) : 50;
   if (place.nightlife) s += 15;
   else if (OUTING_KINDS.has(place.kind)) s += 8;
   else if (place.kind !== 'other') s += 5;
-  else s -= 10; // categoria fora do rolê (loja, serviço): só aparece se não houver coisa melhor
+  else s -= 25; // fora do rolê (loja, serviço, clínica — o grosso do catálogo): só aparece se não houver coisa melhor
   if (OFF_VIBE.test(normalize(place.name))) s -= 12;
+  s += (h.trust - 0.5) * 16; // página abandonada/lugar fechado (confiança baixa) cai; lugar confirmado sobe
   s -= Math.min(25, (place.distanceM / 1000) * 0.6);
-  s -= order * 0.3;
+  s -= Math.min(order, 10) * 0.3;
   return s;
 }
 
 /** junta listas (primeira ocorrência vence), pontua e ordena */
-export function rankPlaces(lists: MapboxPlace[][], q: string, variants: string | string[] | null, limit: number): MapboxPlace[] {
-  const seen = new Map<string, Ranked>();
+export function rankPlaces(lists: Hit[][], q: string, variants: string | string[] | null, limit: number): CatalogPlace[] {
+  const seen = new Map<string, { h: Hit; score: number }>();
   lists.forEach((list) =>
-    list.forEach((place, i) => {
-      if (seen.has(place.id)) return;
-      seen.set(place.id, { place, score: scorePlace(place, q, variants, i) });
+    list.forEach((h, i) => {
+      if (seen.has(h.place.id)) return;
+      seen.set(h.place.id, { h, score: scorePlace(h, q, variants, i) });
     }),
   );
   return [...seen.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map((r) => r.place);
+    .map((r) => r.h.place);
 }
 
-/** sem texto (só o chip): o mais perto primeiro, noite empata a favor */
-export function rankByDistance(lists: MapboxPlace[][], limit: number): MapboxPlace[] {
-  const seen = new Map<string, MapboxPlace>();
-  for (const list of lists) for (const p of list) if (!seen.has(p.id)) seen.set(p.id, p);
+/** distância "efetiva" da navegação por tipo: noite empata a favor; confiança baixa pesa como até 800 m a mais */
+export function browseDistance(h: Hit): number {
+  return h.place.distanceM - (h.place.nightlife ? 150 : 0) + (1 - h.trust) * 800;
+}
+
+/** sem texto (só o chip ou palavra de rolê): o mais perto primeiro, noite e confiança desempatam */
+export function rankByDistance(lists: Hit[][], limit: number): CatalogPlace[] {
+  const seen = new Map<string, Hit>();
+  for (const list of lists) for (const h of list) if (!seen.has(h.place.id)) seen.set(h.place.id, h);
   return [...seen.values()]
-    .sort((a, b) => a.distanceM - (a.nightlife ? 150 : 0) - (b.distanceM - (b.nightlife ? 150 : 0)))
-    .slice(0, limit);
+    .sort((a, b) => browseDistance(a) - browseDistance(b))
+    .slice(0, limit)
+    .map((h) => h.place);
 }

@@ -1,32 +1,37 @@
 // Motor do mapa nativo: porta do antigo mapbox-html.ts (WebView) pra TypeScript, rodando no JS do app e desenhando pelo
-// @rnmapbox/maps. Mesmas regras de produto (quem aparece, como anda, o que pulsa, a coreografia do match), com três
-// trocas técnicas:
+// @maplibre/maplibre-react-native (MLRN). Mesmas regras de produto (quem aparece, como anda, o que pulsa, a coreografia
+// do match), com quatro trocas técnicas:
 //   1. imagens (figuras, bolhas, ícones) são desenhadas uma vez em Skia raster, gravadas em PNG e registradas no
 //      <Images>; "animar" uma figura é trocar o arquivo da imagem dela (quadros cacheados em disco);
 //   2. o que pulsa (sonar, anéis, auras) vira CircleLayer com paint constante atualizado por um relógio — sem relayout;
-//   3. a câmera é o <Camera> nativo, com o controle de animação/padding de engine/camera.ts.
+//   3. a câmera é o <Camera> nativo, com o controle de animação/padding de engine/camera.ts;
+//   4. os grupos de pessoas são calculados aqui (supercluster), não na fonte nativa: o cluster nativo do MapLibre cai
+//      ao expandir depois de a fonte ser republicada (maplibre-native#3519) e a fonte users é republicada até 5x/s.
 // Cada saída (fonte GeoJSON, imagens, fase dos anéis, visual) sai num canal (engine/channels.ts) e só a camada que
 // assina aquele canal re-renderiza. O relógio dorme quando nada anima.
 
+import type { RefObject } from 'react';
 import { AccessibilityInfo } from 'react-native';
-import type { MapState, MapView, ShapeSource } from '@rnmapbox/maps';
+import type { CameraRef, GeoJSONSourceRef, MapRef, ViewStateChangeEvent } from '@maplibre/maplibre-react-native';
+import Supercluster from 'supercluster';
 import type { POI } from '@cruzei/shared-types';
 
 import type { AvatarDefs, BurstPayload, CameraOpts, EmoteKind, MapCommand, MapDataPayload, MapEvent, MapPadding, MapTheme, MapUser, MeState, PerfTier, PinPayload, InitTier } from '../../bridge';
-import { BUB, IMG, IMG_SCALE, bubbleOffset, figOffset, type AvatarDef, type BubbleStyle, type Dim, type EmoteState, type FigureLook, type MapImageRef, type PoseVariation } from '../contracts';
+import { BUB, IMG, IMG_SCALE, bubbleOffset, figOffset, type AvatarDef, type BubbleStyle, type Dim, type EmoteState, type FigureLook, type MapImageEntry, type MapImageRef, type PoseVariation } from '../contracts';
 import { mapDraw } from '../images/draw';
 import { DUR, pose, sizeFor, variationFor } from '../images/anim';
 import { mapImages } from '../images/store';
 import { mapPhotos } from '../images/photos';
 import { Channels } from './channels';
-import { CameraCtl, type CamState, type CameraRef } from './camera';
+import { CameraCtl, MAX_PITCH, type CamState } from './camera';
+import { FeatureStateQueue } from './featureState';
 import { distM, fitZoom, inBounds, isFiniteLngLat, metersPerPixel, midpoint, offsetCenter, offsetMeters, type LngLat } from './geo';
 
 type FC = GeoJSON.FeatureCollection;
 type Feature = GeoJSON.Feature;
 
 /** imagens do mapa agrupadas: cada grupo vira um <Images> (desmontar o grupo tira as imagens dele do estilo) */
-export type ImageGroups = Record<string, Record<string, { url: string; scale: number }>>;
+export type ImageGroups = Record<string, Record<string, MapImageEntry>>;
 
 export interface MapLook {
   theme: MapTheme;
@@ -70,8 +75,10 @@ export interface MapChannels {
   buildingScale: number;
   /** queda do pino da busca */
   pinLook: { dy: number; alpha: number };
-  /** eventos de quadro ligados só com a câmera em movimento (amostra de fps) */
+  /** amostra de fps ligada só com a câmera em movimento */
   frameEvents: boolean;
+  /** névoa do horizonte: 0 (pitch 0) → 1 (pitch 60), em degraus de 0,05 */
+  horizon: number;
   [key: string]: unknown;
 }
 
@@ -101,6 +108,13 @@ export const TAP_PERSON_LAYERS = ['cz-users', 'cz-users-photo', 'cz-users-boost'
 const TAP_LAYERS = [...TAP_PERSON_LAYERS, 'cz-poi', 'cz-cluster', 'cz-cluster-count', 'cz-pin'];
 
 const MAX_USERS = 300;
+/** grupos (supercluster): mesmos raio e zoom máximo do antigo cluster nativo; acima de 21 ninguém se agrupa */
+const CLUSTER_RADIUS = 70;
+const CLUSTER_MAX_ZOOM = 21;
+const WORLD_BBOX: GeoJSON.BBox = [-180, -85, 180, 85];
+/** 'ready' de reserva: o MapLibre só avisa o fim do load com todos os tiles da tela carregados (OpenFreeMap sem SLA) */
+const READY_FALLBACK_MS = 6000;
+const HORIZON_THROTTLE_MS = 80;
 /** teto de figuras próprias por tier (o resto usa a silhueta) — memória de textura no Moto g54 */
 const FIG_CAP: Record<PerfTier, number> = { high: 90, mid: 60, low: 40 };
 /** teto de figuras animando ao mesmo tempo (eu, selecionado e o match sempre animam); o resto desliza parado */
@@ -125,6 +139,13 @@ const STATIC_GRACE_MS = 250;
 /** versão do desenho: muda quando draw.ts mudar o visual (invalida o cache em disco) */
 const RENDER_V = 'r1x' + IMG_SCALE;
 const DEG = Math.PI / 180;
+
+type UsersIndex = Supercluster<GeoJSON.GeoJsonProperties, GeoJSON.GeoJsonProperties>;
+
+/** zoom inteiro que o supercluster usa (floor, limitado a maxZoom+1 = sem grupo) */
+function clusterZoomOf(zoom: number): number {
+  return Math.max(0, Math.min(Math.floor(zoom), CLUSTER_MAX_ZOOM + 1));
+}
 
 interface FigUser {
   id: string;
@@ -270,12 +291,25 @@ export class MapEngine {
     buildingScale: 0,
     pinLook: { dy: -70, alpha: 0 },
     frameEvents: false,
+    horizon: 0,
   });
 
   readonly camera: CameraCtl;
-  private mapView: MapView | null = null;
-  private cameraRef: CameraRef | null = null;
-  private usersSource: ShapeSource | null = null;
+  private mapRef: RefObject<MapRef | null> | null = null;
+  private camRef: RefObject<CameraRef | null> | null = null;
+  /** refs das fontes GeoJSON por id (feature-state é por fonte) */
+  private readonly sources = new Map<string, RefObject<GeoJSONSourceRef | null>>();
+  /** feature-state em lote: uma chamada nativa por fonte a cada turno do JS */
+  private readonly fstate = new FeatureStateQueue((id) => this.sources.get(id)?.current ?? null);
+  /** índice dos grupos publicado agora e o anterior (um toque pode chegar com o quadro de antes da republicação) */
+  private usersIndex: UsersIndex | null = null;
+  private prevUsersIndex: UsersIndex | null = null;
+  private clusterZoom = -1;
+  /** o MLRN instalado não tem setFeatureState: o destaque esconde a figura de baixo tirando-a das fontes */
+  private noFeatureState = false;
+  private readyFallback: ReturnType<typeof setTimeout> | null = null;
+  private horizonTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastHorizonAt = 0;
   private width = 0;
   private height = 0;
 
@@ -313,7 +347,7 @@ export class MapEngine {
   private readonly keyWaiters = new Map<string, Set<string>>();
   private readonly silReady = new Map<string, string>();
   private readonly silPending = new Map<string, string>();
-  private readonly groups = new Map<string, Record<string, { url: string; scale: number }>>();
+  private readonly groups = new Map<string, Record<string, MapImageEntry>>();
   private imagesDirty = false;
 
   private tweens: AlphaTween[] = [];
@@ -348,7 +382,7 @@ export class MapEngine {
     this.theme = deps.initTheme;
     this.initTier = deps.initTier;
     if (deps.initTier !== 'auto') this.tier = deps.initTier;
-    this.camera = new CameraCtl(() => this.cameraRef);
+    this.camera = new CameraCtl(() => this.camRef?.current ?? null);
     this.setLook({ theme: this.theme, tier: this.tier });
     AccessibilityInfo.isReduceMotionEnabled()
       .then((v) => {
@@ -360,11 +394,12 @@ export class MapEngine {
   // =====================================================================
   // Ligação com os componentes
   // =====================================================================
-  attach(mapView: MapView | null, camera: CameraRef | null): void {
-    this.mapView = mapView;
-    this.cameraRef = camera;
+  /** refs (não valores): o <Map> do MLRN só monta a câmera e as fontes depois do 1º layout */
+  attach(map: RefObject<MapRef | null> | null, camera: RefObject<CameraRef | null> | null): void {
+    this.mapRef = map;
+    this.camRef = camera;
     // efeito re-executado (Fast Refresh / StrictMode) depois de um dispose: o motor volta com o estado que tinha
-    if (this.disposed && mapView) {
+    if (this.disposed && map) {
       this.disposed = false;
       if (this.pin && this.ch.get('pinLook').alpha === 0) this.ch.set('pinLook', { dy: 0, alpha: 1 });
       this.camera.flushPadding();
@@ -376,8 +411,13 @@ export class MapEngine {
     }
   }
 
-  attachUsersSource(src: ShapeSource | null): void {
-    this.usersSource = src;
+  private get mapView(): MapRef | null {
+    return this.mapRef?.current ?? null;
+  }
+
+  attachSource(id: string, ref: RefObject<GeoJSONSourceRef | null> | null): void {
+    if (ref) this.sources.set(id, ref);
+    else this.sources.delete(id);
   }
 
   setViewport(width: number, height: number): void {
@@ -395,6 +435,10 @@ export class MapEngine {
     this.pushTimer = null;
     if (this.moveEndTimer) clearTimeout(this.moveEndTimer);
     this.moveEndTimer = null;
+    if (this.readyFallback) clearTimeout(this.readyFallback);
+    this.readyFallback = null;
+    if (this.horizonTimer) clearTimeout(this.horizonTimer);
+    this.horizonTimer = null;
     for (const t of this.momentSeq) clearTimeout(t);
     this.momentSeq = [];
   }
@@ -423,19 +467,30 @@ export class MapEngine {
   }
 
   // =====================================================================
-  // Eventos do MapView
+  // Eventos do <Map>
   // =====================================================================
   onStyleLoaded(): void {
     this.styleLoaded = true;
     this.emit({ type: 'styleLoaded' });
+    // o onDidFinishLoadingMap espera todos os tiles da tela: um tile que não vem (rede ruim, servidor fora) seguraria o
+    // mapa sem 'ready' pra sempre; o motor não depende de tile nenhum
+    if (!this.loaded && !this.readyFallback) {
+      this.readyFallback = setTimeout(() => {
+        this.readyFallback = null;
+        this.onMapLoaded();
+      }, READY_FALLBACK_MS);
+    }
   }
 
   onMapLoaded(): void {
     if (this.loaded || this.disposed) return;
+    if (this.readyFallback) clearTimeout(this.readyFallback);
+    this.readyFallback = null;
     this.loaded = true;
     this.registerBaseImages();
-    // prédios crescendo: uma troca só, 0 → 1; o nativo interpola (fill-extrusion-vertical-scale-transition de 900 ms)
-    this.ch.set('buildingScale', 1);
+    // prédios crescendo: o MapLibre não tem vertical-scale e altura por feature não interpola; 4 degraus de 150 ms
+    // (o BaseTheme arredonda a altura em 0,25 e faz o fade de opacidade no 1º degrau)
+    for (let i = 1; i <= 4; i++) setTimeout(() => this.ch.set('buildingScale', i / 4), (i - 1) * 150);
     // Sem a medição de boot do WebView (giro de +8° contando frames): no boot a thread JS está ocupada desenhando as
     // figuras, os eventos de frame chegam atrasados e o fps sai subestimado. O mapa nasce no tier salvo (ou 'mid' na
     // 1ª abertura) e a tela promove/rebaixa pelas amostras de 'perf', colhidas com a câmera em movimento.
@@ -450,21 +505,32 @@ export class MapEngine {
     this.scheduleIdleCam();
   }
 
-  /** o SDK avisa erro de tile/sprite/glyph pelo mesmo evento: só é fatal se nem o estilo carregou */
+  /** onDidFailLoadingMap: só é fatal se nem o estilo carregou (erro depois disso não tira o mapa da tela) */
   onLoadError(): void {
     if (!this.styleLoaded && !this.loaded) this.emit({ type: 'error', message: 'o mapa não carregou (sem internet?)', fatal: true });
     else if (__DEV__) console.warn('[map] erro de carregamento (não fatal)'); // eslint-disable-line no-console
   }
 
-  onCameraChanged(s: MapState): void {
-    if (!this.updateCamera(s)) return;
+  /**
+   * onRegionWillChange / onRegionIsChanging. Gesto = userInteraction && !animated: no MLRN Android o userInteraction
+   * também vem true nas animações nossas (motivo DEVELOPER_ANIMATION), que chegam com animated true; o duplo toque
+   * (API_ANIMATION) vem com os dois ao contrário e cai na regra de distância do moveend.
+   */
+  onRegionChange(e: ViewStateChangeEvent): void {
+    if (!this.updateCamera(e, Boolean(e.userInteraction) && !e.animated)) return;
     this.lastCameraMoveAt = Date.now();
     // amostra de fps só com a câmera andando (parado, o mapa repinta no ritmo dos anéis e isso não mede o aparelho)
     if (this.active && !this.ch.get('frameEvents')) this.ch.set('frameEvents', true);
-    // 'moveend' = 250 ms sem a câmera mexer. Não dá pra usar o onMapIdle: com os anéis animando o estilo por paint o
-    // mapa quase nunca fica ocioso, e arrastar o mapa não buscaria gente nova
+    // 'moveend' = 250 ms sem a câmera mexer. O onRegionDidChange não serve sozinho: um dedo parado no meio do gesto não
+    // gera idle, e o fim das animações nossas é estimado por timer
     if (this.moveEndTimer) clearTimeout(this.moveEndTimer);
     this.moveEndTimer = setTimeout(() => this.moveEnded(), 250);
+  }
+
+  /** onRegionDidChange (câmera ociosa: gesto e fling acabaram): o padding pendente entra (era o onMapIdle) */
+  onRegionDidChange(e: ViewStateChangeEvent): void {
+    this.updateCamera(e, false);
+    this.camera.flushPadding();
   }
 
   private moveEnded(): void {
@@ -486,31 +552,43 @@ export class MapEngine {
     this.updateLod();
   }
 
-  /** atualiza o estado da câmera; false se o payload não serve */
-  private updateCamera(s: MapState): boolean {
-    const p = s.properties;
-    if (!p || !isFiniteLngLat(p.center)) return false;
+  /** atualiza o estado da câmera; false se o payload não serve. bounds do MLRN: [oeste, sul, leste, norte] */
+  private updateCamera(e: ViewStateChangeEvent, gesture: boolean): boolean {
+    if (!e || !isFiniteLngLat(e.center) || !Number.isFinite(e.zoom)) return false;
     const was = this.camera.gestureActive;
-    const cam: CamState = {
-      center: p.center as LngLat,
-      zoom: p.zoom,
-      bearing: p.heading,
-      pitch: p.pitch,
-      bounds: p.bounds && isFiniteLngLat(p.bounds.ne) && isFiniteLngLat(p.bounds.sw) ? { ne: p.bounds.ne as LngLat, sw: p.bounds.sw as LngLat } : this.camera.state.bounds,
-    };
-    const gesture = Boolean(s.gestures?.isGestureActive);
+    const b = e.bounds;
+    const bounds = Array.isArray(b) && b.length === 4 && b.every(Number.isFinite) ? { ne: [b[2], b[3]] as LngLat, sw: [b[0], b[1]] as LngLat } : this.camera.state.bounds;
+    const cam: CamState = { center: e.center as LngLat, zoom: e.zoom, bearing: e.bearing, pitch: e.pitch, bounds };
     this.camera.onCameraChanged(cam, gesture);
     // como no original, um gesto desliga o giro automático até o próximo reveal/setPin/setActive
     if (gesture && !was) this.stopIdleCam();
+    // grupos mudam no zoom inteiro (igual ao cluster por tile do nativo)
+    if (this.usersIndex && clusterZoomOf(cam.zoom) !== this.clusterZoom) this.publishClusters();
+    this.updateHorizon(cam.pitch);
     return true;
   }
 
-  onMapIdle(s: MapState): void {
-    this.updateCamera(s);
-    this.camera.flushPadding();
+  /** névoa do horizonte proporcional ao pitch, com throttle (a última mudança sempre entra) */
+  private updateHorizon(pitch: number): void {
+    const q = Math.round(Math.min(1, Math.max(0, pitch / MAX_PITCH)) * 20) / 20;
+    if (q === this.ch.get('horizon')) return;
+    const wait = this.lastHorizonAt + HORIZON_THROTTLE_MS - Date.now();
+    if (wait > 0) {
+      if (!this.horizonTimer) {
+        this.horizonTimer = setTimeout(() => {
+          this.horizonTimer = null;
+          this.updateHorizon(this.camera.state.pitch);
+        }, wait);
+      }
+      return;
+    }
+    this.lastHorizonAt = Date.now();
+    this.ch.set('horizon', q);
   }
 
+  /** onDidFinishRenderingFrameFully: o MLRN manda todo quadro; só conta com a amostra ligada e a câmera andando */
   onRenderFrame(): void {
+    if (!this.ch.get('frameEvents')) return;
     const now = Date.now();
     if (now - this.lastCameraMoveAt > 120) return;
     this.frameStamps.push(now);
@@ -539,8 +617,15 @@ export class MapEngine {
     const r = 10;
     let hits: Feature[] = [];
     try {
-      const res = await mv.queryRenderedFeaturesInRect([screenY - r, screenX - r, screenY + r, screenX + r], [], TAP_LAYERS);
-      hits = res?.features ?? [];
+      // retângulo em dp, [[esquerda, topo], [direita, baixo]] (o nativo multiplica pela densidade)
+      const res = await mv.queryRenderedFeatures(
+        [
+          [screenX - r, screenY - r],
+          [screenX + r, screenY + r],
+        ],
+        { layers: TAP_LAYERS },
+      );
+      hits = Array.isArray(res) ? res : [];
     } catch {
       hits = [];
     }
@@ -559,7 +644,7 @@ export class MapEngine {
     }
     const cluster = hits.find((f) => props(f).cluster === true || props(f).point_count != null);
     if (cluster) {
-      void this.onClusterTap(cluster);
+      this.onClusterTap(cluster);
       return;
     }
     const poi = hits.find((f) => 'sonar' in props(f));
@@ -571,23 +656,42 @@ export class MapEngine {
     this.emit({ type: 'mapTap' });
   }
 
-  private async onClusterTap(f: Feature): Promise<void> {
-    const src = this.usersSource;
-    if (!src || f.geometry.type !== 'Point') return;
+  /** toque num grupo: zoom de expansão e folhas saem do supercluster (sem chamada nativa) */
+  private onClusterTap(f: Feature): void {
+    const p = (f.properties ?? {}) as Record<string, unknown>;
+    const clusterId = Number(p.cluster_id);
+    if (f.geometry.type !== 'Point' || !Number.isFinite(clusterId)) return;
     const coords = f.geometry.coordinates as LngLat;
+    const index = this.indexOfCluster(clusterId, Number(p.point_count));
+    if (!index) return;
     try {
-      const zoom = await src.getClusterExpansionZoom(f);
-      if (zoom > 21 || this.camera.state.zoom >= 20.5) {
+      const zoom = index.getClusterExpansionZoom(clusterId);
+      if (zoom > CLUSTER_MAX_ZOOM || this.camera.state.zoom >= 20.5) {
         // todo mundo no mesmo lugar (ex.: dentro do bar): abre o painel com quem está ali
-        const leaves = (await src.getClusterLeaves(f, 100, 0)) as FC | undefined;
-        const ids = (leaves?.features ?? []).map((l) => String((l.properties as Record<string, unknown> | null)?.id ?? '')).filter(Boolean);
+        const ids = index
+          .getLeaves(clusterId, 100, 0)
+          .map((l) => String(l.properties?.id ?? ''))
+          .filter(Boolean);
         if (ids.length) this.emit({ type: 'clusterTap', ids, lat: coords[1], lng: coords[0] });
         return;
       }
       this.camera.move({ center: coords, zoom: Math.min(zoom + 0.3, 21.5), duration: 650, mode: 'easeTo' });
     } catch {
-      /* fonte trocou no meio: ignora o toque */
+      /* grupo de um índice que já trocou: ignora o toque */
     }
+  }
+
+  /** o índice que gerou esse grupo: o atual ou o anterior (confere pela contagem; o id do supercluster é posicional) */
+  private indexOfCluster(clusterId: number, count: number): UsersIndex | null {
+    for (const index of [this.usersIndex, this.prevUsersIndex]) {
+      if (!index) continue;
+      try {
+        if (index.getLeaves(clusterId, Infinity).length === count) return index;
+      } catch {
+        /* id não existe nesse índice */
+      }
+    }
+    return null;
   }
 
   // =====================================================================
@@ -705,7 +809,8 @@ export class MapEngine {
     if (!p) return;
     const s = this.camera.state;
     const bearing = s.bearing + 25;
-    this.camera.move({ center: offsetCenter([p.longitude, p.latitude], 40, 17, bearing, 65), zoom: 17, pitch: 65, bearing, duration: 900, mode: 'easeTo' });
+    // era pitch 65; o MapLibre Android para em 60 e o deslocamento do centro sai com o mesmo pitch
+    this.camera.move({ center: offsetCenter([p.longitude, p.latitude], 40, 17, bearing, MAX_PITCH), zoom: 17, pitch: MAX_PITCH, bearing, duration: 900, mode: 'easeTo' });
   }
 
   setPadding(pad: MapPadding): void {
@@ -717,9 +822,9 @@ export class MapEngine {
   // =====================================================================
   private setImage(group: string, name: string, ref: MapImageRef): void {
     const cur = this.groups.get(group);
-    const url = ref.path;
-    if (cur && cur[name] && cur[name].url === url) return;
-    this.groups.set(group, { ...(cur ?? {}), [name]: { url, scale: ref.scale } });
+    const uri = ref.path;
+    if (cur && cur[name] && cur[name].source.uri === uri) return;
+    this.groups.set(group, { ...(cur ?? {}), [name]: { source: { uri, scale: ref.scale } } });
     this.markImagesDirty();
   }
 
@@ -1172,7 +1277,7 @@ export class MapEngine {
     if (!f.ph) return;
     const wasReady = f.ph.ready;
     f.ph = null;
-    // o <Images> nativo não remove chaves: a imagem fica no grupo até a pessoa sair; a feature só para de apontar pra ela
+    // a imagem fica no grupo até a pessoa sair (o grupo desmonta e leva junto); a feature só para de apontar pra ela
     if (wasReady) {
       if (f.id === 'me') this.pushMe();
       else this.schedulePush(0);
@@ -1242,34 +1347,71 @@ export class MapEngine {
     }, Math.max(0, due - Date.now()));
   }
 
-  /** monta as 3 fontes de pessoas: paradas (cluster), com boost e andando (posição interpolada) */
+  /** sem feature-state (MLRN sem o patch) a figura destacada sai das fontes de baixo, senão aparece dobrada sob o spot */
+  private hiddenBySpot(): string | null {
+    return this.noFeatureState ? this.momentUserId || this.selected : null;
+  }
+
+  /** monta as 3 fontes de pessoas: paradas (agrupadas), com boost e andando (posição interpolada) */
   private pushUsers(): void {
     this.lastPushAt = Date.now();
     const normal: Feature[] = [];
     const boosted: Feature[] = [];
     const movers: Feature[] = [];
+    const hidden = this.hiddenBySpot();
     let aura = false;
     for (const [id, u] of this.users) {
       const f = this.figOf(id);
+      if (!u.isBoosted && u.premiumTier === 'premium_plus') aura = true;
+      if (id === hidden) continue;
       if (f.move && f.pos) movers.push(this.featureFor(u, f, f.pos, u.isBoosted ? 1.17 : 1));
       else (u.isBoosted ? boosted : normal).push(this.featureFor(u, f, f.pos ?? u.pos));
-      if (!u.isBoosted && u.premiumTier === 'premium_plus') aura = true;
     }
     for (const [id, u] of this.leaving) {
       const f = this.figs.get(id);
       if (f?.pos) (u.isBoosted ? boosted : normal).push(this.featureFor(u, f, f.pos));
     }
-    this.ch.set('users', fc(normal));
+    this.loadClusters(normal);
     this.ch.set('usersBoost', fc(boosted));
     this.ch.set('movers', fc(movers));
     this.setRings({ aura, auraBoost: boosted.length > 0 });
   }
 
+  /** reindexa os grupos com as pessoas paradas e publica a fonte users no zoom atual */
+  private loadClusters(points: Feature[]): void {
+    this.prevUsersIndex = this.usersIndex;
+    if (!points.length) {
+      this.usersIndex = null;
+      this.clusterZoom = -1;
+      this.ch.set('users', EMPTY_FC);
+      return;
+    }
+    const index: UsersIndex = new Supercluster({ radius: CLUSTER_RADIUS, maxZoom: CLUSTER_MAX_ZOOM, extent: 512 });
+    // toda feature daqui é Point (featureFor)
+    index.load(points as Supercluster.PointFeature<GeoJSON.GeoJsonProperties>[]);
+    this.usersIndex = index;
+    this.clusterZoom = -1;
+    this.publishClusters();
+  }
+
+  /**
+   * Fonte users = grupos + pessoas soltas no zoom inteiro atual. Os grupos saem com as mesmas propriedades do antigo
+   * cluster nativo (cluster, cluster_id, point_count, point_count_abbreviated); pessoas soltas são as features originais.
+   */
+  private publishClusters(): void {
+    const index = this.usersIndex;
+    if (!index) return;
+    const z = clusterZoomOf(this.camera.state.zoom);
+    this.clusterZoom = z;
+    this.ch.set('users', fc(index.getClusters(WORLD_BBOX, z) as Feature[]));
+  }
+
   private pushMovers(): void {
     const movers: Feature[] = [];
+    const hidden = this.hiddenBySpot();
     for (const [id, u] of this.users) {
       const f = this.figs.get(id);
-      if (f?.move && f.pos) movers.push(this.featureFor(u, f, f.pos, u.isBoosted ? 1.17 : 1));
+      if (f?.move && f.pos && id !== hidden) movers.push(this.featureFor(u, f, f.pos, u.isBoosted ? 1.17 : 1));
     }
     this.ch.set('movers', fc(movers));
   }
@@ -1545,9 +1687,11 @@ export class MapEngine {
         else f.alphaDirty.delete(source);
       }
     }
-    const mv = this.mapView;
-    if (!mv) return;
-    mv.setFeatureState(id, { [key]: a }, source).catch(() => {});
+    if (!this.fstate.set(source, id, { [key]: a }) && !this.noFeatureState) {
+      // MLRN sem o patch do feature-state: fades somem; o destaque passa a esconder a figura de baixo pelas fontes
+      this.noFeatureState = true;
+      this.schedulePush(0);
+    }
   }
 
   private setAlphaElsewhere(id: string, src: string, a: number): void {
@@ -1574,6 +1718,7 @@ export class MapEngine {
     const f = this.figs.get(id);
     if (!f) return;
     if (f.user?.photo && !f.ph && !(f.phWait > Date.now())) this.ensureBubble(f, 0); // foto do selecionado tem prioridade máxima
+    if (this.noFeatureState) this.schedulePush(0);
     this.pushSpot();
     this.setAlpha(SRC.spot, id, 0);
     this.tween(SRC.spot, id, 1, 220);
@@ -1594,6 +1739,7 @@ export class MapEngine {
     this.tween(src, id, 1, 200);
     this.setAlphaElsewhere(id, src, 1);
     this.tween(SRC.spot, id, 0, 200, () => this.pushSpot());
+    if (this.noFeatureState) this.schedulePush(0);
   }
 
   /** toque na pessoa: anel no chão, figura + foto crescem (spot), câmera centraliza */
@@ -1998,7 +2144,7 @@ export class MapEngine {
     }
   }
 
-  /** fades por feature-state: no máximo ~5 degraus por fade (cada degrau é uma chamada ao nativo) */
+  /** fades por feature-state (setFeatureState da fonte): no máximo ~5 degraus por fade (cada degrau é uma chamada ao nativo) */
   private stepTweens(now: number): void {
     if (!this.tweens.length) return;
     const keep: AlphaTween[] = [];

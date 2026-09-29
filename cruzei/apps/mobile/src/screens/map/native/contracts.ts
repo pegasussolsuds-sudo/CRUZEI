@@ -1,10 +1,10 @@
-// Contratos compartilhados do mapa nativo (@rnmapbox/maps). Porta fiel das constantes de geometria do antigo
+// Contratos compartilhados do mapa nativo (@maplibre/maplibre-react-native). Porta fiel das constantes de geometria do antigo
 // mapbox-html.ts (WebView) — o visual das figuras, bolhas e ícones tem de bater pixel a pixel com o de antes.
 //
 // Quem usa:
 //   images/draw.ts    desenha as imagens (Skia raster, CPU) a partir destes tamanhos
 //   engine/*          calcula offsets de ícone (icon-offset) com as mesmas funções
-//   NativeMap.tsx     registra as imagens no <Images> com scale 2
+//   layers.tsx        registra as imagens no <Images> com scale IMG_SCALE
 
 import { PixelRatio } from 'react-native';
 
@@ -130,10 +130,19 @@ export const CAT_EMOJI: Record<string, string> = {
   other: '📍',
 };
 
-/** imagem pronta pro <Images> do rnmapbox: caminho absoluto no disco (sem file://) + densidade */
+/** imagem pronta pro <Images>: caminho absoluto no disco (sem file://) + densidade */
 export interface MapImageRef {
   path: string;
   scale: number;
+}
+
+/**
+ * entrada do <Images> do MLRN pra arquivo local: `source` passa direto pelo Image.resolveAssetSource (objeto volta como
+ * está) e chega no nativo como {uri, scale}; o DownloadMapImageTask transforma '/...' em file:// (Fresco) e marca a
+ * densidade do bitmap com o scale
+ */
+export interface MapImageEntry {
+  source: { uri: string; scale: number };
 }
 
 /**

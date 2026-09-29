@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 interface BootState {
-  /** true quando o estilo do mapa nativo terminou de carregar (contexto GL do Mapbox já criado) */
+  /** true quando o estilo do mapa nativo terminou de carregar (contexto GL do MapLibre já criado) */
   mapReady: boolean;
   setMapReady: (ready: boolean) => void;
 }

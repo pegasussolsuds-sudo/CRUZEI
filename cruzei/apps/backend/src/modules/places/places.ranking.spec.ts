@@ -1,45 +1,115 @@
-import type { MapboxPlace } from '@cruzei/shared-types';
-import { intentCategories, intentOf, isBlocked, kindOf, nameScore, rankByDistance, rankPlaces, spellingVariant, spellingVariants, toPlace, type SearchBoxFeature } from './places.ranking';
+import type { PlaceKind } from '@cruzei/shared-types';
+import {
+  CHIP_KINDS,
+  browseDistance,
+  intentOf,
+  isBlocked,
+  keepForText,
+  nameScore,
+  rankByDistance,
+  rankPlaces,
+  spellingVariant,
+  spellingVariants,
+  toHit,
+  trustOf,
+  type CatalogRow,
+  type Hit,
+} from './places.ranking';
 
 const CENTER = { lat: -18.9186, lng: -48.2772 }; // centro de Uberlândia
 
-function feature(name: string, cats: string[], lat: number, lng: number, id = name): SearchBoxFeature {
+/** chip do taxonomy.ts (scripts/geo) pro tipo */
+const CHIP_OF: Partial<Record<PlaceKind, string>> = {
+  nightclub: 'bar', pub: 'bar', bar: 'bar', cocktail: 'bar', brewery: 'bar', lounge: 'bar', nightlife: 'bar',
+  music: 'show', theatre: 'show', events: 'show', cinema: 'show', entertainment: 'show',
+  cafe: 'cafe', fastfood: 'restaurant', restaurant: 'restaurant', park: 'park', mall: 'shopping', museum: 'museum', gallery: 'museum',
+};
+
+function row(name: string, kind: PlaceKind, extra: Partial<CatalogRow> = {}): CatalogRow {
   return {
-    geometry: { coordinates: [lng, lat] },
-    properties: {
-      name,
-      mapbox_id: id,
-      feature_type: 'poi',
-      address: 'Av. Rondon Pacheco',
-      poi_category_ids: cats,
-      coordinates: { latitude: lat, longitude: lng },
-      context: { place: { name: 'Uberlândia' }, region: { name: 'Minas Gerais', region_code: 'MG' } },
-    },
+    id: `ovt:${name}`,
+    name,
+    kind,
+    chip: CHIP_OF[kind] ?? null,
+    confidence: 0.8,
+    osm_confirmed: false,
+    lat: CENTER.lat + 0.01,
+    lng: CENTER.lng,
+    address: 'Av. Rondon Pacheco, 100',
+    neighborhood: 'Tibery',
+    city: 'Uberlândia',
+    state: 'MG',
+    alt_names: [],
+    ...extra,
   };
 }
 
-function place(name: string, cats: string[], lat = CENTER.lat + 0.01, lng = CENTER.lng): MapboxPlace {
-  const p = toPlace(feature(name, cats, lat, lng), CENTER);
-  if (!p) throw new Error('feature inválida no teste');
-  return p;
+function hit(name: string, kind: PlaceKind, extra: Partial<CatalogRow> = {}): Hit {
+  const h = toHit(row(name, kind, extra), CENTER);
+  if (!h) throw new Error('linha inválida no teste');
+  return h;
 }
 
 describe('places.ranking', () => {
-  describe('kindOf', () => {
-    it('balada vence bar quando as duas categorias vêm', () => {
-      expect(kindOf(['entertainment', 'nightclub', 'nightlife'], 'HUB')).toEqual({ kind: 'nightclub', category: 'bar' });
+  describe('toHit (linha do catálogo → lugar)', () => {
+    it('monta id, chip, endereço, distância e a fonte', () => {
+      const { place } = hit('Zenaide Bar', 'bar');
+      expect(place.id).toBe('ovt:Zenaide Bar');
+      expect(place.category).toBe('bar');
+      expect(place.nightlife).toBe(true);
+      expect(place.address).toBe('Av. Rondon Pacheco, 100, Tibery, Uberlândia');
+      expect(place.state).toBe('MG');
+      expect(place.distanceM).toBeGreaterThan(1000);
+      expect(place.distanceM).toBeLessThan(1200);
+      expect(place.source).toBe('catalog');
     });
-    it('bar com drinks continua bar', () => {
-      expect(kindOf(['bar', 'cocktail_bar', 'food_and_drink'], 'Texas 54 Bar').kind).toBe('bar');
+    it('chip desconhecido vira null; lugar "outro" não é noite', () => {
+      const { place } = hit('Drogasil', 'other', { chip: 'constructor' });
+      expect(place.category).toBeNull();
+      expect(place.nightlife).toBe(false);
     });
-    it('restaurante não vira "comes e bebes" genérico', () => {
-      expect(kindOf(['food', 'food_and_drink', 'restaurant'], 'Tucci - Cucina & Café Bar')).toEqual({ kind: 'restaurant', category: 'restaurant' });
+    it('descarta nome barrado, vazio ou sem coordenada', () => {
+      expect(toHit(row('Garotas Acompanhantes VIP', 'nightclub'), CENTER)).toBeNull();
+      expect(toHit(row('  ', 'bar'), CENTER)).toBeNull();
+      expect(toHit(row('Bar X', 'bar', { lat: Number.NaN }), CENTER)).toBeNull();
     });
-    it('espaço de eventos com "Pub" no nome vira pub (caso do Liv Pub)', () => {
-      expect(kindOf(['event_space', 'services'], 'Liv Pub')).toEqual({ kind: 'pub', category: 'bar' });
+    it('sem centro a distância é 0; nomes alternativos iguais ao nome saem', () => {
+      const h = toHit(row("Rubinho's Bar", 'pub', { alt_names: ['Bar do Rubinho', "Rubinho's Bar"] }), null);
+      expect(h?.place.distanceM).toBe(0);
+      expect(h?.altNames).toEqual(['Bar do Rubinho']);
     });
-    it('sem categoria conhecida fica "other"', () => {
-      expect(kindOf(['dentist'], 'Live Odontologia')).toEqual({ kind: 'other', category: null });
+  });
+
+  describe('trustOf', () => {
+    it('sem sinal = 0,5; confirmado pelo OSM = pelo menos 0,7', () => {
+      expect(trustOf(null, false)).toBe(0.5);
+      expect(trustOf(0.1, true)).toBe(0.7); // "Nash Pub": 0,10 no Overture, balada no OSM
+      expect(trustOf(0.95, true)).toBe(0.95);
+      expect(trustOf(3, false)).toBe(1);
+    });
+  });
+
+  describe('CHIP_KINDS', () => {
+    it('cada chip do app lista tipos do catálogo; "Bares" pega balada e "Shows" pega casa de show', () => {
+      expect(Object.keys(CHIP_KINDS).sort()).toEqual(['bar', 'beach', 'cafe', 'museum', 'park', 'restaurant', 'shopping', 'show']);
+      expect(CHIP_KINDS.bar).toEqual(expect.arrayContaining(['nightclub', 'pub', 'bar', 'cocktail']));
+      expect(CHIP_KINDS.show).toEqual(expect.arrayContaining(['music', 'theatre']));
+      expect(CHIP_KINDS.restaurant).not.toContain('other');
+    });
+  });
+
+  describe('intentOf', () => {
+    it('palavra de rolê vira navegação pelos tipos', () => {
+      expect(intentOf('Balada')?.browse).toEqual(['nightclub']);
+      expect(intentOf('bares')?.browse).toEqual(['bar', 'pub', 'brewery', 'cocktail']);
+      expect(intentOf('café')?.browse).toEqual(['cafe']);
+    });
+    it('shopping só aceita shopping', () => {
+      expect(intentOf('Shopping')).toEqual({ browse: ['mall'], kinds: ['mall'] });
+    });
+    it('nome de lugar não é intenção', () => {
+      expect(intentOf('zenaide')).toBeNull();
+      expect(intentOf('bar do zé')).toBeNull();
     });
   });
 
@@ -65,9 +135,8 @@ describe('places.ranking', () => {
       expect(spellingVariants('olli pizza grill', 2)).toHaveLength(2);
     });
     it('"olli pizza": o Oli Pizza Bar vem primeiro', () => {
-      const variantHits = [place('Oli Pizza Bar', ['food', 'food_and_drink', 'restaurant'])];
-      const other = [place('Pizzaria Riviera', ['fast_food', 'food'])];
-      const out = rankPlaces([[], variantHits, other], 'olli pizza', spellingVariants('olli pizza'), 8);
+      const list = [hit('Pizzaria Riviera', 'fastfood'), hit('Oli Pizza Bar', 'restaurant')];
+      const out = rankPlaces([list], 'olli pizza', spellingVariants('olli pizza'), 8);
       expect(out[0].name).toBe('Oli Pizza Bar');
     });
   });
@@ -90,52 +159,59 @@ describe('places.ranking', () => {
     });
   });
 
+  describe('keepForText', () => {
+    it('lugar "outro" só com as palavras digitadas inteiras no nome', () => {
+      expect(keepForText(hit('Live Odontologia', 'other'), 'liv')).toBe(false);
+      expect(keepForText(hit('Drogasil', 'other'), 'drogasil')).toBe(true);
+      expect(keepForText(hit('Liv Pub', 'bar'), 'live')).toBe(true);
+    });
+  });
+
   describe('rankPlaces', () => {
-    it('"live": o Liv Pub fica acima do salão de festas', () => {
-      const primary = [place('Salão de Festas e Eventos - 3401 Live Events', ['event_space', 'services'])];
-      const variant = [place('Liv Pub', ['event_space', 'services']), place('Liv Up - Uberlândia', ['food', 'food_and_drink'])];
-      const out = rankPlaces([primary, variant], 'live', 'liv', 8);
+    it('"live": o Liv Pub fica acima do salão de festas e da clínica', () => {
+      const list = [hit('Salão de Festas e Eventos - 3401 Live Events', 'events'), hit('Live Odontologia', 'other', { confidence: 0.95 }), hit('Liv Pub', 'bar', { confidence: 0.76 })];
+      const out = rankPlaces([list], 'live', 'liv', 8);
       expect(out[0].name).toBe('Liv Pub');
       expect(out[0].nightlife).toBe(true);
     });
-    it('"texas": o bar vem antes do atacadista e da hamburgueria longe', () => {
+    it('"texas": o bar vem antes da loja de bebida e da lanchonete longe', () => {
       const list = [
-        place('Texas Hamburgueria', ['burger_restaurant', 'fast_food', 'food'], CENTER.lat + 0.27, CENTER.lng),
-        place('Texas', ['food_wholesaler', 'shopping', 'wholesale_store']),
-        place('Texas 54 Bar', ['bar', 'cocktail_bar', 'food_and_drink']),
+        hit('Texas Lanches', 'restaurant', { lat: CENTER.lat + 0.27 }),
+        hit('Texas Beer', 'other'),
+        hit('Texas 54 Bar', 'cocktail'),
       ];
       expect(rankPlaces([list], 'texas', 'texa', 8)[0].name).toBe('Texas 54 Bar');
     });
-    it('não repete o mesmo lugar vindo de duas buscas', () => {
-      const a = place('HUB', ['nightclub']);
+    it('confiança desempata: página abandonada perde pro lugar confirmado', () => {
+      const ghost = hit('Casa Madalena', 'pub', { id: 'ovt:a', confidence: 0.1 });
+      const confirmed = hit('Casa Madalena', 'pub', { id: 'ovt:b', confidence: 0.1, osm_confirmed: true });
+      expect(rankPlaces([[ghost, confirmed]], 'casa madalena', null, 8)[0].id).toBe('ovt:b');
+    });
+    it('nome alternativo do mesmo lugar conta ("bar do rubinho" acha o Rubinho\'s Bar)', () => {
+      const out = rankPlaces([[hit('Bar do Zé', 'bar'), hit("Rubinho's Bar", 'pub', { alt_names: ['Bar do Rubinho'] })]], 'bar do rubinho', null, 8);
+      expect(out[0].name).toBe("Rubinho's Bar");
+    });
+    it('não repete o mesmo lugar vindo de duas listas', () => {
+      const a = hit('HUB', 'nightclub');
       expect(rankPlaces([[a], [a]], 'hub', null, 8)).toHaveLength(1);
     });
     it('respeita o limite', () => {
-      const list = Array.from({ length: 12 }, (_, i) => place(`Bar ${i}`, ['bar'], CENTER.lat + i * 0.001, CENTER.lng));
+      const list = Array.from({ length: 12 }, (_, i) => hit(`Bar ${i}`, 'bar', { lat: CENTER.lat + i * 0.001 }));
       expect(rankPlaces([list], 'bar', null, 5)).toHaveLength(5);
     });
   });
 
   describe('rankByDistance', () => {
     it('mais perto primeiro', () => {
-      const far = place('Longe', ['restaurant'], CENTER.lat + 0.05, CENTER.lng);
-      const near = place('Perto', ['restaurant'], CENTER.lat + 0.001, CENTER.lng);
+      const far = hit('Longe', 'restaurant', { lat: CENTER.lat + 0.05 });
+      const near = hit('Perto', 'restaurant', { lat: CENTER.lat + 0.001 });
       expect(rankByDistance([[far, near]], 5).map((p) => p.name)).toEqual(['Perto', 'Longe']);
     });
-  });
-
-  describe('intentCategories', () => {
-    it('palavra de rolê vira categoria', () => {
-      expect(intentCategories('Balada')).toEqual(['nightclub', 'music_venue']);
-      expect(intentCategories('bares')).toEqual(['bar', 'pub', 'brewery']);
-      expect(intentCategories('café')).toEqual(['cafe', 'coffee_shop']);
-    });
-    it('shopping só aceita shopping', () => {
-      expect(intentOf('Shopping')).toEqual({ categories: ['shopping_mall'], kinds: ['mall'] });
-    });
-    it('nome de lugar não é intenção', () => {
-      expect(intentCategories('zenaide')).toBeNull();
-      expect(intentCategories('bar do zé')).toBeNull();
+    it('confiança muito baixa empurra pra trás (até 800 m)', () => {
+      const ghost = hit('Balada Fantasma', 'nightclub', { lat: CENTER.lat + 0.001, confidence: 0.05 });
+      const real = hit('Heaven Disco', 'nightclub', { lat: CENTER.lat + 0.005, confidence: 0.9 });
+      expect(browseDistance(ghost)).toBeGreaterThan(browseDistance(real));
+      expect(rankByDistance([[ghost, real]], 5)[0].name).toBe('Heaven Disco');
     });
   });
 
@@ -148,26 +224,6 @@ describe('places.ranking', () => {
     it('não barra lugar comum', () => {
       expect(isBlocked('London Pub')).toBe(false);
       expect(isBlocked('Programa Coração Sertanejo')).toBe(false);
-    });
-    it('toPlace descarta lugar barrado', () => {
-      expect(toPlace(feature('Garotas Acompanhantes VIP', ['nightclub'], CENTER.lat, CENTER.lng), CENTER)).toBeNull();
-    });
-  });
-
-  describe('toPlace', () => {
-    it('monta id, endereço e distância', () => {
-      const p = place('Zenaide Bar', ['bar', 'food_and_drink', 'nightlife']);
-      expect(p.id).toBe('mbx:Zenaide Bar');
-      expect(p.address).toBe('Av. Rondon Pacheco, Uberlândia');
-      expect(p.city).toBe('Uberlândia');
-      expect(p.state).toBe('MG');
-      expect(p.distanceM).toBeGreaterThan(1000);
-      expect(p.distanceM).toBeLessThan(1200);
-      expect(p.source).toBe('mapbox');
-    });
-    it('descarta feature sem coordenada ou sem nome', () => {
-      expect(toPlace({ properties: { name: 'X', mapbox_id: 'x' } }, CENTER)).toBeNull();
-      expect(toPlace(feature('', ['bar'], 1, 1), CENTER)).toBeNull();
     });
   });
 });

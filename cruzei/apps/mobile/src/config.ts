@@ -9,8 +9,6 @@ const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, string | und
 export const config = {
   apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL ?? extra.apiBaseUrl ?? 'http://localhost:3000/v1',
   wsUrl: process.env.EXPO_PUBLIC_SOCKET_URL ?? extra.wsUrl ?? 'ws://localhost:3000',
-  // Token público do Mapbox (pk.) — restringir por app/URL no painel antes do launch
-  mapboxToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? extra.mapboxToken ?? '',
   // development | staging | production — vai como environment no Sentry
   env: process.env.EXPO_PUBLIC_ENV ?? (__DEV__ ? 'development' : 'production'),
   // DSN do Sentry (não é segredo: só permite enviar eventos). Vazio = Sentry desligado, nem inicializa

@@ -1,10 +1,9 @@
-import axios from 'axios';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import type { GeoResultType, GeoSearchResponse, GeoSearchResult } from '@cruzei/shared-types';
 import { distanceMeters } from '@cruzei/shared-utils';
-import { config } from '../config';
+import { api } from '../services/api';
 
-const FORWARD_URL = 'https://api.mapbox.com/search/geocode/v6/forward';
-
+/** tipo mostrado no overlay (ícone): 'place' = cidade, 'locality' = distrito/vila */
 export type GeocodeType = 'place' | 'locality' | 'neighborhood' | 'street' | 'address' | 'other';
 
 export interface GeocodeResult {
@@ -17,17 +16,8 @@ export interface GeocodeResult {
   lng: number;
   /** zoom sugerido pra levar a câmera até lá */
   zoom: number;
-}
-
-interface ForwardFeature {
-  id?: string;
-  properties?: {
-    name?: string;
-    feature_type?: string;
-    place_formatted?: string;
-    full_address?: string;
-    coordinates?: { longitude?: number; latitude?: number };
-  };
+  /** [oeste, sul, leste, norte] pra enquadrar a rua/bairro inteiro; null quando não tem */
+  bbox: [number, number, number, number] | null;
 }
 
 const ZOOM_BY_TYPE: Record<GeocodeType, number> = {
@@ -39,29 +29,23 @@ const ZOOM_BY_TYPE: Record<GeocodeType, number> = {
   other: 15,
 };
 
-/** ~1 km: a proximidade enviada ao Mapbox é o centro do MAPA arredondado, nunca a posição fina de alguém */
+const TYPE_OF: Record<GeoResultType, GeocodeType> = {
+  city: 'place',
+  locality: 'locality',
+  neighborhood: 'neighborhood',
+  street: 'street',
+  address: 'address',
+};
+
+/** ~1 km: a proximidade enviada é o centro do MAPA arredondado, nunca a posição fina de alguém */
 const roundCoord = (v: number) => Math.round(v * 100) / 100;
 
-export function parseForward(features: ForwardFeature[]): GeocodeResult[] {
-  const out: GeocodeResult[] = [];
-  for (const f of features) {
-    const p = f.properties;
-    const lat = p?.coordinates?.latitude;
-    const lng = p?.coordinates?.longitude;
-    if (!p?.name || typeof lat !== 'number' || typeof lng !== 'number') continue;
-    const raw = p.feature_type ?? 'other';
-    const type: GeocodeType = raw === 'place' || raw === 'locality' || raw === 'neighborhood' || raw === 'street' || raw === 'address' ? raw : 'other';
-    out.push({
-      id: f.id ?? `${lat},${lng}`,
-      name: p.name,
-      context: p.place_formatted ?? p.full_address ?? '',
-      type,
-      lat,
-      lng,
-      zoom: ZOOM_BY_TYPE[type],
-    });
-  }
-  return out;
+/** resposta do GET /geo/search → resultado do overlay */
+export function fromGeoSearch(results: readonly GeoSearchResult[]): GeocodeResult[] {
+  return results.map((r) => {
+    const type = TYPE_OF[r.type] ?? 'other';
+    return { id: r.id, name: r.name, context: r.context, type, lat: r.lat, lng: r.lng, zoom: ZOOM_BY_TYPE[type], bbox: r.bbox ?? null };
+  });
 }
 
 /** rua, número e bairro só valem perto do mapa (a "Rua Livertino" de Goiás não é o que quem está em Uberlândia procura) */
@@ -79,33 +63,29 @@ export function preferLocal(results: GeocodeResult[], center: { lat: number; lng
 }
 
 /**
- * Busca de lugares/bairros/ruas no Mapbox (Geocoding v6) pra "ir até lá" no mapa.
- * Só dispara com ≥ 3 caracteres e token configurado; o texto deve chegar com debounce.
+ * Busca de bairros/ruas/cidades pra "ir até lá" no mapa: GET /geo/search do backend (nomes do OSM no nosso banco,
+ * ou o Photon auto-hospedado). Só dispara com ≥ 3 caracteres; o texto deve chegar com debounce.
  */
 export function useGeocodeSearch(q: string, proximity: { lat: number; lng: number } | null, enabled: boolean) {
   const text = q.trim();
   return useQuery({
     queryKey: ['geocode', text.toLowerCase(), proximity ? `${roundCoord(proximity.lat)},${roundCoord(proximity.lng)}` : ''],
-    enabled: enabled && text.length >= 3 && Boolean(config.mapboxToken),
+    enabled: enabled && text.length >= 3,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,
     placeholderData: keepPreviousData,
     retry: 1,
-    queryFn: async () => {
-      // axios "cru" de propósito: o interceptor da api mandaria o Bearer do app pro Mapbox
-      const res = await axios.get<{ features?: ForwardFeature[] }>(FORWARD_URL, {
+    queryFn: async ({ signal }) => {
+      const res = await api.get<GeoSearchResponse>('/geo/search', {
+        signal,
         timeout: 8_000,
         params: {
           q: text,
-          country: 'br',
-          language: 'pt',
           limit: 6,
-          types: 'place,locality,neighborhood,street,address',
-          ...(proximity ? { proximity: `${roundCoord(proximity.lng)},${roundCoord(proximity.lat)}` } : {}),
-          access_token: config.mapboxToken,
+          ...(proximity ? { lat: roundCoord(proximity.lat), lng: roundCoord(proximity.lng) } : {}),
         },
       });
-      return preferLocal(parseForward(res.data.features ?? []), proximity);
+      return preferLocal(fromGeoSearch(res.data.results ?? []), proximity);
     },
   });
 }

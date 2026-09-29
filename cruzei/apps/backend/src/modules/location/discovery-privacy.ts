@@ -150,7 +150,7 @@ export function coarse(v: number, decimals = PRIVACY.HISTORY_DECIMALS): number {
 // ---------------------------------------------------------------------------------------------
 // Descoberta de lugares pela galera (brief 28/09): "muita gente fica no mesmo ponto" → lugar novo no mapa.
 // Só AGREGADOS: HyperLogLog de hashes com chave (nunca o id cru) + contagens por sub-célula, apagados em 4 dias.
-// O lugar publicado é SEMPRE um lugar público do Mapbox (nome e ponto dele) — nunca um centro calculado de pessoas.
+// O lugar publicado é SEMPRE um lugar público do catálogo (nome e ponto dele) — nunca um centro calculado de pessoas.
 // ---------------------------------------------------------------------------------------------
 function envNum(name: string, def: number): number {
   const v = Number(process.env[name]);
@@ -182,12 +182,10 @@ export const CROWD = {
   DWELL_MS: envInt('CROWD_DWELL_MIN', 8) * 60_000,
   /** conta nova precisa de X dias (ou selfie verificada) pra contar e pra contribuir; 0 no dev pra testar */
   MIN_ACCOUNT_AGE_D: envNum('CROWD_MIN_ACCOUNT_AGE_D', 7),
-  /** raio (m) em volta de um lugar do Mapbox pra atribuir a permanência a ele */
+  /** raio (m) em volta de um lugar do catálogo pra atribuir a permanência a ele */
   VENUE_RADIUS_M: envInt('CROWD_VENUE_RADIUS_M', 45),
   /** fatia mínima da permanência da célula que um lugar precisa ter; dois lugares acima disso = ambíguo */
   VENUE_MIN_SHARE: envNum('CROWD_VENUE_MIN_SHARE', 0.3),
-  /** teto de chamadas ao Mapbox por dia feitas pelo detector */
-  MAPBOX_DAILY_CAP: envInt('CROWD_MAPBOX_DAILY_CAP', 300),
   /** chaves de multidão vivem janela + 1 dia */
   get KEY_TTL_S(): number {
     return (this.WINDOW_DAYS + 1) * 86_400;

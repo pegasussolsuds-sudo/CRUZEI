@@ -120,7 +120,7 @@ export interface POI {
   totalRatings: number;
   isPartner: boolean;
   partnerOffer: string | null;
-  /** origem: "osm"/"seed"/"partner"… ou "mapbox" = descoberto pela galera (multidão, pedidos, confirmações) */
+  /** origem: "osm"/"seed"/"partner"… ou "catalog" = descoberto pela galera (multidão, pedidos, confirmações; antes "mapbox") */
   source?: string;
   userCount?: number;
   distanceM?: number;
@@ -174,12 +174,12 @@ export interface VibeResponse {
   radiusM: number;
 }
 
-// ---------- "Busca por lugar" (Mapbox Search Box) ----------
-// Bares, baladas, restaurantes e outros lugares reais da cidade, buscados no servidor (GET /places/search) na
-// Mapbox Search Box API. Não trazem dados do app (gente agora, tendência): a lista unificada sabe que
-// `source === 'mapbox'` é um lugar da cidade e renderiza sem medidor de vibe.
+// ---------- "Busca por lugar" (catálogo próprio) ----------
+// Bares, baladas, restaurantes e outros lugares reais da cidade, buscados no servidor (GET /places/search) no catálogo
+// próprio (Overture Places + OpenStreetMap, no nosso Postgres). Não trazem dados do app (gente agora, tendência): a lista
+// unificada sabe que um item com `source` é um lugar da cidade e renderiza sem medidor de vibe.
 
-/** chips de categoria do overlay (🍻 Bares, 🍔 Comer…); o servidor traduz cada um em categorias do Mapbox */
+/** chips de categoria do overlay (🍻 Bares, 🍔 Comer…); o servidor traduz cada um em tipos de lugar do catálogo */
 export const PLACE_CATEGORY_KEYS = ['bar', 'restaurant', 'cafe', 'park', 'shopping', 'show', 'beach', 'museum'] as const;
 export type PlaceCategoryKey = (typeof PLACE_CATEGORY_KEYS)[number];
 
@@ -212,9 +212,9 @@ export const PLACE_KINDS = [
 ] as const;
 export type PlaceKind = (typeof PLACE_KINDS)[number];
 
-/** lugar da cidade vindo da busca (Mapbox Search Box) */
-export interface MapboxPlace {
-  /** id estável `mbx:<mapbox_id>` */
+/** lugar da cidade vindo da busca (catálogo próprio) */
+export interface CatalogPlace {
+  /** id estável com a fonte: `ovt:<gers>` (Overture) ou `osm:n123` / `osm:w123` / `osm:r123` (OpenStreetMap) */
   id: string;
   /** nome público (ex.: "Zenaide Bar") */
   name: string;
@@ -233,12 +233,45 @@ export interface MapboxPlace {
   /** distância (m) ao centro pedido (centro do mapa ou posição do usuário) */
   distanceM: number;
   /** discriminador na lista unificada (lugar do app x lugar da cidade) */
-  source: 'mapbox';
+  source: 'catalog';
 }
 
 export interface PlaceSearchResponse {
-  places: MapboxPlace[];
+  places: CatalogPlace[];
   /** texto buscado (eco) */
   q: string;
   generatedAt: string;
+}
+
+// ---------- Cidade · Bairro e "ir até lá" (GET /geo/label, GET /geo/search) ----------
+
+/** bairro e cidade de um ponto (polígonos do OSM no nosso banco); null quando o ponto está fora das áreas importadas */
+export interface GeoLabelResponse {
+  city: string | null;
+  /** bairro; fora dos bairros, o setor/distrito */
+  neighborhood: string | null;
+  /** UF (2 letras) */
+  state: string | null;
+}
+
+/** city = cidade · locality = distrito/vila · neighborhood = bairro · street = rua · address = endereço com número (Photon) */
+export type GeoResultType = 'city' | 'locality' | 'neighborhood' | 'street' | 'address';
+
+export interface GeoSearchResult {
+  id: string;
+  name: string;
+  /** "Centro, Uberlândia - MG" */
+  context: string;
+  type: GeoResultType;
+  /** ponto representativo (em cima da rua / dentro da área) */
+  lat: number;
+  lng: number;
+  /** [oeste, sul, leste, norte] pra enquadrar; null quando não tem */
+  bbox: [number, number, number, number] | null;
+}
+
+export interface GeoSearchResponse {
+  results: GeoSearchResult[];
+  /** texto buscado (eco) */
+  q: string;
 }

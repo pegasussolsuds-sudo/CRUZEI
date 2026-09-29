@@ -144,11 +144,11 @@ Se alguém divulgar no Metch imagens íntimas suas sem autorização, avise pelo
 
 ## 9. Lugares no mapa e contribuições
 
-- O mapa e a busca de lugares são servidos pelo Mapbox. Os lugares (nome e ponto no mapa) vêm da base do Mapbox. Não usamos o Google Maps.
+- O mapa usa dados abertos do OpenStreetMap, entregues pelo OpenFreeMap. Os lugares (nome e ponto no mapa) vêm da nossa base de lugares, montada com dados abertos do Overture Maps Foundation e do OpenStreetMap. Não usamos o Google Maps nem o Mapbox.
 - **Pôr no Metch:** você pode pedir que um lugar público encontrado na busca entre no mapa.
 - Estando no lugar, você pode confirmar ("É o [nome]?") ou avisar que ali não é um lugar público. Também pode reportar um lugar que já está no mapa.
 - Um lugar também pode entrar no mapa quando muita gente diferente passa tempo ali. Esse sinal é agregado e anonimizado. A Política de Privacidade explica como.
-- O nome e o ponto do lugar sempre vêm do Mapbox. Ninguém digita o nome de um lugar. Nunca mostramos quem pediu, confirmou ou reportou um lugar.
+- O nome e o ponto do lugar sempre vêm da nossa base de lugares. Ninguém digita o nome de um lugar. Nunca mostramos quem pediu, confirmou ou reportou um lugar.
 - Contas com menos de 7 dias ainda não podem contribuir.
 - Só entram tipos de lugar de lazer e encontro. Serviços de saúde, templos, escritórios, lojas e residências ficam de fora.
 - É proibido pedir ou confirmar casas, lugares privados ou lugares falsos, ou usar essas funções para expor alguém.

@@ -1,10 +1,10 @@
-// Geometria simples em Web Mercator pro motor do mapa. O rnmapbox só projeta pontos por chamada assíncrona ao nativo;
+// Geometria simples em Web Mercator pro motor do mapa. O MLRN só projeta pontos por chamada assíncrona ao nativo;
 // aqui fica o que precisa ser síncrono (LOD, deslocamento de câmera, enquadramento do match), aproximado mas estável.
 
 export type LngLat = [number, number];
 
 const EARTH_M = 111_320;
-/** o Mapbox usa tiles de 512 px: metros por pixel no equador no zoom 0 */
+/** o MapLibre usa tiles de 512 px: metros por pixel no equador no zoom 0 */
 const MPP_Z0 = 78_271.517;
 /** tamanho do mundo em px no zoom 0 (tiles de 512) */
 const WORLD_PX = 512;
@@ -32,7 +32,8 @@ export function offsetMeters(p: LngLat, east: number, north: number): LngLat {
  * cima" da tela é o bearing. Aproximação boa pro miolo da tela, que é onde isso é usado.
  */
 export function offsetCenter(target: LngLat, upPx: number, zoom: number, bearing: number, pitch: number): LngLat {
-  const cosP = Math.max(0.2, Math.cos((Math.min(pitch, 78) * Math.PI) / 180));
+  // pitch real nunca passa de 60 (teto do MapLibre Android): o enquadramento usa o mesmo teto
+  const cosP = Math.max(0.2, Math.cos((Math.min(pitch, 60) * Math.PI) / 180));
   const d = (upPx * metersPerPixel(target[1], zoom)) / cosP;
   const b = (bearing * Math.PI) / 180;
   // o centro fica "atrás" do alvo na direção do olhar
@@ -56,7 +57,7 @@ export function fitZoom(a: LngLat, b: LngLat, width: number, height: number, pad
   const h = Math.max(40, height - pad.top - pad.bottom);
   const dx = Math.abs(mercX(a[0]) - mercX(b[0])) * WORLD_PX;
   // com pitch, um pixel vertical de tela cobre ~1/cos(pitch) de chão: a distância vertical "encolhe" na tela
-  const dy = Math.abs(mercY(a[1]) - mercY(b[1])) * WORLD_PX * Math.cos((Math.min(pitch, 75) * Math.PI) / 180);
+  const dy = Math.abs(mercY(a[1]) - mercY(b[1])) * WORLD_PX * Math.cos((Math.min(pitch, 60) * Math.PI) / 180);
   const zx = dx > 0 ? Math.log2(w / dx) : maxZoom;
   const zy = dy > 0 ? Math.log2(h / dy) : maxZoom;
   return Math.min(maxZoom, zx, zy);

@@ -1,9 +1,9 @@
 // Regras PURAS da descoberta de lugares pela galera (sem banco, sem Redis): o job e os testes usam as mesmas funções.
 //
 // Ideia: quando muita gente DIFERENTE fica parada no mesmo pedaço da cidade em dias diferentes, ali tem um lugar
-// (bar, restaurante, praça…). O lugar publicado é SEMPRE um lugar público do Mapbox (nome + ponto do Mapbox) — nunca
-// uma coordenada tirada das pessoas, nunca um nome digitado por alguém.
-import type { MapboxPlace, PlaceKind } from '@cruzei/shared-types';
+// (bar, restaurante, praça…). O lugar publicado é SEMPRE um lugar público do catálogo (nome + ponto do place_catalog) —
+// nunca uma coordenada tirada das pessoas, nunca um nome digitado por alguém.
+import type { CatalogPlace, PlaceKind } from '@cruzei/shared-types';
 import { decodeGeohash } from '@cruzei/shared-utils';
 import { CROWD } from '../location/discovery-privacy';
 import { haversineMeters, isBlocked, isOffVibe } from '../places/places.ranking';
@@ -61,24 +61,24 @@ export interface SubStay {
 }
 
 /** o lugar pode ser publicado/pedido pelo nome e tipo (filtro adulto, fora do clima, tipo permitido) */
-export function venueAllowed(v: Pick<MapboxPlace, 'name' | 'kind'>, kinds: ReadonlySet<PlaceKind>): boolean {
+export function venueAllowed(v: Pick<CatalogPlace, 'name' | 'kind'>, kinds: ReadonlySet<PlaceKind>): boolean {
   return kinds.has(v.kind) && !isBlocked(v.name) && !isOffVibe(v.name);
 }
 
 /**
- * Qual lugar do Mapbox "leva" a multidão da célula: fatia da permanência das sub-células cujo centro fica a
+ * Qual lugar do catálogo "leva" a multidão da célula: fatia da permanência das sub-células cujo centro fica a
  * <= VENUE_RADIUS_M do ponto do lugar, sobre o total da célula (teto 1). Fica quem tem >= VENUE_MIN_SHARE, no máximo
  * 2; dois lugares acima do piso = ambíguo (pergunta pra quem está lá em vez de publicar sozinho).
  */
 export function pickVenues(
-  venues: readonly MapboxPlace[],
+  venues: readonly CatalogPlace[],
   subs: readonly SubStay[],
   cellTotal: number,
   cfg: CrowdCfg = CROWD,
-): { picks: MapboxPlace[]; ambiguous: boolean } {
+): { picks: CatalogPlace[]; ambiguous: boolean } {
   if (cellTotal <= 0 || subs.length === 0) return { picks: [], ambiguous: false };
   const centers = subs.map((s) => ({ ...decodeGeohash(s.sub), stays: s.stays }));
-  const scored: { v: MapboxPlace; share: number }[] = [];
+  const scored: { v: CatalogPlace; share: number }[] = [];
   for (const v of venues) {
     if (!venueAllowed(v, AUTO_KINDS)) continue;
     let near = 0;

@@ -1,4 +1,4 @@
-import type { MapboxPlace } from '@cruzei/shared-types';
+import type { CatalogPlace } from '@cruzei/shared-types';
 import { encodeGeohash } from '@cruzei/shared-utils';
 import { addDays, evaluateCandidate, evaluateCell, pickVenues, type CellStats } from './crowd-rules';
 
@@ -35,8 +35,8 @@ describe('evaluateCell (a célula parece um lugar?)', () => {
 });
 
 describe('pickVenues (qual lugar leva a multidão)', () => {
-  const place = (name: string, lat: number, lng: number, kind: MapboxPlace['kind'] = 'bar'): MapboxPlace => ({
-    id: `mbx:${name}`, name, category: 'bar', kind, nightlife: true, address: null, neighborhood: null, city: 'Uberlândia', state: 'MG', latitude: lat, longitude: lng, distanceM: 0, source: 'mapbox',
+  const place = (name: string, lat: number, lng: number, kind: CatalogPlace['kind'] = 'bar'): CatalogPlace => ({
+    id: `ovt:${name}`, name, category: 'bar', kind, nightlife: true, address: null, neighborhood: null, city: 'Uberlândia', state: 'MG', latitude: lat, longitude: lng, distanceM: 0, source: 'catalog',
   });
   const bar = { lat: -18.9186, lng: -48.2772 };
   const sub = (lat: number, lng: number, stays: number) => ({ sub: encodeGeohash(lat, lng, 8), stays });

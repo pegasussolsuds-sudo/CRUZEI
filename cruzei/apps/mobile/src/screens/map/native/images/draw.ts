@@ -1,4 +1,4 @@
-// Desenho das imagens do mapa nativo (figuras, bolhas, POIs, pino, ícones, brilhos) em PNG pro <Images> do rnmapbox.
+// Desenho das imagens do mapa nativo (figuras, bolhas, POIs, pino, ícones, brilhos) em PNG pro <Images> do MLRN.
 // Porta pixel a pixel do canvas 2D do antigo WebView (mapbox-html.ts, avatar-anim.ts, identity-bubble.ts).
 //
 // Por que RASTER DE CPU (Skia.Surface.Make) e nada de GPU: o Moto g54 derrubava o app no driver GL/HWUI

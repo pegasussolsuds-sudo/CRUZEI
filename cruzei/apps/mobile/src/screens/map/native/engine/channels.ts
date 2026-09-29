@@ -3,7 +3,7 @@ import { useCallback, useRef, useSyncExternalStore } from 'react';
 /**
  * Canais observáveis do motor do mapa: cada fonte GeoJSON, o conjunto de imagens e os valores animados vivem num canal
  * próprio, e cada componente do mapa assina só o seu. Assim um tick de animação (anéis, quem anda) re-renderiza só a
- * camada que mudou — o resto da árvore do <MapView> fica parado e o rnmapbox não reenvia estilo nenhum.
+ * camada que mudou — o resto da árvore do <Map> fica parado e o MLRN não reenvia estilo nenhum.
  */
 export class Channels<T extends Record<string, unknown>> {
   private values: T;

@@ -1,7 +1,7 @@
 import { ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma, type POICategory } from '@prisma/client';
 import * as ngeohash from 'ngeohash';
-import type { MapboxPlace, PlaceKind } from '@cruzei/shared-types';
+import type { CatalogPlace, PlaceKind } from '@cruzei/shared-types';
 import { distanceMeters } from '@cruzei/shared-utils';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
@@ -18,7 +18,8 @@ const REQUEST_MAX_M = 30_000;
 /** mesmo lugar: POI existente a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
 const DUP_NAME_M = 60;
 const DUP_POINT_M = 8;
-const MAPBOX_ID = /^mbx:[A-Za-z0-9_\-.=:]{8,120}$/;
+/** id do catálogo ('ovt:<gers>', 'osm:n123'); 'mbx:' (app antigo, busca do Mapbox) passa no formato e cai no 404 do lookup */
+const PLACE_ID = /^(ovt|osm|mbx):[A-Za-z0-9_\-.=:]{2,120}$/;
 const REPORT_REASONS = ['not_public', 'residence', 'closed', 'wrong_place', 'offensive'] as const;
 export type ReportReason = (typeof REPORT_REASONS)[number];
 /** 3 pessoas diferentes denunciando em 30 dias tiram um lugar descoberto do mapa */
@@ -53,7 +54,8 @@ interface PresenceRow {
 
 interface CandidateRow {
   id: bigint;
-  mapbox_id: string;
+  /** id do lugar no catálogo (linhas antigas: 'mbx:…', só na coluna legada mapbox_id) */
+  ext_id: string;
   cell: string;
   status: string;
   name: string;
@@ -75,7 +77,7 @@ interface CandidateRow {
  * Descoberta de lugares pela galera.
  * - suggest/vote/report: o que as pessoas fazem no app (sempre respostas uniformes: nunca "quem", "quantos" ou "por quê")
  * - runOnce: o detector (cron a cada 3 h): células com muita gente DIFERENTE parada em dias diferentes → lugar público
- *   do Mapbox que leva a multidão → candidato → promovido pelas regras A (multidão), B (2 no lugar) ou C (4 pedidos).
+ *   do catálogo que leva a multidão → candidato → promovido pelas regras A (multidão), B (2 no lugar) ou C (4 pedidos).
  * Nada aqui guarda id de usuário junto com posição: a multidão vive no Redis como HyperLogLog de hashes com chave.
  */
 @Injectable()
@@ -93,12 +95,12 @@ export class PlaceDiscoveryService {
   // Contribuições
   // ---------------------------------------------------------------------------------------------
 
-  /** "📌 Pôr no Metch" num lugar que a NOSSA busca devolveu (id mbx:…). Nome e ponto vêm do Mapbox, nunca do cliente. */
-  async suggest(userId: string, mapboxId: string, now = new Date()): Promise<SuggestResult> {
-    if (!MAPBOX_ID.test(mapboxId)) throw new UnprocessableEntityException({ error: 'invalid_place', message: 'Lugar inválido' });
+  /** "📌 Pôr no Metch" num lugar do catálogo (id ovt:…/osm:… que a busca devolveu). Nome e ponto vêm do catálogo, nunca do cliente. */
+  async suggest(userId: string, placeId: string, now = new Date()): Promise<SuggestResult> {
+    if (!PLACE_ID.test(placeId)) throw new UnprocessableEntityException({ error: 'invalid_place', message: 'Lugar inválido' });
     await this.limit(userId, 'poi_suggest', 10);
     await this.requireContributor(userId, now);
-    const place = await this.places.lookup(mapboxId);
+    const place = await this.places.lookup(placeId);
     if (!place) throw new NotFoundException({ error: 'place_not_found', message: 'Busca o lugar de novo' });
     if (!venueAllowed(place, USER_KINDS)) throw new UnprocessableEntityException({ error: 'place_kind_not_supported', message: 'Esse tipo de lugar não entra no mapa' });
 
@@ -185,7 +187,7 @@ export class PlaceDiscoveryService {
     }
     sum.busyCells = busy.length;
 
-    // 3) só as sobreviventes: união, faixas do dia, residências → regra da célula → lugar do Mapbox que leva a multidão
+    // 3) só as sobreviventes: união, faixas do dia, residências → regra da célula → lugar do catálogo que leva a multidão
     for (const { cell, daily } of busy) {
       const union = await r.pfcount(...days.map((d) => `crowd:u:${d}:${cell}`));
       const around = [cell, ...ngeohash.neighbors(cell)];
@@ -225,9 +227,12 @@ export class PlaceDiscoveryService {
       }
     }
 
-    // 4) cada candidato pendente: regras A/B/C, negações, validade
+    // 4) cada candidato pendente: regras A/B/C, negações, validade. Os da época do Mapbox ('mbx:') nunca são publicados
+    //    (o dado do Mapbox não pode virar lugar permanente): vencem aqui e somem na faxina.
+    sum.expired += await this.prisma.$executeRaw`
+      UPDATE place_candidates SET status = 'expired' WHERE status = 'pending' AND COALESCE(ext_id, mapbox_id) LIKE 'mbx:%'`;
     const pending = await this.prisma.$queryRaw<(CandidateRow & { onsite3: number; req14: number; deny3: number })[]>`
-      SELECT c.id, c.mapbox_id, c.cell, c.status, c.name, c.category::text AS category, c.kind, c.latitude, c.longitude,
+      SELECT c.id, COALESCE(c.ext_id, c.mapbox_id) AS ext_id, c.cell, c.status, c.name, c.category::text AS category, c.kind, c.latitude, c.longitude,
              c.address, c.neighborhood, c.city, c.state, c.ambiguous,
              to_char(c.crowd_pass_on, 'YYYY-MM-DD') AS crowd_pass_on, to_char(c.last_evidence_on, 'YYYY-MM-DD') AS last_evidence_on, c.poi_id,
              count(v.user_id) FILTER (WHERE v.kind = 'onsite' AND v.voted_on >= ${days[2]}::date)::int AS onsite3,
@@ -260,12 +265,12 @@ export class PlaceDiscoveryService {
     // 5) lugares descobertos denunciados por várias pessoas saem do mapa (lápide de 90 dias no candidato)
     const flagged = await this.prisma.$queryRaw<{ poi_id: bigint }[]>`
       SELECT r.poi_id FROM poi_reports r JOIN pois p ON p.id = r.poi_id
-       WHERE p.source = 'mapbox' AND r.reported_on >= ${addDays(today, -29)}::date
+       WHERE p.source IN ('catalog', 'mapbox') AND r.reported_on >= ${addDays(today, -29)}::date
        GROUP BY r.poi_id HAVING count(DISTINCT r.user_id) >= ${TAKEDOWN_REPORTS}`;
     for (const f of flagged) {
       await this.prisma.$transaction([
         this.prisma.$executeRaw`UPDATE place_candidates SET status = 'rejected', resolved_on = ${today}::date WHERE poi_id = ${f.poi_id}`,
-        this.prisma.$executeRaw`DELETE FROM pois WHERE id = ${f.poi_id} AND source = 'mapbox'`,
+        this.prisma.$executeRaw`DELETE FROM pois WHERE id = ${f.poi_id} AND source IN ('catalog', 'mapbox')`,
       ]);
       sum.takenDown++;
       changedMap = true;
@@ -291,15 +296,18 @@ export class PlaceDiscoveryService {
   // Internos
   // ---------------------------------------------------------------------------------------------
 
-  /** publica: POI normal (source 'mapbox'), criado "no começo do dia" (horário não revela quando alguém confirmou) */
+  /**
+   * publica: POI normal com source 'catalog' e external_id = id do catálogo (a mesma chave do scripts/geo/rematch-mapbox-pois),
+   * criado "no começo do dia" (horário não revela quando alguém confirmou)
+   */
   private async promote(c: CandidateRow, today: string): Promise<void> {
-    const externalId = c.mapbox_id.replace(/^mbx:/, '');
+    const externalId = c.ext_id;
     const startOfDay = new Date(`${today}T03:00:00Z`); // 00:00 em Brasília
     await this.prisma.$transaction(async (tx) => {
       const poi = await tx.pOI.upsert({
-        where: { source_externalId: { source: 'mapbox', externalId } },
+        where: { source_externalId: { source: 'catalog', externalId } },
         create: {
-          source: 'mapbox',
+          source: 'catalog',
           externalId,
           name: c.name,
           category: c.category as POICategory,
@@ -320,14 +328,15 @@ export class PlaceDiscoveryService {
     });
   }
 
-  /** cria/atualiza o candidato (chave mbx:<id>); nunca reabre lápide (rejected); vencido volta a pendente */
-  private async upsertCandidate(p: MapboxPlace, today: string, crowd: { crowdPassOn: string; ambiguous: boolean } | null): Promise<CandidateRow | null> {
+  /** cria/atualiza o candidato (chave = id do catálogo); nunca reabre lápide (rejected); vencido volta a pendente */
+  private async upsertCandidate(p: CatalogPlace, today: string, crowd: { crowdPassOn: string; ambiguous: boolean } | null): Promise<CandidateRow | null> {
     const category = p.category ?? 'other';
     const cell = cellOf(p.latitude, p.longitude, CROWD_CELL_PRECISION); // célula do LUGAR (público), nunca de pessoa
+    // mapbox_id é a coluna legada (NOT NULL no backend antigo, que ainda a lê): recebe o mesmo id até ser apagada
     const rows = await this.prisma.$queryRaw<CandidateRow[]>`
-      INSERT INTO place_candidates (key, mapbox_id, cell, status, name, category, kind, latitude, longitude, address, neighborhood, city, state,
+      INSERT INTO place_candidates (key, ext_id, mapbox_id, cell, status, name, category, kind, latitude, longitude, address, neighborhood, city, state,
                                     ambiguous, crowd_pass_on, last_evidence_on, created_on)
-      VALUES (${p.id}, ${p.id}, ${cell}, 'pending', ${p.name.slice(0, 255)}, ${category}::"POICategory", ${p.kind}, ${p.latitude}, ${p.longitude},
+      VALUES (${p.id}, ${p.id}, ${p.id}, ${cell}, 'pending', ${p.name.slice(0, 255)}, ${category}::"POICategory", ${p.kind}, ${p.latitude}, ${p.longitude},
               ${p.address?.slice(0, 500) ?? null}, ${p.neighborhood?.slice(0, 100) ?? null}, ${p.city?.slice(0, 100) ?? null}, ${p.state?.slice(0, 2) ?? null},
               ${crowd?.ambiguous ?? false}, ${crowd ? crowd.crowdPassOn : null}::date, ${today}::date, ${today}::date)
       ON CONFLICT (key) DO UPDATE SET
@@ -348,11 +357,10 @@ export class PlaceDiscoveryService {
         voted_on = EXCLUDED.voted_on`;
   }
 
-  /** o lugar já está no mapa? mesmo id do Mapbox, ou POI a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
-  private async findExisting(p: MapboxPlace): Promise<SuggestResult['poi'] | null> {
-    const externalId = p.id.replace(/^mbx:/, '');
+  /** o lugar já está no mapa? mesmo id do catálogo, ou POI a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
+  private async findExisting(p: CatalogPlace): Promise<SuggestResult['poi'] | null> {
     const same = await this.prisma.pOI.findUnique({
-      where: { source_externalId: { source: 'mapbox', externalId } },
+      where: { source_externalId: { source: 'catalog', externalId: p.id } },
       select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true },
     });
     if (same) return lite(same);

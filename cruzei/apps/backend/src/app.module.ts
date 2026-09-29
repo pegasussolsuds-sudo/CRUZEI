@@ -20,6 +20,7 @@ import { UsersModule } from './modules/users/users.module';
 import { LocationModule } from './modules/location/location.module';
 import { PoisModule } from './modules/pois/pois.module';
 import { PlacesModule } from './modules/places/places.module';
+import { GeoModule } from './modules/geo/geo.module';
 import { MatchesModule } from './modules/matches/matches.module';
 import { WavesModule } from './modules/waves/waves.module';
 import { MessagesModule } from './modules/messages/messages.module';
@@ -90,6 +91,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     LocationModule,
     PoisModule,
     PlacesModule,
+    GeoModule,
     MatchesModule,
     WavesModule,
     MessagesModule,

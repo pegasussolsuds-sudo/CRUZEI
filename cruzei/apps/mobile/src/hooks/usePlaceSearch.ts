@@ -18,7 +18,7 @@ export interface PlaceSearchParams {
 }
 
 /**
- * GET /v1/places/search: bares, baladas, restaurantes e outros lugares reais da cidade (Mapbox Search Box, via servidor).
+ * GET /v1/places/search: bares, baladas, restaurantes e outros lugares reais da cidade (catálogo próprio no servidor: Overture + OSM).
  * Com texto busca pelo nome ("zenaide", "hub"); só com o chip lista os mais perto daquela categoria.
  * Cache por texto + categoria + célula do centro (~1 km); o debounce vem de quem chama.
  */

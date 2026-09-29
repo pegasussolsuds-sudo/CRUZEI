@@ -3,9 +3,9 @@ import { Throttle } from '@nestjs/throttler';
 import type { PlaceCategoryKey, PlaceSearchResponse } from '@cruzei/shared-types';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PlacesService } from './places.service';
-import { CHIP_TO_MAPBOX } from './places.ranking';
+import { CHIP_KINDS } from './places.ranking';
 
-const ALLOWED_CATEGORIES: ReadonlySet<string> = new Set(Object.keys(CHIP_TO_MAPBOX));
+const ALLOWED_CATEGORIES: ReadonlySet<string> = new Set(Object.keys(CHIP_KINDS));
 
 /** query repetida (?q=a&q=b) chega como array: só string conta */
 function str(v: unknown): string | undefined {
@@ -18,9 +18,9 @@ export class PlacesController {
   constructor(private readonly svc: PlacesService) {}
 
   /**
-   * Bares, baladas, restaurantes e outros lugares reais da cidade (Mapbox Search Box, chamado daqui do servidor).
-   * O backend é a única porta: guarda o token, limita a frequência, cacheia por região e manda pro Mapbox só a
-   * posição arredondada (~1 km). Proximidade = centro do mapa ou minha posição.
+   * Bares, baladas, restaurantes e outros lugares reais da cidade, do catálogo próprio (Overture Places + OSM no nosso
+   * Postgres): nada sai do servidor. Limita a frequência e cacheia por região (~1 km). Proximidade = centro do mapa
+   * ou minha posição.
    */
   @Get('search')
   @Throttle({ default: { ttl: 60_000, limit: 30 } })

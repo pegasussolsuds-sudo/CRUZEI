@@ -179,22 +179,23 @@ O que registramos:
 
 Como um lugar entra no mapa:
 
-- Só entra um lugar público que já existe na base do Mapbox, com o nome e o ponto do Mapbox. Nunca um ponto calculado a partir das pessoas.
+- Só entra um lugar público que já existe na nossa base de lugares (montada com dados abertos do Overture Maps Foundation e do OpenStreetMap), com o nome e o ponto dessa base. Nunca um ponto calculado a partir das pessoas.
 - É preciso ter muita gente diferente, em dias diferentes. Não entram áreas onde as mesmas pessoas se repetem todo dia (como casas e escritórios), áreas movimentadas principalmente de madrugada, nem áreas residenciais.
 - Só entram tipos de lugar de lazer e encontro. Serviços de saúde, templos, escritórios, lojas e residências ficam de fora.
 - Os lugares são publicados em lote, a cada 3 horas, com a data marcada no começo do dia. Assim, o horário em que um lugar aparece não revela quando alguém esteve lá.
 
 Se não quiser participar desse sinal, use o modo anônimo, a descoberta em "Ninguém" ou áreas privadas. Você também pode se opor pelo {{EMAIL_PRIVACIDADE}}.
 
-### 3.5 Mapbox
+### 3.5 Mapa e lugares
 
-O mapa e a busca de lugares são servidos pelo Mapbox, empresa com sede nos Estados Unidos. Não usamos o Google Maps.
+O mapa é desenhado pelo MapLibre, um componente de código aberto que roda no seu aparelho e não envia dados de uso a ninguém. Não usamos o Google Maps nem o Mapbox.
 
-- **Desenho do mapa:** seu aparelho baixa o mapa diretamente dos servidores do Mapbox. O Mapbox recebe o endereço IP do aparelho, a área do mapa que está sendo exibida (que costuma incluir a região onde você está) e dados técnicos do aparelho. O componente de mapa do Mapbox também pode enviar a ele dados técnicos de uso e desempenho do mapa e guardar no aparelho um identificador técnico para isso. Não enviamos ao Mapbox seu nome, telefone ou perfil. As posições de outras pessoas que o mapa desenha são sempre as posições aproximadas descritas na seção 3.3.
-- **Busca de lugares:** a busca passa pelo nosso servidor. O Mapbox recebe o texto buscado e uma posição arredondada (cerca de 1 km). Ele não recebe seu IP nem sua identidade. Guardamos os resultados por até 6 horas, sem ligação com quem buscou.
-- **Descoberta de lugares:** nosso servidor consulta o Mapbox pela área de um lugar (cerca de 150 metros), sem nenhum dado de pessoas.
+- **Desenho do mapa:** seu aparelho baixa as partes do mapa (ruas, prédios e nomes) diretamente do OpenFreeMap, serviço gratuito de mapas operado a partir da Hungria e entregue pela rede da Cloudflare. O relevo vem do conjunto de dados abertos Terrain Tiles, hospedado pela Amazon Web Services nos Estados Unidos. Esses fornecedores recebem o endereço IP do aparelho, a área do mapa que está sendo exibida (que costuma incluir a região onde você está) e dados técnicos da conexão. Não enviamos a eles seu nome, telefone ou perfil. As posições de outras pessoas que o mapa desenha são sempre as posições aproximadas descritas na seção 3.3.
+- **Busca de lugares, ruas e bairros:** acontece no nosso servidor, numa base própria montada com dados abertos do Overture Maps Foundation e do OpenStreetMap. O texto buscado e a sua posição não são enviados a terceiros.
+- **Nome do bairro e da cidade** no topo do mapa: calculado no nosso servidor, sem consultar terceiros.
+- **Descoberta de lugares:** usa só a nossa base de lugares, sem enviar nada a terceiros.
 
-O Mapbox trata esses dados conforme a [política de privacidade do Mapbox](https://www.mapbox.com/legal/privacy).
+O OpenFreeMap trata esses dados conforme os [termos do OpenFreeMap](https://openfreemap.org/tos/), e a Amazon conforme a [política de privacidade da AWS](https://aws.amazon.com/privacy/).
 
 ## 4. Fotos e moderação automática
 
@@ -215,8 +216,8 @@ O Mapbox trata esses dados conforme a [política de privacidade do Mapbox](https
 - **Outras pessoas no app:** veem só o que está descrito nas seções 2.3 e 3.3. As mensagens de um chat são vistas pelas duas pessoas do match.
 - **Provedores de nuvem:** hospedam nossos servidores, bancos de dados e as fotos.
 - **Provedor de envio de SMS:** recebe seu número e o código de confirmação para entregar o SMS.
-- **Mapbox:** mapa e busca de lugares, como explicado na seção 3.5.
-- **Amazon Web Services (Amazon Rekognition):** recebe as fotos novas para a análise automática, como explicado na seção 4. Veja a [política de privacidade da AWS](https://aws.amazon.com/privacy/).
+- **OpenFreeMap:** entrega as partes do mapa, como explicado na seção 3.5.
+- **Amazon Web Services:** recebe as fotos novas para a análise automática (Amazon Rekognition), como explicado na seção 4, e entrega o relevo do mapa (seção 3.5). Veja a [política de privacidade da AWS](https://aws.amazon.com/privacy/).
 - **Sentry (Functional Software, Inc.):** recebe os relatórios técnicos de falha do app e do servidor, como explicado na seção 2.10. Veja a [política de privacidade do Sentry](https://sentry.io/privacy/).
 - **Apple e Google:** distribuem o app pelas lojas. Quando houver planos pagos, processam os pagamentos como controladores, segundo as políticas deles.
 - **Autoridades:** compartilhamos dados quando a lei exige, por ordem judicial ou por requisição de autoridade competente, na forma da lei. Também comunicamos às autoridades, por iniciativa própria, quando necessário para proteger a vida ou a integridade física de alguém e em casos de suspeita de exploração ou abuso sexual de crianças e adolescentes (veja os Padrões de Segurança Infantil).
@@ -226,7 +227,7 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 
 ## 6. Transferência internacional
 
-- Alguns fornecedores tratam dados fora do Brasil: o Mapbox e a Amazon Web Services, nos Estados Unidos, e o Sentry, que recebe os relatórios de falha. Provedores de nuvem também podem armazenar dados em outros países.
+- Alguns fornecedores tratam dados fora do Brasil: o OpenFreeMap, a partir da Hungria (União Europeia), com entrega pela rede global da Cloudflare; a Amazon Web Services, nos Estados Unidos; e o Sentry, que recebe os relatórios de falha. Provedores de nuvem também podem armazenar dados em outros países.
 - Fazemos essas transferências nas hipóteses do art. 33 da LGPD, como a execução do contrato com você (art. 33, IX) e cláusulas contratuais com os fornecedores, incluindo as cláusulas-padrão aprovadas pela ANPD quando aplicáveis.
 
 ## 7. Por quanto tempo guardamos
@@ -309,7 +310,7 @@ Se não ficar satisfeito com a nossa resposta, você pode reclamar à Autoridade
 - O app não usa ferramentas (SDKs) de publicidade nem de análise de uso (analytics).
 - Não usamos o identificador de publicidade do aparelho e não rastreamos você em outros apps ou sites.
 - Não usamos cookies de rastreamento.
-- Os componentes de terceiros que se comunicam diretamente com o próprio fornecedor são o mapa do Mapbox, descrito na seção 3.5, e o diagnóstico de falhas do Sentry, descrito na seção 2.10. O Sentry não é ferramenta de publicidade nem de análise de uso: recebe só dados técnicos para corrigir falhas.
+- Os componentes de terceiros que se comunicam diretamente com o próprio fornecedor são o download das partes do mapa (OpenFreeMap) e do relevo (Amazon Web Services), descrito na seção 3.5, e o diagnóstico de falhas do Sentry, descrito na seção 2.10. O Sentry não é ferramenta de publicidade nem de análise de uso: recebe só dados técnicos para corrigir falhas.
 - No seu aparelho, o app guarda as credenciais da sessão no armazenamento seguro do sistema.
 
 ## 12. Mudanças nesta Política

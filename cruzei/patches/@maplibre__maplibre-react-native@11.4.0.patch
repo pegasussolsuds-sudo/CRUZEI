@@ -1,0 +1,1642 @@
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt b/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
+index cedb8bf4f01414c9642ec376ed41b2119acd9deb..a07329ab3b21e03fefa063bc742c9f76c6d79b07 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
+@@ -48,20 +48,45 @@ class MLRNImages(
+         context: Context,
+     ) {
+         val newImages = mutableMapOf<String, ImageEntry>()
++        val changedImages = mutableMapOf<String, ImageEntry>()
++        val keys = HashSet<String>()
+ 
+         for (entry in imagesList) {
+             val key = entry.key
+             val value = entry.value
++            keys.add(key)
+             val oldValue = images.put(key, value)
+             if (oldValue == null) {
+                 newImages[key] = value
++            } else if (!isSameImage(oldValue, value)) {
++                // Metch: chave já registrada com uri/scale/sdf novos baixa de novo e substitui no estilo
++                // (a que ainda não está no estilo, ex. nome que colide com o sprite, segue o caminho de chave nova)
++                if (currentImages.contains(key)) {
++                    changedImages[key] = value
++                } else {
++                    newImages[key] = value
++                }
+             }
+         }
+ 
++        // Metch: chave que saiu da prop sai do estilo (senão a memória das imagens cresce sem limite)
++        val removedImages = images.keys.filter { it !in keys }
++        for (key in removedImages) {
++            images.remove(key)
++        }
++
+         map?.let { mapInstance ->
+-            if (mapInstance.style != null) {
+-                processImages(newImages, mapInstance, context)
++            val style = mapInstance.style ?: return@let
++
++            for (key in removedImages) {
++                // só as que este componente pôs no estilo (nunca uma imagem do sprite com o mesmo nome)
++                if (currentImages.remove(key)) {
++                    style.removeImage(key)
++                }
+             }
++
++            processImages(newImages, mapInstance, context)
++            downloadImages(changedImages, mapInstance, context)
+         }
+     }
+ 
+@@ -73,8 +98,10 @@ class MLRNImages(
+     }
+ 
+     private fun removeImages(mapView: MLRNMapView) {
++        // Metch: cópia antes do clear() (o callback pode rodar depois) e só o que este componente adicionou
++        val imageNames = currentImages.toList()
+         mapView.getStyle { style ->
+-            for (imageName in images.keys) {
++            for (imageName in imageNames) {
+                 style.removeImage(imageName)
+             }
+         }
+@@ -112,11 +139,40 @@ class MLRNImages(
+ 
+         // Download remote images asynchronously
+         if (remoteImages.isNotEmpty()) {
+-            val task = DownloadMapImageTask(context, mapInstance, null)
++            val task = DownloadMapImageTask(context, mapInstance, null, shouldApplyImage)
+             task.execute(*remoteImages.toTypedArray())
+         }
+     }
+ 
++    // Metch: troca de imagem já no estilo: sem placeholder (a antiga fica até a nova chegar), addImage com o mesmo nome substitui
++    private fun downloadImages(
++        imagesToDownload: Map<String, ImageEntry>,
++        mapInstance: MapLibreMap,
++        context: Context,
++    ) {
++        if (imagesToDownload.isEmpty()) return
++
++        val remoteImages = mutableListOf<Map.Entry<String, ImageEntry>>()
++        for ((imageName, entry) in imagesToDownload) {
++            remoteImages.add(java.util.AbstractMap.SimpleEntry(imageName, entry))
++        }
++
++        val task = DownloadMapImageTask(context, mapInstance, null, shouldApplyImage)
++        task.execute(*remoteImages.toTypedArray())
++    }
++
++    // Metch: download atrasado só entra se a chave ainda pede essa mesma imagem e o componente segue no mapa
++    private val shouldApplyImage =
++        DownloadMapImageTask.ShouldApply { name, entry ->
++            val current = images[name]
++            map != null && current != null && isSameImage(current, entry)
++        }
++
++    private fun isSameImage(
++        a: ImageEntry,
++        b: ImageEntry,
++    ): Boolean = a.uri == b.uri && a.scale == b.scale && a.sdf == b.sdf
++
+     fun addMissingImageToStyle(
+         id: String,
+         mapInstance: MapLibreMap,
+@@ -125,7 +181,7 @@ class MLRNImages(
+         val style = mapInstance.style ?: return false
+ 
+         style.addImage(id, imagePlaceholder!!)
+-        val task = DownloadMapImageTask(context, mapInstance, null)
++        val task = DownloadMapImageTask(context, mapInstance, null, shouldApplyImage)
+         task.execute(java.util.AbstractMap.SimpleEntry(id, entry))
+ 
+         currentImages.add(id)
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt b/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt
+index 0c6baf8d4930cd29aac76f61d04038cf937f75d2..894e4095029e8c22ae63e4bd2dc7c6f7acc72685 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt
+@@ -366,7 +366,19 @@ class MLRNLayer(
+ 
+     override fun removeFromMap(mapView: MLRNMapView) {
+         val layer = mLayer ?: return
+-        this.style?.removeLayer(layer)
++        // Metch (MLRN#1647): estilo nulo ou recarregando (getStyle só devolve estilo carregado): nada a remover
++        val style = this.style ?: return
++        val id = mID ?: return
++        // camada que já saiu do estilo: mLayer pode apontar para um peer nativo liberado (SIGSEGV 0x8), não toca nela
++        val live = style.getLayer(id) ?: return
++        if (live === layer) {
++            style.removeLayer(layer)
++        } else {
++            // camada do estilo base reaproveitada (getLayer cria wrapper novo a cada chamada) ou referência velha:
++            // remove pelo wrapper vivo e fica com ele (passa a ser dono da camada removida, dá para inserir de novo)
++            style.removeLayer(live)
++            mLayer = live
++        }
+     }
+ 
+     private val style: Style?
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt
+index 10caa053b17af412872100c5d405ae1dd681c0fe..cd21f0798bcf268a6bf3948356b3c46dae312f5b 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt
+@@ -107,9 +107,15 @@ abstract class MLRNSource<T : Source?>(
+         if (mQueuedLayers != null) {
+             mQueuedLayers!!.clear()
+         }
+-        if (mMap != null && source != null && mMap!!.style != null) {
++        // Metch (MLRN#1647): só remove se o estilo vivo ainda tem esta mesma fonte (referência velha aponta para peer liberado)
++        val style = mMap?.style
++        val src = source
++        val id = mID
++        if (style != null && src != null && id != null) {
+             try {
+-                mMap!!.style!!.removeSource(source!!)
++                if (style.getSource(id) === src) {
++                    style.removeSource(src)
++                }
+             } catch (ex: Throwable) {
+                 Logger.w(
+                     LOG_TAG,
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSource.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSource.kt
+index c84759716e34235c286c3a4a2a8c405a3c213f91..26cc7c8cf680a8f785781acab7f2634dce729320 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSource.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSource.kt
+@@ -200,6 +200,22 @@ class MLRNGeoJSONSource(
+         return GeoJSONUtils.fromFeatureList(leaves.features()!!)
+     }
+ 
++    // Metch: só mexe no estado com o mapa vivo (depois do onDestroy o peer nativo da fonte é zerado e a chamada lança)
++    private val liveSource: GeoJsonSource?
++        get() = if (mMapView != null && !mMapView!!.isDestroyed) source else null
++
++    fun setFeatureState(
++        featureId: String,
++        state: JsonObject,
++    ): Boolean = liveSource?.setFeatureState(featureId, state) ?: false
++
++    fun getFeatureState(featureId: String): JsonObject? = liveSource?.getFeatureState(featureId)
++
++    fun removeFeatureState(
++        featureId: String?,
++        key: String?,
++    ): Boolean = liveSource?.removeFeatureState(featureId, key) ?: false
++
+     private fun createClusterFeature(clusterId: Int): Feature {
+         val properties = JsonObject()
+         properties.addProperty("cluster_id", clusterId)
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSourceModule.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSourceModule.kt
+index 12807d7caad596800e8b6f2c0698ddd4d38b67d8..b2ee21ff447b0872cd4dd6b322f254cae2fd4bf1 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSourceModule.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/sources/geojsonsource/MLRNGeoJSONSourceModule.kt
+@@ -3,8 +3,11 @@ package org.maplibre.reactnative.components.sources.geojsonsource
+ import com.facebook.react.bridge.Promise
+ import com.facebook.react.bridge.ReactApplicationContext
+ import com.facebook.react.bridge.ReadableArray
++import com.facebook.react.bridge.ReadableMap
+ import com.facebook.react.module.annotations.ReactModule
++import com.google.gson.JsonObject
+ import org.maplibre.reactnative.NativeGeoJSONSourceModuleSpec
++import org.maplibre.reactnative.utils.ConvertUtils
+ import org.maplibre.reactnative.utils.ExpressionParser
+ import org.maplibre.reactnative.utils.ReactTag
+ import org.maplibre.reactnative.utils.ReactTagResolver
+@@ -71,4 +74,81 @@ class MLRNGeoJSONSourceModule(
+             promise.resolve(it.getClusterChildren(clusterId.toInt()))
+         }
+     }
++
++    override fun setFeatureState(
++        reactTag: Double,
++        featureId: String,
++        state: ReadableMap,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { shapeSource ->
++            val jsonState = ConvertUtils.toJsonObject(state) ?: JsonObject()
++
++            if (shapeSource.setFeatureState(featureId, jsonState)) {
++                promise.resolve(null)
++            } else {
++                promise.reject(
++                    "source_not_attached",
++                    "Source is not attached to a map, feature state was not set",
++                )
++            }
++        }
++    }
++
++    override fun getFeatureState(
++        reactTag: Double,
++        featureId: String,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { shapeSource ->
++            promise.resolve(
++                shapeSource.getFeatureState(featureId)?.let { ConvertUtils.toWritableMap(it) },
++            )
++        }
++    }
++
++    override fun removeFeatureState(
++        reactTag: Double,
++        featureId: String?,
++        key: String?,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { shapeSource ->
++            if (shapeSource.removeFeatureState(featureId, key)) {
++                promise.resolve(null)
++            } else {
++                promise.reject(
++                    "source_not_attached",
++                    "Source is not attached to a map, feature state was not removed",
++                )
++            }
++        }
++    }
++
++    // Metch: lote de setFeatureState, um único salto para a UI thread
++    override fun setFeatureStates(
++        reactTag: Double,
++        featureIds: ReadableArray,
++        states: ReadableArray,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { shapeSource ->
++            val count = minOf(featureIds.size(), states.size())
++
++            for (i in 0 until count) {
++                val featureId = featureIds.getString(i) ?: continue
++                val jsonState = ConvertUtils.toJsonObject(states.getMap(i)) ?: continue
++
++                if (!shapeSource.setFeatureState(featureId, jsonState)) {
++                    promise.reject(
++                        "source_not_attached",
++                        "Source is not attached to a map, feature state was not set",
++                    )
++                    return@withViewportOnUIThread
++                }
++            }
++
++            promise.resolve(null)
++        }
++    }
+ }
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSource.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSource.kt
+index d43e89043514f5332797572a52ee8305c031d763..48cd55b948edbfae901cf117bb1b724536845ae0 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSource.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSource.kt
+@@ -3,6 +3,7 @@ package org.maplibre.reactnative.components.sources.tilesources.vectorsource
+ import android.content.Context
+ import androidx.annotation.Size
+ import com.facebook.react.bridge.WritableArray
++import com.google.gson.JsonObject
+ import org.maplibre.android.style.expressions.Expression
+ import org.maplibre.android.style.sources.VectorSource
+ import org.maplibre.reactnative.components.sources.tilesources.MLRNPressableTileSource
+@@ -34,4 +35,25 @@ class MLRNVectorSource(
+ 
+         return GeoJSONUtils.fromFeatureList(features)
+     }
++
++    // Metch: só mexe no estado com o mapa vivo (depois do onDestroy o peer nativo da fonte é zerado e a chamada lança)
++    private val liveSource: VectorSource?
++        get() = if (mMapView != null && !mMapView!!.isDestroyed) source else null
++
++    fun setFeatureState(
++        sourceLayerId: String,
++        featureId: String,
++        state: JsonObject,
++    ): Boolean = liveSource?.setFeatureState(sourceLayerId, featureId, state) ?: false
++
++    fun getFeatureState(
++        sourceLayerId: String,
++        featureId: String,
++    ): JsonObject? = liveSource?.getFeatureState(sourceLayerId, featureId)
++
++    fun removeFeatureState(
++        sourceLayerId: String,
++        featureId: String?,
++        key: String?,
++    ): Boolean = liveSource?.removeFeatureState(sourceLayerId, featureId, key) ?: false
+ }
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSourceModule.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSourceModule.kt
+index f2fcb3672109ba1f310d6fb0bcc7f123b815c9d7..a03594df1775c444c9a9e4ebb238cc6aa4bcd15e 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSourceModule.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/sources/tilesources/vectorsource/MLRNVectorSourceModule.kt
+@@ -3,8 +3,11 @@ package org.maplibre.reactnative.components.sources.tilesources.vectorsource
+ import com.facebook.react.bridge.Promise
+ import com.facebook.react.bridge.ReactApplicationContext
+ import com.facebook.react.bridge.ReadableArray
++import com.facebook.react.bridge.ReadableMap
+ import com.facebook.react.module.annotations.ReactModule
++import com.google.gson.JsonObject
+ import org.maplibre.reactnative.NativeVectorSourceModuleSpec
++import org.maplibre.reactnative.utils.ConvertUtils
+ import org.maplibre.reactnative.utils.ExpressionParser
+ import org.maplibre.reactnative.utils.ReactTag
+ import org.maplibre.reactnative.utils.ReactTagResolver
+@@ -41,4 +44,59 @@ class MLRNVectorSourceModule(
+             )
+         }
+     }
++
++    override fun setFeatureState(
++        reactTag: Double,
++        featureId: String,
++        sourceLayer: String,
++        state: ReadableMap,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { vectorSource ->
++            val jsonState = ConvertUtils.toJsonObject(state) ?: JsonObject()
++
++            if (vectorSource.setFeatureState(sourceLayer, featureId, jsonState)) {
++                promise.resolve(null)
++            } else {
++                promise.reject(
++                    "source_not_attached",
++                    "Source is not attached to a map, feature state was not set",
++                )
++            }
++        }
++    }
++
++    override fun getFeatureState(
++        reactTag: Double,
++        featureId: String,
++        sourceLayer: String,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { vectorSource ->
++            promise.resolve(
++                vectorSource.getFeatureState(sourceLayer, featureId)?.let {
++                    ConvertUtils.toWritableMap(it)
++                },
++            )
++        }
++    }
++
++    override fun removeFeatureState(
++        reactTag: Double,
++        featureId: String?,
++        sourceLayer: String,
++        key: String?,
++        promise: Promise,
++    ) {
++        withViewportOnUIThread(reactTag, promise) { vectorSource ->
++            if (vectorSource.removeFeatureState(sourceLayer, featureId, key)) {
++                promise.resolve(null)
++            } else {
++                promise.reject(
++                    "source_not_attached",
++                    "Source is not attached to a map, feature state was not removed",
++                )
++            }
++        }
++    }
+ }
+diff --git a/android/src/main/java/org/maplibre/reactnative/modules/MLRNLocationModule.kt b/android/src/main/java/org/maplibre/reactnative/modules/MLRNLocationModule.kt
+index c4365390601bbce477309749aa9610ecfc3785ce..5c9d5a3c5ff448bcf41dda18043f451f0df6fc5d 100644
+--- a/android/src/main/java/org/maplibre/reactnative/modules/MLRNLocationModule.kt
++++ b/android/src/main/java/org/maplibre/reactnative/modules/MLRNLocationModule.kt
+@@ -80,6 +80,13 @@ class MLRNLocationModule(
+         stopLocationManager()
+     }
+ 
++    // Metch (MLRN#1697): o reload do JS não chama onHostDestroy; sem isso o listener deste módulo fica no
++    // LocationManager (singleton) e o próximo fix chama emitOnUpdate no runtime morto
++    override fun invalidate() {
++        locationManager.removeLocationListener(onUserLocationChangeCallback)
++        super.invalidate()
++    }
++
+     fun pause() {
+         pauseLocationManager()
+     }
+diff --git a/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java b/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
+index c3fc0627714ac7f031a2a26d8872eb74978bdb97..30349fccfb758ee29503ffc618e13311234313f2 100644
+--- a/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
++++ b/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
+@@ -40,12 +40,19 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+     private WeakReference<MapLibreMap> mMap;
+     @Nullable
+     private OnAllImagesLoaded mCallback;
++    @Nullable
++    private final ShouldApply mShouldApply;
+     private final Object mCallerContext;
+ 
+     public DownloadMapImageTask(Context context, MapLibreMap map, @Nullable OnAllImagesLoaded callback) {
++        this(context, map, callback, null);
++    }
++
++    public DownloadMapImageTask(Context context, MapLibreMap map, @Nullable OnAllImagesLoaded callback, @Nullable ShouldApply shouldApply) {
+         mContext = new WeakReference<>(context.getApplicationContext());
+         mMap = new WeakReference<>(map);
+         mCallback = callback;
++        mShouldApply = shouldApply;
+         mCallerContext = this;
+     }
+ 
+@@ -53,6 +60,11 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+         void onAllImagesLoaded();
+     }
+ 
++    // Metch: checado na main thread antes de pôr a imagem no estilo (download atrasado de uri velha ou de chave removida é descartado)
++    public interface ShouldApply {
++        boolean shouldApply(String name, ImageEntry entry);
++    }
++
+     @SafeVarargs
+     @Override
+     protected final List<Map.Entry<String, DownloadedImage>> doInBackground(Map.Entry<String, ImageEntry>... objects) {
+@@ -131,6 +143,9 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+             Style style = map.getStyle();
+             if (style != null) {
+                 for (Map.Entry<String, DownloadedImage> image : images) {
++                    if (mShouldApply != null && !mShouldApply.shouldApply(image.getKey(), image.getValue().info())) {
++                        continue;
++                    }
+                     style.addImage(image.getKey(), image.getValue().bitmap(), image.getValue().info().sdf);
+                 }
+             }
+diff --git a/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js b/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js
+index 15cf3271eacc4a2739c771c0afbf8d9445d0ec21..fef432eeeb24613de89a8be4e150bd352319c7af 100644
+--- a/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js
++++ b/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js
+@@ -25,6 +25,9 @@ const GeoJSONSource = exports.GeoJSONSource = /*#__PURE__*/(0, _react.memo)(({
+ }) => {
+   const nativeRef = (0, _react.useRef)(null);
+   const frozenId = (0, _useFrozenId.useFrozenId)(id);
++  function removeFeatureState(feature, key) {
++    return _NativeGeoJSONSourceModule.default.removeFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), feature ? String(feature.id) : null, key ?? null);
++  }
+   (0, _react.useImperativeHandle)(ref, () => ({
+     getData: async filter => {
+       return _NativeGeoJSONSourceModule.default.getData((0, _findNodeHandle.findNodeHandle)(nativeRef.current), (0, _getNativeFilter.getNativeFilter)(filter));
+@@ -38,6 +41,26 @@ const GeoJSONSource = exports.GeoJSONSource = /*#__PURE__*/(0, _react.memo)(({
+     getClusterChildren: async clusterId => {
+       return _NativeGeoJSONSourceModule.default.getClusterChildren((0, _findNodeHandle.findNodeHandle)(nativeRef.current), clusterId);
+     },
++    setFeatureState: async ({
++      id
++    }, state) => {
++      return _NativeGeoJSONSourceModule.default.setFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), String(id), state);
++    },
++    getFeatureState: async ({
++      id
++    }) => {
++      const state = await _NativeGeoJSONSourceModule.default.getFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), String(id));
++      return state ?? null;
++    },
++    removeFeatureState,
++    // Metch: lote de setFeatureState (fora do PR #1651)
++    setFeatureStates: async entries => {
++      return _NativeGeoJSONSourceModule.default.setFeatureStates((0, _findNodeHandle.findNodeHandle)(nativeRef.current), entries.map(({
++        id
++      }) => String(id)), entries.map(({
++        state
++      }) => state));
++    },
+     getAnimatableRef: () => nativeRef.current ? new Proxy(nativeRef.current, {
+       get: (target, prop) => prop === "_viewConfig" ? target.__viewConfig : target[prop]
+     }) : null
+diff --git a/lib/commonjs/components/sources/vector-source/VectorSource.js b/lib/commonjs/components/sources/vector-source/VectorSource.js
+index 9805fd24977b7302fccd576b4cf5f7f2644692cf..89658de044640903973f5a230da9695e59f29ca1 100644
+--- a/lib/commonjs/components/sources/vector-source/VectorSource.js
++++ b/lib/commonjs/components/sources/vector-source/VectorSource.js
+@@ -26,13 +26,33 @@ const VectorSource = exports.VectorSource = /*#__PURE__*/(0, _react.memo)(({
+ }) => {
+   const nativeRef = (0, _react.useRef)(null);
+   const frozenId = (0, _useFrozenId.useFrozenId)(id);
++  function removeFeatureState({
++    id,
++    sourceLayer
++  }, key) {
++    return _NativeVectorSourceModule.default.removeFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), id === undefined ? null : String(id), sourceLayer, key ?? null);
++  }
+   (0, _react.useImperativeHandle)(ref, () => ({
+     querySourceFeatures: async ({
+       sourceLayer,
+       filter
+     }) => {
+       return _NativeVectorSourceModule.default.querySourceFeatures((0, _findNodeHandle.findNodeHandle)(nativeRef.current), sourceLayer, (0, _getNativeFilter.getNativeFilter)(filter));
+-    }
++    },
++    setFeatureState: async ({
++      id,
++      sourceLayer
++    }, state) => {
++      return _NativeVectorSourceModule.default.setFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), String(id), sourceLayer, state);
++    },
++    getFeatureState: async ({
++      id,
++      sourceLayer
++    }) => {
++      const state = await _NativeVectorSourceModule.default.getFeatureState((0, _findNodeHandle.findNodeHandle)(nativeRef.current), String(id), sourceLayer);
++      return state ?? null;
++    },
++    removeFeatureState
+   }));
+   return /*#__PURE__*/(0, _jsxRuntime.jsx)(_VectorSourceNativeComponent.default, {
+     ref: nativeRef,
+diff --git a/lib/module/components/sources/geojson-source/GeoJSONSource.js b/lib/module/components/sources/geojson-source/GeoJSONSource.js
+index abb21d564be478ed34dcba5c6f67f244cd367aa5..4aebce1c6aa7cf8517be13c2be5dfa90a9f2f818 100644
+--- a/lib/module/components/sources/geojson-source/GeoJSONSource.js
++++ b/lib/module/components/sources/geojson-source/GeoJSONSource.js
+@@ -20,6 +20,9 @@ export const GeoJSONSource = /*#__PURE__*/memo(({
+ }) => {
+   const nativeRef = useRef(null);
+   const frozenId = useFrozenId(id);
++  function removeFeatureState(feature, key) {
++    return NativeGeoJSONSourceModule.removeFeatureState(findNodeHandle(nativeRef.current), feature ? String(feature.id) : null, key ?? null);
++  }
+   useImperativeHandle(ref, () => ({
+     getData: async filter => {
+       return NativeGeoJSONSourceModule.getData(findNodeHandle(nativeRef.current), getNativeFilter(filter));
+@@ -33,6 +36,26 @@ export const GeoJSONSource = /*#__PURE__*/memo(({
+     getClusterChildren: async clusterId => {
+       return NativeGeoJSONSourceModule.getClusterChildren(findNodeHandle(nativeRef.current), clusterId);
+     },
++    setFeatureState: async ({
++      id
++    }, state) => {
++      return NativeGeoJSONSourceModule.setFeatureState(findNodeHandle(nativeRef.current), String(id), state);
++    },
++    getFeatureState: async ({
++      id
++    }) => {
++      const state = await NativeGeoJSONSourceModule.getFeatureState(findNodeHandle(nativeRef.current), String(id));
++      return state ?? null;
++    },
++    removeFeatureState,
++    // Metch: lote de setFeatureState (fora do PR #1651)
++    setFeatureStates: async entries => {
++      return NativeGeoJSONSourceModule.setFeatureStates(findNodeHandle(nativeRef.current), entries.map(({
++        id
++      }) => String(id)), entries.map(({
++        state
++      }) => state));
++    },
+     getAnimatableRef: () => nativeRef.current ? new Proxy(nativeRef.current, {
+       get: (target, prop) => prop === "_viewConfig" ? target.__viewConfig : target[prop]
+     }) : null
+diff --git a/lib/module/components/sources/vector-source/VectorSource.js b/lib/module/components/sources/vector-source/VectorSource.js
+index 4c37dd518c110c4b0429a92d03618d25d43cb985..59458ca46193ca52559627ebca120c9718e4df79 100644
+--- a/lib/module/components/sources/vector-source/VectorSource.js
++++ b/lib/module/components/sources/vector-source/VectorSource.js
+@@ -21,13 +21,33 @@ export const VectorSource = /*#__PURE__*/memo(({
+ }) => {
+   const nativeRef = useRef(null);
+   const frozenId = useFrozenId(id);
++  function removeFeatureState({
++    id,
++    sourceLayer
++  }, key) {
++    return NativeVectorSourceModule.removeFeatureState(findNodeHandle(nativeRef.current), id === undefined ? null : String(id), sourceLayer, key ?? null);
++  }
+   useImperativeHandle(ref, () => ({
+     querySourceFeatures: async ({
+       sourceLayer,
+       filter
+     }) => {
+       return NativeVectorSourceModule.querySourceFeatures(findNodeHandle(nativeRef.current), sourceLayer, getNativeFilter(filter));
+-    }
++    },
++    setFeatureState: async ({
++      id,
++      sourceLayer
++    }, state) => {
++      return NativeVectorSourceModule.setFeatureState(findNodeHandle(nativeRef.current), String(id), sourceLayer, state);
++    },
++    getFeatureState: async ({
++      id,
++      sourceLayer
++    }) => {
++      const state = await NativeVectorSourceModule.getFeatureState(findNodeHandle(nativeRef.current), String(id), sourceLayer);
++      return state ?? null;
++    },
++    removeFeatureState
+   }));
+   return /*#__PURE__*/_jsx(VectorSourceNativeComponent, {
+     ref: nativeRef,
+diff --git a/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts b/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts
+index a0c47bff2832115432ca383be637e2655bbae59c..2c48500ef9c200d556a28a1b979d653560cadf14 100644
+--- a/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts
++++ b/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts
+@@ -3,6 +3,7 @@ import { Component, type ComponentProps, type ReactNode, type Ref } from "react"
+ import { type ReactNativeElement } from "react-native";
+ import GeoJSONSourceNativeComponent from "./GeoJSONSourceNativeComponent";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ export type NativeGeoJSONSourceRef = Component<ComponentProps<typeof GeoJSONSourceNativeComponent>> & ReactNativeElement;
+ export interface GeoJSONSourceRef {
+@@ -46,6 +47,102 @@ export interface GeoJSONSourceRef {
+      * const collection = await geoJSONSourceRef.current?.getClusterChildren(clusterId);
+      */
+     getClusterChildren(clusterId: number): Promise<GeoJSON.Feature[]>;
++    /**
++     * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++     * key-value pairs that are assigned to a feature at runtime. The given `state`
++     *  object is merged with any existing key-value pairs in the feature's state.
++     * Features are identified by their `id` , which can be any number or string.
++     * The feature must carry an `id` in the source data.
++     *
++     * Use the `feature-state` expression to access the values in a feature's state
++     * object for the purposes of styling. Only paint properties support it.
++     *
++     * @param feature - Feature identifier
++     * @param state - A set of key-value pairs. The values should be valid JSON types.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.setFeatureState(
++     *   { id: feature.id },
++     *   { selected: true },
++     * );
++     * ```
++     */
++    setFeatureState(feature: {
++        id: string | number;
++    }, state: FeatureState): Promise<void>;
++    /**
++     * Gets the `state` of a feature. Resolves to `null` when the feature has no
++     * state.
++     *
++     * @param feature - Feature identifier
++     *
++     * @example
++     * ```ts
++     * const state = await geoJSONSourceRef.current?.getFeatureState({
++     *   id: feature.id,
++     * });
++     * ```
++     */
++    getFeatureState(feature: {
++        id: string | number;
++    }): Promise<FeatureState | null>;
++    /**
++     * Removes the `state` of a feature, setting it back to the default behavior. If
++     * only `feature.id` is specified, it removes all keys of that feature's state.
++     * If `key` is also specified, it removes only that key of that feature's state.
++     * A `key` can only be removed for a specific feature; there is no way to remove
++     * one key from every feature at once.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Feature identifier
++     * @param key - The key in the feature state to reset
++     *
++     * @example
++     * ```ts
++     * // Reset the entire state of one feature
++     * await geoJSONSourceRef.current?.removeFeatureState({ id: feature.id });
++     * // Reset only the `selected` key of one feature
++     * await geoJSONSourceRef.current?.removeFeatureState(
++     *   { id: feature.id },
++     *   "selected",
++     * );
++     * ```
++     */
++    removeFeatureState(feature: {
++        id: string | number;
++    }, key?: string): Promise<void>;
++    /**
++     * Removes the `state` of all features in the source, setting them back to the
++     * default behavior.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.removeFeatureState();
++     * ```
++     */
++    removeFeatureState(): Promise<void>;
++    /**
++     * Metch (fora do PR #1651): vários `setFeatureState` numa chamada nativa só,
++     * aplicados em ordem na UI thread. Para animação quadro a quadro.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.setFeatureStates([
++     *   { id: "a", state: { a: 0.5 } },
++     *   { id: "b", state: { pa: 1 } },
++     * ]);
++     * ```
++     */
++    setFeatureStates(entries: ReadonlyArray<{
++        id: string | number;
++        state: FeatureState;
++    }>): Promise<void>;
+     /**
+      * Returns the native ref for Reanimated compatibility.
+      */
+diff --git a/lib/typescript/commonjs/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts b/lib/typescript/commonjs/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
+index bd2d135d7ff93c2c5d8ed290a03a2e09404879c9..4cc153ffcac5d2b3240bb5599e5fbb157a9b8987 100644
+--- a/lib/typescript/commonjs/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
++++ b/lib/typescript/commonjs/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
+@@ -4,6 +4,10 @@ export interface Spec extends TurboModule {
+     getClusterExpansionZoom: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32) => Promise<number>;
+     getClusterLeaves: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32, limit: CodegenTypes.Int32, offset: CodegenTypes.Int32) => Promise<GeoJSON.Feature[]>;
+     getClusterChildren: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32) => Promise<GeoJSON.Feature[]>;
++    setFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, state: CodegenTypes.UnsafeObject) => Promise<void>;
++    getFeatureState: (reactTag: CodegenTypes.Int32, featureId: string) => Promise<CodegenTypes.UnsafeObject | null>;
++    removeFeatureState: (reactTag: CodegenTypes.Int32, featureId: string | null, key: string | null) => Promise<void>;
++    setFeatureStates: (reactTag: CodegenTypes.Int32, featureIds: string[], states: CodegenTypes.UnsafeObject[]) => Promise<void>;
+ }
+ declare const _default: Spec;
+ export default _default;
+diff --git a/lib/typescript/commonjs/components/sources/vector-source/NativeVectorSourceModule.d.ts b/lib/typescript/commonjs/components/sources/vector-source/NativeVectorSourceModule.d.ts
+index abe81e53baa1f17788103669b3c93bab49d6b442..cd92bc0963a20fa2bc468784f4b878d5f349e18f 100644
+--- a/lib/typescript/commonjs/components/sources/vector-source/NativeVectorSourceModule.d.ts
++++ b/lib/typescript/commonjs/components/sources/vector-source/NativeVectorSourceModule.d.ts
+@@ -1,6 +1,9 @@
+ import { type CodegenTypes, type TurboModule } from "react-native";
+ export interface Spec extends TurboModule {
+     querySourceFeatures: (reactTag: CodegenTypes.Int32, sourceLayer: string, filter: string[]) => Promise<GeoJSON.Feature[]>;
++    setFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, sourceLayer: string, state: CodegenTypes.UnsafeObject) => Promise<void>;
++    getFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, sourceLayer: string) => Promise<CodegenTypes.UnsafeObject | null>;
++    removeFeatureState: (reactTag: CodegenTypes.Int32, featureId: string | null, sourceLayer: string, key: string | null) => Promise<void>;
+ }
+ declare const _default: Spec;
+ export default _default;
+diff --git a/lib/typescript/commonjs/components/sources/vector-source/VectorSource.d.ts b/lib/typescript/commonjs/components/sources/vector-source/VectorSource.d.ts
+index 291e682d7d0349f3f655f23fe77d033f74aac90c..8df2f66d8394745c6694a181a6a9eef933362c15 100644
+--- a/lib/typescript/commonjs/components/sources/vector-source/VectorSource.d.ts
++++ b/lib/typescript/commonjs/components/sources/vector-source/VectorSource.d.ts
+@@ -1,6 +1,7 @@
+ import type { FilterSpecification } from "@maplibre/maplibre-gl-style-spec";
+ import { type ReactNode, type Ref } from "react";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ export interface VectorSourceRef {
+     /**
+@@ -18,6 +19,99 @@ export interface VectorSourceRef {
+         sourceLayer: string;
+         filter?: FilterSpecification;
+     }): Promise<GeoJSON.Feature[]>;
++    /**
++     * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++     * key-value pairs that are assigned to a feature at runtime. The given `state`
++     *  object is merged with any existing key-value pairs in the feature's state.
++     * Features are identified by their `id` within a `sourceLayer` , which can be
++     * any number or string. The feature must carry an `id` in the vector tile data.
++     *
++     * Use the `feature-state` expression to access the values in a feature's state
++     * object for the purposes of styling. Only paint properties support it.
++     *
++     * @param feature - Feature identifier
++     * @param state - A set of key-value pairs. The values should be valid JSON types.
++     *
++     * @example
++     * ```ts
++     * await vectorSourceRef.current?.setFeatureState(
++     *   { id: feature.id, sourceLayer: "buildings" },
++     *   { selected: true },
++     * );
++     * ```
++     */
++    setFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }, state: FeatureState): Promise<void>;
++    /**
++     * Gets the `state` of a feature. Resolves to `null` when the feature has no
++     * state.
++     *
++     * @param feature - Feature identifier
++     *
++     * @example
++     * ```ts
++     * const state = await vectorSourceRef.current?.getFeatureState({
++     *   id: feature.id,
++     *   sourceLayer: "buildings",
++     * });
++     * ```
++     */
++    getFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }): Promise<FeatureState | null>;
++    /**
++     * Removes the `state` of a feature, setting it back to the default behavior. If
++     * only `feature.id` is specified, it removes all keys of that feature's state.
++     * If `key` is also specified, it removes only that key of that feature's state.
++     * A `key` can only be removed for a specific feature; there is no way to remove
++     * one key from every feature at once.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Feature identifier
++     * @param key - The key in the feature state to reset
++     *
++     * @example
++     * ```ts
++     * // Reset the entire state of one feature
++     * await vectorSourceRef.current?.removeFeatureState({
++     *   id: feature.id,
++     *   sourceLayer: "buildings",
++     * });
++     * // Reset only the `selected` key of one feature
++     * await vectorSourceRef.current?.removeFeatureState(
++     *   { id: feature.id, sourceLayer: "buildings" },
++     *   "selected",
++     * );
++     * ```
++     */
++    removeFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }, key?: string): Promise<void>;
++    /**
++     * Removes the `state` of all features in the given source layer, setting them
++     * back to the default behavior.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Source layer identifier
++     *
++     * @example
++     * ```ts
++     * await vectorSourceRef.current?.removeFeatureState({
++     *   sourceLayer: "buildings",
++     * });
++     * ```
++     */
++    removeFeatureState(feature: {
++        sourceLayer: string;
++    }): Promise<void>;
+ }
+ export interface VectorSourceProps extends BaseProps, PressableSourceProps {
+     /**
+diff --git a/lib/typescript/commonjs/index.d.ts b/lib/typescript/commonjs/index.d.ts
+index 2ff2f3ce52bfc3b017718da746f8ce9fc407cb64..e9b2b567f06afbf8330a097a7068c3b18c27a02c 100644
+--- a/lib/typescript/commonjs/index.d.ts
++++ b/lib/typescript/commonjs/index.d.ts
+@@ -11,6 +11,7 @@ export { type GeoJSONSourceRef, type GeoJSONSourceProps, GeoJSONSource, } from "
+ export { type RasterSourceProps, RasterSource, } from "./components/sources/raster-source/RasterSource";
+ export { type RasterDEMSourceProps, RasterDEMSource, } from "./components/sources/raster-dem-source/RasterDEMSource";
+ export { type VectorSourceRef, type VectorSourceProps, VectorSource, } from "./components/sources/vector-source/VectorSource";
++export type { FeatureState, FeatureStateValue } from "./types/FeatureState";
+ export { Layer, type LayerProps, type SourceLayerProps, type FillLayerProps, type LineLayerProps, type SymbolLayerProps, type CircleLayerProps, type HeatmapLayerProps, type FillExtrusionLayerProps, type RasterLayerProps, type BackgroundLayerProps, } from "./components/layer/Layer";
+ export type { LayerSpecification, BackgroundLayerSpecification, CircleLayerSpecification, ColorReliefLayerSpecification, FillLayerSpecification, FillExtrusionLayerSpecification, HeatmapLayerSpecification, HillshadeLayerSpecification, LineLayerSpecification, RasterLayerSpecification, SymbolLayerSpecification, SourceSpecification, GeoJSONSourceSpecification, ImageSourceSpecification, RasterSourceSpecification, RasterDEMSourceSpecification, VectorSourceSpecification, VideoSourceSpecification, FilterSpecification, StyleSpecification, SkySpecification, LightSpecification, TerrainSpecification, ProjectionSpecification, } from "@maplibre/maplibre-gl-style-spec";
+ export { type ImageSourceWithSdf, type ImageEntry, type ImagesProps, Images, } from "./components/images/Images";
+diff --git a/lib/typescript/commonjs/types/FeatureState.d.ts b/lib/typescript/commonjs/types/FeatureState.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f330689f4ff4469808aa2238d46f0e7d259ae4c4
+--- /dev/null
++++ b/lib/typescript/commonjs/types/FeatureState.d.ts
+@@ -0,0 +1,11 @@
++/**
++ * A JSON-serializable value, as accepted by the `feature-state` expression.
++ */
++export type FeatureStateValue = string | number | boolean | null | FeatureStateValue[] | FeatureState;
++/**
++ * Runtime key-value state attached to a single feature. Read it in style
++ * expressions with `["feature-state", "key"]` .
++ */
++export interface FeatureState {
++    [key: string]: FeatureStateValue;
++}
+diff --git a/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts b/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts
+index a0c47bff2832115432ca383be637e2655bbae59c..2c48500ef9c200d556a28a1b979d653560cadf14 100644
+--- a/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts
++++ b/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts
+@@ -3,6 +3,7 @@ import { Component, type ComponentProps, type ReactNode, type Ref } from "react"
+ import { type ReactNativeElement } from "react-native";
+ import GeoJSONSourceNativeComponent from "./GeoJSONSourceNativeComponent";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ export type NativeGeoJSONSourceRef = Component<ComponentProps<typeof GeoJSONSourceNativeComponent>> & ReactNativeElement;
+ export interface GeoJSONSourceRef {
+@@ -46,6 +47,102 @@ export interface GeoJSONSourceRef {
+      * const collection = await geoJSONSourceRef.current?.getClusterChildren(clusterId);
+      */
+     getClusterChildren(clusterId: number): Promise<GeoJSON.Feature[]>;
++    /**
++     * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++     * key-value pairs that are assigned to a feature at runtime. The given `state`
++     *  object is merged with any existing key-value pairs in the feature's state.
++     * Features are identified by their `id` , which can be any number or string.
++     * The feature must carry an `id` in the source data.
++     *
++     * Use the `feature-state` expression to access the values in a feature's state
++     * object for the purposes of styling. Only paint properties support it.
++     *
++     * @param feature - Feature identifier
++     * @param state - A set of key-value pairs. The values should be valid JSON types.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.setFeatureState(
++     *   { id: feature.id },
++     *   { selected: true },
++     * );
++     * ```
++     */
++    setFeatureState(feature: {
++        id: string | number;
++    }, state: FeatureState): Promise<void>;
++    /**
++     * Gets the `state` of a feature. Resolves to `null` when the feature has no
++     * state.
++     *
++     * @param feature - Feature identifier
++     *
++     * @example
++     * ```ts
++     * const state = await geoJSONSourceRef.current?.getFeatureState({
++     *   id: feature.id,
++     * });
++     * ```
++     */
++    getFeatureState(feature: {
++        id: string | number;
++    }): Promise<FeatureState | null>;
++    /**
++     * Removes the `state` of a feature, setting it back to the default behavior. If
++     * only `feature.id` is specified, it removes all keys of that feature's state.
++     * If `key` is also specified, it removes only that key of that feature's state.
++     * A `key` can only be removed for a specific feature; there is no way to remove
++     * one key from every feature at once.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Feature identifier
++     * @param key - The key in the feature state to reset
++     *
++     * @example
++     * ```ts
++     * // Reset the entire state of one feature
++     * await geoJSONSourceRef.current?.removeFeatureState({ id: feature.id });
++     * // Reset only the `selected` key of one feature
++     * await geoJSONSourceRef.current?.removeFeatureState(
++     *   { id: feature.id },
++     *   "selected",
++     * );
++     * ```
++     */
++    removeFeatureState(feature: {
++        id: string | number;
++    }, key?: string): Promise<void>;
++    /**
++     * Removes the `state` of all features in the source, setting them back to the
++     * default behavior.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.removeFeatureState();
++     * ```
++     */
++    removeFeatureState(): Promise<void>;
++    /**
++     * Metch (fora do PR #1651): vários `setFeatureState` numa chamada nativa só,
++     * aplicados em ordem na UI thread. Para animação quadro a quadro.
++     *
++     * @example
++     * ```ts
++     * await geoJSONSourceRef.current?.setFeatureStates([
++     *   { id: "a", state: { a: 0.5 } },
++     *   { id: "b", state: { pa: 1 } },
++     * ]);
++     * ```
++     */
++    setFeatureStates(entries: ReadonlyArray<{
++        id: string | number;
++        state: FeatureState;
++    }>): Promise<void>;
+     /**
+      * Returns the native ref for Reanimated compatibility.
+      */
+diff --git a/lib/typescript/module/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts b/lib/typescript/module/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
+index bd2d135d7ff93c2c5d8ed290a03a2e09404879c9..4cc153ffcac5d2b3240bb5599e5fbb157a9b8987 100644
+--- a/lib/typescript/module/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
++++ b/lib/typescript/module/components/sources/geojson-source/NativeGeoJSONSourceModule.d.ts
+@@ -4,6 +4,10 @@ export interface Spec extends TurboModule {
+     getClusterExpansionZoom: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32) => Promise<number>;
+     getClusterLeaves: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32, limit: CodegenTypes.Int32, offset: CodegenTypes.Int32) => Promise<GeoJSON.Feature[]>;
+     getClusterChildren: (reactTag: CodegenTypes.Int32, clusterId: CodegenTypes.Int32) => Promise<GeoJSON.Feature[]>;
++    setFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, state: CodegenTypes.UnsafeObject) => Promise<void>;
++    getFeatureState: (reactTag: CodegenTypes.Int32, featureId: string) => Promise<CodegenTypes.UnsafeObject | null>;
++    removeFeatureState: (reactTag: CodegenTypes.Int32, featureId: string | null, key: string | null) => Promise<void>;
++    setFeatureStates: (reactTag: CodegenTypes.Int32, featureIds: string[], states: CodegenTypes.UnsafeObject[]) => Promise<void>;
+ }
+ declare const _default: Spec;
+ export default _default;
+diff --git a/lib/typescript/module/components/sources/vector-source/NativeVectorSourceModule.d.ts b/lib/typescript/module/components/sources/vector-source/NativeVectorSourceModule.d.ts
+index abe81e53baa1f17788103669b3c93bab49d6b442..cd92bc0963a20fa2bc468784f4b878d5f349e18f 100644
+--- a/lib/typescript/module/components/sources/vector-source/NativeVectorSourceModule.d.ts
++++ b/lib/typescript/module/components/sources/vector-source/NativeVectorSourceModule.d.ts
+@@ -1,6 +1,9 @@
+ import { type CodegenTypes, type TurboModule } from "react-native";
+ export interface Spec extends TurboModule {
+     querySourceFeatures: (reactTag: CodegenTypes.Int32, sourceLayer: string, filter: string[]) => Promise<GeoJSON.Feature[]>;
++    setFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, sourceLayer: string, state: CodegenTypes.UnsafeObject) => Promise<void>;
++    getFeatureState: (reactTag: CodegenTypes.Int32, featureId: string, sourceLayer: string) => Promise<CodegenTypes.UnsafeObject | null>;
++    removeFeatureState: (reactTag: CodegenTypes.Int32, featureId: string | null, sourceLayer: string, key: string | null) => Promise<void>;
+ }
+ declare const _default: Spec;
+ export default _default;
+diff --git a/lib/typescript/module/components/sources/vector-source/VectorSource.d.ts b/lib/typescript/module/components/sources/vector-source/VectorSource.d.ts
+index 291e682d7d0349f3f655f23fe77d033f74aac90c..8df2f66d8394745c6694a181a6a9eef933362c15 100644
+--- a/lib/typescript/module/components/sources/vector-source/VectorSource.d.ts
++++ b/lib/typescript/module/components/sources/vector-source/VectorSource.d.ts
+@@ -1,6 +1,7 @@
+ import type { FilterSpecification } from "@maplibre/maplibre-gl-style-spec";
+ import { type ReactNode, type Ref } from "react";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ export interface VectorSourceRef {
+     /**
+@@ -18,6 +19,99 @@ export interface VectorSourceRef {
+         sourceLayer: string;
+         filter?: FilterSpecification;
+     }): Promise<GeoJSON.Feature[]>;
++    /**
++     * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++     * key-value pairs that are assigned to a feature at runtime. The given `state`
++     *  object is merged with any existing key-value pairs in the feature's state.
++     * Features are identified by their `id` within a `sourceLayer` , which can be
++     * any number or string. The feature must carry an `id` in the vector tile data.
++     *
++     * Use the `feature-state` expression to access the values in a feature's state
++     * object for the purposes of styling. Only paint properties support it.
++     *
++     * @param feature - Feature identifier
++     * @param state - A set of key-value pairs. The values should be valid JSON types.
++     *
++     * @example
++     * ```ts
++     * await vectorSourceRef.current?.setFeatureState(
++     *   { id: feature.id, sourceLayer: "buildings" },
++     *   { selected: true },
++     * );
++     * ```
++     */
++    setFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }, state: FeatureState): Promise<void>;
++    /**
++     * Gets the `state` of a feature. Resolves to `null` when the feature has no
++     * state.
++     *
++     * @param feature - Feature identifier
++     *
++     * @example
++     * ```ts
++     * const state = await vectorSourceRef.current?.getFeatureState({
++     *   id: feature.id,
++     *   sourceLayer: "buildings",
++     * });
++     * ```
++     */
++    getFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }): Promise<FeatureState | null>;
++    /**
++     * Removes the `state` of a feature, setting it back to the default behavior. If
++     * only `feature.id` is specified, it removes all keys of that feature's state.
++     * If `key` is also specified, it removes only that key of that feature's state.
++     * A `key` can only be removed for a specific feature; there is no way to remove
++     * one key from every feature at once.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Feature identifier
++     * @param key - The key in the feature state to reset
++     *
++     * @example
++     * ```ts
++     * // Reset the entire state of one feature
++     * await vectorSourceRef.current?.removeFeatureState({
++     *   id: feature.id,
++     *   sourceLayer: "buildings",
++     * });
++     * // Reset only the `selected` key of one feature
++     * await vectorSourceRef.current?.removeFeatureState(
++     *   { id: feature.id, sourceLayer: "buildings" },
++     *   "selected",
++     * );
++     * ```
++     */
++    removeFeatureState(feature: {
++        id: string | number;
++        sourceLayer: string;
++    }, key?: string): Promise<void>;
++    /**
++     * Removes the `state` of all features in the given source layer, setting them
++     * back to the default behavior.
++     *
++     * Removals are applied on the next rendered frame, so `getFeatureState` called
++     * immediately afterwards may still return the removed entries.
++     *
++     * @param feature - Source layer identifier
++     *
++     * @example
++     * ```ts
++     * await vectorSourceRef.current?.removeFeatureState({
++     *   sourceLayer: "buildings",
++     * });
++     * ```
++     */
++    removeFeatureState(feature: {
++        sourceLayer: string;
++    }): Promise<void>;
+ }
+ export interface VectorSourceProps extends BaseProps, PressableSourceProps {
+     /**
+diff --git a/lib/typescript/module/index.d.ts b/lib/typescript/module/index.d.ts
+index 2ff2f3ce52bfc3b017718da746f8ce9fc407cb64..e9b2b567f06afbf8330a097a7068c3b18c27a02c 100644
+--- a/lib/typescript/module/index.d.ts
++++ b/lib/typescript/module/index.d.ts
+@@ -11,6 +11,7 @@ export { type GeoJSONSourceRef, type GeoJSONSourceProps, GeoJSONSource, } from "
+ export { type RasterSourceProps, RasterSource, } from "./components/sources/raster-source/RasterSource";
+ export { type RasterDEMSourceProps, RasterDEMSource, } from "./components/sources/raster-dem-source/RasterDEMSource";
+ export { type VectorSourceRef, type VectorSourceProps, VectorSource, } from "./components/sources/vector-source/VectorSource";
++export type { FeatureState, FeatureStateValue } from "./types/FeatureState";
+ export { Layer, type LayerProps, type SourceLayerProps, type FillLayerProps, type LineLayerProps, type SymbolLayerProps, type CircleLayerProps, type HeatmapLayerProps, type FillExtrusionLayerProps, type RasterLayerProps, type BackgroundLayerProps, } from "./components/layer/Layer";
+ export type { LayerSpecification, BackgroundLayerSpecification, CircleLayerSpecification, ColorReliefLayerSpecification, FillLayerSpecification, FillExtrusionLayerSpecification, HeatmapLayerSpecification, HillshadeLayerSpecification, LineLayerSpecification, RasterLayerSpecification, SymbolLayerSpecification, SourceSpecification, GeoJSONSourceSpecification, ImageSourceSpecification, RasterSourceSpecification, RasterDEMSourceSpecification, VectorSourceSpecification, VideoSourceSpecification, FilterSpecification, StyleSpecification, SkySpecification, LightSpecification, TerrainSpecification, ProjectionSpecification, } from "@maplibre/maplibre-gl-style-spec";
+ export { type ImageSourceWithSdf, type ImageEntry, type ImagesProps, Images, } from "./components/images/Images";
+diff --git a/lib/typescript/module/types/FeatureState.d.ts b/lib/typescript/module/types/FeatureState.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f330689f4ff4469808aa2238d46f0e7d259ae4c4
+--- /dev/null
++++ b/lib/typescript/module/types/FeatureState.d.ts
+@@ -0,0 +1,11 @@
++/**
++ * A JSON-serializable value, as accepted by the `feature-state` expression.
++ */
++export type FeatureStateValue = string | number | boolean | null | FeatureStateValue[] | FeatureState;
++/**
++ * Runtime key-value state attached to a single feature. Read it in style
++ * expressions with `["feature-state", "key"]` .
++ */
++export interface FeatureState {
++    [key: string]: FeatureStateValue;
++}
+diff --git a/src/components/sources/geojson-source/GeoJSONSource.tsx b/src/components/sources/geojson-source/GeoJSONSource.tsx
+index ec7dc32e3c041f6a67ffab3983296bae30868e08..1c923cf80a3ae8346ffcc26188f15d411c2cf516 100644
+--- a/src/components/sources/geojson-source/GeoJSONSource.tsx
++++ b/src/components/sources/geojson-source/GeoJSONSource.tsx
+@@ -17,6 +17,7 @@ import GeoJSONSourceNativeComponent from "./GeoJSONSourceNativeComponent";
+ import NativeGeoJSONSourceModule from "./NativeGeoJSONSourceModule";
+ import { useFrozenId } from "../../../hooks/useFrozenId";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ import { cloneReactChildrenWithProps } from "../../../utils";
+ import { findNodeHandle } from "../../../utils/findNodeHandle";
+@@ -76,6 +77,108 @@ export interface GeoJSONSourceRef {
+    */
+   getClusterChildren(clusterId: number): Promise<GeoJSON.Feature[]>;
+ 
++  /**
++   * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++   * key-value pairs that are assigned to a feature at runtime. The given `state`
++   *  object is merged with any existing key-value pairs in the feature's state.
++   * Features are identified by their `id` , which can be any number or string.
++   * The feature must carry an `id` in the source data.
++   *
++   * Use the `feature-state` expression to access the values in a feature's state
++   * object for the purposes of styling. Only paint properties support it.
++   *
++   * @param feature - Feature identifier
++   * @param state - A set of key-value pairs. The values should be valid JSON types.
++   *
++   * @example
++   * ```ts
++   * await geoJSONSourceRef.current?.setFeatureState(
++   *   { id: feature.id },
++   *   { selected: true },
++   * );
++   * ```
++   */
++  setFeatureState(
++    feature: { id: string | number },
++    state: FeatureState,
++  ): Promise<void>;
++
++  /**
++   * Gets the `state` of a feature. Resolves to `null` when the feature has no
++   * state.
++   *
++   * @param feature - Feature identifier
++   *
++   * @example
++   * ```ts
++   * const state = await geoJSONSourceRef.current?.getFeatureState({
++   *   id: feature.id,
++   * });
++   * ```
++   */
++  getFeatureState(feature: {
++    id: string | number;
++  }): Promise<FeatureState | null>;
++
++  /**
++   * Removes the `state` of a feature, setting it back to the default behavior. If
++   * only `feature.id` is specified, it removes all keys of that feature's state.
++   * If `key` is also specified, it removes only that key of that feature's state.
++   * A `key` can only be removed for a specific feature; there is no way to remove
++   * one key from every feature at once.
++   *
++   * Removals are applied on the next rendered frame, so `getFeatureState` called
++   * immediately afterwards may still return the removed entries.
++   *
++   * @param feature - Feature identifier
++   * @param key - The key in the feature state to reset
++   *
++   * @example
++   * ```ts
++   * // Reset the entire state of one feature
++   * await geoJSONSourceRef.current?.removeFeatureState({ id: feature.id });
++   * // Reset only the `selected` key of one feature
++   * await geoJSONSourceRef.current?.removeFeatureState(
++   *   { id: feature.id },
++   *   "selected",
++   * );
++   * ```
++   */
++  removeFeatureState(
++    feature: { id: string | number },
++    key?: string,
++  ): Promise<void>;
++
++  /**
++   * Removes the `state` of all features in the source, setting them back to the
++   * default behavior.
++   *
++   * Removals are applied on the next rendered frame, so `getFeatureState` called
++   * immediately afterwards may still return the removed entries.
++   *
++   * @example
++   * ```ts
++   * await geoJSONSourceRef.current?.removeFeatureState();
++   * ```
++   */
++  removeFeatureState(): Promise<void>;
++
++  /**
++   * Metch (fora do PR #1651): vários `setFeatureState` numa chamada nativa só,
++   * aplicados em ordem na UI thread. Para animação quadro a quadro.
++   *
++   * @example
++   * ```ts
++   * await geoJSONSourceRef.current?.setFeatureStates([
++   *   { id: "a", state: { a: 0.5 } },
++   *   { id: "b", state: { pa: 1 } },
++   * ]);
++   * ```
++   */
++  setFeatureStates(
++    entries: ReadonlyArray<{ id: string | number; state: FeatureState }>,
++  ): Promise<void>;
++
+   /**
+    * Returns the native ref for Reanimated compatibility.
+    */
+@@ -181,6 +284,22 @@ export const GeoJSONSource = memo(
+ 
+     const frozenId = useFrozenId(id);
+ 
++    function removeFeatureState(
++      feature: { id: string | number },
++      key?: string,
++    ): Promise<void>;
++    function removeFeatureState(): Promise<void>;
++    function removeFeatureState(
++      feature?: { id: string | number },
++      key?: string,
++    ): Promise<void> {
++      return NativeGeoJSONSourceModule.removeFeatureState(
++        findNodeHandle(nativeRef.current),
++        feature ? String(feature.id) : null,
++        key ?? null,
++      );
++    }
++
+     useImperativeHandle(ref, () => ({
+       getData: async (filter) => {
+         return NativeGeoJSONSourceModule.getData(
+@@ -216,6 +335,33 @@ export const GeoJSONSource = memo(
+         );
+       },
+ 
++      setFeatureState: async ({ id }, state) => {
++        return NativeGeoJSONSourceModule.setFeatureState(
++          findNodeHandle(nativeRef.current),
++          String(id),
++          state,
++        );
++      },
++
++      getFeatureState: async ({ id }) => {
++        const state = (await NativeGeoJSONSourceModule.getFeatureState(
++          findNodeHandle(nativeRef.current),
++          String(id),
++        )) as FeatureState | null | undefined;
++
++        return state ?? null;
++      },
++
++      removeFeatureState,
++
++      setFeatureStates: async (entries) => {
++        return NativeGeoJSONSourceModule.setFeatureStates(
++          findNodeHandle(nativeRef.current),
++          entries.map(({ id }) => String(id)),
++          entries.map(({ state }) => state),
++        );
++      },
++
+       getAnimatableRef: () =>
+         nativeRef.current
+           ? new Proxy(nativeRef.current, {
+diff --git a/src/components/sources/geojson-source/NativeGeoJSONSourceModule.ts b/src/components/sources/geojson-source/NativeGeoJSONSourceModule.ts
+index 872d42c9b0ef53f9ab0283a1c3ed1f316745abce..fe1973a76bfdddc89afe9d45801f699b7917c7ce 100644
+--- a/src/components/sources/geojson-source/NativeGeoJSONSourceModule.ts
++++ b/src/components/sources/geojson-source/NativeGeoJSONSourceModule.ts
+@@ -26,6 +26,30 @@ export interface Spec extends TurboModule {
+     reactTag: CodegenTypes.Int32,
+     clusterId: CodegenTypes.Int32,
+   ) => Promise<GeoJSON.Feature[]>;
++
++  setFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string,
++    state: CodegenTypes.UnsafeObject,
++  ) => Promise<void>;
++
++  getFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string,
++  ) => Promise<CodegenTypes.UnsafeObject | null>;
++
++  removeFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string | null,
++    key: string | null,
++  ) => Promise<void>;
++
++  // Metch: lote de setFeatureState (featureIds[i] recebe states[i]) numa chamada só
++  setFeatureStates: (
++    reactTag: CodegenTypes.Int32,
++    featureIds: string[],
++    states: CodegenTypes.UnsafeObject[],
++  ) => Promise<void>;
+ }
+ 
+ export default TurboModuleRegistry.getEnforcing<Spec>(
+diff --git a/src/components/sources/vector-source/NativeVectorSourceModule.ts b/src/components/sources/vector-source/NativeVectorSourceModule.ts
+index 2f017995496c8b8ab628117f33d77a47e301f018..ba614e748a677aef9fe4a301e04ff07d2d891442 100644
+--- a/src/components/sources/vector-source/NativeVectorSourceModule.ts
++++ b/src/components/sources/vector-source/NativeVectorSourceModule.ts
+@@ -10,6 +10,26 @@ export interface Spec extends TurboModule {
+     sourceLayer: string,
+     filter: string[],
+   ) => Promise<GeoJSON.Feature[]>;
++
++  setFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string,
++    sourceLayer: string,
++    state: CodegenTypes.UnsafeObject,
++  ) => Promise<void>;
++
++  getFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string,
++    sourceLayer: string,
++  ) => Promise<CodegenTypes.UnsafeObject | null>;
++
++  removeFeatureState: (
++    reactTag: CodegenTypes.Int32,
++    featureId: string | null,
++    sourceLayer: string,
++    key: string | null,
++  ) => Promise<void>;
+ }
+ 
+ export default TurboModuleRegistry.getEnforcing<Spec>("MLRNVectorSourceModule");
+diff --git a/src/components/sources/vector-source/VectorSource.tsx b/src/components/sources/vector-source/VectorSource.tsx
+index 80dbbcae0425045aea2ffd88999819af14a7d865..0902ce810289c63aa94d6271ba9e880abf9c0a24 100644
+--- a/src/components/sources/vector-source/VectorSource.tsx
++++ b/src/components/sources/vector-source/VectorSource.tsx
+@@ -14,6 +14,7 @@ import NativeVectorSourceModule from "./NativeVectorSourceModule";
+ import VectorSourceNativeComponent from "./VectorSourceNativeComponent";
+ import { useFrozenId } from "../../../hooks/useFrozenId";
+ import { type BaseProps } from "../../../types/BaseProps";
++import type { FeatureState } from "../../../types/FeatureState";
+ import type { PressableSourceProps } from "../../../types/PressableSourceProps";
+ import { cloneReactChildrenWithProps } from "../../../utils";
+ import { findNodeHandle } from "../../../utils/findNodeHandle";
+@@ -35,6 +36,101 @@ export interface VectorSourceRef {
+     sourceLayer: string;
+     filter?: FilterSpecification;
+   }): Promise<GeoJSON.Feature[]>;
++
++  /**
++   * Sets the `state` of a feature. A feature's `state` is a set of user-defined
++   * key-value pairs that are assigned to a feature at runtime. The given `state`
++   *  object is merged with any existing key-value pairs in the feature's state.
++   * Features are identified by their `id` within a `sourceLayer` , which can be
++   * any number or string. The feature must carry an `id` in the vector tile data.
++   *
++   * Use the `feature-state` expression to access the values in a feature's state
++   * object for the purposes of styling. Only paint properties support it.
++   *
++   * @param feature - Feature identifier
++   * @param state - A set of key-value pairs. The values should be valid JSON types.
++   *
++   * @example
++   * ```ts
++   * await vectorSourceRef.current?.setFeatureState(
++   *   { id: feature.id, sourceLayer: "buildings" },
++   *   { selected: true },
++   * );
++   * ```
++   */
++  setFeatureState(
++    feature: { id: string | number; sourceLayer: string },
++    state: FeatureState,
++  ): Promise<void>;
++
++  /**
++   * Gets the `state` of a feature. Resolves to `null` when the feature has no
++   * state.
++   *
++   * @param feature - Feature identifier
++   *
++   * @example
++   * ```ts
++   * const state = await vectorSourceRef.current?.getFeatureState({
++   *   id: feature.id,
++   *   sourceLayer: "buildings",
++   * });
++   * ```
++   */
++  getFeatureState(feature: {
++    id: string | number;
++    sourceLayer: string;
++  }): Promise<FeatureState | null>;
++
++  /**
++   * Removes the `state` of a feature, setting it back to the default behavior. If
++   * only `feature.id` is specified, it removes all keys of that feature's state.
++   * If `key` is also specified, it removes only that key of that feature's state.
++   * A `key` can only be removed for a specific feature; there is no way to remove
++   * one key from every feature at once.
++   *
++   * Removals are applied on the next rendered frame, so `getFeatureState` called
++   * immediately afterwards may still return the removed entries.
++   *
++   * @param feature - Feature identifier
++   * @param key - The key in the feature state to reset
++   *
++   * @example
++   * ```ts
++   * // Reset the entire state of one feature
++   * await vectorSourceRef.current?.removeFeatureState({
++   *   id: feature.id,
++   *   sourceLayer: "buildings",
++   * });
++   * // Reset only the `selected` key of one feature
++   * await vectorSourceRef.current?.removeFeatureState(
++   *   { id: feature.id, sourceLayer: "buildings" },
++   *   "selected",
++   * );
++   * ```
++   */
++  removeFeatureState(
++    feature: { id: string | number; sourceLayer: string },
++    key?: string,
++  ): Promise<void>;
++
++  /**
++   * Removes the `state` of all features in the given source layer, setting them
++   * back to the default behavior.
++   *
++   * Removals are applied on the next rendered frame, so `getFeatureState` called
++   * immediately afterwards may still return the removed entries.
++   *
++   * @param feature - Source layer identifier
++   *
++   * @example
++   * ```ts
++   * await vectorSourceRef.current?.removeFeatureState({
++   *   sourceLayer: "buildings",
++   * });
++   * ```
++   */
++  removeFeatureState(feature: { sourceLayer: string }): Promise<void>;
+ }
+ 
+ export interface VectorSourceProps extends BaseProps, PressableSourceProps {
+@@ -106,6 +202,23 @@ export const VectorSource = memo(({ id, ref, ...props }: VectorSourceProps) => {
+ 
+   const frozenId = useFrozenId(id);
+ 
++  function removeFeatureState(
++    feature: { id: string | number; sourceLayer: string },
++    key?: string,
++  ): Promise<void>;
++  function removeFeatureState(feature: { sourceLayer: string }): Promise<void>;
++  function removeFeatureState(
++    { id, sourceLayer }: { id?: string | number; sourceLayer: string },
++    key?: string,
++  ): Promise<void> {
++    return NativeVectorSourceModule.removeFeatureState(
++      findNodeHandle(nativeRef.current),
++      id === undefined ? null : String(id),
++      sourceLayer,
++      key ?? null,
++    );
++  }
++
+   useImperativeHandle(ref, () => ({
+     querySourceFeatures: async ({
+       sourceLayer,
+@@ -120,6 +233,27 @@ export const VectorSource = memo(({ id, ref, ...props }: VectorSourceProps) => {
+         getNativeFilter(filter) as string[],
+       );
+     },
++
++    setFeatureState: async ({ id, sourceLayer }, state) => {
++      return NativeVectorSourceModule.setFeatureState(
++        findNodeHandle(nativeRef.current),
++        String(id),
++        sourceLayer,
++        state,
++      );
++    },
++
++    getFeatureState: async ({ id, sourceLayer }) => {
++      const state = (await NativeVectorSourceModule.getFeatureState(
++        findNodeHandle(nativeRef.current),
++        String(id),
++        sourceLayer,
++      )) as FeatureState | null | undefined;
++
++      return state ?? null;
++    },
++
++    removeFeatureState,
+   }));
+ 
+   return (
+diff --git a/src/index.ts b/src/index.ts
+index 071fb3b8d53b7af8b5343ba406567a640ca49600..467a6e44734f037bacdadf10147eb23f7892dc6b 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -71,6 +71,8 @@ export {
+   VectorSource,
+ } from "./components/sources/vector-source/VectorSource";
+ 
++export type { FeatureState, FeatureStateValue } from "./types/FeatureState";
++
+ export {
+   Layer,
+   type LayerProps,
+diff --git a/src/types/FeatureState.ts b/src/types/FeatureState.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa4b4da6c5e6a4dc10efb39c2b7167cd97b5f704
+--- /dev/null
++++ b/src/types/FeatureState.ts
+@@ -0,0 +1,18 @@
++/**
++ * A JSON-serializable value, as accepted by the `feature-state` expression.
++ */
++export type FeatureStateValue =
++  | string
++  | number
++  | boolean
++  | null
++  | FeatureStateValue[]
++  | FeatureState;
++
++/**
++ * Runtime key-value state attached to a single feature. Read it in style
++ * expressions with `["feature-state", "key"]` .
++ */
++export interface FeatureState {
++  [key: string]: FeatureStateValue;
++}

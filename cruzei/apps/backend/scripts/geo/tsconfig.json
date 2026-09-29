@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../../../..",
+    "paths": {
+      "@/*": ["src/*"],
+      "@cruzei/shared-types": ["../../packages/shared-types/src"],
+      "@cruzei/shared-utils": ["../../packages/shared-utils/src"]
+    }
+  },
+  "include": ["./**/*.ts"]
+}

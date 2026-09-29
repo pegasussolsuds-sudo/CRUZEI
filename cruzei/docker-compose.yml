@@ -35,6 +35,29 @@ services:
       timeout: 5s
       retries: 5
 
+  # Photon (OPCIONAL) — busca de rua/bairro/cidade com tolerância a erro pro "ir até lá" (GET /geo/search).
+  # Não sobe com `docker compose up`: só com o profile. Sem ele (PHOTON_URL vazio) o backend usa o geo_names local.
+  # Uma vez (~1–2 GB de disco e 4–8 GB de RAM pro Brasil, estimativa):
+  #   1) em apps/backend/data/geo/photon/ (no .gitignore): o jar da release (github.com/komoot/photon/releases,
+  #      ex. photon-1.3.0.jar → renomeie pra photon.jar) e o dump do Brasil do GraphHopper
+  #      (download1.graphhopper.com/public/ → south-america/brazil/, .jsonl.zst), descompactado: zstd -d <arquivo> -o brazil.jsonl
+  #   2) importar:  docker compose --profile photon run --rm photon java -jar /import/photon.jar import -import-file /import/brazil.jsonl -languages pt,en -data-dir /photon
+  #   3) subir:     docker compose --profile photon up -d photon   e no .env do backend: PHOTON_URL=http://localhost:2322
+  photon:
+    image: eclipse-temurin:21-jre
+    container_name: cruzei-photon
+    profiles: ["photon"]
+    restart: unless-stopped
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx4g"
+    command: ["java", "-jar", "/import/photon.jar", "serve", "-listen-ip", "0.0.0.0", "-listen-port", "2322", "-data-dir", "/photon"]
+    ports:
+      - "2322:2322"
+    volumes:
+      - ./apps/backend/data/geo/photon:/import:ro
+      - cruzei-photon-data:/photon
+
 volumes:
   cruzei-pg-data:
   cruzei-redis-data:
+  cruzei-photon-data:

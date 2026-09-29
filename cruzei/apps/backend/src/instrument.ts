@@ -50,7 +50,7 @@ function sanitizeValue(value: unknown, depth = 0): unknown {
 function beforeBreadcrumb(crumb: Breadcrumb): Breadcrumb {
   const data: Record<string, unknown> | undefined = crumb.data ? { ...crumb.data } : undefined;
   if (data) {
-    // chamadas de saída (Mapbox, FCM, AWS): a query leva token e posição
+    // chamadas de saída (Photon, FCM, AWS): a query leva token e posição
     delete data['http.query'];
     delete data['http.fragment'];
     if (typeof data.url === 'string') data.url = sanitizeUrl(data.url);

@@ -1,41 +1,33 @@
 import { Injectable, Logger } from '@nestjs/common';
-import * as fs from 'node:fs';
-import type { MapboxPlace, PlaceCategoryKey, PlaceSearchResponse } from '@cruzei/shared-types';
+import { Prisma } from '@prisma/client';
+import type { CatalogPlace, PlaceCategoryKey, PlaceKind, PlaceSearchResponse } from '@cruzei/shared-types';
 import { decodeGeohash, decodeGeohashBounds } from '@cruzei/shared-utils';
-import { CROWD, localDateBrazil } from '../location/discovery-privacy';
+import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import {
-  CHIP_TO_MAPBOX,
-  SOCIAL_CATEGORIES,
-  VIBE_CATEGORIES,
+  CHIP_KINDS,
   haversineMeters,
   intentOf,
+  keepForText,
   nameScore,
   rankByDistance,
   rankPlaces,
   spellingVariants,
-  toPlace,
-  type SearchBoxFeature,
+  toHit,
+  type CatalogRow,
+  type Hit,
 } from './places.ranking';
 
-const SEARCHBOX_URL = 'https://api.mapbox.com/search/searchbox/v1';
-const TIMEOUT_MS = 4_500;
-/** lugares mudam pouco: 6 h de cache por texto + região (economiza cota do Mapbox e responde na hora) */
-const CACHE_TTL_SECONDS = 6 * 3600;
-/** busca sem resultado fica menos tempo (o lugar pode ter acabado de ser cadastrado no Mapbox) */
+/** o catálogo muda 1x por mês (Overture) / semana (OSM): 1 h de cache por texto + região segura a rajada de digitação */
+const CACHE_TTL_SECONDS = 3600;
+/** busca sem resultado fica menos tempo (o catálogo pode ter acabado de ser reimportado) */
 const EMPTY_TTL_SECONDS = 10 * 60;
-/** ~39 km pra cada lado do centro: cidade + região metropolitana */
-const BBOX_DEG = 0.35;
-/** o que passar disso só entra quando a região não tem nada com esse nome */
-const LOCAL_MAX_M = 60_000;
-const CACHE_VERSION = 'v6';
-/** lugar devolvido pela NOSSA busca: só esses podem ser sugeridos pro mapa (nada de nome/ponto vindo do cliente) */
-const REMEMBER_TTL_SECONDS = 6 * 3600;
-/** lugares do Mapbox em volta de uma célula movimentada (inclusive 'nenhum'): 7 dias */
-const CELL_TTL_SECONDS = 7 * 86_400;
-/** categorias consultadas pelo detector numa célula (as mesmas famílias da busca, que já sabemos que o Mapbox aceita) */
-const CELL_CATEGORIES = ['bar', 'nightlife', 'restaurant', 'cafe', 'park', 'shopping_mall'];
-/** folga em volta da célula geohash-7 na consulta ao Mapbox (lugar na borda da célula) */
+/** cidade + região metropolitana */
+const LOCAL_RADIUS_M = 40_000;
+const CACHE_VERSION = 'cat1';
+/** quantos lugares a busca por texto traz do banco antes do ranking fino */
+const TEXT_POOL = 60;
+/** folga em volta da célula geohash-7 na procura de lugares (lugar na borda da célula) */
 const CELL_MARGIN_M = 60;
 
 export interface PlacesSearchArgs {
@@ -47,18 +39,46 @@ export interface PlacesSearchArgs {
   limit: number;
 }
 
-/** ~1 km: a posição que sai pro Mapbox é a da célula (privacidade), e a mesma célula reaproveita o cache */
-function toCell(c: { lat: number; lng: number }): { lat: number; lng: number } {
+type LatLng = { lat: number; lng: number };
+
+/** filtro de uma consulta ao catálogo (sempre só os canônicos que estão na busca) */
+interface Find {
+  /** texto (e grafias alternativas): casa por trigrama com o nome normalizado */
+  terms?: string[];
+  kinds?: PlaceKind[] | null;
+  /** fora os lugares "outro" (loja, serviço, clínica) */
+  noOther?: boolean;
+  center: LatLng | null;
+  /** null = catálogo inteiro */
+  radiusM: number | null;
+  order: 'similarity' | 'nearest';
+  limit: number;
+}
+
+/** colunas que a busca lê do place_catalog (ver CatalogRow) */
+const COLS = Prisma.sql`
+  c.id, c.name, c.kind, c.chip, c.confidence, ST_Y(c.geog::geometry) AS lat, ST_X(c.geog::geometry) AS lng,
+  c.address, c.neighborhood, c.city, c.state, c.alt_names,
+  (c.source = 'osm' OR EXISTS (SELECT 1 FROM unnest(c.alt_ids) a WHERE a LIKE 'osm:%')) AS osm_confirmed`;
+
+/** ~1 km: a mesma célula reaproveita o cache (a distância final é recalculada do ponto exato) */
+function toCell(c: LatLng): LatLng {
   return { lat: Math.round(c.lat * 100) / 100, lng: Math.round(c.lng * 100) / 100 };
 }
 
+/**
+ * Busca de lugares da cidade no catálogo próprio (place_catalog: Overture Places + OSM, importado por scripts/geo).
+ * Nada sai do servidor: sem API externa, sem cota, sem teto diário. Texto casa por trigrama (f_norm + pg_trgm, com
+ * índice GIN) e o ranking fino (nome, tipo, confiança, distância) fica em places.ranking.ts.
+ */
 @Injectable()
 export class PlacesService {
   private readonly log = new Logger(PlacesService.name);
-  private readonly token = (process.env.MAPBOX_TOKEN ?? '').trim();
-  private warnedNoToken = false;
 
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+  ) {}
 
   async search(args: PlacesSearchArgs): Promise<PlaceSearchResponse> {
     const q = args.q.trim();
@@ -67,218 +87,133 @@ export class PlacesService {
 
     let places = await this.cached(key);
     if (!places) {
-      places = await this.fetchPlaces(q, args.category, cell, args.limit);
-      if (places) await this.store(key, places);
+      places = await this.findPlaces(q, args.category, cell, args.limit);
+      await this.store(key, places);
     }
     // distância recalculada do ponto exato (o cache guarda a da célula)
     const center = args.center;
-    const out = (places ?? []).map((p) => (center ? { ...p, distanceM: haversineMeters(center.lat, center.lng, p.latitude, p.longitude) } : p));
-    await this.remember(out);
+    const out = places.map((p) => (center ? { ...p, distanceM: haversineMeters(center.lat, center.lng, p.latitude, p.longitude) } : p));
     return { places: out, q, generatedAt: new Date().toISOString() };
   }
 
-  /** um lugar que a nossa busca devolveu nas últimas 6 h (id 'mbx:…'), ou null */
-  async lookup(id: string): Promise<MapboxPlace | null> {
-    try {
-      const raw = await this.redis.client.get(`mbx:p:${id}`);
-      return raw ? (JSON.parse(raw) as MapboxPlace) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async remember(places: MapboxPlace[]): Promise<void> {
-    if (places.length === 0) return;
-    try {
-      const pipe = this.redis.client.pipeline();
-      for (const p of places) pipe.set(`mbx:p:${p.id}`, JSON.stringify(p), 'EX', REMEMBER_TTL_SECONDS);
-      await pipe.exec();
-    } catch (err) {
-      this.log.warn(`cache de lugares falhou: ${(err as Error).message}`);
-    }
+  /**
+   * Lugar do catálogo pelo id (`ovt:…` / `osm:…`), resolvendo duplicado pro canônico; null se não existe ou saiu
+   * da busca (buffet, sumiu da fonte). Nome e ponto vêm sempre daqui, nunca do cliente.
+   */
+  async lookup(id: string): Promise<CatalogPlace | null> {
+    const rows = await this.prisma.$queryRaw<CatalogRow[]>`
+      SELECT ${COLS} FROM place_catalog c
+       WHERE c.dup_of IS NULL AND c.searchable
+         AND (c.id = ${id} OR c.alt_ids @> ARRAY[${id}]::text[] OR c.id = (SELECT d.dup_of FROM place_catalog d WHERE d.id = ${id}))
+       LIMIT 1`;
+    return rows[0] ? (toHit(rows[0], null)?.place ?? null) : null;
   }
 
   /**
-   * Lugares públicos do Mapbox dentro de uma célula geohash-7 (+ folga). Só a CAIXA da célula vai pro Mapbox (dado
-   * agregado), nunca a posição de alguém. Cache de 7 dias (inclusive vazio) e teto diário de chamadas do detector.
-   * null = pulou (sem token, teto do dia, falha) — o detector tenta de novo na próxima rodada.
-   * MAPBOX_STUB=<arquivo.json> (fora de produção): lê uma lista fixa de lugares em vez de chamar o Mapbox (testes/carga).
+   * Lugares públicos do catálogo dentro de uma célula geohash-7 (+ folga), pro detector da multidão. Consulta local
+   * (ST_DWithin), sem cota. Só tipos conhecidos (nada de "outro"); quem decide o que pode ir pro mapa é o crowd-rules.
+   * null = falhou (o detector tenta de novo na próxima rodada).
    */
-  async venuesInCell(cell: string): Promise<MapboxPlace[] | null> {
-    const key = `mbx:cell:v1:${cell}`;
-    const hit = await this.cached(key);
-    if (hit) return hit;
+  async venuesInCell(cell: string): Promise<CatalogPlace[] | null> {
     const b = decodeGeohashBounds(cell);
     const dLat = CELL_MARGIN_M / 111_195;
     const dLng = dLat / Math.cos((((b.latMin + b.latMax) / 2) * Math.PI) / 180);
     const box = { latMin: b.latMin - dLat, latMax: b.latMax + dLat, lngMin: b.lngMin - dLng, lngMax: b.lngMax + dLng };
-    const inside = (p: MapboxPlace) => p.latitude >= box.latMin && p.latitude <= box.latMax && p.longitude >= box.lngMin && p.longitude <= box.lngMax;
+    const inside = (p: CatalogPlace) => p.latitude >= box.latMin && p.latitude <= box.latMax && p.longitude >= box.lngMin && p.longitude <= box.lngMax;
     const c = decodeGeohash(cell);
     const center = { lat: c.latitude, lng: c.longitude };
-
-    let venues: MapboxPlace[] | null;
-    let complete = true;
-    const stub = process.env.NODE_ENV !== 'production' ? (process.env.MAPBOX_STUB ?? '').trim() : '';
-    if (stub) {
-      try {
-        venues = (JSON.parse(fs.readFileSync(stub, 'utf8')) as MapboxPlace[]).filter(inside);
-      } catch (err) {
-        this.log.warn(`MAPBOX_STUB ilegível: ${(err as Error).message}`);
-        return null;
-      }
-    } else {
-      if (!this.token) return null;
-      const budgetKey = `mbx:budget:${localDateBrazil()}`;
-      const used = await this.redis.client.incrby(budgetKey, CELL_CATEGORIES.length);
-      if (used === CELL_CATEGORIES.length) await this.redis.client.expire(budgetKey, 2 * 86_400);
-      if (used > CROWD.MAPBOX_DAILY_CAP) return null;
-      const bbox = [box.lngMin, box.latMin, box.lngMax, box.latMax].map((n) => n.toFixed(5)).join(',');
-      // uma categoria por vez: em rajada o Search Box responde 429 (o detector não tem pressa)
-      const lists: (MapboxPlace[] | null)[] = [];
-      for (const cat of CELL_CATEGORIES) lists.push(await this.categoryBrowse(cat, center, bbox));
-      if (lists.every((l) => l === null)) return null;
-      complete = lists.every((l) => l !== null);
-      const byId = new Map<string, MapboxPlace>();
-      for (const l of lists) for (const p of l ?? []) if (inside(p)) byId.set(p.id, p);
-      venues = [...byId.values()];
-    }
-    // resultado incompleto (alguma categoria falhou) vale pouco: a próxima rodada tenta de novo
-    await this.redis.client.set(key, JSON.stringify(venues), 'EX', complete ? CELL_TTL_SECONDS : EMPTY_TTL_SECONDS);
-    // cada lugar achado também pode ser sugerido/confirmado depois (mesmo cache da busca)
-    await this.remember(venues);
-    return venues;
-  }
-
-  /** null = falha (não cacheia); [] = o Mapbox respondeu e não tem nada */
-  private async fetchPlaces(q: string, category: PlaceCategoryKey | null, cell: { lat: number; lng: number } | null, limit: number): Promise<MapboxPlace[] | null> {
-    if (!this.token) {
-      if (!this.warnedNoToken) {
-        this.warnedNoToken = true;
-        this.log.error('MAPBOX_TOKEN ausente no backend: a busca de lugares fica vazia. Coloque o token no .env do backend.');
-      }
+    // raio que cobre a caixa inteira (meia diagonal); o que fica fora da caixa sai no filtro
+    const radiusM = Math.max(
+      haversineMeters(center.lat, center.lng, box.latMax, box.lngMax),
+      haversineMeters(center.lat, center.lng, box.latMin, box.lngMin),
+    ) + 1;
+    try {
+      const hits = await this.find({ center, radiusM, noOther: true, order: 'nearest', limit: 200 });
+      return hits.map((h) => h.place).filter(inside);
+    } catch (err) {
+      this.log.warn(`catálogo falhou na célula: ${(err as Error).message}`);
       return null;
     }
+  }
+
+  private async findPlaces(q: string, category: PlaceCategoryKey | null, cell: LatLng | null, limit: number): Promise<CatalogPlace[]> {
+    const local = { center: cell, radiusM: cell ? LOCAL_RADIUS_M : null };
 
     // 1) só o chip, sem texto: os lugares daquela categoria mais perto
     if (!q && category) {
-      const lists = await Promise.all(CHIP_TO_MAPBOX[category].map((c) => this.categoryBrowse(c, cell)));
-      if (lists.every((l) => l === null)) return null;
-      return rankByDistance(lists.map((l) => l ?? []), limit);
+      const hits = await this.find({ ...local, kinds: CHIP_KINDS[category], order: 'nearest', limit: limit * 3 });
+      return rankByDistance([hits], limit);
     }
 
     // 2) palavra de rolê ("balada", "bar", "shopping"…): os daquele tipo mais perto, mais os que têm a palavra no nome
-    //    e são do mesmo tipo (antes a busca por texto misturava bar e restaurante em "shopping")
+    //    e são de um tipo aceito
     const intent = category ? null : intentOf(q);
     if (intent) {
       const [browse, text] = await Promise.all([
-        Promise.all(intent.categories.map((c) => this.categoryBrowse(c, cell))),
-        this.forward(q, intent.categories, cell, true, 10),
+        this.find({ ...local, kinds: intent.browse, order: 'nearest', limit: limit * 3 }),
+        this.find({ ...local, kinds: intent.kinds, terms: [q], order: 'similarity', limit: 20 }),
       ]);
-      if (browse.every((l) => l === null) && text === null) return null;
-      const accept = (p: MapboxPlace) => intent.kinds.includes(p.kind);
-      const named = (text ?? []).filter((p) => accept(p) && nameScore(p.name, q, null) >= 65);
-      return rankByDistance([...browse.map((l) => (l ?? []).filter(accept)), named], limit);
+      const named = text.filter((h) => nameScore(h.place.name, q, null) >= 65);
+      return rankByDistance([browse, named], limit);
     }
 
-    // 3) texto: noite/comer (+ lugares de encontro) na região, mais as grafias alternativas ("live" → "Liv Pub")
-    const vibeCats = category ? CHIP_TO_MAPBOX[category] : [...VIBE_CATEGORIES];
+    // 3) texto: o nome e as grafias alternativas ("live" → "Liv Pub") numa consulta só, na região
     const variants = spellingVariants(q);
-    const calls: Promise<MapboxPlace[] | null>[] = [this.forward(q, vibeCats, cell, true, 10)];
-    if (!category) calls.push(this.forward(q, [...SOCIAL_CATEGORIES], cell, true, 5));
-    for (const v of variants) calls.push(this.forward(v, vibeCats, cell, true, 6));
-    const lists = await Promise.all(calls);
-    if (lists.every((l) => l === null)) return null;
+    const kinds = category ? CHIP_KINDS[category] : null;
+    const hits = await this.find({ ...local, kinds, terms: [q, ...variants], order: 'similarity', limit: TEXT_POOL });
+    let merged = rankPlaces([hits.filter((h) => keepForText(h, q))], q, variants, limit);
 
-    let merged = rankPlaces(
-      lists.map((l) => (l ?? []).filter((p) => p.distanceM <= LOCAL_MAX_M)),
-      q,
-      variants,
-      limit,
-    );
-
-    // 4) nada na região: procura no Brasil todo (ex.: "Zenaide Bar Campinas" vendo o mapa de Uberlândia)
-    //    Só entra o que tem todas as palavras digitadas no nome: no meio da digitação ("aideu") o Brasil todo devolvia
-    //    "Aide e Buga" a 600 km.
-    if (merged.length === 0 && q.length >= 4) {
-      const wide = await this.forward(q, vibeCats, cell, false, limit);
-      if (wide) merged = rankPlaces([wide.filter((p) => nameScore(p.name, q, null) >= 75)], q, variants, limit);
+    // 4) nada na região: o catálogo inteiro (ex.: "Zenaide Bar Campinas" vendo o mapa de Uberlândia).
+    //    Só entra o que tem todas as palavras digitadas no nome: no meio da digitação ("aideu") vinha lugar a 600 km.
+    if (merged.length === 0 && q.length >= 4 && cell) {
+      const wide = await this.find({ center: cell, radiusM: null, kinds, terms: [q], order: 'similarity', limit: limit * 2 });
+      merged = rankPlaces([wide.filter((h) => nameScore(h.place.name, q, null) >= 75)], q, variants, limit);
     }
     return merged;
   }
 
-  private forward(q: string, categories: string[], cell: { lat: number; lng: number } | null, local: boolean, limit: number): Promise<MapboxPlace[] | null> {
-    const params = new URLSearchParams({
-      q,
-      language: 'pt',
-      country: 'br',
-      types: 'poi',
-      limit: String(Math.min(10, limit)),
-      poi_category: categories.join(','),
-      access_token: this.token,
-    });
-    if (cell) {
-      params.set('proximity', `${cell.lng},${cell.lat}`);
-      if (local) params.set('bbox', bboxAround(cell));
+  /** uma consulta parametrizada ao catálogo (nenhum texto do usuário é concatenado no SQL) */
+  private async find(f: Find): Promise<Hit[]> {
+    const pt = f.center ? Prisma.sql`ST_SetSRID(ST_MakePoint(${f.center.lng}::float8, ${f.center.lat}::float8), 4326)::geography` : null;
+    const terms = (f.terms ?? []).filter((t) => t.trim().length > 0);
+    const conds: Prisma.Sql[] = [Prisma.sql`c.dup_of IS NULL`, Prisma.sql`c.searchable`];
+    // f_norm(texto) <% name_norm = word_similarity >= 0,6, com o índice GIN trigram
+    if (terms.length > 0) conds.push(Prisma.sql`(${Prisma.join(terms.map((t) => Prisma.sql`f_norm(${t}) <% c.name_norm`), ' OR ')})`);
+    if (f.kinds && f.kinds.length > 0) conds.push(Prisma.sql`c.kind = ANY(${f.kinds}::text[])`);
+    if (f.noOther) conds.push(Prisma.sql`c.kind <> 'other'`);
+    if (pt && f.radiusM != null) conds.push(Prisma.sql`ST_DWithin(c.geog, ${pt}, ${f.radiusM}::float8)`);
+    const sim =
+      terms.length > 0 ? Prisma.sql`GREATEST(${Prisma.join(terms.map((t) => Prisma.sql`word_similarity(f_norm(${t}), c.name_norm)`))})` : Prisma.sql`0`;
+    const near = pt ? Prisma.sql`c.geog <-> ${pt}` : Prisma.sql`c.id`;
+    const order = f.order === 'nearest' ? near : Prisma.sql`(c.kind <> 'other') DESC, ${sim} DESC, ${near}`;
+    const rows = await this.prisma.$queryRaw<CatalogRow[]>`
+      SELECT ${COLS} FROM place_catalog c
+       WHERE ${Prisma.join(conds, ' AND ')}
+       ORDER BY ${order}
+       LIMIT ${f.limit}`;
+    const out: Hit[] = [];
+    for (const r of rows) {
+      const h = toHit(r, f.center);
+      if (h) out.push(h);
     }
-    return this.request(`${SEARCHBOX_URL}/forward?${params.toString()}`, cell);
+    return out;
   }
 
-  private categoryBrowse(category: string, cell: { lat: number; lng: number } | null, bbox?: string): Promise<MapboxPlace[] | null> {
-    const params = new URLSearchParams({ language: 'pt', limit: '25', access_token: this.token });
-    if (cell) {
-      params.set('proximity', `${cell.lng},${cell.lat}`);
-      params.set('bbox', bbox ?? bboxAround(cell));
-    } else {
-      params.set('country', 'br');
-    }
-    return this.request(`${SEARCHBOX_URL}/category/${encodeURIComponent(category)}?${params.toString()}`, cell);
-  }
-
-  private async request(url: string, cell: { lat: number; lng: number } | null): Promise<MapboxPlace[] | null> {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: ctrl.signal, headers: { accept: 'application/json' } });
-      if (!res.ok) {
-        // 401/403 = token errado ou sem escopo; 429 = cota. Nunca loga a URL (tem o token).
-        this.log.warn(`Mapbox Search Box respondeu ${res.status}`);
-        return null;
-      }
-      const data = (await res.json()) as { features?: SearchBoxFeature[] };
-      const out: MapboxPlace[] = [];
-      for (const f of data.features ?? []) {
-        const p = toPlace(f, cell);
-        if (p) out.push(p);
-      }
-      return out;
-    } catch (err) {
-      this.log.warn(`Mapbox Search Box falhou: ${(err as Error).name === 'AbortError' ? 'timeout' : (err as Error).message}`);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  private async cached(key: string): Promise<MapboxPlace[] | null> {
+  private async cached(key: string): Promise<CatalogPlace[] | null> {
     try {
       const raw = await this.redis.client.get(key);
-      return raw ? (JSON.parse(raw) as MapboxPlace[]) : null;
+      return raw ? (JSON.parse(raw) as CatalogPlace[]) : null;
     } catch (err) {
       this.log.warn(`cache get falhou: ${(err as Error).message}`);
       return null;
     }
   }
 
-  private async store(key: string, places: MapboxPlace[]): Promise<void> {
+  private async store(key: string, places: CatalogPlace[]): Promise<void> {
     try {
       await this.redis.client.set(key, JSON.stringify(places), 'EX', places.length > 0 ? CACHE_TTL_SECONDS : EMPTY_TTL_SECONDS);
     } catch (err) {
       this.log.warn(`cache set falhou: ${(err as Error).message}`);
     }
   }
-}
-
-function bboxAround(c: { lat: number; lng: number }): string {
-  const r = (n: number) => Math.round(n * 1e4) / 1e4;
-  return [r(c.lng - BBOX_DEG), r(c.lat - BBOX_DEG), r(c.lng + BBOX_DEG), r(c.lat + BBOX_DEG)].join(',');
 }

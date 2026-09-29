@@ -210,32 +210,23 @@ async function main() {
     report('10 app não persiste descoberta/posição de terceiros (react-query só em memória)', hits === 0, `${hits} persistências encontradas`);
   }
 
-  // TESTE 11 — descoberta de lugares: só lugar que a NOSSA busca devolveu pode ser sugerido; resposta uniforme
-  const venue = {
-    id: 'mbx:auditoria-lugar-teste-0001',
-    name: 'Bar Auditoria Teste',
-    category: 'bar',
-    kind: 'bar',
-    nightlife: true,
-    address: null,
-    neighborhood: null,
-    city: 'Uberlândia',
-    state: 'MG',
-    latitude: ME.lat + 0.0003,
-    longitude: ME.lng,
-    distanceM: 0,
-    source: 'mapbox',
-  };
+  // TESTE 11 — descoberta de lugares: só lugar do NOSSO catálogo pode ser sugerido; resposta uniforme
+  const venue = { id: 'ovt:auditoria-lugar-teste-0001', name: 'Bar Auditoria Teste', latitude: ME.lat + 0.0003, longitude: ME.lng };
   {
     await prisma.$executeRaw`DELETE FROM place_candidates WHERE key = ${venue.id}`;
-    const unknown = await call(tMe, 'POST', '/pois/suggest', { mapboxId: 'mbx:nunca-veio-da-busca-123' });
-    await redis.set(`mbx:p:${venue.id}`, JSON.stringify(venue), 'EX', 600); // como se a busca tivesse devolvido
+    // lugar de teste no catálogo (sai no fim do teste 12)
+    await prisma.$executeRaw`
+      INSERT INTO place_catalog (id, source, name, kind, chip, confidence, geog, city, state, refreshed_on)
+      VALUES (${venue.id}, 'overture', ${venue.name}, 'bar', 'bar', 0.9,
+              ST_SetSRID(ST_MakePoint(${venue.longitude}::float8, ${venue.latitude}::float8), 4326)::geography, 'Uberlândia', 'MG', current_date)
+      ON CONFLICT (id) DO NOTHING`;
+    const unknown = await call(tMe, 'POST', '/pois/suggest', { placeId: 'ovt:nunca-veio-da-busca-123' });
     await presence(me.id, ME.lat, ME.lng);
-    const ok = await call(tMe, 'POST', '/pois/suggest', { mapboxId: venue.id });
+    const ok = await call(tMe, 'POST', '/pois/suggest', { placeId: venue.id });
     const keys = Object.keys((ok.json as object) ?? {});
     const bad = findForbiddenKeys(ok.json);
     report(
-      '11 sugestão: id fora da busca = 404; aceita responde só { status } (sem quem/quantos/por quê)',
+      '11 sugestão: id fora do catálogo = 404; aceita responde só { status } (sem quem/quantos/por quê)',
       unknown.status === 404 && ok.status === 200 && keys.join(',') === 'status' && (ok.json as { status?: string }).status === 'pending' && bad.length === 0,
       `fora da busca: ${unknown.status}; aceita: ${ok.status} ${JSON.stringify(ok.json)}`,
     );
@@ -250,6 +241,7 @@ async function main() {
     report('12 voto de longe = 404 idêntico ao de candidato inexistente', far.status === 404 && none.status === 404 && JSON.stringify(far.json) === JSON.stringify(none.json), `longe: ${far.status}; inexistente: ${none.status}`);
     await presence(b.id, B.lat, B.lng);
     await prisma.$executeRaw`DELETE FROM place_candidates WHERE key = ${venue.id}`;
+    await prisma.$executeRaw`DELETE FROM place_catalog WHERE id = ${venue.id}`;
   }
 
   // TESTE 13 — denúncia: sempre { ok: true } pra lugar que existe; 404 pra inexistente

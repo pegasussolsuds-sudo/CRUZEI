@@ -86,7 +86,7 @@ export const PlacePreviewSheet = forwardRef<PlacePreviewSheetHandle, PlacePrevie
   const shown = people.slice(0, MAX_AVATARS);
   const extra = people.length - shown.length;
   // lugar que a galera pôs no mapa (multidão/pedidos/confirmações): selo + "Reportar"
-  const discovered = poi?.source === 'mapbox';
+  const discovered = poi?.source === 'catalog' || poi?.source === 'mapbox'; // 'mapbox': linhas antigas
   const [reportState, setReportState] = useState<'idle' | 'choosing' | 'sent'>('idle');
   useEffect(() => setReportState('idle'), [poi?.id]);
   const sendReport = useCallback(

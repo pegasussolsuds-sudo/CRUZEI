@@ -4,23 +4,23 @@ import Animated, { FadeInDown, useReducedMotion } from 'react-native-reanimated'
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { formatApproxDistance } from '@cruzei/shared-utils';
-import type { MapboxPlace } from '@cruzei/shared-types';
+import type { CatalogPlace } from '@cruzei/shared-types';
 import { PressScale } from '../animated/PressScale';
 import { placeKindMeta } from './placeKinds';
 
-export interface MapboxPlaceRowProps {
-  place: MapboxPlace;
+export interface CatalogPlaceRowProps {
+  place: CatalogPlace;
   index: number;
-  onPress: (place: MapboxPlace) => void;
+  onPress: (place: CatalogPlace) => void;
   /** anima a entrada (só na abertura da busca; digitando, as linhas entram sem animação) */
   animate?: boolean;
 }
 
 /**
- * Linha de lugar da cidade (Mapbox Search Box): bar, balada, restaurante… Não tem "gente agora" (não é dado do app),
+ * Linha de lugar da cidade (catálogo do servidor: Overture + OSM): bar, balada, restaurante… Não tem "gente agora" (não é dado do app),
  * então o destaque é o tipo do lugar: noite ganha selo rosa. Tocar leva a câmera e crava o pino no mapa.
  */
-export const MapboxPlaceRow = memo(function MapboxPlaceRow({ place, index, onPress, animate = true }: MapboxPlaceRowProps) {
+export const CatalogPlaceRow = memo(function CatalogPlaceRow({ place, index, onPress, animate = true }: CatalogPlaceRowProps) {
   const reduceMotion = useReducedMotion();
   const meta = placeKindMeta(place.kind);
   const where = place.neighborhood ?? place.city;

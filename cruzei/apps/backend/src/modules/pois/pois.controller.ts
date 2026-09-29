@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { IsIn, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Throttle } from '@nestjs/throttler';
 import { POICategory } from '@prisma/client';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -8,10 +8,17 @@ import { PoisService, VIBE_FILTERS, type VibeFilter } from './pois.service';
 import { PlaceDiscoveryService } from './place-discovery.service';
 
 class SuggestPlaceDto {
-  /** id 'mbx:…' de um lugar que a busca do app devolveu (nome e ponto vêm do Mapbox, nunca do cliente) */
+  /** id 'ovt:…' / 'osm:…' de um lugar que a busca do app devolveu (nome e ponto vêm do catálogo, nunca do cliente) */
+  @IsOptional()
   @IsString()
   @MaxLength(130)
-  mapboxId!: string;
+  placeId?: string;
+
+  /** nome antigo do campo (app anterior ao catálogo manda o mesmo id aqui) */
+  @IsOptional()
+  @IsString()
+  @MaxLength(130)
+  mapboxId?: string;
 }
 
 class VotePlaceDto {
@@ -102,7 +109,7 @@ export class PoisController {
   @HttpCode(200)
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   suggest(@CurrentUser() user: AuthenticatedUser, @Body() dto: SuggestPlaceDto) {
-    return this.discovery.suggest(user.id, dto.mapboxId);
+    return this.discovery.suggest(user.id, dto.placeId ?? dto.mapboxId ?? '');
   }
 
   /** 'É o <nome>?' / 'Aqui não é lugar público': só vale estando no lugar (senão 404, igual a 'não existe') */
