@@ -7,7 +7,9 @@ import type { Redis } from 'ioredis';
 import { CANDIDATE_INVALIDATION_CHANNEL, RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
 import { distanceMeters, encodeGeohash } from '@cruzei/shared-utils';
-import type { ConversationRef, PlaceKind, PlacePrompt } from '@cruzei/shared-types';
+import type { ConversationRef, InvisiblePresence, PlaceKind, PlacePrompt } from '@cruzei/shared-types';
+import { effectiveTier } from '../../common/premium';
+import { groupInvisible, type InvisibleItem } from './invisible';
 import type { LikeStatus } from '../inbox/routing';
 import { loadPeerSocial, type PeerSocialRow } from './peer-social';
 import { ExpiringCache, SaturatedError, Semaphore, TtlMemo, chunk, historySignature, matchesHomeCells, planCellReload, selectTop, triageForDiscovery } from './hot-path';
@@ -137,6 +139,8 @@ export interface DiscoveryResult {
   users: DiscoveryUserDto[];
   /** pessoas por perto que existem mas não ganham marcador/identidade (área esparsa) */
   hiddenCount: number;
+  /** invisíveis agrupados, só pra Premium vigente (grátis: null) — sem identidade (location/invisible.ts) */
+  invisible: InvisiblePresence | null;
   radiusM: number;
   me: { discoverable: boolean; hiddenReason: HiddenReason | null; placePrompt?: PlacePrompt | null };
 }
@@ -159,6 +163,8 @@ interface Party {
   visibilityMode: string;
   isPaused: boolean;
   deletedAt: Date | null;
+  /** só no consultante (loadParty): Premium vigente — decide se vê os invisíveis agrupados */
+  premium?: boolean;
 }
 
 /** flags de privacidade do candidato: recarregadas a cada DISCOVERY_CANDIDATE_TTL_MS (consulta leve, só colunas) */
@@ -553,15 +559,18 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private async discoverNow(requesterId: string, requestedRadiusM?: number): Promise<DiscoveryResult> {
     const radiusM = Math.min(PRIVACY.DISCOVERY_RADIUS_M, Math.max(50, requestedRadiusM ?? PRIVACY.DISCOVERY_RADIUS_M));
     let placePrompt: PlacePrompt | null = null;
+    let invisible: InvisiblePresence | null = null;
     const empty = (reason: HiddenReason | null): DiscoveryResult => ({
       users: [],
       hiddenCount: 0,
       radiusM,
       me: { discoverable: reason === null, hiddenReason: reason, placePrompt },
+      invisible,
     });
 
     const me = await this.loadParty(requesterId);
     if (!me) return empty('paused');
+    if (me.premium) invisible = { total: 0, groups: [] };
     const presences = await this.getPresences([requesterId]);
     const mine = presences.get(requesterId);
     if (!mine) return empty('no_presence');
@@ -599,6 +608,9 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
 
     const blocked = await this.blockedWith(requesterId);
     const rows = await this.loadCandidates(triage.needed.filter((id) => !blocked.has(id)));
+
+    // 0) invisíveis (só Premium): agrupados por lugar/quadra, sem identidade — ver location/invisible.ts
+    if (me.premium) invisible = await this.invisibleNearby(me, mine, triage, pres, rows, blocked);
 
     // 1) elegibilidade (visível, com presença, não oculto, regras de descoberta dos DOIS lados) + raio REAL
     const eligible: { u: CandidateRow; p: Presence; dist: number }[] = [];
@@ -682,7 +694,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
         conversation: social.get(u.id)?.conversation ?? null,
       }));
 
-    return { users, hiddenCount, radiusM, me: { discoverable: myReason === null, hiddenReason: myReason, placePrompt } };
+    return { users, hiddenCount, radiusM, me: { discoverable: myReason === null, hiddenReason: myReason, placePrompt }, invisible };
   }
 
   /**
@@ -789,6 +801,11 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private mutuallyDiscoverable(a: Party, b: Party, bPresence: Presence): boolean {
     if (b.visibilityMode !== 'visible' || b.isPaused || b.deletedAt) return false;
     if (bPresence.hidden) return false;
+    return this.discoveryRulesAllow(a, b);
+  }
+
+  /** só as regras de descoberta dos DOIS ("Ninguém", "Interesses compatíveis"), sem olhar visibilidade */
+  private discoveryRulesAllow(a: Pick<Party, 'discoveryMode' | 'interests'>, b: Pick<Party, 'discoveryMode' | 'interests'>): boolean {
     if (a.discoveryMode === 'nobody' || b.discoveryMode === 'nobody') return false;
     if (a.discoveryMode !== 'compatible' && b.discoveryMode !== 'compatible') return true;
     // interesse em comum (sem criar array por candidato: numa multidão isso roda milhares de vezes por consulta)
@@ -796,6 +813,54 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     const big = small === a.interests ? b.interests : a.interests;
     for (const i of small) if (big.has(i)) return true;
     return false;
+  }
+
+  /**
+   * Invisíveis no raio pra quem é Premium: consulta leve (modo de descoberta e interesses — a mesma reciprocidade dos
+   * visíveis; nada de perfil, nome ou foto) e agrupamento por lugar/quadra. Área privada/residência, pausa, conta fora
+   * do ar, análise e Block (qualquer sentido) ficam de fora.
+   */
+  private async invisibleNearby(
+    me: Party,
+    mine: Presence,
+    triage: { inRadius: Map<string, number>; areaOf: Map<string, string> },
+    pres: Map<string, Presence>,
+    rows: CandidateRow[],
+    blocked: Set<string>,
+  ): Promise<InvisiblePresence> {
+    const loaded = new Set(rows.map((r) => r.id));
+    const ids = [...triage.inRadius.keys()].filter((id) => !loaded.has(id) && !blocked.has(id));
+    const visibleByArea = new Map<string, number>();
+    const visibleByPlace = new Map<number, number>();
+    for (const u of rows) {
+      const p = pres.get(u.id);
+      if (!p || p.hidden || u.discoveryMode === 'nobody') continue;
+      const area = triage.areaOf.get(u.id) ?? this.areaOf(p);
+      visibleByArea.set(area, (visibleByArea.get(area) ?? 0) + 1);
+      if (p.poi) visibleByPlace.set(p.poi.id, (visibleByPlace.get(p.poi.id) ?? 0) + 1);
+    }
+    const band = (pos: { lat: number; lng: number }) => proximityBand(distanceMeters(mine.lat, mine.lng, pos.lat, pos.lng));
+    if (ids.length === 0) return groupInvisible([], { visibleByArea, visibleByPlace }, band);
+
+    const found: { id: string; discoveryMode: DiscoveryMode; interests: number[] | null }[] = [];
+    for (const part of chunk(ids, ID_CHUNK)) {
+      found.push(
+        ...(await this.prisma.$queryRaw<{ id: string; discoveryMode: DiscoveryMode; interests: number[] | null }[]>`
+          SELECT u.id::text AS id, u.discovery_mode::text AS "discoveryMode",
+                 (SELECT array_agg(ui.interest_id) FROM user_interests ui WHERE ui.user_id = u.id) AS interests
+            FROM users u
+           WHERE u.id = ANY(${part}::uuid[]) AND u.visibility_mode = 'anonymous' AND u.deleted_at IS NULL
+             AND u.is_paused = false AND u.account_status = 'active' AND u.review_hold_at IS NULL`),
+      );
+    }
+    const items: InvisibleItem[] = [];
+    for (const r of found) {
+      const p = pres.get(r.id);
+      if (!p || p.hidden) continue;
+      if (!this.discoveryRulesAllow(me, { discoveryMode: r.discoveryMode, interests: new Set(r.interests ?? []) })) continue;
+      items.push({ area: triage.areaOf.get(r.id) ?? this.areaOf(p), vcell: this.vcellOf(p), poi: p.poi });
+    }
+    return groupInvisible(items, { visibleByArea, visibleByPlace }, band);
   }
 
   private activeBoosts(): Promise<Set<string>> {
@@ -853,10 +918,18 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private async loadParty(id: string): Promise<Party | null> {
     const u = await this.prisma.user.findUnique({
       where: { id },
-      select: { id: true, discoveryMode: true, visibilityMode: true, isPaused: true, deletedAt: true, userInterests: { select: { interestId: true } } },
+      select: { id: true, discoveryMode: true, visibilityMode: true, isPaused: true, deletedAt: true, premiumTier: true, premiumExpiresAt: true, userInterests: { select: { interestId: true } } },
     });
     if (!u || u.deletedAt) return null;
-    return { id: u.id, discoveryMode: u.discoveryMode as DiscoveryMode, interests: new Set(u.userInterests.map((i) => i.interestId)), visibilityMode: u.visibilityMode, isPaused: u.isPaused, deletedAt: u.deletedAt };
+    return {
+      id: u.id,
+      discoveryMode: u.discoveryMode as DiscoveryMode,
+      interests: new Set(u.userInterests.map((i) => i.interestId)),
+      visibilityMode: u.visibilityMode,
+      isPaused: u.isPaused,
+      deletedAt: u.deletedAt,
+      premium: effectiveTier(u.premiumTier, u.premiumExpiresAt) !== 'free',
+    };
   }
 
   private async loadCandidates(ids: string[]): Promise<CandidateRow[]> {

@@ -358,7 +358,7 @@ export function ProfileScreen() {
           <Row
             icon={isAnonymous ? 'eye-off-outline' : 'eye-outline'}
             label="Modo anônimo"
-            hint="Você vê todo mundo, ninguém vê você"
+            hint="Você vê todo mundo, ninguém sabe que é você"
             value={isAnonymous}
             onToggle={() => toggleAnonymous()}
           />

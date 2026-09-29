@@ -2,7 +2,7 @@
 // Nasceu como a ponte RN <-> WebView (mapbox-gl JS); os nomes dos comandos e dos eventos continuam os mesmos, mas agora
 // os comandos são objetos tipados entregues direto ao motor (sem JSON nem injectJavaScript) e os eventos chegam por callback.
 
-import type { MapPosition, NearbyUser, POI } from '@cruzei/shared-types';
+import type { InvisibleGroup, MapPosition, NearbyUser, POI } from '@cruzei/shared-types';
 import type { AvatarLayer, AvatarRig } from '../../avatar';
 
 export type MapTheme = 'day' | 'dusk' | 'night';
@@ -89,7 +89,9 @@ export type MapEvent =
   | { type: 'clusterTap'; ids: string[]; lat: number; lng: number }
   | { type: 'matchMomentDone'; userId: string | null; shown: boolean }
   | { type: 'perf'; fps: number }
-  | { type: 'pinTap'; id: string };
+  | { type: 'pinTap'; id: string }
+  /** toque num marcador de gente invisível (só Premium): quantos e o lugar público, nunca quem */
+  | { type: 'invisibleTap'; count: number; place: string | null };
 
 // ---------- tela -> mapa ----------
 
@@ -109,7 +111,8 @@ export type CommandName =
   | 'defineAvatars'
   | 'matchMoment'
   | 'emote'
-  | 'setPin';
+  | 'setPin'
+  | 'setInvisible';
 
 export type MapCommand =
   | { fn: 'setTheme'; args: [MapTheme, boolean] }
@@ -126,7 +129,8 @@ export type MapCommand =
   | { fn: 'defineAvatars'; args: [AvatarDefs] }
   | { fn: 'matchMoment'; args: [{ userId: string }] }
   | { fn: 'emote'; args: [string, EmoteKind] }
-  | { fn: 'setPin'; args: [PinPayload | null, boolean] };
+  | { fn: 'setPin'; args: [PinPayload | null, boolean] }
+  | { fn: 'setInvisible'; args: [InvisibleGroup[] | null] };
 
 /** Builders tipados dos comandos (mesmas assinaturas da época da WebView). */
 export const cmd = {
@@ -147,4 +151,6 @@ export const cmd = {
   emote: (id: string, kind: EmoteKind): MapCommand => ({ fn: 'emote', args: [id, kind] }),
   /** crava (ou tira, com null) o pino do lugar escolhido; fly = câmera voa até lá com o pino caindo */
   setPin: (pin: PinPayload | null, fly = false): MapCommand => ({ fn: 'setPin', args: [pin, fly] }),
+  /** gente invisível por perto (só Premium; null/[] = nada): um marcador por lugar ou quadra, nunca uma pessoa */
+  setInvisible: (groups: InvisibleGroup[] | null): MapCommand => ({ fn: 'setInvisible', args: [groups] }),
 } as const;

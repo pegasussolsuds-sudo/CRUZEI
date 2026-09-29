@@ -77,14 +77,16 @@ export class LikesService {
         premiumExpiresAt: true,
       },
     });
-    // suspensa, banida ou fora da descoberta pela moderação: some pra todo mundo, curtida inclusive
-    if (!target || target.deletedAt || target.accountStatus !== 'active' || target.reviewHoldAt)
+    // suspensa, banida, fora da descoberta pela moderação ou invisível (modo anônimo): some pra todo mundo, curtida
+    // inclusive — o MESMO 404, pra ninguém descobrir pelo erro que a pessoa existe e está invisível
+    if (
+      !target ||
+      target.deletedAt ||
+      target.accountStatus !== 'active' ||
+      target.reviewHoldAt ||
+      target.visibilityMode === 'anonymous'
+    )
       throw new NotFoundException('Usuário não encontrado');
-    if (target.visibilityMode === 'anonymous') {
-      throw new BadRequestException(
-        'Essa pessoa está em modo anônimo — só dá pra curtir quando ela se revelar',
-      );
-    }
 
     // atalho antes de gastar cota; a checagem que vale é a de dentro da transação (depois da trava do par)
     const blocked = await this.prisma.block.findFirst({

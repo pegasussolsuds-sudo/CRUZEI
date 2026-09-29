@@ -33,6 +33,7 @@ import { VenueCard } from '../../components/map/VenueCard';
 import { NamePlaceCard, type PlacePromptAnswer } from '../../components/map/NamePlaceCard';
 import { votePlace } from '../../hooks/usePlaceContrib';
 import { placeKindMeta } from '../../components/map/placeKinds';
+import { invisibleTapText } from '../../components/map/invisible';
 import type { GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
@@ -63,9 +64,12 @@ const HEADING_MIN_DELTA = 4;
 const HEADING_THROTTLE_MS = 100;
 const PADDING_THROTTLE_MS = 16;
 const MATCH_MOMENT_FALLBACK_MS = 3800;
+const TOAST_MS = 2500;
+/** o aviso dos invisíveis é mais comprido: fica um pouco mais na tela */
+const INVISIBLE_TOAST_MS = 4000;
 
 // ordem de reaplicação do estado após um 'ready' (mapa novo depois de um erro fatal)
-const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe', 'reveal', 'setData', 'select', 'setPadding', 'setPin'];
+const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe', 'reveal', 'setData', 'setInvisible', 'select', 'setPadding', 'setPin'];
 // one-shots que vale a pena segurar até o 'ready'; comandos de câmera antes do ready só atropelariam o reveal
 const QUEUEABLE: ReadonlySet<CommandName> = new Set<CommandName>(['burst']);
 const TIER_BELOW: Record<PerfTier, PerfTier | null> = { high: 'mid', mid: 'low', low: null };
@@ -276,10 +280,10 @@ export function MapScreen() {
   const [canAskLocation, setCanAskLocation] = useState(true);
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = useCallback((t: string) => {
+  const showToast = useCallback((t: string, ms: number = TOAST_MS) => {
     setToast(t);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 2500);
+    toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -523,6 +527,14 @@ export function MapScreen() {
     for (const key of Array.from(knownAvatars.current.keys())) if (!used.has(key)) knownAvatars.current.delete(key);
   }, [hasData, users, mapUsers, pois, myAvatarKey, defineAvatars, send]);
 
+  // gente invisível (modo anônimo) por perto: só Premium — pra quem é grátis o servidor manda null e o mapa fica vazio.
+  // Vai direto do /nearby pro mapa, agrupada por lugar/quadra (nunca quem é); nada disso é guardado ou registrado aqui
+  const invisible = nearbyQuery.data?.invisible ?? null;
+  const invisibleGroups = invisible?.groups ?? null;
+  useEffect(() => {
+    send(cmd.setInvisible(invisibleGroups), 'setInvisible');
+  }, [invisibleGroups, send]);
+
   useEffect(() => {
     send(cmd.select(selected), 'select');
   }, [selected, send]);
@@ -721,6 +733,12 @@ export function MapScreen() {
           setVenueCardOpen(true);
           break;
         }
+        case 'invisibleTap': {
+          // nunca abre cartão de pessoa: só quantos (e o lugar, que é público)
+          Haptics.selectionAsync().catch(() => {});
+          showToast(invisibleTapText(msg.count, msg.place), INVISIBLE_TOAST_MS);
+          break;
+        }
         case 'mapTap': {
           setSelected(null);
           setSelectedPoiId(null);
@@ -776,7 +794,7 @@ export function MapScreen() {
           break;
       }
     },
-    [flushOnReady, onMapDead, send, finishMoment],
+    [flushOnReady, onMapDead, send, finishMoment, showToast],
   );
 
   // ---------- acenos recebidos (socket) ----------
@@ -1255,6 +1273,7 @@ export function MapScreen() {
         users={users}
         bandById={bandById}
         hiddenCount={hiddenCount}
+        invisibleTotal={invisible?.total ?? 0}
         radiusM={radiusM}
         isFree={isFree}
         isLoading={listLoading}
@@ -1314,8 +1333,8 @@ export function MapScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black },
   floating: { position: 'absolute', left: 0, right: 0, gap: spacing.sm },
-  toast: { alignSelf: 'center', backgroundColor: colors.black, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minHeight: 36, justifyContent: 'center' },
-  toastText: { ...typography.bodySmall, color: colors.white },
+  toast: { alignSelf: 'center', marginHorizontal: spacing.lg, backgroundColor: colors.black, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minHeight: 36, justifyContent: 'center' },
+  toastText: { ...typography.bodySmall, color: colors.white, textAlign: 'center' },
   notice: { marginHorizontal: spacing.lg, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.overlayDark, padding: spacing.md, borderRadius: radius.md },
   noticeText: { ...typography.bodySmall, color: colors.white, flex: 1 },
   noticeBtn: { minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.sm },

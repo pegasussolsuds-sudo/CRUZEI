@@ -52,7 +52,7 @@ Quem pode ver seu perfil vê:
 
 Ninguém vê seu telefone, sua data de nascimento completa, sua orientação sexual, sua posição exata, sua distância exata nem suas áreas privadas.
 
-Com o modo anônimo ligado, com o perfil pausado ou com a pessoa bloqueada, seu perfil não aparece.
+Com o modo anônimo ligado, com o perfil pausado ou com a pessoa bloqueada, seu perfil não aparece. No modo anônimo, assinantes Premium veem apenas quantas pessoas anônimas há em um lugar ou quadra (a partir de um número mínimo de pessoas no local), sem nome, foto, perfil ou posição de ninguém; quem está pausado, em área privada ou com a descoberta em "Ninguém" nem entra nessa conta.
 
 ### 2.4 Localização
 

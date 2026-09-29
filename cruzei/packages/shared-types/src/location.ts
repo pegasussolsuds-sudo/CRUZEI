@@ -86,6 +86,29 @@ export interface DiscoveryResponse {
   hiddenCount: number;
   radiusM: number;
   me: { discoverable: boolean; hiddenReason: HiddenReason | null; placePrompt?: PlacePrompt | null };
+  /**
+   * Gente invisível (modo anônimo) por perto — SÓ pra quem tem Premium vigente; pra quem é grátis vem null e nenhum
+   * número (nem o total). Nunca identidade: sem id, nome, foto nem avatar, e agrupada por lugar ou quadra.
+   */
+  invisible?: InvisiblePresence | null;
+}
+
+/** grupo de invisíveis num lugar ou numa quadra: um marcador com a contagem, nunca uma pessoa */
+export interface InvisibleGroup {
+  /** chave do grupo pro mapa ('poi:<id>' ou 'cell:<geohash>'), nunca de uma pessoa */
+  key: string;
+  /** ponto do lugar ou centro da quadra — nunca a posição de alguém */
+  lat: number;
+  lng: number;
+  count: number;
+  band: ProximityBand;
+  poi: { id: number; name: string } | null;
+}
+
+export interface InvisiblePresence {
+  /** invisíveis no raio, inclusive os que não viram marcador (região com pouca gente: só entram aqui) */
+  total: number;
+  groups: InvisibleGroup[];
 }
 
 /**

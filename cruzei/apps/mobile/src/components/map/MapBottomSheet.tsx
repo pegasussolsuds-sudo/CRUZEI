@@ -12,6 +12,7 @@ import { FadeInView } from '../animated/FadeInView';
 import { LiveDot } from '../animated/LiveDot';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PersonRow } from './PersonRow';
+import { invisibleSummary } from './invisible';
 
 export const SHEET_SNAP_POINTS: string[] = ['22%', '68%'];
 export const SHEET_SNAP_FRACTIONS = [0.22, 0.68] as const;
@@ -52,6 +53,8 @@ export interface MapBottomSheetProps {
   bandById: ReadonlyMap<string, ProximityBand>;
   /** pessoas por perto que o servidor não mostra (região esparsa) — só o número */
   hiddenCount?: number;
+  /** gente invisível (modo anônimo) por perto — só Premium; grátis recebe null do servidor e aqui chega 0 */
+  invisibleTotal?: number;
   radiusM: number;
   isFree: boolean;
   isLoading: boolean;
@@ -88,7 +91,7 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
 ];
 
 export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
-  { users, bandById, hiddenCount = 0, radiusM, isFree, isLoading, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
+  { users, bandById, hiddenCount = 0, invisibleTotal = 0, radiusM, isFree, isLoading, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -130,11 +133,13 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     return list;
   }, [users, groupFilter, poiFilter, poiFilterIds, filter, rankOf]);
 
+  // " · 👻 N invisíveis por perto" só no resumo geral (Premium; grátis = '')
+  const invisibleText = groupFilter || poiFilter ? '' : invisibleSummary(invisibleTotal);
   const title = groupFilter
     ? groupFilter.label
     : poiFilter
       ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
-      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}`;
+      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}${invisibleText}`;
 
   const renderItem = useCallback(
     // sem animação de entrada por linha: com multidão em volta a lista troca dezenas de linhas a cada atualização
@@ -172,7 +177,8 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
   const header = (
     <View style={styles.header} onLayout={onHeaderLayout}>
       <View style={styles.titleRow}>
-        <Text style={styles.title} numberOfLines={1} accessibilityRole="header">
+        {/* com os invisíveis o resumo passa de uma linha nos 360 dp: quebra em vez de cortar (a altura recolhida é medida) */}
+        <Text style={styles.title} numberOfLines={invisibleText ? 2 : 1} accessibilityRole="header">
           👥 {title}
         </Text>
         {isLoading ? (

@@ -559,6 +559,81 @@ const PinLayers = memo(function PinLayers({ engine }: { engine: Engine }) {
   );
 });
 
+// ---------- gente invisível (só Premium): fantasma discreto por lugar/quadra, nunca uma pessoa ----------
+/**
+ * cor crua por tema (camadas Metch não recebem a luz): disco translúcido com borda suave e um brilho difuso em volta;
+ * de dia um lilás acinzentado que não some no chão claro, à noite quase branco e bem transparente
+ */
+const GHOST: Record<MapTheme, { fill: string; stroke: string; glow: string; text: string; halo: string }> = {
+  day: { fill: 'rgba(96,104,160,0.16)', stroke: 'rgba(72,80,136,0.55)', glow: 'rgba(120,128,200,0.22)', text: '#3C4270', halo: '#FAFAFA' },
+  dusk: { fill: 'rgba(226,218,255,0.14)', stroke: 'rgba(236,230,255,0.55)', glow: 'rgba(200,190,255,0.20)', text: '#EEE9FF', halo: '#1A1A2A' },
+  night: { fill: 'rgba(206,214,255,0.12)', stroke: 'rgba(220,226,255,0.50)', glow: 'rgba(160,176,255,0.18)', text: '#DCE2FF', halo: '#0A0A1A' },
+};
+/** raio (px) do disco por zoom: um pouco maior que o ícone do lugar (44 px x 0,8 no z15), que fica por cima */
+const GHOST_R: [number, number][] = [
+  [10, 4],
+  [13, 9],
+  [15, 19],
+  [18, 28],
+];
+const GHOST_GLOW_R = GHOST_R.map(([z, r]): [number, number] => [z, r * 1.45]);
+const GHOST_STROKE_W: [number, number][] = [
+  [10, 0.8],
+  [15, 1.4],
+  [18, 1.8],
+];
+/** rótulo só de perto (longe fica só o disco, como o ponto das pessoas) */
+const GHOST_LABEL_MIN_ZOOM = 14;
+const GHOST_PLACE = filterOf(['has', 'place']);
+const GHOST_CELL = filterOf(['!', ['has', 'place']]);
+// text-offset sempre array e text-font de uma fonte que o OpenFreeMap serve (o factory do MLRN Android cai com número
+// solto); texto puro, sem emoji (a fonte SDF não tem o glifo)
+const GHOST_LABEL_BASE = {
+  'text-field': ['coalesce', ['get', 'label'], ''],
+  'text-font': FONT,
+  'text-size': 11,
+  'text-max-width': 8,
+  'text-letter-spacing': 0.02,
+  'text-pitch-alignment': 'viewport',
+  // o número é o recado do marcador: aparece mesmo cruzando nome de rua (e não esconde nome nenhum)
+  'text-allow-overlap': true,
+  'text-ignore-placement': true,
+};
+/**
+ * rótulo sempre EM CIMA do disco: embaixo ficam o nome do lugar e os ícones de lugar da quadra (que desenham por cima
+ * dos invisíveis e escondiam o "3 invisíveis" — visto no Moto)
+ */
+const GHOST_LABEL_ABOVE = symbolLayout({ ...GHOST_LABEL_BASE, 'text-anchor': 'bottom', 'text-offset': [0, -2.2] });
+
+const GhostLayers = memo(function GhostLayers({ engine }: { engine: Engine }) {
+  const theme = useChannelSelector(engine.ch, 'look', (l) => l.theme);
+  const C = GHOST[theme] ?? GHOST.day;
+  const glow = useMemo(
+    () => circlePaint({ 'circle-radius': zoomScale(GHOST_GLOW_R), 'circle-color': C.glow, 'circle-blur': 0.9, 'circle-pitch-alignment': 'viewport' }),
+    [C.glow],
+  );
+  const disc = useMemo(
+    () =>
+      circlePaint({
+        'circle-radius': zoomScale(GHOST_R),
+        'circle-color': C.fill,
+        'circle-stroke-color': C.stroke,
+        'circle-stroke-width': zoomScale(GHOST_STROKE_W),
+        'circle-pitch-alignment': 'viewport',
+      }),
+    [C.fill, C.stroke],
+  );
+  const label = useMemo(() => symbolPaint({ 'text-color': C.text, 'text-halo-color': C.halo, 'text-halo-width': 1.2 }), [C.text, C.halo]);
+  return (
+    <>
+      <Layer type="circle" id="cz-invisible-glow" source={SRC.invisible} paint={glow} />
+      <Layer type="circle" id="cz-invisible" source={SRC.invisible} paint={disc} />
+      <Layer type="symbol" id="cz-invisible-label" source={SRC.invisible} minzoom={GHOST_LABEL_MIN_ZOOM} filter={GHOST_CELL} layout={GHOST_LABEL_ABOVE} paint={label} />
+      <Layer type="symbol" id="cz-invisible-place-label" source={SRC.invisible} minzoom={GHOST_LABEL_MIN_ZOOM} filter={GHOST_PLACE} layout={GHOST_LABEL_ABOVE} paint={label} />
+    </>
+  );
+});
+
 // ---------- rótulos com cor do tema (camadas Metch não recebem a luz: cor crua) ----------
 const POI_LABEL_LAYOUT = symbolLayout({
   'text-field': ['step', ['zoom'], '', 15, ['get', 'label']],
@@ -599,6 +674,7 @@ export const MetchLayers = memo(function MetchLayers({ engine }: { engine: Engin
       <Source engine={engine} name="moment" id={SRC.moment} />
       <Source engine={engine} name="pin" id={SRC.pin} />
       <Source engine={engine} name="particles" id={SRC.particles} />
+      <Source engine={engine} name="invisible" id={SRC.invisible} />
 
       {/* arco do momento do match: por baixo das auras */}
       <Layer type="line" id="cz-moment-glow" source={SRC.moment} layout={STYLE.momentLayout} paint={STYLE.momentGlow} />
@@ -606,6 +682,8 @@ export const MetchLayers = memo(function MetchLayers({ engine }: { engine: Engin
       {/* auras (boost/premium+) por baixo dos avatares */}
       <AuraUsers engine={engine} />
       <AuraBoost engine={engine} />
+      {/* gente invisível (só Premium): abaixo do sonar, dos lugares e de todo mundo visível; rótulo cede a vez aos outros */}
+      <GhostLayers engine={engine} />
       {/* sonar dos hotspots: acima das auras, abaixo dos avatares */}
       <Layer type="symbol" id="cz-hot-sonar" source={SRC.pois} filter={HOT_FILTER} layout={STYLE.sonarGlow.layout} />
       <SonarLevel engine={engine} v={1} />

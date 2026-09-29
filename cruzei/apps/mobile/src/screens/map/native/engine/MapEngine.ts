@@ -14,7 +14,7 @@ import type { RefObject } from 'react';
 import { AccessibilityInfo } from 'react-native';
 import type { CameraRef, GeoJSONSourceRef, MapRef, ViewStateChangeEvent } from '@maplibre/maplibre-react-native';
 import Supercluster from 'supercluster';
-import type { POI } from '@cruzei/shared-types';
+import type { InvisibleGroup, POI } from '@cruzei/shared-types';
 
 import type { AvatarDefs, BurstPayload, CameraOpts, EmoteKind, MapCommand, MapDataPayload, MapEvent, MapPadding, MapTheme, MapUser, MeState, PerfTier, PinPayload, InitTier } from '../../bridge';
 import { BUB, IMG, IMG_SCALE, bubbleOffset, figOffset, type AvatarDef, type BubbleStyle, type Dim, type EmoteState, type FigureLook, type MapImageEntry, type MapImageRef, type PoseVariation } from '../contracts';
@@ -22,6 +22,7 @@ import { mapDraw } from '../images/draw';
 import { DUR, pose, sizeFor, variationFor } from '../images/anim';
 import { mapImages } from '../images/store';
 import { mapPhotos } from '../images/photos';
+import { invisibleFeatures } from '../../../../components/map/invisible';
 import { Channels } from './channels';
 import { CameraCtl, MAX_PITCH, type CamState } from './camera';
 import { FeatureStateQueue } from './featureState';
@@ -66,6 +67,8 @@ export interface MapChannels {
   pin: FC;
   moment: FC;
   particles: FC;
+  /** gente invisível (só Premium): um ponto por lugar/quadra com a contagem, nunca uma pessoa */
+  invisible: FC;
   images: ImageGroups;
   /** relógio das animações de paint (s) — só muda com algo em rings */
   phase: number;
@@ -100,12 +103,15 @@ export const SRC = {
   pin: 'pin',
   moment: 'moment',
   particles: 'particles',
+  invisible: 'invisible',
 } as const;
 const PERSON_SOURCES = [SRC.users, SRC.usersBoost, SRC.movers, SRC.spot];
 
 /** camadas que contam como toque numa pessoa */
 export const TAP_PERSON_LAYERS = ['cz-users', 'cz-users-photo', 'cz-users-boost', 'cz-users-boost-photo', 'cz-movers', 'cz-movers-photo', 'cz-spot', 'cz-spot-photo', 'cz-users-dot', 'cz-users-boost-dot', 'cz-movers-dot'];
-const TAP_LAYERS = [...TAP_PERSON_LAYERS, 'cz-poi', 'cz-cluster', 'cz-cluster-count', 'cz-pin'];
+/** marcador de gente invisível: o disco e os rótulos (o brilho em volta não conta) */
+const TAP_INVISIBLE_LAYERS = ['cz-invisible', 'cz-invisible-label', 'cz-invisible-place-label'];
+const TAP_LAYERS = [...TAP_PERSON_LAYERS, 'cz-poi', 'cz-cluster', 'cz-cluster-count', 'cz-pin', ...TAP_INVISIBLE_LAYERS];
 
 const MAX_USERS = 300;
 /** grupos (supercluster): mesmos raio e zoom máximo do antigo cluster nativo; acima de 21 ninguém se agrupa */
@@ -291,6 +297,7 @@ export class MapEngine {
     pin: EMPTY_FC,
     moment: EMPTY_FC,
     particles: EMPTY_FC,
+    invisible: EMPTY_FC,
     images: {},
     phase: 0,
     rings: NO_RINGS,
@@ -334,6 +341,8 @@ export class MapEngine {
   private located = false;
   private revealed = false;
   private me: MeState | null = null;
+  /** últimos grupos de invisíveis recebidos (redesenha quando eu ando: o marcador perto de mim sai de baixo do avatar) */
+  private invisibleGroups: InvisibleGroup[] | null = null;
   private users = new Map<string, FigUser>();
   private pois = new Map<number, POI>();
   private hotIds = new Set<number>();
@@ -620,7 +629,7 @@ export class MapEngine {
     return Math.min(60, Math.round(1000 / iv[Math.floor(iv.length / 2)]));
   }
 
-  /** toque no mapa: uma consulta só, com prioridade pino > pessoa > grupo > lugar > mapa vazio */
+  /** toque no mapa: uma consulta só, com prioridade pino > pessoa > grupo > lugar > invisíveis > mapa vazio */
   async onPress(screenX: number, screenY: number): Promise<void> {
     const mv = this.mapView;
     if (!mv || !this.ready) return;
@@ -661,6 +670,14 @@ export class MapEngine {
     if (poi) {
       const id = Number(props(poi).id);
       if (Number.isFinite(id)) this.emit({ type: 'poiTap', id });
+      return;
+    }
+    // gente invisível: nunca abre cartão de pessoa; a tela só diz quantos (e o lugar, que é público)
+    const ghost = hits.find((f) => 'inv' in props(f));
+    if (ghost) {
+      const p = props(ghost);
+      const count = Number(p.inv);
+      if (Number.isFinite(count) && count > 0) this.emit({ type: 'invisibleTap', count, place: typeof p.place === 'string' ? p.place : null });
       return;
     }
     this.emit({ type: 'mapTap' });
@@ -749,6 +766,8 @@ export class MapEngine {
           return this.emote(c.args[0], c.args[1]);
         case 'setPin':
           return this.setPin(c.args[0], c.args[1]);
+        case 'setInvisible':
+          return this.setInvisible(c.args[0]);
         default:
           return;
       }
@@ -1649,6 +1668,18 @@ export class MapEngine {
     this.startClock();
   }
 
+  /**
+   * Gente invisível por perto (só Premium; pra quem é grátis o servidor manda null): um marcador por lugar ou quadra
+   * com a contagem. O motor guarda só a coleção pronta (contagem, posição do grupo, nome do lugar) — nada por pessoa.
+   */
+  setInvisible(groups: InvisibleGroup[] | null): void {
+    this.invisibleGroups = groups;
+    // perto de mim o marcador sai de baixo do meu avatar (só desenho: invisible.drawPosition)
+    const next = invisibleFeatures(groups, this.me);
+    if (!next.features.length && !this.ch.get('invisible').features.length) return;
+    this.ch.set('invisible', next);
+  }
+
   private ensurePoiImage(p: POI, hot: boolean): string {
     const isEvent = p.category === 'event';
     const id = hot ? 'poi-hot' : isEvent ? 'poi-event' : `poi-${p.category || 'other'}${p.isPartner ? '-partner' : ''}`;
@@ -1666,6 +1697,7 @@ export class MapEngine {
     if (!me || typeof me.lat !== 'number' || typeof me.lng !== 'number') return;
     const moved = !this.me || this.me.lat !== me.lat || this.me.lng !== me.lng;
     this.me = me;
+    if (moved && this.invisibleGroups?.length) this.setInvisible(this.invisibleGroups);
     const u: FigUser = {
       id: 'me',
       name: me.name || 'você',

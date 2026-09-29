@@ -59,7 +59,7 @@ Fale com a gente pelo e-mail {{EMAIL_SUPORTE}}.
 
 ### Controles de visibilidade
 
-- **Modo anônimo:** você vê as pessoas, mas não aparece para ninguém e não recebe curtidas. No plano gratuito, o modo anônimo pode ter duração limitada e ficam pausados curtir e as mensagens: você não curte ninguém e não manda nem recebe mensagens até voltar a ficar visível. As mensagens que chegarem nesse tempo ficam guardadas e aparecem quando você volta. No Premium, dá para curtir e conversar no modo anônimo.
+- **Modo anônimo:** você vê as pessoas, mas ninguém sabe que é você: seu perfil, nome e foto não aparecem no mapa nem na descoberta, e você não recebe curtidas. Assinantes Premium podem ver quantas pessoas estão no modo anônimo em um lugar ou região, agrupadas, sem nunca saber quem são. No plano gratuito, o modo anônimo pode ter duração limitada e ficam pausados curtir e as mensagens: você não curte ninguém e não manda nem recebe mensagens até voltar a ficar visível. As mensagens que chegarem nesse tempo ficam guardadas e aparecem quando você volta. No Premium, dá para curtir e conversar no modo anônimo.
 - **Descoberta:** "Todos", "Interesses compatíveis" (só quem tem pelo menos um interesse em comum com você) ou "Ninguém". A regra vale para os dois lados: quem escolhe "Ninguém" não aparece e também não vê ninguém.
 - **Pausar:** tira seu perfil do mapa e da descoberta por um tempo.
 - **Áreas privadas:** você cadastra até 5 lugares (como casa, trabalho ou faculdade) onde ninguém descobre você.

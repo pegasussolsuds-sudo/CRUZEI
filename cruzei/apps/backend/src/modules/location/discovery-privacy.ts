@@ -45,6 +45,11 @@ export const PRIVACY = {
   MIN_AREA_K: envInt('DISCOVERY_MIN_AREA_K', 2),
   /** mínimo de pessoas num lugar (POI) pra nomear quem está lá */
   MIN_PLACE_K: envInt('DISCOVERY_MIN_PLACE_K', 2),
+  /**
+   * invisíveis (só Premium vê, sem identidade): mínimo de pessoas (visíveis + invisíveis) no lugar ou na área pra um
+   * grupo de invisíveis virar marcador — mais rígido que o dos visíveis, pra ninguém ser apontado
+   */
+  INVISIBLE_MIN_K: envInt('DISCOVERY_INVISIBLE_MIN_K', 3),
   /** presença expira (s) — quem não atualizou some da descoberta */
   PRESENCE_TTL_S: envInt('DISCOVERY_PRESENCE_TTL_S', 7_200),
   /** intervalo mínimo entre atualizações de posição aceitas (s) — anti-trilha */
