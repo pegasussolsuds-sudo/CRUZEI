@@ -1,6 +1,6 @@
 // Monta as camadas vetoriais do avatar Cruzei a partir de uma AvatarConfig.
-// Uma única fonte de verdade de geometria: o app desenha com react-native-svg e o mapa (WebView)
-// recebe as mesmas camadas e desenha com canvas/Path2D — o avatar é idêntico nos dois lugares.
+// Uma única fonte de verdade de geometria: o app desenha com react-native-svg e o mapa nativo
+// recebe as mesmas camadas e desenha com Skia (screens/map/native/images/draw.ts) — o avatar é idêntico nos dois lugares.
 //
 // Sistema de coordenadas: viewBox 0 0 100 140 (corpo inteiro, pés em y≈134).
 // Cabeça: centro (50,33) r=21. Ombros y≈56. Mãos y≈101. Pernas 92→126. Sapatos até 134.
@@ -24,7 +24,7 @@ export interface AvatarRig {
   legR: [number, number];
 }
 
-/** Camada desenhável (chaves curtas: vai serializada pro WebView do mapa). */
+/** Camada desenhável (chaves curtas: herança da época em que ia serializada pro WebView do mapa). */
 export interface AvatarLayer {
   /** path SVG */
   d: string;

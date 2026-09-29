@@ -2,13 +2,14 @@ import { create } from 'zustand';
 import * as SecureStore from 'expo-secure-store';
 import type { InitTier } from '../screens/map/bridge';
 
-const STORAGE_KEY = 'metch.mapTier';
+// v2: o tier da época da WebView não vale pro mapa nativo (bem mais leve); a 1ª abertura mede de novo
+const STORAGE_KEY = 'metch.mapTier.v2';
 
 /**
  * Tier de performance do mapa, lembrado entre aberturas do app (SecureStore — string curta, sem dado pessoal).
- * Recriar o WebView no meio do uso pra aplicar o tier 'low' (clamp de DPR) era o gatilho da queda nativa do HWUI
- * (OpsTask::tryConcat) no Moto g54: 3–5 de cada 10 aberturas caíam 15–20 s depois do boot. Agora o rebaixamento no
- * meio da sessão só desliga efeitos (setTier) e o DPR menor vale a partir da próxima abertura, que já nasce 'low'.
+ * O tier decide os efeitos caros do mapa (prédios com flood light/AO, partículas, giro automático da câmera, ritmo dos
+ * anéis, teto de figuras próprias). Rebaixar no meio da sessão só desliga efeitos (setTier); a próxima abertura já
+ * nasce no tier salvo, sem precisar medir de novo.
  */
 interface MapPerfState {
   tier: InitTier;

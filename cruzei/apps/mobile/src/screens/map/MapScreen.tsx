@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, type AppStateStatus, BackHandler, type LayoutChangeEvent, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { useIsFocused, useNavigation, type NavigationProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
@@ -37,8 +36,8 @@ import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } fr
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
 import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../avatar';
-import { buildMapboxHtml } from './mapbox-html';
-import { buildBeforeContentLoadedScript, cmd, parseWebMsg, type AvatarDefs, type CommandName, type InitTier, type MapUser, type PerfTier, type PinPayload } from './bridge';
+import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand, type MapEvent, type MapUser, type PerfTier, type PinPayload } from './bridge';
+import { NativeMap, type NativeMapHandle } from './native/NativeMap';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
 import type { AvatarConfig, DiscoveryResponse, MapPosition, MapboxPlace, NearbyUser, POI, PlacePrompt, PlaceSuggestResponse, ProximityBand, VibePlace } from '@cruzei/shared-types';
@@ -62,10 +61,8 @@ const HEADING_MIN_DELTA = 4;
 const HEADING_THROTTLE_MS = 100;
 const PADDING_THROTTLE_MS = 16;
 const MATCH_MOMENT_FALLBACK_MS = 3800;
-// origem http: página http carrega imagens http (fotos de dev na LAN) e https (Mapbox, R2) sem 'mixed content'
-const BASE_URL = 'http://app.cruzei.com.br/';
 
-// ordem de reaplicação do estado após um 'ready' (reload/crash do WebView)
+// ordem de reaplicação do estado após um 'ready' (mapa novo depois de um erro fatal)
 const REPLAY_ORDER: CommandName[] = ['setTier', 'setTheme', 'setActive', 'setMe', 'reveal', 'setData', 'select', 'setPadding', 'setPin'];
 // one-shots que vale a pena segurar até o 'ready'; comandos de câmera antes do ready só atropelariam o reveal
 const QUEUEABLE: ReadonlySet<CommandName> = new Set<CommandName>(['burst']);
@@ -95,7 +92,7 @@ function addTo(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
 }
 
 export function MapScreen() {
-  const webRef = useRef<WebView>(null);
+  const mapRef = useRef<NativeMapHandle>(null);
   const sheetRef = useRef<MapBottomSheetHandle>(null);
   const userSheetRef = useRef<UserPreviewSheetHandle>(null);
   const placeSheetRef = useRef<PlacePreviewSheetHandle>(null);
@@ -142,22 +139,18 @@ export function MapScreen() {
   const myAvatar = useMemo(() => resolveAvatar(me?.avatar ?? null, me?.id ?? 'me', me?.gender ?? null), [me?.avatar, me?.id, me?.gender]);
   const myAvatarKey = keyOf(myAvatar);
 
-  // ---------- WebView ----------
-  // tier inicial vem do store (sobrevive a remount): define o clamp de DPR e o HTML já nasce no tier certo.
-  // `webKey` remonta o WebView (retry / renderer morto) — reload() não ressuscita um renderer morto no Android.
-  // tier e tema do HTML são lidos só na (re)montagem: promoção de tier ou troca de tema ao vivo NÃO recarregam a página
-  // (vão por setTier/setTheme); trocar a string do `source` faria o WebView recarregar o mapa inteiro em silêncio.
-  const [htmlTier, setHtmlTier] = useState<InitTier>(() => useMapPerfStore.getState().tier);
-  const [webKey, setWebKey] = useState(0);
+  // ---------- mapa nativo (@rnmapbox/maps) ----------
+  // tier e tema iniciais são lidos só na montagem; promoção de tier e troca de tema ao vivo vão por setTier/setTheme.
+  // `mapKey` só remonta o mapa depois de um erro fatal de carregamento (não há mapa na tela); vivo, ele nunca é recriado.
+  const [initTier] = useState<InitTier>(() => useMapPerfStore.getState().tier);
+  const [mapKey, setMapKey] = useState(0);
   const themeRef = useRef(theme);
   themeRef.current = theme;
-  const html = useMemo(() => buildMapboxHtml(config.mapboxToken, { theme: themeRef.current, tier: htmlTier }), [htmlTier, webKey]); // eslint-disable-line react-hooks/exhaustive-deps -- tema lido do ref só na (re)montagem
-  const beforeScript = useMemo(() => buildBeforeContentLoadedScript(htmlTier), [htmlTier]);
 
   const readyRef = useRef(false);
-  const stateCmds = useRef(new Map<CommandName, string>());
-  const oneShots = useRef<string[]>([]);
-  const [webReady, setWebReady] = useState(false);
+  const stateCmds = useRef(new Map<CommandName, MapCommand>());
+  const oneShots = useRef<MapCommand[]>([]);
+  const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(config.mapboxToken ? null : 'o mapa não tá disponível agora');
 
   useEffect(() => {
@@ -167,8 +160,8 @@ export function MapScreen() {
     }
   }, []);
 
-  const inject = useCallback((js: string) => {
-    webRef.current?.injectJavaScript(js);
+  const inject = useCallback((c: MapCommand) => {
+    mapRef.current?.run(c);
   }, []);
 
   /**
@@ -176,16 +169,16 @@ export function MapScreen() {
    * Antes do 'ready' só os one-shots em QUEUEABLE são segurados (câmera antes do ready atropelaria o reveal).
    */
   const send = useCallback(
-    (js: string, key?: CommandName, oneShot?: CommandName) => {
-      if (key) stateCmds.current.set(key, js);
-      if (readyRef.current) inject(js);
-      else if (!key && oneShot && QUEUEABLE.has(oneShot)) oneShots.current.push(js);
+    (c: MapCommand, key?: CommandName, oneShot?: CommandName) => {
+      if (key) stateCmds.current.set(key, c);
+      if (readyRef.current) inject(c);
+      else if (!key && oneShot && QUEUEABLE.has(oneShot)) oneShots.current.push(c);
     },
     [inject],
   );
 
   // ---------- definições de avatar (cache por visual, não por pessoa) ----------
-  // O WebView desenha silhueta até receber as camadas da chave; mandamos cada chave UMA vez por vida do WebView.
+  // O mapa desenha silhueta até receber as camadas da chave; mandamos cada chave UMA vez por vida do mapa.
   const sentAvatarKeys = useRef(new Set<string>());
   const knownAvatars = useRef(new Map<string, AvatarConfig>());
   const defineAvatars = useCallback(
@@ -204,7 +197,7 @@ export function MapScreen() {
     },
     [inject],
   );
-  // depois de um reload do WebView, as chaves precisam ir de novo (o HTML nasceu vazio)
+  // mapa novo (retry depois de erro fatal): as chaves precisam ir de novo
   const resendAvatars = useCallback(() => {
     sentAvatarKeys.current.clear();
     defineAvatars(knownAvatars.current.values());
@@ -213,33 +206,25 @@ export function MapScreen() {
   const flushOnReady = useCallback(() => {
     resendAvatars();
     for (const key of REPLAY_ORDER) {
-      const js = stateCmds.current.get(key);
-      if (js) inject(js);
+      const c = stateCmds.current.get(key);
+      if (c) inject(c);
     }
-    for (const js of oneShots.current) inject(js);
+    for (const c of oneShots.current) inject(c);
     oneShots.current = [];
   }, [inject, resendAvatars]);
 
-  const onWebDead = useCallback((why: string) => {
+  const onMapDead = useCallback((why: string) => {
     readyRef.current = false;
-    setWebReady(false);
+    setMapReady(false);
     setMapError(why);
-  }, []);
-
-  // Chromium inicializado (HTML carregado): a splash pode sair por cima de um mapa já vivo (ver stores/boot.ts)
-  const onWebLoaded = useCallback(() => useBootStore.getState().setWebViewReady(true), []);
-
-  const remountWeb = useCallback(() => {
-    readyRef.current = false;
-    setWebReady(false);
-    setHtmlTier(useMapPerfStore.getState().tier); // rebaixamento pra 'low' já gravado no store: a página nova nasce nele
-    setWebKey((k) => k + 1); // o próximo 'ready' faz o replay do estado (REPLAY_ORDER)
   }, []);
 
   const retryMap = useCallback(() => {
     setMapError(null);
-    remountWeb();
-  }, [remountWeb]);
+    readyRef.current = false;
+    setMapReady(false);
+    setMapKey((k) => k + 1); // o próximo 'ready' faz o replay do estado (REPLAY_ORDER)
+  }, []);
 
   // ---------- tier de performance ----------
   const [measuredTier, setMeasuredTier] = useState<PerfTier>('high');
@@ -249,7 +234,7 @@ export function MapScreen() {
   const highFpsCount = useRef(0);
   const readyAt = useRef(0);
 
-  // manda o tier EFETIVO (nunca sobe o WebView acima do que ele mediu num reload)
+  // manda o tier EFETIVO (nunca sobe o mapa acima do que ele mediu)
   useEffect(() => {
     if (forcedTier) send(cmd.setTier(tier), 'setTier');
   }, [forcedTier, tier, send]);
@@ -364,7 +349,7 @@ export function MapScreen() {
       .catch(() => {});
   }, [noPresence, active, lat, lng, refetchNearby]);
 
-  // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no WebView por chave)
+  // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no mapa por chave)
   // só quem tem posição VISUAL (o servidor omite o marcador de quem está em região esparsa)
   const mapUsers = useMemo<MapUser[]>(
     () =>
@@ -425,7 +410,7 @@ export function MapScreen() {
     if (selected && !selectedUser) setSelected(null);
   }, [selected, selectedUser]);
 
-  // refs pra onMessage ficar estável (o WebView recebe a mesma prop em todo ciclo)
+  // refs pra onMapEvent ficar estável
   const usersRef = useRef(users);
   usersRef.current = users;
   const poisRef = useRef(pois);
@@ -436,7 +421,7 @@ export function MapScreen() {
   measuredTierRef.current = measuredTier;
 
   // ---------- descoberta (dicas discretas) + indicadores do header ----------
-  const hints = useDiscoveryHints(users, pois, bandById, active && webReady, `${centerGeohash ?? ''}|${radiusM}`);
+  const hints = useDiscoveryHints(users, pois, bandById, active && mapReady, `${centerGeohash ?? ''}|${radiusM}`);
   const hintsRef = useRef(hints);
   hintsRef.current = hints;
   const indicators = useMemo(() => {
@@ -447,7 +432,7 @@ export function MapScreen() {
 
   // ---------- heading (só tier high, só em foco, só com o mapa pronto; throttle 100ms) ----------
   useEffect(() => {
-    if (tier !== 'high' || !active || !webReady || locStatus !== 'ready') {
+    if (tier !== 'high' || !active || !mapReady || locStatus !== 'ready') {
       setHeading(null);
       return;
     }
@@ -474,7 +459,7 @@ export function MapScreen() {
       cancelled = true;
       sub?.remove();
     };
-  }, [tier, active, webReady, locStatus]);
+  }, [tier, active, mapReady, locStatus]);
 
   // ---------- comandos de estado (idempotentes; reaplicados no próximo 'ready') ----------
   useEffect(() => {
@@ -528,7 +513,7 @@ export function MapScreen() {
       pendingFocus.current = null;
       send(cmd.focusPoi(focusId));
     }
-    // o WebView descarta as definições de quem saiu do mapa no mesmo setData: espelha aqui pra não acumular
+    // o mapa descarta as definições de quem saiu no mesmo setData: espelha aqui pra não acumular
     const used = new Set(mapUsers.map((u) => u.avatarKey));
     used.add(myAvatarKey);
     for (const key of Array.from(sentAvatarKeys.current)) if (!used.has(key)) sentAvatarKeys.current.delete(key);
@@ -575,8 +560,8 @@ export function MapScreen() {
     if (paddingTimer.current) clearTimeout(paddingTimer.current);
   }, []);
   useEffect(() => {
-    if (webReady && headerH > 0) send(cmd.setPadding({ top: headerH, bottom: lastBottomRef.current }), 'setPadding');
-  }, [headerH, webReady, send]);
+    if (mapReady && headerH > 0) send(cmd.setPadding({ top: headerH, bottom: lastBottomRef.current }), 'setPadding');
+  }, [headerH, mapReady, send]);
 
   // com uma sheet de pessoa/lugar aberta, o padding é dela (a lista fica recolhida por baixo)
   const previewFraction = selectedUser ? USER_SHEET_FRACTION : selectedPoi ? PLACE_SHEET_FRACTION : null;
@@ -648,7 +633,7 @@ export function MapScreen() {
       send(cmd.matchMoment(userId));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       if (momentTimer.current) clearTimeout(momentTimer.current);
-      momentTimer.current = setTimeout(finishMoment, MATCH_MOMENT_FALLBACK_MS); // se o WebView não responder
+      momentTimer.current = setTimeout(finishMoment, MATCH_MOMENT_FALLBACK_MS); // se o mapa não responder
     },
     [send, finishMoment],
   );
@@ -659,30 +644,30 @@ export function MapScreen() {
     matchQueue.current = [];
   }, []);
 
-  // ---------- mensagens do WebView ----------
-  const onMessage = useCallback(
-    (e: WebViewMessageEvent) => {
-      const msg = parseWebMsg(e.nativeEvent.data);
-      if (!msg) return;
+  // ---------- eventos do mapa ----------
+  const onMapEvent = useCallback(
+    (msg: MapEvent) => {
       switch (msg.type) {
         case 'ready': {
           readyRef.current = true;
-          setWebReady(true);
+          setMapReady(true);
           setMapError(null);
-          // WebView que nasceu com tier forçado (remount em low) não mediu de verdade: mantém o teto anterior
-          if (htmlTier === 'auto') setMeasuredTier(msg.tier);
+          // o tier do 'ready' é o efetivo (medido, ou o salvo de uma abertura anterior): é ele que vale daqui pra frente
+          setMeasuredTier(msg.tier);
           lowFpsCount.current = 0;
           highFpsCount.current = 0;
           readyAt.current = Date.now();
-          if (__DEV__) console.info('[map] ready tier=' + msg.tier + ' fps=' + msg.fps + ' webgl2=' + msg.webgl2 + ' dpr=' + msg.dpr); // eslint-disable-line no-console
+          if (__DEV__) console.info('[map] ready tier=' + msg.tier + ' fps=' + msg.fps); // eslint-disable-line no-console
           flushOnReady();
           break;
         }
         case 'styleLoaded':
+          // estilo carregado: a splash pode sair por cima de um mapa já vivo (ver stores/boot.ts)
+          useBootStore.getState().setMapReady(true);
           break;
         case 'error': {
           if (msg.fatal) {
-            onWebDead(msg.message);
+            onMapDead(msg.message);
           } else {
             // eslint-disable-next-line no-console
             console.warn('[map]', msg.message);
@@ -770,11 +755,8 @@ export function MapScreen() {
               const next = TIER_BELOW[tierRef.current];
               if (next) {
                 setForcedTier(next);
-                if (next === 'low') {
-                  // NÃO remonta o WebView: recriar o Chromium no meio do uso derrubava o app (HWUI tryConcat) no Moto.
-                  // Aqui só os efeitos caem (setTier via forcedTier); o clamp de DPR vale na próxima abertura (persistido).
-                  useMapPerfStore.getState().setTier('low');
-                }
+                // rebaixamento persistido: a próxima abertura já nasce no tier menor
+                if (next === 'low') useMapPerfStore.getState().setTier('low');
               }
             }
           } else {
@@ -782,18 +764,11 @@ export function MapScreen() {
           }
           break;
         }
-        case 'photoBlocked': {
-          if (__DEV__) {
-            // eslint-disable-next-line no-console
-            console.info('[map] foto sem CORS, caiu no placeholder:', msg.url);
-          }
-          break;
-        }
         default:
           break;
       }
     },
-    [flushOnReady, onWebDead, remountWeb, send, finishMoment, htmlTier],
+    [flushOnReady, onMapDead, send, finishMoment],
   );
 
   // ---------- acenos recebidos (socket) ----------
@@ -1001,7 +976,7 @@ export function MapScreen() {
       const pin: PinPayload = { id: m.id, lat: m.latitude, lng: m.longitude, name: m.name, emoji: placeKindMeta(m.kind).emoji, nightlife: m.nightlife };
       setVenue(m);
       setVenueCardOpen(true);
-      // replay (reload do WebView) recoloca o pino sem voar de novo; agora, voa com o pino caindo
+      // replay (mapa novo) recoloca o pino sem voar de novo; agora, voa com o pino caindo
       stateCmds.current.set('setPin', cmd.setPin(pin, false));
       if (readyRef.current) inject(cmd.setPin(pin, true));
     },
@@ -1136,36 +1111,24 @@ export function MapScreen() {
   }, [poiFilter, users]);
 
   const floatBottom = Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])) + spacing.sm;
+  // logo e atribuição do Mapbox (obrigatórios pelos termos) logo acima da lista recolhida
+  const ornamentBottom = Math.round(containerH * SHEET_SNAP_FRACTIONS[0]) + 6;
   const peopleCount = users.length;
   const listLoading = Boolean(queryCenter) && (nearbyQuery.isPending || nearbyQuery.isPlaceholderData);
 
   return (
     <View style={styles.container} onLayout={onLayout}>
-      <WebView
-        key={webKey}
-        ref={webRef}
-        source={{ html, baseUrl: BASE_URL }}
-        originWhitelist={['*']}
-        injectedJavaScriptBeforeContentLoaded={beforeScript}
-        injectedJavaScriptBeforeContentLoadedForMainFrameOnly
-        onMessage={onMessage}
-        javaScriptEnabled
-        domStorageEnabled
-        cacheEnabled
-        mixedContentMode="always" // fotos de dev vêm por http (LAN); em prod tudo é https (R2)
-        allowsFullscreenVideo={false}
-        overScrollMode="never"
-        style={styles.web}
-        containerStyle={styles.web}
-        setBuiltInZoomControls={false}
-        // "none" = o Chromium desenha direto na janela; em camada "hardware" (FBO do HWUI) o driver GL do Moto g54 corrompia o estado
-        // do HWUI na criação da WebView (crashes em renderLayerImpl / OpsTask::tryConcat / SkStrikeCache)
-        androidLayerType="none"
-        onError={() => onWebDead('sem conexão com o mapa')}
-        onRenderProcessGone={() => onWebDead('o mapa travou')}
-        accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
-        onLoadEnd={onWebLoaded}
-      />
+      {config.mapboxToken ? (
+        <NativeMap
+          key={mapKey}
+          ref={mapRef}
+          initTheme={themeRef.current}
+          initTier={initTier}
+          onEvent={onMapEvent}
+          ornamentBottom={ornamentBottom}
+          accessibilityLabel={`Mapa com ${peopleCount} ${peopleCount === 1 ? 'pessoa' : 'pessoas'} perto e ${pois.length} lugares`}
+        />
+      ) : null}
 
       <MapHeader
         lat={queryCenter?.lat ?? null}
@@ -1308,7 +1271,7 @@ export function MapScreen() {
         onClose={closePlaceSheet}
       />
 
-      {!webReady && !mapError ? (
+      {!mapReady && !mapError ? (
         <View style={styles.loader} pointerEvents="none">
           <ActivityIndicator color={colors.primary} size="large" />
         </View>
@@ -1321,7 +1284,6 @@ export function MapScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.black },
-  web: { ...StyleSheet.absoluteFill, backgroundColor: colors.black },
   floating: { position: 'absolute', left: 0, right: 0, gap: spacing.sm },
   toast: { alignSelf: 'center', backgroundColor: colors.black, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minHeight: 36, justifyContent: 'center' },
   toastText: { ...typography.bodySmall, color: colors.white },

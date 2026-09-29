@@ -1,7 +1,7 @@
 // Sensação de descoberta (doc §11) sem spam: observa o que muda no "universo" em volta e solta
 // UMA dica por vez, com intervalo mínimo e dedupe por sessão.
 //   - "✨ N pessoas novas apareceram perto de você" (a partir do 2º carregamento)
-//   - "🔥 <lugar> tá bombando · N pessoas" (hotspot novo — o WebView avisa via hotspotBorn)
+//   - "🔥 <lugar> tá bombando · N pessoas" (hotspot novo — o mapa avisa via hotspotBorn)
 //   - "⚡ Evento perto: <nome>" (POI de evento entrou no raio)
 //   - "👀 N pessoas online a menos de 250 m" (quando muita gente perto e online)
 

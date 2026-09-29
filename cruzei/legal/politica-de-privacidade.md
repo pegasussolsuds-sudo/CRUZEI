@@ -100,6 +100,7 @@ Explicamos na seção 4.
 - **Registros de acesso:** a cada login, cadastro e renovação de sessão, guardamos data, hora, endereço IP, porta de origem e a identificação técnica do app e do aparelho (user agent).
 - **Base legal:** cumprimento de obrigação legal (art. 7º, II), porque o Marco Civil da Internet (art. 15) exige guardar esses registros por 6 meses.
 - **Segurança da conta:** o código do SMS é guardado só de forma cifrada (hash). Guardamos também contadores de uso temporários para limitar abusos. Base legal: legítimo interesse (art. 7º, IX).
+- **Diagnóstico de falhas:** quando o app ou o servidor dá erro ou fecha sozinho, um relatório técnico vai para o Sentry, serviço da Functional Software, Inc., com servidores fora do Brasil. O app também avisa se cada uso terminou normalmente ou com falha, para medirmos a estabilidade. O relatório traz só dados técnicos do aparelho, do app e do erro, com o identificador interno da sua conta, que é um código aleatório. Não inclui localização, telefone, nome, fotos nem conteúdo de conversas, e o endereço IP não é guardado. Serve só para encontrar e corrigir falhas. Base legal: legítimo interesse (art. 7º, IX).
 
 ### 2.11 Atendimento
 
@@ -216,6 +217,7 @@ O Mapbox trata esses dados conforme a [política de privacidade do Mapbox](https
 - **Provedor de envio de SMS:** recebe seu número e o código de confirmação para entregar o SMS.
 - **Mapbox:** mapa e busca de lugares, como explicado na seção 3.5.
 - **Amazon Web Services (Amazon Rekognition):** recebe as fotos novas para a análise automática, como explicado na seção 4. Veja a [política de privacidade da AWS](https://aws.amazon.com/privacy/).
+- **Sentry (Functional Software, Inc.):** recebe os relatórios técnicos de falha do app e do servidor, como explicado na seção 2.10. Veja a [política de privacidade do Sentry](https://sentry.io/privacy/).
 - **Apple e Google:** distribuem o app pelas lojas. Quando houver planos pagos, processam os pagamentos como controladores, segundo as políticas deles.
 - **Autoridades:** compartilhamos dados quando a lei exige, por ordem judicial ou por requisição de autoridade competente, na forma da lei. Também comunicamos às autoridades, por iniciativa própria, quando necessário para proteger a vida ou a integridade física de alguém e em casos de suspeita de exploração ou abuso sexual de crianças e adolescentes (veja os Padrões de Segurança Infantil).
 - **Operações societárias:** se o Metch for vendido ou incorporado, os dados podem passar para a empresa sucessora, que deverá respeitar esta Política.
@@ -224,7 +226,7 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 
 ## 6. Transferência internacional
 
-- Alguns fornecedores tratam dados fora do Brasil: o Mapbox e a Amazon Web Services, nos Estados Unidos. Provedores de nuvem também podem armazenar dados em outros países.
+- Alguns fornecedores tratam dados fora do Brasil: o Mapbox e a Amazon Web Services, nos Estados Unidos, e o Sentry, que recebe os relatórios de falha. Provedores de nuvem também podem armazenar dados em outros países.
 - Fazemos essas transferências nas hipóteses do art. 33 da LGPD, como a execução do contrato com você (art. 33, IX) e cláusulas contratuais com os fornecedores, incluindo as cláusulas-padrão aprovadas pela ANPD quando aplicáveis.
 
 ## 7. Por quanto tempo guardamos
@@ -248,6 +250,7 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 - **Registros de acesso:** 6 meses, e depois são apagados. Podem ser guardados por mais tempo se uma autoridade pedir, como permite o Marco Civil (art. 15, § 2º).
 - **Planos pagos:** enquanto a conta existir e, depois, pelo prazo exigido pelas leis fiscal e de defesa do consumidor.
 - **Contadores de uso contra abuso:** até 24 horas.
+- **Relatórios de falha (Sentry):** até 90 dias.
 - **Cópias temporárias do perfil (cache):** até 1 hora.
 - **Resultados de busca de lugares** (sem ligação com você): até 6 horas.
 - **E-mails de atendimento:** pelo tempo necessário para atender e comprovar o atendimento.
@@ -306,7 +309,7 @@ Se não ficar satisfeito com a nossa resposta, você pode reclamar à Autoridade
 - O app não usa ferramentas (SDKs) de publicidade nem de análise de uso (analytics).
 - Não usamos o identificador de publicidade do aparelho e não rastreamos você em outros apps ou sites.
 - Não usamos cookies de rastreamento.
-- O único componente de terceiros que se comunica diretamente com o próprio fornecedor é o mapa do Mapbox, descrito na seção 3.5.
+- Os componentes de terceiros que se comunicam diretamente com o próprio fornecedor são o mapa do Mapbox, descrito na seção 3.5, e o diagnóstico de falhas do Sentry, descrito na seção 2.10. O Sentry não é ferramenta de publicidade nem de análise de uso: recebe só dados técnicos para corrigir falhas.
 - No seu aparelho, o app guarda as credenciais da sessão no armazenamento seguro do sistema.
 
 ## 12. Mudanças nesta Política

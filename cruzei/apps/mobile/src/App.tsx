@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, AppState, View } from 'react-native';
+import { Alert, AppState, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Sentry from '@sentry/react-native';
+import { Button, colors, spacing, typography } from '@cruzei/ui-mobile';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ReanimatedLogLevel, configureReanimatedLogger } from 'react-native-reanimated';
@@ -16,6 +18,7 @@ import { setAccountBlockedHandler } from './services/api';
 import { asAccountBlocked, useAccountBlockStore } from './stores/accountBlock';
 import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
+import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
@@ -45,9 +48,9 @@ export function App() {
   const fontsReady = useAppFonts();
   const isLoading = useAuthStore((s) => s.isLoading);
   const [splashDone, setSplashDone] = useState(false);
-  const webViewReady = useBootStore((s) => s.webViewReady);
+  const mapReady = useBootStore((s) => s.mapReady);
   // O navegador só monta quando a coreografia da splash termina (montar junto engasga a animação ~1 s).
-  // A WebView do mapa nasce por baixo da splash e a splash só sai quando ela carregou (teto de 4 s) — ver stores/boot.ts.
+  // O mapa nativo nasce por baixo da splash e a splash só sai quando o estilo dele carregou (teto de 4 s) — ver stores/boot.ts.
   const [shellReady, setShellReady] = useState(false);
   const [mapWaitOver, setMapWaitOver] = useState(false);
   useEffect(() => {
@@ -55,11 +58,19 @@ export function App() {
     const id = setTimeout(() => setMapWaitOver(true), 4000);
     return () => clearTimeout(id);
   }, [shellReady]);
-  const splashReady = shellReady && !isLoading && (!isAuthenticated || webViewReady || mapWaitOver);
+  const splashReady = shellReady && !isLoading && (!isAuthenticated || mapReady || mapWaitOver);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Sentry (no-op sem DSN): a sessão só pelo id do usuário e o motor do mapa em uso, pra separar os crashes
+  useEffect(() => {
+    setSentryTag('map.engine', 'native');
+  }, []);
+  useEffect(() => {
+    setSentryUser(user?.id ?? null);
+  }, [user?.id]);
 
   // Espelha o modo anônimo do servidor no store local
   useEffect(() => {
@@ -130,21 +141,71 @@ export function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <QueryClientProvider client={queryClient}>
         <SafeAreaProvider>
-          {/* ícones claros na splash escura; depois o RootNavigator decide pela rota focada */}
-          {!shellReady ? <StatusBar style="light" /> : null}
-          {shellReady ? <RootNavigator splashing={!splashDone} /> : null}
-          {/* Splash animada por cima até a sessão hidratar e o navegador montar (mín. 2.7s) */}
-          {!splashDone ? (
-            <SplashScreen
-              ready={splashReady}
-              onSettled={() => setShellReady(true)}
-              onFinish={() => setSplashDone(true)}
-            />
-          ) : null}
+          <AppErrorBoundary>
+            {/* ícones claros na splash escura; depois o RootNavigator decide pela rota focada */}
+            {!shellReady ? <StatusBar style="light" /> : null}
+            {shellReady ? <RootNavigator splashing={!splashDone} /> : null}
+            {/* Splash animada por cima até a sessão hidratar e o navegador montar (mín. 2.7s) */}
+            {!splashDone ? (
+              <SplashScreen
+                ready={splashReady}
+                onSettled={() => setShellReady(true)}
+                onFinish={() => setSplashDone(true)}
+              />
+            ) : null}
+          </AppErrorBoundary>
         </SafeAreaProvider>
       </QueryClientProvider>
     </GestureHandlerRootView>
   );
 }
+
+// ---- Erro de render: tela escura com "tentar de novo" em vez de o app fechar ----
+
+function ErrorFallback({ onRetry }: { onRetry: () => void }) {
+  return (
+    <View style={fallbackStyles.root}>
+      <StatusBar style="light" />
+      <Text style={fallbackStyles.title}>Algo deu errado aqui</Text>
+      <Button title="Tentar de novo" onPress={onRetry} />
+    </View>
+  );
+}
+
+/** sem Sentry: boundary mínimo com o mesmo fallback, sem reportar nada */
+class LocalErrorBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) return <ErrorFallback onRetry={() => this.setState({ failed: false })} />;
+    return this.props.children;
+  }
+}
+
+/** com Sentry ligado, o boundary dele (reporta com o component stack); senão o local */
+function AppErrorBoundary({ children }: { children: React.ReactNode }) {
+  if (!sentryEnabled) return <LocalErrorBoundary>{children}</LocalErrorBoundary>;
+  return (
+    <Sentry.ErrorBoundary fallback={({ resetError }) => <ErrorFallback onRetry={resetError} />}>
+      {children}
+    </Sentry.ErrorBoundary>
+  );
+}
+
+const fallbackStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.black, // #0A0A1A, o fundo da splash
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xl,
+    gap: spacing.xl,
+  },
+  title: { ...typography.h3, color: colors.white, textAlign: 'center' },
+});
 
 export default App;

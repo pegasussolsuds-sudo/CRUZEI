@@ -1,11 +1,14 @@
 // .env ANTES de tudo (constantes lidas no import dependem dele)
 import './config/load-env';
+// Sentry logo depois do .env (lê SENTRY_DSN) e antes do Nest/express carregarem; sem DSN não faz nada
+import './instrument';
 import 'reflect-metadata';
 import cluster from 'node:cluster';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import * as Sentry from '@sentry/nestjs';
 import * as express from 'express';
 import * as fs from 'node:fs';
 import { AppModule } from './app.module';
@@ -102,9 +105,14 @@ const workers = clusterWorkerCount();
 if (workers > 1 && cluster.isPrimary) {
   runPrimary(workers);
 } else {
-  bootstrap().catch((err) => {
+  bootstrap().catch(async (err) => {
     // eslint-disable-next-line no-console
     console.error('Falha ao subir:', err);
+    // o exit mataria o envio no meio: espera até 2 s o evento sair
+    if (Sentry.isInitialized()) {
+      Sentry.captureException(err);
+      await Sentry.flush(2000);
+    }
     process.exit(1);
   });
 }

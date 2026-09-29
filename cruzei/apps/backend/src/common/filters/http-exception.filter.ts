@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 import { Request, Response } from 'express';
 
 @Catch()
@@ -33,6 +34,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
         `${req.method} ${req.url} → ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      // só erro do servidor vai pro Sentry (4xx é fluxo normal); sem DSN é no-op. Limpeza em src/instrument.ts
+      Sentry.captureException(exception);
     }
 
     res.status(status).json(

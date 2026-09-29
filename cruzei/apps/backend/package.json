@@ -34,6 +34,7 @@
     "@nestjs/throttler": "6.2.1",
     "@nestjs/websockets": "10.4.22",
     "@prisma/client": "5.20.0",
+    "@sentry/nestjs": "10.75.3",
     "@socket.io/redis-adapter": "8.3.0",
     "bull": "4.16.0",
     "class-transformer": "0.5.1",

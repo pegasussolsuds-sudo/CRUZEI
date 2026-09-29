@@ -11,4 +11,11 @@ export const config = {
   wsUrl: process.env.EXPO_PUBLIC_SOCKET_URL ?? extra.wsUrl ?? 'ws://localhost:3000',
   // Token público do Mapbox (pk.) — restringir por app/URL no painel antes do launch
   mapboxToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? extra.mapboxToken ?? '',
+  // development | staging | production — vai como environment no Sentry
+  env: process.env.EXPO_PUBLIC_ENV ?? (__DEV__ ? 'development' : 'production'),
+  // DSN do Sentry (não é segredo: só permite enviar eventos). Vazio = Sentry desligado, nem inicializa
+  sentryDsn: process.env.EXPO_PUBLIC_SENTRY_DSN ?? '',
+  // override opcional de release/dist; vazio = o SDK nativo usa app.metch@versão+build, o mesmo do upload dos source maps
+  sentryRelease: process.env.EXPO_PUBLIC_SENTRY_RELEASE ?? '',
+  sentryDist: process.env.EXPO_PUBLIC_SENTRY_DIST ?? '',
 } as const;
