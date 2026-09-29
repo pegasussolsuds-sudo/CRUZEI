@@ -1,3 +1,4 @@
+import { INBOX_EVENTS } from '@cruzei/shared-types';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -20,7 +21,12 @@ import { AccountStateService } from '../modules/account/account-state.service';
 import type { JwtPayload } from '../modules/auth/auth.service';
 import { RedisService } from '../redis/redis.service';
 
-import { canJoinConversation, isUuid } from './conversation-access';
+import {
+  conversationAccess,
+  isUuid,
+  typingMuted,
+  type ConversationAccess,
+} from './conversation-access';
 
 /** sala de cada pessoa: todo evento que precisa chegar (conversa, mensagem, curtida) sai por aqui */
 const userRoom = (userId: string) => `user:${userId}`;
@@ -34,6 +40,10 @@ const userRooms = (userIds: string[]) => [
 // join_conversation vai no banco a cada pedido: teto por socket (4029 = SocketErrorCode.RATE_LIMIT)
 const JOIN_WINDOW_MS = 60_000;
 const JOIN_MAX_PER_WINDOW = 30;
+
+// "digitando" mudo (quem recebeu a solicitação): a promoção pode vir com o chat aberto, então reconsulta no máximo
+// uma vez por janela. Neste processo o 'conversation:promoted' já libera na hora (unmuteTyping).
+export const TYPING_RECHECK_MS = 3_000;
 
 /** ack do join_conversation (4003 = sem acesso, 4029 = pedidos demais) */
 export type JoinConversationAck = { ok: true } | { ok: false; code: 4003 | 4029 };
@@ -138,17 +148,18 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       client.emit('error', { code: 4029, message: 'Muitos pedidos, tente de novo em instantes' });
       return { ok: false, code: 4029 };
     }
-    let ok = false;
+    let access: ConversationAccess | null = null;
     try {
-      ok = await canJoinConversation(this.prisma, conversationId, userId);
+      access = await conversationAccess(this.prisma, conversationId, userId);
     } catch (e) {
       this.logger.warn(`join_conversation falhou user=${userId}: ${(e as Error).message}`);
     }
-    if (!ok) {
+    if (!access) {
       client.emit('error', { code: 4003, message: 'Sem acesso a esta conversa' });
       return { ok: false, code: 4003 };
     }
     client.join(convRoom(conversationId as string));
+    this.setTypingMute(client, conversationId as string, access);
     return { ok: true };
   }
 
@@ -157,7 +168,9 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { conversationId: string },
   ) {
-    if (isUuid(body?.conversationId)) client.leave(convRoom(body.conversationId));
+    if (!isUuid(body?.conversationId)) return;
+    client.leave(convRoom(body.conversationId));
+    this.mutedTyping(client).delete(body.conversationId);
   }
 
   @SubscribeMessage('typing')
@@ -169,6 +182,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const conversationId = body?.conversationId;
     // só quem entrou na sala (join_conversation confere membro, arquivo e bloqueio) avisa que está digitando
     if (!isUuid(conversationId) || !client.rooms.has(convRoom(conversationId))) return;
+    // quem RECEBEU a solicitação não revela que abriu (true e false descartados: o outro lado nunca viu o true)
+    if (this.typingMutedNow(client, conversationId)) return;
     // except user:<eu>: os outros aparelhos de quem digita não recebem o próprio "digitando"
     client
       .to(convRoom(conversationId))
@@ -186,6 +201,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   emitToUser(userId: string, event: string, payload: unknown) {
     if (!userId) return;
     this.server?.to(userRoom(userId)).emit(event, payload);
+    if (event === INBOX_EVENTS.conversationPromoted) this.unmuteTyping([userId], payload);
   }
 
   /**
@@ -197,6 +213,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const rooms = userRooms(userIds);
     if (!rooms.length) return;
     this.server?.to(rooms).emit(event, payload);
+    if (event === INBOX_EVENTS.conversationPromoted) this.unmuteTyping(userIds, payload);
   }
 
   /**
@@ -215,6 +232,67 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (!room) return;
     this.server.to(userRoom(userId)).emit('account_blocked', reason);
     setTimeout(() => room.disconnectSockets(true), 300);
+  }
+
+  // ---- "digitando" mudo de quem recebeu a solicitação ----
+
+  /** conversas em que o "digitando" deste socket está mudo → quando reconsultar (guardado no socket, some com ele) */
+  private mutedTyping(client: Socket): Map<string, number> {
+    const data = client.data as { mutedTyping?: Map<string, number> };
+    return (data.mutedTyping ??= new Map());
+  }
+
+  private setTypingMute(client: Socket, conversationId: string, access: ConversationAccess) {
+    const muted = this.mutedTyping(client);
+    if (typingMuted(access)) muted.set(conversationId, Date.now() + TYPING_RECHECK_MS);
+    else muted.delete(conversationId);
+  }
+
+  /**
+   * Mudo agora? Vencida a janela, reconsulta em segundo plano (responder, mover pra principal ou a curtida mútua
+   * promovem com o chat aberto): o evento atual é descartado e os próximos já seguem a resposta.
+   */
+  private typingMutedNow(client: Socket, conversationId: string): boolean {
+    const muted = this.mutedTyping(client);
+    const recheckAt = muted.get(conversationId);
+    if (recheckAt === undefined) return false;
+    if (Date.now() >= recheckAt) {
+      muted.set(conversationId, Date.now() + TYPING_RECHECK_MS); // uma reconsulta por janela
+      void this.refreshTypingMute(client, conversationId);
+    }
+    return true;
+  }
+
+  private async refreshTypingMute(client: Socket, conversationId: string): Promise<void> {
+    try {
+      const access = await conversationAccess(this.prisma, conversationId, client.data.userId);
+      if (!client.rooms.has(convRoom(conversationId))) return; // saiu enquanto consultava
+      if (!access) {
+        // perdeu o acesso (arquivou, bloqueio): sai da sala como no join recusado
+        client.leave(convRoom(conversationId));
+        this.mutedTyping(client).delete(conversationId);
+        return;
+      }
+      this.setTypingMute(client, conversationId, access);
+    } catch (e) {
+      // continua mudo; tenta de novo na próxima janela
+      this.logger.warn(`typing: reconsulta falhou conv=${conversationId}: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * 'conversation:promoted' saindo: libera o "digitando" dos sockets DESTE processo na hora (promoção é permanente).
+   * Sockets de outros processos liberam na reconsulta (TYPING_RECHECK_MS).
+   */
+  private unmuteTyping(userIds: string[], payload: unknown) {
+    const conversationId = (payload as { conversationId?: unknown } | null)?.conversationId;
+    if (!isUuid(conversationId) || !this.server) return;
+    for (const room of userRooms(userIds)) {
+      for (const socketId of this.server.sockets.adapter.rooms.get(room) ?? []) {
+        const s = this.server.sockets.sockets.get(socketId);
+        if (s) this.mutedTyping(s).delete(conversationId);
+      }
+    }
   }
 
   /** janela fixa por socket (guardada no próprio socket: some junto com ele) */

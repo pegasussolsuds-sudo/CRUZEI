@@ -24,7 +24,8 @@ export interface InboxEventPayloads {
   'message:new': MessageNewPayload;
   'message:read': MessageReadPayload;
   'conversation:removed': ConversationRemovedPayload;
-  like_received: { fromUserId: string; isSuper: boolean; isMutual?: boolean };
+  /** fromUserId só pra Premium+ vigente ou curtida mútua (quem não pode ver quem curtiu recebe só o sinal) */
+  like_received: { fromUserId?: string; isSuper: boolean; isMutual?: boolean };
 }
 export type InboxEventName = keyof InboxEventPayloads;
 

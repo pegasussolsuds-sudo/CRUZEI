@@ -1,10 +1,11 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 import type { PrismaService } from '../../src/database/prisma.service';
 import type { AccountStateService } from '../../src/modules/account/account-state.service';
 import { BlocksService } from '../../src/modules/blocks/blocks.service';
 import { InboxService } from '../../src/modules/inbox/inbox.service';
+import { LikesService } from '../../src/modules/likes/likes.service';
 import type { LocationService } from '../../src/modules/location/location.service';
 import { loadPeerSocial } from '../../src/modules/location/peer-social';
 import { ModerationService } from '../../src/modules/moderation/moderation.service';
@@ -18,7 +19,8 @@ import { assertTestDatabase } from './env';
 
 // Segurança da inbox contra o banco de TESTE (cruzei_test): bloqueio (esconde dos dois lados, zera não lidas,
 // arquiva pros dois, Like/Message intocados, eventos só depois do commit), banimento (arquiva as conversas da
-// pessoa) e o que o cartão/mapa mostram (likeStatus com RECEIVED só pra Premium+, conversa do par).
+// pessoa) e o que o cartão/mapa mostram (likeStatus com RECEIVED só pra Premium+, conversa do par); curtida:
+// like_received sem identidade fora do Premium+/mútuo e a corrida curtida × bloqueio.
 // Banco fora do ar = FALHA. Recriar o banco: bash test/db/setup-test-db.sh
 
 const prisma = new PrismaClient();
@@ -58,7 +60,7 @@ const gateway = {
   removeFromConversation: jest.fn(),
   disconnectUser: jest.fn(),
 };
-const accounts = { invalidate: jest.fn(async () => undefined) };
+const accounts = { invalidate: jest.fn(async (_id: string): Promise<void> => undefined) };
 // cartão público: faixa/lugar não interessam aqui (a pessoa não está "descoberta")
 const location = { discoverability: jest.fn(async () => ({ ok: false, band: null, poi: null })) };
 
@@ -80,6 +82,29 @@ const inbox = new InboxService(
   redis as unknown as RedisService,
   gateway as unknown as ChatGateway,
 );
+const likes = new LikesService(
+  db,
+  redis as unknown as RedisService,
+  gateway as unknown as ChatGateway,
+  inbox,
+);
+
+/** tudo que o gateway falso emitiu, na ordem das chamadas (emitToUser e emitToUsers juntos) */
+const emitted = () =>
+  [
+    ...gateway.emitToUser.mock.calls.map((c, i) => ({
+      to: [c[0] as string],
+      event: c[1] as string,
+      payload: c[2] as Record<string, unknown>,
+      order: gateway.emitToUser.mock.invocationCallOrder[i],
+    })),
+    ...gateway.emitToUsers.mock.calls.map((c, i) => ({
+      to: c[0] as string[],
+      event: c[1] as string,
+      payload: c[2] as Record<string, unknown>,
+      order: gateway.emitToUsers.mock.invocationCallOrder[i],
+    })),
+  ].sort((x, y) => x.order - y.order);
 
 // TRUNCATE não dispara o trigger de linha do audit_log (deleteMany de usuário falharia)
 const resetDb = () =>
@@ -402,11 +427,25 @@ describe('banimento (ModerationService.act ban)', () => {
     const xz = await conversation(x.id, z.id, { sent: 1 }); // solicitação de X pra Z
     const yz = await conversation(y.id, z.id, { sent: 1, replies: 1, promoted: true });
 
+    // no 1º invalidate a conta já está banida e as conversas ainda NÃO foram arquivadas (o guard barra antes)
+    let atInvalidate: { status?: string; open: string[] } | null = null;
+    accounts.invalidate.mockImplementationOnce(async () => {
+      const u = await prisma.user.findUnique({
+        where: { id: x.id },
+        select: { accountStatus: true },
+      });
+      atInvalidate = { status: u?.accountStatus, open: await visibleTo(x.id) };
+    });
+
     await moderation.act({ id: mod.id, role: 'moderator' }, x.id, {
       action: 'ban',
       reason: 'teste',
     });
 
+    expect(atInvalidate).toEqual({ status: 'banned', open: expect.arrayContaining([xy, xz]) });
+    expect(accounts.invalidate.mock.invocationCallOrder[0]).toBeLessThan(
+      gateway.emitToUsers.mock.invocationCallOrder[0],
+    );
     for (const conv of [xy, xz]) {
       const ms = await members(conv);
       expect(ms.every((m) => m.archivedAt instanceof Date && m.unreadCount === 0)).toBe(true);
@@ -477,6 +516,47 @@ describe('banimento (ModerationService.act ban)', () => {
     ).toEqual(['oi 0', 'oi 1']);
     expect(byId.get(xz)?.otherUserId).toBe(z.id);
     expect(byId.get(xz)?.messages).toHaveLength(2);
+  });
+
+  it('userDetail lê denúncia de antes da inbox (context.matchId, origem matches): a conversa tem o mesmo id', async () => {
+    const x = await newUser('Xis');
+    const y = await newUser('Ypsilon');
+    const z = await newUser('Zeta');
+    const xy = await conversation(y.id, x.id, { sent: 2 });
+    const yz = await conversation(y.id, z.id, { sent: 1 }); // não é de X: continua de fora
+    await prisma.report.createMany({
+      data: [
+        {
+          id: '44444444-4444-4444-8444-444444444444',
+          reporterId: y.id,
+          reportedId: x.id,
+          reason: 'child_safety',
+          context: { source: 'matches', matchId: xy.toUpperCase() },
+        },
+        {
+          id: '55555555-5555-4555-8555-555555555555',
+          reporterId: z.id,
+          reportedId: x.id,
+          reason: 'spam',
+          context: { source: 'chat', matchId: yz },
+        },
+      ],
+    });
+
+    const d = await moderation.userDetail(x.id);
+    expect(d.conversations.map((c) => c.conversationId)).toEqual([xy]);
+    expect(d.conversations[0].otherUserId).toBe(y.id);
+    expect(d.conversations[0].messages.map((m) => m.content).sort()).toEqual(['oi 0', 'oi 1']);
+    // e a denúncia sai no formato de hoje pro app da moderação
+    const ctx = new Map(d.reports.map((r) => [r.id, r.context]));
+    expect(ctx.get('44444444-4444-4444-8444-444444444444')).toEqual({
+      source: 'inbox',
+      conversationId: xy,
+    });
+    expect(ctx.get('55555555-5555-4555-8555-555555555555')).toEqual({
+      source: 'chat',
+      conversationId: yz,
+    });
   });
 });
 
@@ -559,5 +639,138 @@ describe('cartão público e mapa (likeStatus + conversa do par)', () => {
       data: { archivedAt: new Date() },
     });
     expect((await loadPeerSocial(db, b.id, [a.id])).get(a.id)?.conversation).toBeNull();
+  });
+});
+
+describe('curtida (LikesService): like_received só identifica quem pode saber', () => {
+  const likeEvents = () => emitted().filter((e) => e.event === 'like_received');
+
+  it('curtida não mútua: sem quem curtiu (só isSuper) fora do Premium+ vigente; Premium+ vigente recebe o id', async () => {
+    const a = await newUser('Ana');
+    const b = await newUser('Bia'); // grátis
+    const c = await newUser('Cris', {
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const d = await newUser('Duda', { premiumTier: 'premium_plus', premiumExpiresAt: null });
+    const e = await newUser('Eli', {
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: new Date(Date.now() - 1000), // venceu
+    });
+    const f = await newUser('Fê', {
+      premiumTier: 'premium',
+      premiumExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    await likes.like(a.id, b.id);
+    await likes.like(a.id, f.id, true); // super, plano sem "já te curtiu"
+    await likes.like(a.id, e.id);
+    await likes.like(a.id, c.id, true);
+    await likes.like(a.id, d.id);
+
+    expect(likeEvents().map((ev) => [ev.to, ev.payload])).toEqual([
+      [[b.id], { isSuper: false }],
+      [[f.id], { isSuper: true }],
+      [[e.id], { isSuper: false }],
+      [[c.id], { fromUserId: a.id, isSuper: true }],
+      [[d.id], { fromUserId: a.id, isSuper: false }],
+    ]);
+    // nada do id de quem curtiu nos eventos sem identidade (nem com outro nome de campo)
+    for (const ev of likeEvents().slice(0, 3))
+      expect(JSON.stringify(ev.payload)).not.toContain(a.id);
+  });
+
+  it('curtida que fecha o mútuo: o id vai mesmo pra quem é grátis (MUTUAL aparece pra todos)', async () => {
+    const a = await newUser('Ana');
+    const b = await newUser('Bia');
+    await likes.like(a.id, b.id);
+    await likes.like(b.id, a.id);
+    expect(likeEvents().map((ev) => [ev.to, ev.payload])).toEqual([
+      [[b.id], { isSuper: false }],
+      [[a.id], { fromUserId: b.id, isSuper: false, isMutual: true }],
+    ]);
+  });
+});
+
+describe('curtida × bloqueio (o Block é conferido de novo depois da trava do par)', () => {
+  const forbiddenForBlocker = ['like_received', 'conversation:promoted', 'message:new'];
+  const systemMessages = (conversationId: string) =>
+    prisma.message.count({ where: { conversationId, systemKind: { not: null } } });
+  const archivedForBoth = async (conversationId: string) =>
+    (await members(conversationId)).every(
+      (m) => m.archivedAt instanceof Date && m.unreadCount === 0,
+    );
+
+  it('bloqueio entra entre a checagem de fora e a trava: nada de curtida, promoção ou evento; a cota volta', async () => {
+    const a = await newUser('Ana');
+    const b = await newUser('Bia');
+    await likes.like(a.id, b.id);
+    const { conversation: conv } = await inbox.createConversation(a.id, b.id, 'oi');
+    jest.clearAllMocks();
+
+    // a checagem de fora já passou (sem Block); o bloqueio commita antes da transação da curtida pegar a trava
+    const realIncr = redis.incrRate;
+    const incr = jest
+      .spyOn(redis, 'incrRate')
+      .mockImplementationOnce(async (userId: string, action: string) => {
+        await blocks.block(a.id, b.id);
+        return realIncr(userId, action);
+      });
+    try {
+      await expect(likes.like(b.id, a.id)).rejects.toBeInstanceOf(BadRequestException);
+    } finally {
+      incr.mockRestore();
+    }
+
+    expect(await prisma.like.count({ where: { likerId: b.id, likedId: a.id } })).toBe(0);
+    const c = await prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } });
+    expect(c.promotedAt).toBeNull();
+    expect(await systemMessages(conv.id)).toBe(0);
+    expect(counters.get(`rate:${b.id}:like`)).toBe(0); // a curtida recusada não gastou cota
+    // só o bloqueio falou com alguém
+    expect(emitted().map((e) => e.event)).toEqual(['conversation:removed']);
+    expect(await archivedForBoth(conv.id)).toBe(true);
+  });
+
+  it('ao mesmo tempo, em vários pares: ou a curtida entra ANTES do bloqueio, ou é recusada sem gravar nada', async () => {
+    for (let i = 0; i < 8; i++) {
+      const a = await newUser(`Bloqueia ${i}`);
+      const b = await newUser(`Curte ${i}`);
+      await likes.like(a.id, b.id);
+      const { conversation: conv } = await inbox.createConversation(a.id, b.id, 'oi');
+      jest.clearAllMocks();
+
+      const [liked, blocked] = await Promise.allSettled([
+        likes.like(b.id, a.id),
+        blocks.block(a.id, b.id),
+      ]);
+      expect(blocked.status).toBe('fulfilled');
+
+      const likeBA = await prisma.like.count({ where: { likerId: b.id, likedId: a.id } });
+      const c = await prisma.conversation.findUniqueOrThrow({ where: { id: conv.id } });
+      const events = emitted();
+      const removedAt = events.findIndex((e) => e.event === 'conversation:removed');
+      expect(removedAt).toBeGreaterThanOrEqual(0);
+      // quem bloqueou não recebe nada da curtida DEPOIS do conversation:removed
+      const late = events
+        .slice(removedAt + 1)
+        .filter((e) => e.to.includes(a.id) && forbiddenForBlocker.includes(e.event));
+      expect(late).toEqual([]);
+
+      if (liked.status === 'rejected') {
+        expect(liked.reason).toBeInstanceOf(BadRequestException);
+        expect(likeBA).toBe(0);
+        expect(c.promotedAt).toBeNull();
+        expect(await systemMessages(conv.id)).toBe(0);
+        expect(events.filter((e) => forbiddenForBlocker.includes(e.event))).toEqual([]);
+      } else {
+        // a curtida pegou a trava primeiro: mútua legítima e promovida; o bloqueio arquivou depois
+        expect(likeBA).toBe(1);
+        expect(c.promotedAt).toBeInstanceOf(Date);
+        expect(await systemMessages(conv.id)).toBe(1);
+      }
+      // em qualquer ordem o bloqueio vale: arquivada pros dois, não lidas zeradas
+      expect(await archivedForBoth(conv.id)).toBe(true);
+    }
   });
 });

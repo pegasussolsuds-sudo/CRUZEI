@@ -110,6 +110,8 @@ export function App() {
       socket.on('message:read', (p) => applyRead(queryClient, p, useAuthStore.getState().user?.id));
       // bloqueio, arquivamento ou moderação: a conversa some da lista na hora (o chat aberto fecha sozinho)
       socket.on('conversation:removed', ({ conversationId }) => applyRemoved(queryClient, conversationId));
+      // curtida recebida: só o contador do perfil. O payload pode vir sem fromUserId (quem não é Premium+ não vê quem
+      // curtiu), então aqui nada depende de quem foi
       socket.on('like_received', () => {
         queryClient.invalidateQueries({ queryKey: ['me'] });
       });

@@ -161,3 +161,23 @@ export function marksReadAllowed(
   const folder = typeof r === 'string' ? r : r.folder;
   return !(role === 'RECIPIENT' && folder === 'request');
 }
+
+/**
+ * O que uma mensagem de gente faz, do ponto de vista de quem envia (decide a regra de quem está em análise):
+ * - 'start': abre conversa nova (a transação acabou de criar a conversa do par);
+ * - 'request': insiste numa solicitação que EU abri e que ainda não teve resposta nem foi promovida;
+ * - 'reply': qualquer outra (responder quem me pediu, conversa já na principal).
+ */
+export type SendIntent = 'start' | 'request' | 'reply';
+
+export function sendIntent(
+  role: MemberRole,
+  f: ConversationFacts,
+  opening: boolean,
+  cfg: Readonly<RoutingCfg> = ROUTING,
+): SendIntent {
+  if (opening) return 'start';
+  if (role === 'REQUESTER' && f.messagesFromB === 0 && route(f, cfg).folder === 'request')
+    return 'request';
+  return 'reply';
+}

@@ -16,12 +16,17 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+import { LEGACY_REPORT_SOURCES, type LegacyReportSource } from './report-context';
+
 // DTOs da denúncia: POST /reports (alvo no corpo) e POST /users/:id/report (alvo na rota) validam igual.
 
 export class ReportContextDto {
-  @IsIn(REPORT_SOURCES as unknown as string[]) source!: ReportSource;
+  /** 'matches' é de build antigo (antes da inbox): o serviço grava como 'inbox' */
+  @IsIn([...REPORT_SOURCES, ...LEGACY_REPORT_SOURCES]) source!: ReportSource | LegacyReportSource;
   /** conversa denunciada (a moderação lê as últimas mensagens dela) */
   @IsOptional() @IsUUID() conversationId?: string;
+  /** build antigo: id do match = id da conversa (a migração reaproveitou o uuid); gravado como conversationId */
+  @IsOptional() @IsUUID() matchId?: string;
   @IsOptional() @IsUUID() messageId?: string;
   @IsOptional() @IsUUID() photoId?: string;
 }

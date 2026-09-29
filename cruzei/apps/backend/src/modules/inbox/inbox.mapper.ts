@@ -33,10 +33,16 @@ export interface MessageRow {
   systemKind: string | null;
   readAt: Date | null;
   createdAt: Date;
+  /** id que o app gerou no envio (ausente nas consultas que não precisam dele) */
+  clientId?: string | null;
 }
 
-export function toChatMessage(m: MessageRow): ChatMessage {
-  return {
+/**
+ * Linha → ChatMessage. `viewerId` = quem vai receber o objeto: o clientId só vai pra quem ENVIOU a mensagem
+ * (reconciliação do balão otimista no app); pro outro lado ele nem aparece.
+ */
+export function toChatMessage(m: MessageRow, viewerId?: string): ChatMessage {
+  const out: ChatMessage = {
     id: m.id,
     conversationId: m.conversationId,
     senderId: m.senderId,
@@ -47,6 +53,8 @@ export function toChatMessage(m: MessageRow): ChatMessage {
     systemKind: (m.systemKind as SystemMessageKind | null) ?? null,
     messageType: m.messageType as MessageType,
   };
+  if (m.clientId && viewerId && m.senderId === viewerId) out.clientId = m.clientId;
+  return out;
 }
 
 /** linha da consulta de resumo (inbox.queries.ts): a conversa vista por UM membro */
@@ -84,6 +92,8 @@ export interface SummaryRow {
   lm_system_kind: string | null;
   lm_read_at: Date | null;
   lm_created_at: Date | null;
+  /** clientId da última mensagem (só vai pro resumo quando ela é de quem consulta) */
+  lm_client_id?: string | null;
 }
 
 /** idade em anos completos (data de nascimento é DATE: meia-noite UTC) */
@@ -119,18 +129,24 @@ export function factsFromRow(
 
 export function toSummary(r: SummaryRow, now: Date = new Date()): ConversationSummary {
   const route = routeOf(r.promoted_at);
+  // a última mensagem é de quem consulta quando não é do peer: só aí o clientId volta
+  const lmViewer = r.lm_sender_id && r.lm_sender_id !== r.peer_id ? r.lm_sender_id : undefined;
   const lastMessage: ChatMessage | null = r.lm_id
-    ? toChatMessage({
-        id: r.lm_id,
-        conversationId: r.id,
-        senderId: r.lm_sender_id as string,
-        body: r.lm_body,
-        mediaUrl: r.lm_media_url,
-        messageType: r.lm_message_type ?? 'text',
-        systemKind: r.lm_system_kind,
-        readAt: r.lm_read_at,
-        createdAt: r.lm_created_at as Date,
-      })
+    ? toChatMessage(
+        {
+          id: r.lm_id,
+          conversationId: r.id,
+          senderId: r.lm_sender_id as string,
+          body: r.lm_body,
+          mediaUrl: r.lm_media_url,
+          messageType: r.lm_message_type ?? 'text',
+          systemKind: r.lm_system_kind,
+          readAt: r.lm_read_at,
+          createdAt: r.lm_created_at as Date,
+          clientId: r.lm_client_id ?? null,
+        },
+        lmViewer,
+      )
     : null;
   const sees = seesLikesReceived(
     { premiumTier: r.viewer_premium_tier, premiumExpiresAt: r.viewer_premium_expires_at },

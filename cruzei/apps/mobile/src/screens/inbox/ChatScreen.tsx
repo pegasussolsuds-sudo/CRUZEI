@@ -2,6 +2,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from '
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   KeyboardAvoidingView,
   Pressable,
@@ -36,6 +37,7 @@ import {
   type ConversationDetail,
   type ConversationRemovedPayload,
   type CreateConversationResponse,
+  type MessageNewPayload,
   type SystemMessageKind,
 } from '@cruzei/shared-types';
 import { colors, duration, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
@@ -49,15 +51,18 @@ import {
   applyConversationNew,
   applyUnread,
   inboxKeys,
+  settleOutbox,
   upsertMessage,
   useConversation,
   useConversationMessages,
   useConversationWith,
   usePromoteRequest,
+  type CachedMessage,
+  type OutboxMessage,
 } from '../../hooks/useInbox';
 
 /** balão na tela: as minhas ainda não confirmadas ficam só aqui (pending/failed) até o servidor devolver */
-type LocalMessage = ChatMessageWithClientId & { pending?: boolean; failed?: boolean; sent?: boolean };
+type LocalMessage = OutboxMessage;
 type ChatNav = NativeStackNavigationProp<InboxStackParamList, 'Chat'>;
 
 const HEADER_AVATAR = 32;
@@ -306,6 +311,10 @@ export function ChatScreen() {
   /** a conversa atual sem closure velha (o 1º envio do rascunho troca o id no meio) */
   const convIdRef = useRef(conversationId);
   convIdRef.current = conversationId ?? convIdRef.current;
+  /** clientIds que o servidor já confirmou (resposta, eco do socket ou histórico): erro atrasado do POST não vira "falhou" */
+  const confirmedRef = useRef<Set<string>>(new Set());
+  const outboxRef = useRef(outbox);
+  outboxRef.current = outbox;
 
   // rascunho (sem id): procura a conversa do par; achou → vira o chat normal
   const lookup = useConversationWith(peer.id, !conversationId);
@@ -324,6 +333,10 @@ export function ChatScreen() {
   const isRequesterWaiting = detail?.route === 'request' && detail.myRole === 'REQUESTER';
   // limite do REQUESTER até a 1ª resposta (o servidor conta; aqui só trava o campo e explica)
   const requestLimitHit = isRequesterWaiting && detail?.requestMessagesLeft === 0;
+  // quem RECEBEU a solicitação não manda "digitando" até aceitar: contaria a quem pediu que ela foi aberta (o recibo de
+  // leitura também fica retido até lá). Com o detalhe ainda carregando, fica mudo até saber a rota
+  const typingMutedRef = useRef(true);
+  typingMutedRef.current = isRecipientRequest || (Boolean(conversationId) && !detail);
 
   // Header: avatar da pessoa (bust) + nome
   const peerAvatar = detail?.peer.avatar ?? peer.avatar ?? null;
@@ -406,8 +419,53 @@ export function ChatScreen() {
     }
   }, [history]);
 
-  // Marca como lida até a última do outro (a de sistema não conta). Quem recebeu a solicitação também chama: o servidor
-  // zera o badge dele mas só manda o recibo (readAt/message:read pro outro) depois de aceitar — mover ou responder
+  // o histórico já tem a minha mensagem (mesmo clientId): o balão "não foi · toca pra reenviar" vira a real e o reenvio
+  // some (a resposta do POST se perdeu, mas a mensagem chegou)
+  useEffect(() => {
+    const delivered = new Map<string, CachedMessage>();
+    for (const m of history ?? []) if (m.clientId && m.senderId === myId) delivered.set(m.clientId, m);
+    if (!delivered.size) return;
+    for (const cid of delivered.keys()) confirmedRef.current.add(cid);
+    setOutbox((prev) => settleOutbox(prev, delivered));
+  }, [history, myId]);
+
+  // eco do socket (message:new com o meu clientId) confirma o balão mesmo sem a resposta do POST, inclusive no
+  // rascunho, quando o histórico ainda nem existe
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !myId) return;
+    const onNew = (p: MessageNewPayload) => {
+      const m = p?.message;
+      const cid = m?.clientId;
+      if (!cid || m.senderId !== myId || !outboxRef.current.some((o) => o.clientId === cid)) return;
+      confirmedRef.current.add(cid);
+      setOutbox((prev) => settleOutbox(prev, new Map([[cid, m]])));
+    };
+    socket.on('message:new', onNew);
+    return () => {
+      socket.off('message:new', onNew);
+    };
+  }, [myId]);
+
+  // o rascunho achou a conversa sem a resposta do POST (lookup ou conversation:new): com balão ainda não confirmado,
+  // busca o histórico de novo pra reconciliar pelo clientId (um cache velho não teria a mensagem)
+  const hadConversation = useRef(Boolean(conversationId));
+  useEffect(() => {
+    if (!conversationId || hadConversation.current) return;
+    hadConversation.current = true;
+    if (outboxRef.current.some((o) => !o.sent)) void qc.invalidateQueries({ queryKey: inboxKeys.messages(conversationId), exact: true });
+  }, [conversationId, qc]);
+
+  // app em segundo plano com o chat aberto: o que chega nesse tempo não foi visto, então não marca como lida
+  const [appActive, setAppActive] = useState(() => AppState.currentState !== 'background' && AppState.currentState !== 'inactive');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
+    return () => sub.remove();
+  }, []);
+
+  // Marca como lida até a última do outro QUE ESTÁ NA TELA (a de sistema não conta), só com o chat em foco e o app na
+  // frente. Quem recebeu a solicitação também chama: o servidor zera o badge dele mas só manda o recibo
+  // (readAt/message:read pro outro) depois de aceitar — mover ou responder
   const lastPeer = useMemo(() => {
     const hist = history ?? [];
     for (let i = hist.length - 1; i >= 0; i--) {
@@ -419,7 +477,7 @@ export function ChatScreen() {
   const readSent = useRef<string | null>(null);
   const readKey = lastPeer && detail ? `${lastPeer.id}:${detail.route}` : null; // aceitar a solicitação manda o recibo de novo
   useEffect(() => {
-    if (!conversationId || !detail || !lastPeer || !readKey || !isFocused) return;
+    if (!conversationId || !detail || !lastPeer || !readKey || !isFocused || !appActive) return;
     if (readSent.current === readKey) return;
     if (lastPeer.readAt && detail.unreadCount === 0) return;
     readSent.current = readKey;
@@ -429,7 +487,7 @@ export function ChatScreen() {
       .catch(() => {
         readSent.current = null;
       });
-  }, [conversationId, detail, lastPeer, readKey, isFocused, qc]);
+  }, [conversationId, detail, lastPeer, readKey, isFocused, appActive, qc]);
 
   // Tempo real da tela: sala conv:<id> só pro "digitando" (mensagem e leitura chegam pela sala do usuário, no App)
   useEffect(() => {
@@ -471,9 +529,18 @@ export function ChatScreen() {
     [],
   );
 
+  /** mandei isTyping:true e ainda não o false: só então o false sai (um false solto também diria que a pessoa está ali) */
+  const typingOnRef = useRef(false);
+  const typingSentAt = useRef(0);
   const emitTyping = useCallback((isTyping: boolean) => {
     const id = convIdRef.current;
-    if (id) getSocket()?.emit('typing', { conversationId: id, isTyping });
+    if (!id) return;
+    if (isTyping ? typingMutedRef.current : !typingOnRef.current) return;
+    // um true por tecla é ruído: só na mudança, repetido antes do TYPING_TTL_MS do outro lado vencer
+    if (isTyping && typingOnRef.current && Date.now() - typingSentAt.current < TYPING_TTL_MS / 2) return;
+    if (isTyping) typingSentAt.current = Date.now();
+    typingOnRef.current = isTyping;
+    getSocket()?.emit('typing', { conversationId: id, isTyping });
   }, []);
 
   const onChangeText = (t: string) => {
@@ -499,18 +566,24 @@ export function ChatScreen() {
           // rascunho: a 1ª mensagem cria (ou reusa) a conversa do par
           const res = await api.post<CreateConversationResponse>('/conversations', { toUserId: peer.id, body: text, clientId });
           const { conversation, message } = res.data;
+          confirmedRef.current.add(clientId);
           markOutbox(clientId, { ...message, clientId, pending: false, failed: false, sent: true });
           applyConversationNew(qc, { conversation });
           convIdRef.current = conversation.id;
           nav.setParams({ conversationId: conversation.id });
           return;
         }
+        // reenvio com a conversa já descoberta vem por aqui com o MESMO clientId: o servidor dedupa por remetente e
+        // devolve a mensagem que já existe em vez de gravar outra
         const res = await api.post<ChatMessageWithClientId>(`/conversations/${id}/messages`, { body: text, clientId });
+        confirmedRef.current.add(clientId);
         upsertMessage(qc, id, { ...res.data, clientId });
         markOutbox(clientId, { ...res.data, clientId, pending: false, failed: false, sent: true });
         // quem pediu e ainda espera resposta: o servidor recalcula quantas ainda cabem
         if (requesterWaiting) qc.invalidateQueries({ queryKey: inboxKeys.conversation(id) });
       } catch (err) {
+        // a resposta se perdeu mas o servidor já confirmou (eco do socket ou histórico): não é falha
+        if (confirmedRef.current.has(clientId)) return;
         const e = toApiError(err);
         setOutbox((prev) => prev.map((m) => (m.clientId === clientId && m.pending ? { ...m, pending: false, failed: true } : m)));
         if (e.status === 429) setError(rateLimitText(err));

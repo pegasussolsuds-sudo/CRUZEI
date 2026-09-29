@@ -35,9 +35,14 @@ export interface ChatMessage {
   /** preenchido só quando messageType = 'system' */
   systemKind: SystemMessageKind | null;
   messageType: MessageType;
+  /**
+   * id que o app gerou no envio; volta SÓ nas mensagens de quem consulta (histórico, lastMessage, eco do envio e
+   * message:new do remetente). Reenviar com o mesmo clientId, em qualquer das duas rotas, devolve esta mensagem.
+   */
+  clientId?: string;
 }
 
-/** mensagem ecoada para quem enviou: clientId faz a reconciliação otimista no app */
+/** mensagem ecoada para quem enviou (clientId faz a reconciliação otimista no app); = ChatMessage, mantido por compatibilidade */
 export type ChatMessageWithClientId = ChatMessage & { clientId?: string };
 
 export interface ConversationPeer {

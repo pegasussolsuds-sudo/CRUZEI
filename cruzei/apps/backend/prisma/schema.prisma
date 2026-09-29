@@ -312,11 +312,15 @@ model Message {
   readAt         DateTime?    @map("read_at") @db.Timestamp(6)
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamp(6)
   expiresAt      DateTime?    @map("expires_at") @db.Timestamp(6)
+  /// id que o app gerou pra mensagem (reenvio idempotente); só quem enviou vê de volta; null em sistema/antigas
+  clientId       String?      @map("client_id") @db.VarChar(64)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sender         User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
 
   // NULLs são distintos no Postgres: as mensagens normais (systemKind nulo) não colidem
   @@unique([conversationId, systemKind], map: "uq_messages_conv_system_kind")
+  // uma chave de reenvio por remetente, nas duas rotas de envio (sem clientId = NULL, não colide)
+  @@unique([senderId, clientId], map: "uq_messages_sender_client_id")
   @@index([conversationId, createdAt(sort: Desc)], map: "idx_messages_conv_created")
   @@index([matchId, createdAt(sort: Desc)])
   @@index([senderId])

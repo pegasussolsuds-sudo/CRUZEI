@@ -18,12 +18,14 @@ import {
   HttpStatus,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
+import { blockedBody } from '../account/account-state.service';
 
 import {
   emitEvent,
@@ -40,9 +42,11 @@ import {
   routeOf,
   toChatMessage,
   toSummary,
+  type MessageRow,
 } from './inbox.mapper';
 import {
   inboxCounts,
+  insertMessage,
   lockPair as lockPairTx,
   markMessagesRead,
   messagesPage,
@@ -56,10 +60,11 @@ import {
   marksReadAllowed,
   planReevaluation,
   ROUTING,
+  sendIntent,
   type ConversationFacts,
   type MemberRole,
 } from './routing';
-import { CARD_TARGET_SELECT, cardVisible, peerReachable } from './visibility';
+import { CARD_TARGET_SELECT, cardVisible, peerReachable, senderDenied } from './visibility';
 
 // Conversas: Principal + Solicitações (Instagram + reciprocidade do Tinder). O chat NUNCA é bloqueado: as duas pessoas
 // conversam desde a 1ª mensagem; muda só ONDE a conversa aparece (regras puras em routing.ts, pasta gravada em
@@ -85,8 +90,6 @@ interface NewMessage {
 }
 
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
-/** memória do clientId (reenvio do app depois de falha/timeout devolve a mesma mensagem) */
-const CLIENT_ID_TTL_S = 600;
 const LIST_DEFAULT = 30;
 const LIST_MAX = 50;
 
@@ -100,11 +103,51 @@ const MESSAGE_SELECT = {
   systemKind: true,
   readAt: true,
   createdAt: true,
+  clientId: true,
 } as const;
+
+/** conta de quem age: estado (senderDenied) + o que o erro igual ao do JwtAuthGuard precisa */
+const ACCOUNT_SELECT = {
+  id: true,
+  deletedAt: true,
+  accountStatus: true,
+  reviewHoldAt: true,
+  suspendedUntil: true,
+  moderationReason: true,
+} as const;
+type AccountRow = Prisma.UserGetPayload<{ select: typeof ACCOUNT_SELECT }>;
 
 // 404 idêntico pra inexistente, bloqueado (qualquer sentido), sem acesso, anônimo, pausado, banido, em análise, apagado
 const conversationNotFound = () => new NotFoundException('Conversa não encontrada');
 const userNotFound = () => new NotFoundException('Usuário não encontrado');
+
+/** clientId reusado pelo MESMO remetente em OUTRA conversa (cliente com defeito): não devolve mensagem de outro par */
+const clientIdConflict = () =>
+  new ConflictException({
+    error: 'client_id_conflict',
+    message: 'Esse clientId já foi usado em outra conversa',
+  });
+
+/**
+ * Conta de quem envia fora do ar (lida FRESCA do banco): o MESMO erro do JwtAuthGuard, que lê um cache de estado
+ * (15 s local, 10 min no Redis) — o app já sabe mostrar banido/suspenso (403) e sair da conta (401).
+ */
+function senderAccountError(u: AccountRow | null | undefined): HttpException {
+  if (!u || u.deletedAt) {
+    return new UnauthorizedException({ error: 'account_gone', message: 'Conta não encontrada' });
+  }
+  return new ForbiddenException(
+    blockedBody({
+      status: u.accountStatus,
+      until: u.suspendedUntil?.getTime() ?? null,
+      reason: u.moderationReason,
+    }),
+  );
+}
+
+/** clientId do app (o DTO já limita a 64); vazio = sem idempotência */
+const normClientId = (c: string | undefined | null): string | undefined =>
+  c ? c.slice(0, 64) : undefined;
 
 /** 429 no formato do resto da API ({error, message}) + retryAfter em segundos (null = não é questão de tempo) */
 function tooMany(error: string, message: string, retryAfter: number | null): HttpException {
@@ -141,117 +184,122 @@ export class InboxService {
 
   /**
    * POST /conversations: abre a conversa do par (ou reusa a que existe) e grava a 1ª mensagem, na mesma transação.
-   * Pode abrir quem vê o cartão público da pessoa (visibility.ts); conversa que já existe segue as regras do envio.
+   * Pode abrir quem vê o cartão público da pessoa (visibility.ts) e tem a conta apta (ativa, fora de análise);
+   * conversa que já existe segue as regras do envio.
+   * Reenvio com um clientId já gravado por mim (por esta rota OU pela de mensagens) devolve a mesma mensagem.
    */
   async createConversation(
     me: string,
     toUserId: string,
     body: string,
-    clientId?: string,
+    clientIdRaw?: string,
   ): Promise<CreateConversationResponse> {
     const text = cleanBody(body);
     if (toUserId === me) throw userNotFound();
+    const clientId = normClientId(clientIdRaw);
     const [low, high] = pairOf(me, toUserId);
 
-    return this.withClientId(
-      `msg:cid:to:${toUserId}:${me}`,
-      clientId,
-      async (messageId) => {
-        const prev = await this.prisma.message.findUnique({
-          where: { id: messageId },
-          select: MESSAGE_SELECT,
-        });
-        if (!prev) return null;
-        const conversation = await this.summaryFor(this.prisma, prev.conversationId, me);
-        return conversation
-          ? { conversation, message: { ...toChatMessage(prev), clientId } }
-          : null;
-      },
-      async () => {
-        const existing = await this.prisma.conversation.findUnique({
-          where: { userLowId_userHighId: { userLowId: low, userHighId: high } },
-          select: { id: true },
-        });
-        if (!existing) await this.assertCanStart(me, toUserId);
-        await this.checkSendRate(me, toUserId);
+    // reenvio de algo que já foi gravado: antes de limites e regras (não gasta cota nem cai no teto de 3)
+    if (clientId) {
+      const prev = await this.findByClientId(this.prisma, me, clientId);
+      if (prev) return this.replayCreate(this.prisma, me, toUserId, prev);
+    }
 
-        // teto de conversas NOVAS por dia (reusar a do par não conta)
-        let countedNew = false;
-        if (!existing) {
-          const n = await this.redis.incrRate(me, 'conv:new', 86_400);
-          countedNew = true;
-          if (n > INBOX_LIMITS.newConversationsPerDay) {
-            const retryAfter = await this.ttlOf(`rate:${me}:conv:new`, 86_400);
-            await this.refund(me, 'conv:new');
-            throw tooMany(
-              'daily_limit',
-              `Você já abriu ${INBOX_LIMITS.newConversationsPerDay} conversas novas hoje. Tenta de novo amanhã.`,
-              retryAfter,
-            );
+    const existing = await this.prisma.conversation.findUnique({
+      where: { userLowId_userHighId: { userLowId: low, userHighId: high } },
+      select: { id: true },
+    });
+    if (!existing) await this.assertCanStart(me, toUserId);
+    await this.checkSendRate(me, toUserId);
+
+    // teto de conversas NOVAS por dia (reusar a do par não conta)
+    let countedNew = false;
+    if (!existing) {
+      const n = await this.redis.incrRate(me, 'conv:new', 86_400);
+      countedNew = true;
+      if (n > INBOX_LIMITS.newConversationsPerDay) {
+        const retryAfter = await this.ttlOf(`rate:${me}:conv:new`, 86_400);
+        await this.refund(me, 'conv:new');
+        throw tooMany(
+          'daily_limit',
+          `Você já abriu ${INBOX_LIMITS.newConversationsPerDay} conversas novas hoje. Tenta de novo amanhã.`,
+          retryAfter,
+        );
+      }
+    }
+
+    try {
+      const out = await this.prisma.$transaction(async (tx) => {
+        await lockPairTx(tx, me, toUserId);
+        if (clientId) {
+          // o mesmo clientId estava em voo (a trava do par esperou ele terminar): devolve o que ele gravou
+          const prev = await this.findByClientId(tx, me, clientId);
+          if (prev) {
+            const result = await this.replayCreate(tx, me, toUserId, prev);
+            return { created: false, replayed: true, events: [] as InboxEvent[], result };
           }
         }
-
-        try {
-          const out = await this.prisma.$transaction(async (tx) => {
-            await lockPairTx(tx, me, toUserId);
-            // uma conversa por par: dois POST simultâneos (ou os dois lados ao mesmo tempo) caem na mesma linha
-            const inserted = await tx.$queryRaw<{ id: string }[]>`
-              INSERT INTO conversations (user_low_id, user_high_id)
-              VALUES (${low}::uuid, ${high}::uuid)
-              ON CONFLICT (user_low_id, user_high_id) DO NOTHING
-              RETURNING id::text AS id`;
-            const created = inserted.length === 1;
-            const conversationId = created
-              ? inserted[0].id
-              : (
-                  await tx.conversation.findUniqueOrThrow({
-                    where: { userLowId_userHighId: { userLowId: low, userHighId: high } },
-                    select: { id: true },
-                  })
-                ).id;
-            if (created) {
-              await tx.conversationMember.createMany({
-                data: [
-                  { conversationId, userId: me, role: 'REQUESTER' },
-                  { conversationId, userId: toUserId, role: 'RECIPIENT' },
-                ],
-                skipDuplicates: true,
-              });
-            }
-            const conv = await this.loadConv(tx, conversationId, true);
-            if (!conv || !conv.members.some((m) => m.userId === me)) throw userNotFound();
-
-            const sent = await this.appendMessage(
-              tx,
-              conv,
-              me,
-              { body: text, messageType: 'text', mediaUrl: null },
-              clientId,
-              userNotFound,
-            );
-            const events: InboxEvent[] = [];
-            if (created) {
-              // um emit por lado: pasta, peer e não lidas mudam por lado
-              for (const m of conv.members) {
-                const s = await this.summaryFor(tx, conversationId, m.userId);
-                if (s) events.push(emitEvent(m.userId, 'conversation:new', { conversation: s }));
-              }
-            }
-            events.push(...sent.events);
-            const conversation = await this.summaryFor(tx, conversationId, me);
-            if (!conversation) throw userNotFound();
-            return { created, events, result: { conversation, message: sent.message } };
-          }, TX_OPTIONS);
-
-          if (countedNew && !out.created) await this.refund(me, 'conv:new'); // a outra requisição criou primeiro
-          this.flush(out.events);
-          return { result: out.result, messageId: out.result.message.id };
-        } catch (e) {
-          if (countedNew) await this.refund(me, 'conv:new');
-          throw e;
+        // uma conversa por par: dois POST simultâneos (ou os dois lados ao mesmo tempo) caem na mesma linha
+        const inserted = await tx.$queryRaw<{ id: string }[]>`
+          INSERT INTO conversations (user_low_id, user_high_id)
+          VALUES (${low}::uuid, ${high}::uuid)
+          ON CONFLICT (user_low_id, user_high_id) DO NOTHING
+          RETURNING id::text AS id`;
+        const created = inserted.length === 1;
+        const conversationId = created
+          ? inserted[0].id
+          : (
+              await tx.conversation.findUniqueOrThrow({
+                where: { userLowId_userHighId: { userLowId: low, userHighId: high } },
+                select: { id: true },
+              })
+            ).id;
+        if (created) {
+          await tx.conversationMember.createMany({
+            data: [
+              { conversationId, userId: me, role: 'REQUESTER' },
+              { conversationId, userId: toUserId, role: 'RECIPIENT' },
+            ],
+            skipDuplicates: true,
+          });
         }
-      },
-    );
+        const conv = await this.loadConv(tx, conversationId, true);
+        if (!conv || !conv.members.some((m) => m.userId === me)) throw userNotFound();
+
+        const sent = await this.appendMessage(
+          tx,
+          conv,
+          me,
+          { body: text, messageType: 'text', mediaUrl: null },
+          { clientId, notFound: userNotFound, opening: created },
+        );
+        const events: InboxEvent[] = [];
+        if (created) {
+          // um emit por lado: pasta, peer e não lidas mudam por lado
+          for (const m of conv.members) {
+            const s = await this.summaryFor(tx, conversationId, m.userId);
+            if (s) events.push(emitEvent(m.userId, 'conversation:new', { conversation: s }));
+          }
+        }
+        events.push(...sent.events);
+        const conversation = await this.summaryFor(tx, conversationId, me);
+        if (!conversation) throw userNotFound();
+        return {
+          created,
+          replayed: false,
+          events,
+          result: { conversation, message: sent.message },
+        };
+      }, TX_OPTIONS);
+
+      if (countedNew && !out.created) await this.refund(me, 'conv:new'); // a outra requisição criou primeiro
+      if (out.replayed) await this.refundSendRate(me, toUserId);
+      this.flush(out.events);
+      return out.result;
+    } catch (e) {
+      if (countedNew) await this.refund(me, 'conv:new');
+      throw e;
+    }
   }
 
   /** POST /conversations/:id/messages */
@@ -297,59 +345,77 @@ export class InboxService {
     me: string,
     conversationId: string,
     input: NewMessage,
-    clientId?: string,
+    clientIdRaw?: string,
   ): Promise<ChatMessageWithClientId> {
+    const clientId = normClientId(clientIdRaw);
     const pre = await this.loadConv(this.prisma, conversationId);
     if (!pre || !pre.members.some((m) => m.userId === me)) throw conversationNotFound();
     const peerId = otherOf(pre, me);
 
-    return this.withClientId(
-      `msg:cid:${conversationId}:${me}`,
-      clientId,
-      async (messageId) => {
-        const prev = await this.prisma.message.findUnique({
-          where: { id: messageId },
-          select: MESSAGE_SELECT,
-        });
-        return prev && prev.conversationId === conversationId
-          ? { ...toChatMessage(prev), clientId }
-          : null;
-      },
-      async () => {
-        await this.checkSendRate(me, peerId);
-        const out = await this.prisma.$transaction(async (tx) => {
-          await lockPairTx(tx, me, peerId);
-          const conv = await this.loadConv(tx, conversationId, true); // de novo, dentro da trava (promoção/unread frescos)
-          if (!conv) throw conversationNotFound();
-          return this.appendMessage(tx, conv, me, input, clientId);
-        }, TX_OPTIONS);
-        this.flush(out.events);
-        return { result: out.message, messageId: out.message.id };
-      },
-    );
+    // reenvio (timeout/queda depois do commit, ou a 1ª mensagem que saiu pelo POST /conversations): a mesma mensagem
+    if (clientId) {
+      const prev = await this.findByClientId(this.prisma, me, clientId);
+      if (prev) return this.replayInConversation(this.prisma, me, peerId, conversationId, prev);
+    }
+
+    await this.checkSendRate(me, peerId);
+    const out = await this.prisma.$transaction(async (tx) => {
+      await lockPairTx(tx, me, peerId);
+      const conv = await this.loadConv(tx, conversationId, true); // de novo, dentro da trava (promoção/unread frescos)
+      if (!conv) throw conversationNotFound();
+      if (clientId) {
+        // o mesmo clientId estava em voo (a trava do par esperou ele terminar): devolve o que ele gravou
+        const prev = await this.findByClientId(tx, me, clientId);
+        if (prev) {
+          return {
+            replay: await this.replayInConversation(tx, me, peerId, conversationId, prev),
+          };
+        }
+      }
+      return this.appendMessage(tx, conv, me, input, { clientId });
+    }, TX_OPTIONS);
+    if ('replay' in out) {
+      await this.refundSendRate(me, peerId);
+      return out.replay;
+    }
+    this.flush(out.events);
+    return out.message;
   }
 
   /**
    * Grava UMA mensagem de gente e reavalia a pasta na mesma transação (chamar com a trava do par).
+   * - quem envia: conta apagada/fora de 'active' → o erro do JwtAuthGuard; em análise → só responde (senderDenied)
    * - Block (qualquer sentido) ou a outra ponta apagada/fora de 'active' → 404
    * - REQUESTER sem resposta: no máximo INBOX_LIMITS.requesterMessagesBeforeReply → 429 awaiting_reply
    * - soma 1 nas não lidas do outro; quem estava arquivado volta a ver a conversa
    * - promoção idempotente (applyPromotion): bounce ou curtida mútua que ainda não tinha virado principal
+   * - clientId gravado na mensagem (UNIQUE por remetente): é ele que faz o reenvio devolver a mesma mensagem
    */
   private async appendMessage(
     tx: Tx,
     conv: ConvCtx,
     senderId: string,
     input: NewMessage,
-    clientId?: string,
-    notFound: () => NotFoundException = conversationNotFound,
+    opts: {
+      clientId?: string;
+      notFound?: () => NotFoundException;
+      /** a transação acabou de criar a conversa (abrir conversa nova) */
+      opening?: boolean;
+    } = {},
   ): Promise<{ message: ChatMessageWithClientId; events: InboxEvent[] }> {
+    const notFound = opts.notFound ?? conversationNotFound;
     const me = conv.members.find((m) => m.userId === senderId);
     const peer = conv.members.find((m) => m.userId !== senderId);
     if (!me || !peer) throw notFound();
-    await this.assertPairOpen(tx, senderId, peer.userId, notFound);
+    const sender = await this.assertPairOpen(tx, senderId, peer.userId, notFound);
 
     const { facts } = await this.loadFacts(tx, conv);
+    if (senderDenied(sender, sendIntent(me.role, facts, opts.opening === true)) === 'hold') {
+      // em análise, sem revelar a análise: abrir conversa nova dá o 404 de alvo indisponível; insistir numa
+      // solicitação sem resposta dá o 429 de quem já esgotou as mensagens antes da resposta
+      if (opts.opening) throw notFound();
+      throw tooMany('awaiting_reply', 'Agora é esperar a resposta.', null);
+    }
     if (me.role === 'REQUESTER' && !canRequesterSend(facts)) {
       throw tooMany(
         'awaiting_reply',
@@ -359,18 +425,18 @@ export class InboxService {
     }
 
     const now = new Date();
-    const row = await tx.message.create({
-      data: {
-        conversationId: conv.id,
-        senderId,
-        body: input.body,
-        messageType: input.messageType,
-        mediaUrl: input.mediaUrl,
-        mediaExpiresAt: input.mediaExpiresAt ?? null,
-        createdAt: now,
-      },
-      select: MESSAGE_SELECT,
+    const row = await insertMessage(tx, {
+      conversationId: conv.id,
+      senderId,
+      body: input.body,
+      messageType: input.messageType,
+      mediaUrl: input.mediaUrl,
+      mediaExpiresAt: input.mediaExpiresAt ?? null,
+      createdAt: now,
+      clientId: opts.clientId ?? null,
     });
+    // só colide com o mesmo clientId gravado AGORA por mim noutra conversa (a do par já foi conferida na trava)
+    if (!row) throw clientIdConflict();
     await tx.conversation.update({ where: { id: conv.id }, data: { lastMessageAt: now } });
     const peerRow = await tx.conversationMember.update({
       where: { conversationId_userId: { conversationId: conv.id, userId: peer.userId } },
@@ -384,17 +450,17 @@ export class InboxService {
       });
     }
 
-    const message = toChatMessage(row);
+    // clientId só volta pra quem enviou (reconciliação da mensagem otimista no app)
+    const mine = toChatMessage(row, senderId);
     const events: InboxEvent[] = [
-      // clientId só volta pra quem enviou (reconciliação da mensagem otimista no app)
       emitEvent(senderId, 'message:new', {
         conversationId: conv.id,
-        message: { ...message, clientId },
+        message: mine,
         unreadCount: me.unreadCount,
       }),
       emitEvent(peer.userId, 'message:new', {
         conversationId: conv.id,
-        message,
+        message: toChatMessage(row),
         unreadCount: peerRow.unreadCount,
       }),
     ];
@@ -414,7 +480,7 @@ export class InboxService {
       const s = await this.summaryFor(tx, conv.id, m.userId);
       if (s) events.push(emitEvent(m.userId, 'conversation:new', { conversation: s }));
     }
-    return { message: { ...message, clientId }, events };
+    return { message: mine, events };
   }
 
   // =============================================================================================
@@ -610,13 +676,22 @@ export class InboxService {
     if (!row) throw conversationNotFound();
     const summary = toSummary(row);
     const facts = factsFromRow(row);
+    let requestMessagesLeft = summary.awaitingReply
+      ? Math.max(0, INBOX_LIMITS.requesterMessagesBeforeReply - facts.messagesFromA)
+      : null;
+    if (requestMessagesLeft) {
+      // em análise não insiste na solicitação que abriu (senderDenied): o app já mostra "esperando resposta"
+      const u = await this.prisma.user.findUnique({
+        where: { id: me },
+        select: { reviewHoldAt: true },
+      });
+      if (u?.reviewHoldAt) requestMessagesLeft = 0;
+    }
     return {
       ...summary,
       createdAt: row.created_at.toISOString(),
       archivedAt: row.archived_at?.toISOString() ?? null,
-      requestMessagesLeft: summary.awaitingReply
-        ? Math.max(0, INBOX_LIMITS.requesterMessagesBeforeReply - facts.messagesFromA)
-        : null,
+      requestMessagesLeft,
     };
   }
 
@@ -630,12 +705,13 @@ export class InboxService {
     });
     if (!conv) return null;
     const [row] = await summaryRows(this.prisma, { viewerId: me, conversationId: conv.id });
-    return row
-      ? { id: row.id, folder: folderFor(row.my_role, routeOf(row.promoted_at)) }
-      : null;
+    return row ? { id: row.id, folder: folderFor(row.my_role, routeOf(row.promoted_at)) } : null;
   }
 
-  /** GET /conversations/:id/messages?limit≤100&before (id de mensagem ou instante ISO), em ordem crescente */
+  /**
+   * GET /conversations/:id/messages?limit≤100&before (id de mensagem ou instante ISO), em ordem crescente.
+   * As MINHAS mensagens trazem o clientId: o app casa o balão que falhou com a mensagem que já foi gravada.
+   */
   async listMessages(
     me: string,
     conversationId: string,
@@ -657,7 +733,7 @@ export class InboxService {
       }
     }
     const rows = await messagesPage(this.prisma, conversationId, { limit, beforeId, beforeAt });
-    return rows.map((m) => toChatMessage(m));
+    return rows.map((m) => toChatMessage(m, me));
   }
 
   // =============================================================================================
@@ -858,8 +934,16 @@ export class InboxService {
     };
   }
 
-  /** abrir conversa NOVA: a mesma visibilidade do cartão público + Block em qualquer sentido → 404 idêntico */
+  /**
+   * abrir conversa NOVA: a mesma visibilidade do cartão público + Block em qualquer sentido → 404 idêntico.
+   * Quem abre também: conta fora do ar → erro do guard; em análise → o mesmo 404 (não revela a análise). Conferência
+   * antecipada (não gasta a cota diária); a definitiva é a do appendMessage, dentro da trava do par.
+   */
   private async assertCanStart(me: string, targetId: string): Promise<void> {
+    const sender = await this.prisma.user.findUnique({ where: { id: me }, select: ACCOUNT_SELECT });
+    const denied = senderDenied(sender, 'start');
+    if (denied === 'account') throw senderAccountError(sender);
+    if (denied === 'hold') throw userNotFound();
     const blocked = await this.prisma.block.findFirst({
       where: {
         OR: [
@@ -877,13 +961,26 @@ export class InboxService {
     if (!cardVisible(target)) throw userNotFound();
   }
 
-  /** conversa que já existe: só Block (qualquer sentido) e a outra ponta apagada/fora de 'active' cortam */
+  /**
+   * Conversa que já existe, com as linhas FRESCAS (dentro da trava do par quando há transação):
+   * - quem age (me) com conta apagada/fora de 'active' → o erro do JwtAuthGuard. O guard lê um cache, e um envio pode
+   *   ter esperado a trava do par enquanto o ban era gravado: sem isto, o banido desarquivava as conversas que a
+   *   moderação acabou de arquivar e mandava message:new às vítimas
+   * - Block (qualquer sentido) ou a outra ponta apagada/fora de 'active' → notFound
+   * Devolve a conta de quem age (a regra de quem está em análise depende do que a mensagem faz: senderDenied).
+   */
   private async assertPairOpen(
     db: Tx,
     me: string,
     peerId: string,
     notFound = conversationNotFound,
-  ): Promise<void> {
+  ): Promise<AccountRow> {
+    const users = await db.user.findMany({
+      where: { id: { in: [me, peerId] } },
+      select: ACCOUNT_SELECT,
+    });
+    const sender = users.find((u) => u.id === me);
+    if (!sender || senderDenied(sender, 'reply')) throw senderAccountError(sender);
     const blocked = await db.block.findFirst({
       where: {
         OR: [
@@ -894,11 +991,8 @@ export class InboxService {
       select: { id: true },
     });
     if (blocked) throw notFound();
-    const peer = await db.user.findUnique({
-      where: { id: peerId },
-      select: { deletedAt: true, accountStatus: true },
-    });
-    if (!peerReachable(peer)) throw notFound();
+    if (!peerReachable(users.find((u) => u.id === peerId))) throw notFound();
+    return sender;
   }
 
   /** por remetente (30/min, todas as conversas) e por par (15/min) — além do @Throttle da rota */
@@ -930,35 +1024,61 @@ export class InboxService {
     await this.redis.client.decr(`rate:${me}:${action}`).catch(() => undefined);
   }
 
+  /** o reenvio que chegou depois da 1ª tentativa em voo gastou cota à toa: devolve (por remetente e por par) */
+  private async refundSendRate(me: string, peerId: string): Promise<void> {
+    await this.refund(me, 'msg');
+    await this.refund(me, `msg:to:${peerId}`);
+  }
+
+  // ---- idempotência do reenvio ----
+  // O app reusa o clientId quando o POST falha ou estoura o tempo. A chave é UMA por remetente, gravada na própria
+  // mensagem (UNIQUE(sender_id, client_id)), e vale nas duas rotas: a 1ª mensagem que saiu pelo POST /conversations e
+  // é reenviada pelo POST /conversations/:id/messages (o app descobriu a conversa pelo socket) não duplica. Sem prazo;
+  // se a 1ª tentativa falhou (rollback), nada foi gravado e o reenvio grava normalmente.
+
+  private findByClientId(db: Tx, senderId: string, clientId: string) {
+    return db.message.findUnique({
+      where: { senderId_clientId: { senderId, clientId } },
+      select: MESSAGE_SELECT,
+    });
+  }
+
   /**
-   * Idempotência do reenvio: o app reusa o clientId quando o POST falha/estoura o tempo. Se a 1ª tentativa gravou,
-   * devolve a mesma mensagem em vez de criar outra; se falhou, a chave some e o reenvio grava normalmente.
+   * Reenvio pelo POST /conversations/:id/messages: a mensagem já gravada só vale se for DESTA conversa; o par tem que
+   * continuar aberto (bloqueio/conta fora = 404, como qualquer envio). Nada é gravado nem emitido de novo.
    */
-  private async withClientId<T>(
-    scope: string,
-    clientId: string | undefined,
-    replay: (messageId: string) => Promise<T | null>,
-    run: () => Promise<{ result: T; messageId: string }>,
-  ): Promise<T> {
-    if (!clientId) return (await run()).result;
-    const key = `${scope}:${clientId.slice(0, 64)}`;
-    const claimed = await this.redis.client.set(key, 'pending', 'EX', CLIENT_ID_TTL_S, 'NX');
-    if (!claimed) {
-      const prevId = await this.redis.client.get(key);
-      const prev = prevId && prevId !== 'pending' ? await replay(prevId) : null;
-      if (prev) return prev;
-      throw new ConflictException({
-        error: 'message_pending',
-        message: 'Essa mensagem ainda está sendo enviada',
-      });
-    }
-    try {
-      const { result, messageId } = await run();
-      await this.redis.client.set(key, messageId, 'EX', CLIENT_ID_TTL_S);
-      return result;
-    } catch (e) {
-      await this.redis.client.del(key).catch(() => undefined);
-      throw e;
-    }
+  private async replayInConversation(
+    db: Tx,
+    me: string,
+    peerId: string,
+    conversationId: string,
+    prev: MessageRow,
+  ): Promise<ChatMessageWithClientId> {
+    if (prev.conversationId !== conversationId) throw clientIdConflict();
+    await this.assertPairOpen(db, me, peerId, conversationNotFound);
+    return toChatMessage(prev, me);
+  }
+
+  /**
+   * Reenvio pelo POST /conversations: a mensagem já gravada tem que ser do MESMO par (me, toUserId). Resumo
+   * indisponível (bloqueio, conta da outra ponta fora) = 404, nunca um 409 preso até a chave vencer.
+   */
+  private async replayCreate(
+    db: Tx,
+    me: string,
+    toUserId: string,
+    prev: MessageRow,
+  ): Promise<CreateConversationResponse> {
+    const [low, high] = pairOf(me, toUserId);
+    const conv = await db.conversation.findUnique({
+      where: { id: prev.conversationId },
+      select: { userLowId: true, userHighId: true },
+    });
+    if (!conv) throw userNotFound();
+    if (conv.userLowId !== low || conv.userHighId !== high) throw clientIdConflict();
+    await this.assertPairOpen(db, me, toUserId, userNotFound);
+    const conversation = await this.summaryFor(db, prev.conversationId, me);
+    if (!conversation) throw userNotFound();
+    return { conversation, message: toChatMessage(prev, me) };
   }
 }

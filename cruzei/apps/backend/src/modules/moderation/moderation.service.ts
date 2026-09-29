@@ -8,7 +8,6 @@ import type {
   ModerationReportGroup,
   ModerationUserDetail,
   ModerationUserSummary,
-  ReportPayload,
   ReportReason,
   UserRole,
 } from '@cruzei/shared-types';
@@ -18,6 +17,11 @@ import { ChatGateway } from '../../realtime/chat.gateway';
 import { AccountStateService, blockedBody } from '../account/account-state.service';
 import { PhotoModerationService } from './photo-moderation.service';
 import { lockPair } from '../inbox/inbox.queries';
+import {
+  contextConversationId,
+  sanitizeContext,
+  type ReportContextInput,
+} from '../reports/report-context';
 
 const SUMMARY_SELECT = {
   id: true,
@@ -136,15 +140,12 @@ export class ModerationService {
       this.prisma.moderationAction.findMany({ where: { targetUserId: userId }, orderBy: { createdAt: 'desc' }, take: 50 }),
     ]);
     // só as conversas citadas nas denúncias (a política de privacidade avisa que a moderação pode lê-las).
+    // Denúncia de antes da inbox tem context.matchId: a conversa foi criada com o mesmo id do match.
     const conversationIds = [
       ...new Set(
         reports
-          .map((r) => {
-            const c = r.context as { conversationId?: string } | null;
-            return c?.conversationId;
-          })
-          .filter((id): id is string => typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id))
-          .map((id) => id.toLowerCase()),
+          .map((r) => contextConversationId(r.context))
+          .filter((id): id is string => id !== null),
       ),
     ].slice(0, 5);
     const conversations: ModerationUserDetail['conversations'] = [];
@@ -210,6 +211,9 @@ export class ModerationService {
           where: { id: targetId },
           data: { accountStatus: 'banned', suspendedUntil: null, moderationReason: reason, reviewHoldAt: null },
         });
+        // cache do estado da conta (15 s local, 10 min Redis) cai JÁ: o guard barra o banido antes do arquivamento,
+        // senão um envio dele nessa janela desarquivaria conversas e avisaria as vítimas
+        await this.accounts.invalidate(targetId);
         await this.resolveReports(targetId, moderator.id, 'resolved', 'ban');
         await this.archiveConversations(targetId);
         // o número fica preso à conta banida (users.phone é único): não dá pra se cadastrar de novo com ele.
@@ -308,7 +312,8 @@ export class ModerationService {
       reason: r.reason as ReportReason,
       description: r.description,
       reporterId: r.reporterId,
-      context: (r.context as ReportPayload['context']) ?? null,
+      // denúncia antiga (matchId, origem 'matches') sai no formato de hoje
+      context: sanitizeContext(r.context as ReportContextInput | null),
       priority: r.priority,
       createdAt: r.createdAt.toISOString(),
     };

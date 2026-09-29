@@ -73,6 +73,9 @@
     "jest-expo": "57.0.5",
     "typescript": "6.0.3"
   },
+  "jest": {
+    "preset": "jest-expo"
+  },
   "expo": {
     "install": {
       "exclude": [

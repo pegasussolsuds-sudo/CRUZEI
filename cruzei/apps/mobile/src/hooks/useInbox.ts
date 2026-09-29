@@ -7,10 +7,10 @@ import {
   type QueryClient,
   type QueryFunctionContext,
   type UseInfiniteQueryResult,
+  type UseQueryOptions,
 } from '@tanstack/react-query';
 import {
   INBOX_LIMITS,
-  type ChatMessage,
   type ChatMessageWithClientId,
   type ConversationDetail,
   type ConversationRef,
@@ -57,11 +57,14 @@ export function useInboxList(folder: InboxFolder, enabled = true): UseInfiniteQu
     enabled,
     initialPageParam: null,
     queryFn: async ({ pageParam }: QueryFunctionContext<readonly string[], string | null>): Promise<InboxListResponse> => {
+      const startedAt = Date.now();
       const res = await api.get<InboxListResponse>(folder === 'inbox' ? '/inbox' : '/inbox/requests', {
         params: pageParam ? { cursor: pageParam } : undefined,
       });
-      // a 1ª página traz a contagem do servidor: aba e segmentado usam sem outra requisição
-      if (!pageParam && res.data.counts) qc.setQueryData(inboxKeys.counts, res.data.counts);
+      // a 1ª página traz a contagem do servidor: aba e segmentado usam sem outra requisição. Não troca uma contagem
+      // buscada depois que esta requisição saiu (ela é mais nova que a desta página)
+      const countsAt = qc.getQueryState(inboxKeys.counts)?.dataUpdatedAt ?? 0;
+      if (!pageParam && res.data.counts && countsAt <= startedAt) qc.setQueryData(inboxKeys.counts, res.data.counts);
       return res.data;
     },
     getNextPageParam: (last: InboxListResponse) => last.nextCursor ?? null,
@@ -84,37 +87,52 @@ export function inboxBadge(c: InboxCounts | undefined): number {
   return c ? c.unreadInbox + c.requests : 0;
 }
 
-export function useConversation(id: string | undefined) {
-  return useQuery({
+/** detalhe da conversa (opções fora do hook: o teste da corrida com o socket usa as mesmas) */
+export function conversationQuery(
+  id: string | undefined,
+): UseQueryOptions<ConversationDetail, Error, ConversationDetail, ReturnType<typeof inboxKeys.conversation>> {
+  return {
     queryKey: inboxKeys.conversation(id ?? ''),
     enabled: Boolean(id),
     queryFn: async () => (await api.get<ConversationDetail>(`/conversations/${id}`)).data,
     retry: (count, err) => toApiError(err).status !== 404 && count < 2,
-  });
+  };
+}
+
+export function useConversation(id: string | undefined) {
+  return useQuery(conversationQuery(id));
 }
 
 /** histórico (crescente). O servidor corta em INBOX_LIMITS.historyPageMax */
-export function useConversationMessages(id: string | undefined) {
-  const qc = useQueryClient();
-  return useQuery({
+export function conversationMessagesQuery(
+  qc: QueryClient,
+  id: string | undefined,
+): UseQueryOptions<CachedMessage[], Error, CachedMessage[], ReturnType<typeof inboxKeys.messages>> {
+  return {
     queryKey: inboxKeys.messages(id ?? ''),
     enabled: Boolean(id),
     queryFn: async (): Promise<CachedMessage[]> => {
-      const res = await api.get<ChatMessage[]>(`/conversations/${id}/messages`, { params: { limit: INBOX_LIMITS.historyPageMax } });
+      // as minhas podem vir com clientId (o outbox do chat reconcilia por ele)
+      const res = await api.get<CachedMessage[]>(`/conversations/${id}/messages`, { params: { limit: INBOX_LIMITS.historyPageMax } });
       const fetched = res.data;
       const prev = qc.getQueryData<CachedMessage[]>(inboxKeys.messages(id ?? ''));
       if (!prev?.length) return fetched;
-      // o histórico não traz clientId: mantém o das que já estavam no cache (balão não remonta) e não perde o que chegou
+      // sem clientId no histórico, mantém o das que já estavam no cache (balão não remonta) e não perde o que chegou
       // pelo socket enquanto a requisição voltava
       const cid = new Map<string, string>();
       for (const m of prev) if (m.clientId) cid.set(m.id, m.clientId);
       const ids = new Set(fetched.map((m) => m.id));
       const lastAt = fetched.length ? fetched[fetched.length - 1].createdAt : '';
       const late = prev.filter((m) => !ids.has(m.id) && m.createdAt > lastAt);
-      return [...fetched.map((m) => (cid.has(m.id) ? { ...m, clientId: cid.get(m.id) } : m)), ...late];
+      return [...fetched.map((m) => (!m.clientId && cid.has(m.id) ? { ...m, clientId: cid.get(m.id) } : m)), ...late];
     },
     retry: (count, err) => toApiError(err).status !== 404 && count < 2,
-  });
+  };
+}
+
+export function useConversationMessages(id: string | undefined) {
+  const qc = useQueryClient();
+  return useQuery(conversationMessagesQuery(qc, id));
 }
 
 /** a conversa do par, se existir (cartão, mapa e chat em rascunho) */
@@ -176,6 +194,36 @@ export function iLiked(s: LikeStatus): boolean {
   return s === 'SENT' || s === 'MUTUAL';
 }
 
+/**
+ * Quem curtiu, no 'like_received'. O servidor só manda fromUserId pra Premium+ ou quando a curtida fechou o par (mútua,
+ * os dois veem); pros outros vem só {isSuper}. Sem id = sem identidade nenhuma na tela (nem emote no mapa).
+ */
+export function likerIdOf(p: unknown): string | null {
+  const id = p && typeof p === 'object' ? (p as { fromUserId?: unknown }).fromUserId : undefined;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+// ───────────────────────────── outbox do chat ─────────────────────────────
+
+/** balão meu ainda não confirmado pelo servidor (pending/failed) ou já confirmado (sent, com o id real) */
+export type OutboxMessage = CachedMessage & { pending?: boolean; failed?: boolean; sent?: boolean };
+
+/**
+ * O servidor já tem a mensagem (histórico ou eco do socket trouxe o mesmo clientId): o balão otimista vira a real,
+ * inclusive o que ficou "não foi · toca pra reenviar" porque a resposta do POST se perdeu. Devolve o mesmo array
+ * quando nada muda (sem re-render).
+ */
+export function settleOutbox(outbox: OutboxMessage[], delivered: ReadonlyMap<string, CachedMessage>): OutboxMessage[] {
+  let changed = false;
+  const next = outbox.map((o) => {
+    const m = o.clientId && !o.sent ? delivered.get(o.clientId) : undefined;
+    if (!m || !o.clientId) return o;
+    changed = true;
+    return { ...o, ...m, clientId: o.clientId, pending: false, failed: false, sent: true };
+  });
+  return changed ? next : outbox;
+}
+
 // ───────────────────────────── cache (socket e ações) ─────────────────────────────
 
 function sortKey(c: ConversationSummary): string {
@@ -228,14 +276,37 @@ export function findSummary(qc: QueryClient, id: string): { folder: InboxFolder;
   return null;
 }
 
+/**
+ * Busca de novo DESCARTANDO a resposta em voo: o SELECT dela pode ter rodado antes do commit do evento, e ela
+ * sobrescreveria o que o evento acertou. Com dados, o invalidate já cancela a busca velha (cancelRefetch); na 1ª carga
+ * (sem dados) o React Query só pegaria carona nela, então cancela antes (volta pro estado de antes da busca).
+ */
+function refetchFresh(qc: QueryClient, queryKey: readonly unknown[]): void {
+  const st = qc.getQueryState(queryKey);
+  if (st?.fetchStatus === 'fetching' && st.data === undefined) void qc.cancelQueries({ queryKey, exact: true });
+  void qc.invalidateQueries({ queryKey, exact: true });
+}
+
+/** evento do socket numa query com busca em andamento: refaz a busca (sem busca em voo, o setQueryData já basta) */
+function refetchIfInFlight(qc: QueryClient, queryKey: readonly unknown[]): void {
+  if (qc.getQueryState(queryKey)?.fetchStatus === 'fetching') refetchFresh(qc, queryKey);
+}
+
+function refetchListsIfInFlight(qc: QueryClient): void {
+  refetchIfInFlight(qc, inboxKeys.list('inbox'));
+  refetchIfInFlight(qc, inboxKeys.list('requests'));
+}
+
 /** GET /conversations/with/:userId no cache (cartão e chat em rascunho acham a conversa sem ir ao servidor) */
 function setLookup(qc: QueryClient, userId: string, ref: ConversationLookupResponse): void {
-  qc.setQueryData(inboxKeys.withUser(userId), ref);
+  const key = inboxKeys.withUser(userId);
+  qc.setQueryData(key, ref);
+  refetchIfInFlight(qc, key);
 }
 
 function invalidateLists(qc: QueryClient): void {
-  qc.invalidateQueries({ queryKey: inboxKeys.list('inbox'), exact: true });
-  qc.invalidateQueries({ queryKey: inboxKeys.list('requests') });
+  refetchFresh(qc, inboxKeys.list('inbox'));
+  refetchFresh(qc, inboxKeys.list('requests'));
 }
 
 let countsTimer: ReturnType<typeof setTimeout> | null = null;
@@ -248,10 +319,15 @@ export function refreshCounts(qc: QueryClient): void {
   }, 800);
 }
 
-/** mensagem nova no histórico aberto: substitui a otimista (clientId) ou a repetida (id); senão entra em ordem */
+/**
+ * Mensagem nova no histórico aberto: substitui a otimista (clientId) ou a repetida (id); senão entra em ordem.
+ * Sem histórico no cache ele vem inteiro do servidor quando o chat abrir; se a busca já está em voo, ela é refeita
+ * (a resposta dela pode não ter a mensagem, e o chat aberto ficaria sem ela).
+ */
 export function upsertMessage(qc: QueryClient, conversationId: string, m: CachedMessage): void {
-  qc.setQueryData<CachedMessage[]>(inboxKeys.messages(conversationId), (prev) => {
-    if (!prev) return prev; // histórico ainda não carregado: vem inteiro quando o chat abrir
+  const key = inboxKeys.messages(conversationId);
+  qc.setQueryData<CachedMessage[]>(key, (prev) => {
+    if (!prev) return prev;
     const i = prev.findIndex((x) => x.id === m.id || (m.clientId != null && x.clientId === m.clientId));
     if (i >= 0) {
       const next = [...prev];
@@ -263,6 +339,7 @@ export function upsertMessage(qc: QueryClient, conversationId: string, m: Cached
     if (prev.length && prev[prev.length - 1].createdAt > m.createdAt) next.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
     return next;
   });
+  refetchIfInFlight(qc, key);
 }
 
 /** 'message:new' (inclui a de sistema; unreadCount é o meu, contado pelo servidor) */
@@ -271,13 +348,16 @@ export function applyMessageNew(qc: QueryClient, p: MessageNewPayload): void {
   const found = findSummary(qc, p.conversationId);
   if (found) {
     placeInList(qc, { ...found.item, lastMessage: p.message, lastMessageAt: p.message.createdAt, unreadCount: p.unreadCount });
+    refetchListsIfInFlight(qc);
   } else {
     // fora do cache (lista não carregada, conversa que voltou do arquivo): o servidor manda a lista certa
     invalidateLists(qc);
   }
-  qc.setQueryData<ConversationDetail>(inboxKeys.conversation(p.conversationId), (d) =>
+  const detailKey = inboxKeys.conversation(p.conversationId);
+  qc.setQueryData<ConversationDetail>(detailKey, (d) =>
     d ? { ...d, lastMessage: p.message, lastMessageAt: p.message.createdAt, unreadCount: p.unreadCount } : d,
   );
+  refetchIfInFlight(qc, detailKey);
   refreshCounts(qc);
 }
 
@@ -285,6 +365,7 @@ export function applyMessageNew(qc: QueryClient, p: MessageNewPayload): void {
 export function applyConversationNew(qc: QueryClient, p: ConversationNewPayload): void {
   const c = p.conversation;
   placeInList(qc, c);
+  refetchListsIfInFlight(qc);
   setLookup(qc, c.peer.id, { id: c.id, folder: c.folder });
   refreshCounts(qc);
 }
@@ -306,14 +387,21 @@ export function applyPromoted(qc: QueryClient, p: ConversationPromotedPayload): 
     if (found.folder === 'requests') {
       removeFromList(qc, 'requests', p.conversationId);
       if (!placeInList(qc, promote(found.item))) invalidateLists(qc);
-    } else patchInList(qc, p.conversationId, promote);
+      else refetchListsIfInFlight(qc);
+    } else {
+      patchInList(qc, p.conversationId, promote);
+      refetchListsIfInFlight(qc);
+    }
   } else invalidateLists(qc);
   let peerId = found?.item.peer.id;
-  qc.setQueryData<ConversationDetail>(inboxKeys.conversation(p.conversationId), (d) => {
+  const detailKey = inboxKeys.conversation(p.conversationId);
+  qc.setQueryData<ConversationDetail>(detailKey, (d) => {
     if (!d) return d;
     peerId = peerId ?? d.peer.id;
     return { ...promote(d), requestMessagesLeft: null };
   });
+  // o GET do detalhe em voo (ex.: invalidado depois de um envio) voltaria com a rota de antes e travaria o composer
+  refetchIfInFlight(qc, detailKey);
   if (peerId) setLookup(qc, peerId, { id: p.conversationId, folder: 'inbox' });
   refreshCounts(qc);
 }
@@ -329,12 +417,13 @@ export function applyRead(qc: QueryClient, p: MessageReadPayload, myId: string |
     if (!p.upToMessageId || !last || last.id === p.upToMessageId) applyUnread(qc, p.conversationId, 0);
     else {
       invalidateLists(qc);
-      qc.invalidateQueries({ queryKey: inboxKeys.conversation(p.conversationId) });
+      refetchFresh(qc, inboxKeys.conversation(p.conversationId));
       refreshCounts(qc);
     }
     return;
   }
-  qc.setQueryData<CachedMessage[]>(inboxKeys.messages(p.conversationId), (prev) => {
+  const key = inboxKeys.messages(p.conversationId);
+  qc.setQueryData<CachedMessage[]>(key, (prev) => {
     if (!prev) return prev;
     const upTo = p.upToMessageId ? prev.findIndex((m) => m.id === p.upToMessageId) : prev.length - 1;
     let changed = false;
@@ -348,12 +437,16 @@ export function applyRead(qc: QueryClient, p: MessageReadPayload, myId: string |
     });
     return changed ? next : prev;
   });
+  refetchIfInFlight(qc, key);
 }
 
 /** não lidas de uma conversa com o número que o servidor devolveu (POST /read) */
 export function applyUnread(qc: QueryClient, conversationId: string, unreadCount: number): void {
   patchInList(qc, conversationId, (c) => (c.unreadCount === unreadCount ? c : { ...c, unreadCount }));
-  qc.setQueryData<ConversationDetail>(inboxKeys.conversation(conversationId), (d) => (d && d.unreadCount !== unreadCount ? { ...d, unreadCount } : d));
+  refetchListsIfInFlight(qc);
+  const detailKey = inboxKeys.conversation(conversationId);
+  qc.setQueryData<ConversationDetail>(detailKey, (d) => (d && d.unreadCount !== unreadCount ? { ...d, unreadCount } : d));
+  refetchIfInFlight(qc, detailKey);
   refreshCounts(qc);
 }
 
@@ -362,6 +455,7 @@ export function applyRemoved(qc: QueryClient, conversationId: string): void {
   const found = findSummary(qc, conversationId);
   removeFromList(qc, 'inbox', conversationId);
   removeFromList(qc, 'requests', conversationId);
+  refetchListsIfInFlight(qc);
   const peerId = found?.item.peer.id ?? qc.getQueryData<ConversationDetail>(inboxKeys.conversation(conversationId))?.peer.id;
   if (peerId) setLookup(qc, peerId, null);
   // o chat aberto (query ativa) cuida de si; o resto do cache da conversa sai

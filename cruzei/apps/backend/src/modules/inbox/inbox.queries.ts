@@ -28,10 +28,13 @@ const PEER_JOIN = Prisma.sql`
 /**
  * Filtros de segurança de toda leitura: conta da outra ponta apagada ou fora de 'active' some, e Block em qualquer
  * sentido some dos dois lados (segunda proteção: o bloqueio já arquiva as duas linhas de membro).
+ * Solicitação (ainda não promovida) aberta por quem está EM ANÁLISE (reviewHoldAt) some de quem a RECEBEU: nome e
+ * foto de quem está em análise não aparecem pra ninguém novo. Volta sozinha se a análise terminar sem punição.
  */
 const PEER_VISIBLE = Prisma.sql`
   AND p.deleted_at IS NULL
   AND p.account_status = 'active'
+  AND NOT (c.promoted_at IS NULL AND me.role = 'RECIPIENT' AND p.review_hold_at IS NOT NULL)
   AND NOT EXISTS (
     SELECT 1 FROM blocks b
     WHERE (b.blocker_id = me.user_id AND b.blocked_id = p.id)
@@ -94,13 +97,15 @@ export async function summaryRows(db: RawDb, f: SummaryFilter): Promise<SummaryR
            lm.message_type::text AS lm_message_type,
            lm.system_kind AS lm_system_kind,
            lm.read_at AS lm_read_at,
-           lm.created_at AS lm_created_at
+           lm.created_at AS lm_created_at,
+           lm.client_id AS lm_client_id
       FROM conversation_members me
       JOIN conversations c ON c.id = me.conversation_id
       JOIN users v ON v.id = me.user_id
       ${PEER_JOIN}
       LEFT JOIN LATERAL (
-        SELECT x.id, x.sender_id, x.content, x.media_url, x.message_type, x.system_kind, x.read_at, x.created_at
+        SELECT x.id, x.sender_id, x.content, x.media_url, x.message_type, x.system_kind, x.read_at, x.created_at,
+               x.client_id
           FROM messages x
          WHERE x.conversation_id = c.id
          ORDER BY x.created_at DESC, x.id DESC
@@ -162,7 +167,35 @@ export function pairOf(a: string, b: string): [string, string] {
 const MESSAGE_COLUMNS = Prisma.sql`
   x.id::text AS "id", x.conversation_id::text AS "conversationId", x.sender_id::text AS "senderId",
   x.content AS "body", x.media_url AS "mediaUrl", x.message_type::text AS "messageType",
-  x.system_kind AS "systemKind", x.read_at AS "readAt", x.created_at AS "createdAt"`;
+  x.system_kind AS "systemKind", x.read_at AS "readAt", x.created_at AS "createdAt", x.client_id AS "clientId"`;
+
+export interface NewMessageRow {
+  conversationId: string;
+  senderId: string;
+  body: string | null;
+  messageType: string;
+  mediaUrl: string | null;
+  mediaExpiresAt: Date | null;
+  createdAt: Date;
+  clientId: string | null;
+}
+
+/**
+ * Grava uma mensagem de gente. A UNIQUE(sender_id, client_id) segura o reenvio: se esse remetente já gravou esse
+ * clientId (em QUALQUER conversa, inclusive numa transação que ainda estava em voo), não grava nada e devolve null.
+ * Sem clientId (NULL) nunca colide.
+ */
+export async function insertMessage(db: RawDb, m: NewMessageRow): Promise<MessageRow | null> {
+  const [row] = await db.$queryRaw<MessageRow[]>`
+    INSERT INTO messages AS x
+           (id, conversation_id, sender_id, content, message_type, media_url, media_expires_at, created_at, client_id)
+    VALUES (gen_random_uuid(), ${m.conversationId}::uuid, ${m.senderId}::uuid, ${m.body}::text,
+            ${m.messageType}::"MessageType", ${m.mediaUrl}::varchar, ${m.mediaExpiresAt}::timestamp,
+            ${m.createdAt}::timestamp, ${m.clientId}::varchar)
+    ON CONFLICT (sender_id, client_id) DO NOTHING
+    RETURNING ${MESSAGE_COLUMNS}`;
+  return row ?? null;
+}
 
 export interface MessagePageOpts {
   limit: number;

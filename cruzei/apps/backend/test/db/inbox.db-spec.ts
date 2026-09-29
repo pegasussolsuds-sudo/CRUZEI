@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import type { PrismaService } from '../../src/database/prisma.service';
 import { BlocksService } from '../../src/modules/blocks/blocks.service';
 import { MUTUAL_LIKE_TEXT } from '../../src/modules/inbox/inbox.mapper';
+import { lockPair } from '../../src/modules/inbox/inbox.queries';
 import { InboxService } from '../../src/modules/inbox/inbox.service';
 import { LikesService } from '../../src/modules/likes/likes.service';
 import type { ChatGateway } from '../../src/realtime/chat.gateway';
@@ -226,6 +227,20 @@ const memberOf = (conversationId: string, userId: string) =>
   });
 const systemMessages = (conversationId: string) =>
   prisma.message.findMany({ where: { conversationId, systemKind: { not: null } } });
+
+/** espera até alguém ficar parado numa trava advisory (o envio esperando a trava do par) */
+async function waitForAdvisoryWaiter(timeoutMs = 5_000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    const [r] = await prisma.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_locks
+       WHERE locktype = 'advisory' AND NOT granted
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`;
+    if (r.n > 0) return;
+    await new Promise((res) => setTimeout(res, 25));
+  }
+  throw new Error('ninguém ficou esperando a trava do par');
+}
 
 beforeAll(async () => {
   await assertTestDatabase(prisma);
@@ -623,6 +638,272 @@ describe('idempotência e concorrência', () => {
     expect(m2.id).toBe(m1.id);
     expect(m2.clientId).toBe('dup-2');
     expect(await prisma.message.count()).toBe(2);
+  });
+});
+
+// =================================================================================================
+describe('reenvio pelo clientId: uma chave só por remetente, nas duas rotas', () => {
+  it('1ª mensagem saiu pelo POST /conversations, resposta perdida; reenvio pelo /messages devolve a MESMA (sem duplicar nem gastar)', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const first = await inbox.createConversation(ana, bia, 'oi, tudo bem?', 'c_1');
+    const conv = first.conversation.id;
+    const msgRate = await redis.client.get(`rate:${ana}:msg`);
+    gw.reset();
+
+    // o app descobriu a conversa pelo socket (conversation:new) e reenvia o balão que "falhou" pela outra rota
+    const again = await inbox.sendMessage(ana, conv, 'oi, tudo bem?', 'c_1');
+    expect(again).toMatchObject({ id: first.message.id, clientId: 'c_1', body: 'oi, tudo bem?' });
+    expect(await prisma.message.count({ where: { conversationId: conv } })).toBe(1);
+    expect(gw.emitted).toHaveLength(0);
+    expect((await memberOf(conv, bia)).unreadCount).toBe(1);
+    // não gastou 1 das 3 do REQUESTER nem o limite por minuto
+    expect((await inbox.getConversation(ana, conv)).requestMessagesLeft).toBe(2);
+    expect(await redis.client.get(`rate:${ana}:msg`)).toBe(msgRate);
+
+    // e o caminho inverso: saiu pelo /messages, reenviado pelo POST /conversations
+    const m2 = await inbox.sendMessage(ana, conv, 'tá por aí?', 'c_2');
+    gw.reset();
+    const viaCreate = await inbox.createConversation(ana, bia, 'tá por aí?', 'c_2');
+    expect(viaCreate.message).toMatchObject({ id: m2.id, clientId: 'c_2' });
+    expect(viaCreate.conversation).toMatchObject({ id: conv, myRole: 'REQUESTER' });
+    expect(await prisma.message.count({ where: { conversationId: conv } })).toBe(2);
+    expect(gw.emitted).toHaveLength(0);
+
+    // a 3ª (última antes da resposta) reenviada não cai no 429 awaiting_reply: é a mesma mensagem
+    const m3 = await inbox.sendMessage(ana, conv, 'última', 'c_3');
+    await expect(inbox.sendMessage(ana, conv, 'última', 'c_3')).resolves.toMatchObject({
+      id: m3.id,
+    });
+    await expect(inbox.createConversation(ana, bia, 'última', 'c_3')).resolves.toMatchObject({
+      message: { id: m3.id },
+    });
+    await expectHttp(inbox.sendMessage(ana, conv, 'quarta', 'c_4'), 429, 'awaiting_reply');
+    expect(await prisma.message.count({ where: { conversationId: conv } })).toBe(3);
+
+    // gravação por SQL cru: created_at igual ao last_message_at que o Prisma gravou com o mesmo instante
+    const last = await prisma.message.findUniqueOrThrow({ where: { id: m3.id } });
+    const c = await prisma.conversation.findUniqueOrThrow({ where: { id: conv } });
+    expect(last.createdAt.getTime()).toBe(c.lastMessageAt?.getTime());
+    expect(last.clientId).toBe('c_3');
+  });
+
+  it('histórico e lastMessage trazem o clientId só nas MINHAS mensagens', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi', 'a_1')).conversation.id;
+    await inbox.sendMessage(bia, conv, 'oi!', 'b_1');
+    await inbox.sendMessage(ana, conv, 'sem clientId');
+
+    const forAna = await inbox.listMessages(ana, conv);
+    expect(forAna.map((m) => [m.body, m.clientId])).toEqual([
+      ['oi', 'a_1'],
+      ['oi!', undefined],
+      ['sem clientId', undefined],
+    ]);
+    expect(forAna.every((m) => m.senderId === ana || !('clientId' in m))).toBe(true);
+    const forBia = await inbox.listMessages(bia, conv);
+    expect(forBia.map((m) => m.clientId)).toEqual([undefined, 'b_1', undefined]);
+
+    // lastMessage do resumo: minha → com clientId; do outro → sem
+    await inbox.sendMessage(bia, conv, 'e aí', 'b_2');
+    expect((await inbox.getConversation(bia, conv)).lastMessage?.clientId).toBe('b_2');
+    const anaView = await inbox.getConversation(ana, conv);
+    expect(anaView.lastMessage?.body).toBe('e aí');
+    expect(anaView.lastMessage && 'clientId' in anaView.lastMessage).toBe(false);
+  });
+
+  it('o mesmo clientId ao mesmo tempo (nas duas rotas) → 1 mensagem só', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await inbox.sendMessage(bia, conv, 'oi!'); // principal: o teto de 3 não interfere
+
+    const [a, b] = await Promise.all([
+      inbox.sendMessage(ana, conv, 'junto', 'par_1'),
+      inbox.sendMessage(ana, conv, 'junto', 'par_1'),
+    ]);
+    expect(b.id).toBe(a.id);
+    const [c, d] = await Promise.all([
+      inbox.createConversation(ana, bia, 'cruzado', 'par_2'),
+      inbox.sendMessage(ana, conv, 'cruzado', 'par_2'),
+    ]);
+    expect(d.id).toBe(c.message.id);
+    expect(await prisma.message.count({ where: { conversationId: conv, senderId: ana } })).toBe(3);
+    // cada envio real soltou 1 message:new por lado; os reenvios, nenhum
+    expect(of('message:new').filter((e) => e.to[0] === bia)).toHaveLength(4);
+  });
+
+  it('reenvio depois de bloqueio → 404 (não 409 preso); clientId de outra conversa → 409, nada gravado', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const caio = await newUser('Caio');
+    const conv = (await inbox.createConversation(ana, bia, 'oi', 'k_1')).conversation.id;
+    const withCaio = (await inbox.createConversation(ana, caio, 'oi Caio', 'k_2')).conversation.id;
+
+    // o mesmo clientId noutra conversa/par (cliente com defeito): não devolve a mensagem de outro par
+    await expectHttp(inbox.sendMessage(ana, withCaio, 'oi', 'k_1'), 409, 'client_id_conflict');
+    await expectHttp(inbox.createConversation(ana, caio, 'oi', 'k_1'), 409, 'client_id_conflict');
+    expect(await prisma.message.count()).toBe(2);
+
+    await blocks.block(bia, ana);
+    gw.reset();
+    const body = await expectHttp(inbox.createConversation(ana, bia, 'oi', 'k_1'), 404);
+    expect(body.message).toBe('Usuário não encontrado');
+    await expectHttp(inbox.sendMessage(ana, conv, 'oi', 'k_1'), 404);
+    expect(gw.emitted).toHaveLength(0);
+    expect(await prisma.message.count()).toBe(2);
+  });
+});
+
+// =================================================================================================
+describe('quem ENVIA também é conferido (conta e análise)', () => {
+  it('banida/suspensa/apagada: erro igual ao do guard nas duas rotas; nada gravado, nada emitido, nada desarquivado', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const caio = await newUser('Caio');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    // a moderação já arquivou as conversas de Ana (o cache do guard ainda diz 'active')
+    await prisma.conversationMember.updateMany({
+      where: { conversationId: conv },
+      data: { archivedAt: new Date() },
+    });
+
+    const cases: [UserExtra, number, string][] = [
+      [{ accountStatus: 'banned' }, 403, 'account_banned'],
+      [{ accountStatus: 'suspended' }, 403, 'account_suspended'],
+      [{ accountStatus: 'active', deletedAt: new Date() }, 401, 'account_gone'],
+    ];
+    for (const [state, status, error] of cases) {
+      await prisma.user.update({ where: { id: ana }, data: { deletedAt: null, ...state } });
+      gw.reset();
+      await expectHttp(inbox.sendMessage(ana, conv, 'ainda aqui?'), status, error);
+      await expectHttp(inbox.createConversation(ana, bia, 'pelo cartão'), status, error);
+      await expectHttp(inbox.createConversation(ana, caio, 'conversa nova'), status, error);
+      expect(gw.emitted).toHaveLength(0);
+    }
+    expect(await prisma.message.count()).toBe(1);
+    expect(await prisma.conversation.count()).toBe(1);
+    expect(await redis.client.get(`rate:${ana}:conv:new`)).toBe('1'); // só a conversa aberta antes do ban
+    for (const u of [ana, bia]) expect((await memberOf(conv, u)).archivedAt).not.toBeNull();
+    expect((await memberOf(conv, bia)).unreadCount).toBe(1);
+  });
+
+  it('banida enquanto o envio esperava a trava do par (janela do ban): o envio vê o ban e não grava', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await inbox.sendMessage(bia, conv, 'oi!');
+    gw.reset();
+
+    // "moderação": segura a trava do par, bane e arquiva; só commita depois que o envio já está esperando
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const ban = prisma.$transaction(
+      async (tx) => {
+        await lockPair(tx, ana, bia);
+        await tx.user.update({ where: { id: ana }, data: { accountStatus: 'banned' } });
+        await tx.conversationMember.updateMany({
+          where: { conversationId: conv },
+          data: { archivedAt: new Date(), unreadCount: 0 },
+        });
+        await gate;
+      },
+      { timeout: 20_000 },
+    );
+    const sending = inbox.sendMessage(ana, conv, 'na janela do ban').then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await waitForAdvisoryWaiter();
+    release();
+    await ban;
+
+    const err = (await sending) as HttpException;
+    expect(err).toBeInstanceOf(HttpException);
+    expect(err.getStatus()).toBe(403);
+    expect((err.getResponse() as Record<string, unknown>).error).toBe('account_banned');
+    expect(gw.emitted).toHaveLength(0);
+    expect(await prisma.message.count({ where: { conversationId: conv } })).toBe(2);
+    for (const u of [ana, bia]) {
+      const m = await memberOf(conv, u);
+      expect(m.archivedAt).not.toBeNull();
+      expect(m.unreadCount).toBe(0);
+    }
+  });
+
+  it('em análise: não abre conversa nova (404 igual ao de alvo indisponível) e não gasta a cota do dia', async () => {
+    const hold = await newUser('Hold', { reviewHoldAt: new Date() });
+    const bia = await newUser('Bia');
+    const other = await newUser('Outra');
+    const unavailable = await newUser('Pausa', { isPaused: true });
+
+    const held = await expectHttp(inbox.createConversation(hold, bia, 'oi', 'h_1'), 404);
+    // não revela a análise: o mesmo 404 de quem tenta abrir com alguém indisponível
+    const paused = await expectHttp(inbox.createConversation(other, unavailable, 'oi'), 404);
+    expect(held).toEqual(paused);
+    expect(await prisma.conversation.count()).toBe(0);
+    expect(await prisma.message.count()).toBe(0);
+    expect(await redis.client.get(`rate:${hold}:conv:new`)).toBeNull();
+    expect(gw.emitted).toHaveLength(0);
+  });
+
+  it('em análise: não insiste na solicitação que abriu (429, composer "esperando"), e ela some das Solicitações de quem recebeu', async () => {
+    const x = await newUser('X');
+    const bia = await newUser('Bia');
+    const conv = (await inbox.createConversation(x, bia, 'oi')).conversation.id;
+    expect((await inbox.list(bia, 'requests')).items).toHaveLength(1);
+    await prisma.user.update({ where: { id: x }, data: { reviewHoldAt: new Date() } });
+    gw.reset();
+
+    await expectHttp(inbox.sendMessage(x, conv, 'oi de novo'), 429, 'awaiting_reply');
+    await expectHttp(inbox.createConversation(x, bia, 'pelo cartão'), 429, 'awaiting_reply');
+    expect((await inbox.getConversation(x, conv)).requestMessagesLeft).toBe(0);
+    expect(await prisma.message.count({ where: { conversationId: conv } })).toBe(1);
+    expect((await memberOf(conv, bia)).unreadCount).toBe(1);
+    expect(gw.emitted).toHaveLength(0);
+
+    // quem recebeu não vê mais nome/foto de quem está em análise
+    expect((await inbox.list(bia, 'requests')).items).toEqual([]);
+    expect(await inbox.counts(bia)).toEqual({ unreadInbox: 0, requests: 0, unreadRequests: 0 });
+    await expectHttp(inbox.getConversation(bia, conv), 404);
+    expect(await inbox.lookupWith(bia, x)).toBeNull();
+    // quem está em análise continua vendo a própria conversa (principal, aguardando)
+    expect((await inbox.list(x, 'inbox')).items.map((c) => c.id)).toEqual([conv]);
+
+    // análise encerrada sem punição: volta tudo
+    await prisma.user.update({ where: { id: x }, data: { reviewHoldAt: null } });
+    expect((await inbox.list(bia, 'requests')).items.map((c) => c.id)).toEqual([conv]);
+    await expect(inbox.sendMessage(x, conv, 'agora vai')).resolves.toMatchObject({
+      body: 'agora vai',
+    });
+  });
+
+  it('em análise: RESPONDE quem pediu e continua conversa aceita', async () => {
+    const x = await newUser('X');
+    const bia = await newUser('Bia');
+    const caio = await newUser('Caio');
+    // Bia pediu antes da análise; X (agora em análise) responde → bounce, principal
+    const fromBia = (await inbox.createConversation(bia, x, 'oi X')).conversation.id;
+    await prisma.user.update({ where: { id: x }, data: { reviewHoldAt: new Date() } });
+    await expect(inbox.sendMessage(x, fromBia, 'oi Bia')).resolves.toMatchObject({
+      body: 'oi Bia',
+    });
+    // responder pelo POST /conversations (reuso da conversa do par) também vale
+    await expect(inbox.createConversation(x, bia, 'tudo bem?')).resolves.toMatchObject({
+      message: { body: 'tudo bem?' },
+    });
+    expect(
+      (await prisma.conversation.findUniqueOrThrow({ where: { id: fromBia } })).promotedReason,
+    ).toBe('bounce');
+
+    // conversa que X abriu ANTES da análise e já foi aceita: continua
+    await prisma.user.update({ where: { id: x }, data: { reviewHoldAt: null } });
+    const withCaio = (await inbox.createConversation(x, caio, 'oi Caio')).conversation.id;
+    await inbox.promoteManual(caio, withCaio);
+    await prisma.user.update({ where: { id: x }, data: { reviewHoldAt: new Date() } });
+    await expect(inbox.sendMessage(x, withCaio, 'e aí')).resolves.toMatchObject({ body: 'e aí' });
+    expect(await prisma.message.count({ where: { senderId: x } })).toBe(4);
   });
 });
 

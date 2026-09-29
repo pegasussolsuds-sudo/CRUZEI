@@ -1,9 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
-import { REPORT_REASONS, REPORT_SOURCES, type ReportContext, type ReportPayload, type ReportReason, type ReportResult } from '@cruzei/shared-types';
+import { REPORT_REASONS, type ReportPayload, type ReportReason, type ReportResult } from '@cruzei/shared-types';
 import { PrismaService } from '../../database/prisma.service';
 import { BlocksService } from '../blocks/blocks.service';
 import { ModerationService } from '../moderation/moderation.service';
+
+import { sanitizeContext, type ReportContextInput } from './report-context';
+
+export { sanitizeContext } from './report-context';
 
 /** ordem da fila: exploração infantil primeiro, depois menor de idade/ameaça, depois assédio/conteúdo impróprio */
 export const REPORT_PRIORITY: Record<ReportReason, number> = {
@@ -20,8 +24,6 @@ export const REPORT_PRIORITY: Record<ReportReason, number> = {
 
 /** pessoas diferentes denunciando em 7 dias → sai da descoberta até a revisão */
 export const HOLD_DISTINCT_REPORTERS = 3;
-const SOURCES = new Set<string>(REPORT_SOURCES);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class ReportsService {
@@ -31,7 +33,11 @@ export class ReportsService {
     private readonly moderation: ModerationService,
   ) {}
 
-  async create(reporterId: string, p: Omit<ReportPayload, 'userId'> & { targetId: string }): Promise<ReportResult> {
+  /** context aceita o formato de build antigo (matchId, origem 'matches'): grava sempre no formato de hoje */
+  async create(
+    reporterId: string,
+    p: Omit<ReportPayload, 'userId' | 'context'> & { targetId: string; context?: ReportContextInput },
+  ): Promise<ReportResult> {
     const { targetId } = p;
     if (reporterId === targetId) throw new BadRequestException('Não pode denunciar você mesmo');
     if (!REPORT_REASONS.includes(p.reason)) throw new BadRequestException('Motivo inválido');
@@ -87,14 +93,4 @@ export class ReportsService {
     }
     return { id, merged: Boolean(recent), blocked };
   }
-}
-
-/** só campos conhecidos e uuids válidos */
-export function sanitizeContext(c: ReportPayload['context'] | undefined): ReportContext | null {
-  if (!c || typeof c !== 'object' || !SOURCES.has(c.source)) return null;
-  const out: ReportContext = { source: c.source };
-  if (typeof c.conversationId === 'string' && UUID.test(c.conversationId)) out.conversationId = c.conversationId.toLowerCase();
-  if (typeof c.messageId === 'string' && UUID.test(c.messageId)) out.messageId = c.messageId;
-  if (typeof c.photoId === 'string' && UUID.test(c.photoId)) out.photoId = c.photoId;
-  return out;
 }

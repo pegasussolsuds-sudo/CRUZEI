@@ -18,7 +18,7 @@ import { useLocationStore } from '../../stores/location';
 import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
 import { useDiscoveryHints } from '../../hooks/useDiscoveryHints';
-import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
+import { iLiked, inboxKeys, likeStatusOf, likerIdOf } from '../../hooks/useInbox';
 import { useAuthStore } from '../../stores/auth';
 import { useBootStore } from '../../stores/boot';
 import { useMapPerfStore } from '../../stores/mapPerf';
@@ -785,8 +785,10 @@ export function MapScreen() {
       if (p?.fromUserId) send(cmd.emote(p.fromUserId, 'wave')); // quem acenou acena no mapa
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     };
-    const onLikeReceived = (p: { fromUserId?: string }) => {
-      if (p?.fromUserId) send(cmd.emote(p.fromUserId, 'like'));
+    // quem curtiu só vem pra Premium+ (ou na curtida mútua); sem id, nada no mapa entrega quem foi
+    const onLikeReceived = (p: unknown) => {
+      const from = likerIdOf(p);
+      if (from) send(cmd.emote(from, 'like'));
     };
     connectSocket()
       .then((socket) => {

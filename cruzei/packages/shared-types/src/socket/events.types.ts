@@ -19,8 +19,11 @@ export interface ServerToClientEvents {
   hotspot_alert: (data: { poi: Hotspot['poi']; userCount: number }) => void;
 
   // Curtidas
-  /** isMutual: essa curtida fechou o par (os dois se curtiram) */
-  like_received: (data: { fromUserId: string; isSuper: boolean; isMutual?: boolean }) => void;
+  /**
+   * isMutual: essa curtida fechou o par (os dois se curtiram). fromUserId só vem pra Premium+ vigente ou na curtida
+   * mútua; pros demais o evento é só o sinal, sem quem curtiu
+   */
+  like_received: (data: { fromUserId?: string; isSuper: boolean; isMutual?: boolean }) => void;
   wave_received: (data: { fromUserId: string; name: string; avatar: AvatarConfig | null; at: string }) => void;
 
   // Conversas (salas user:<id>, só o par; emitidos depois do commit)

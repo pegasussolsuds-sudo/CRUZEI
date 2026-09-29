@@ -1,6 +1,10 @@
 import { PrismaClient } from '@prisma/client';
 
-import { canJoinConversation } from '../../src/realtime/conversation-access';
+import {
+  canJoinConversation,
+  conversationAccess,
+  typingMuted,
+} from '../../src/realtime/conversation-access';
 
 import { assertTestDatabase } from './env';
 
@@ -122,5 +126,32 @@ describe('canJoinConversation (sala conv:<id> do gateway)', () => {
     });
     expect(await can(conv, ana)).toBe(true);
     expect(await can(conv, bia)).toBe(false);
+  });
+});
+
+describe('conversationAccess (papel + promoção: o "digitando" de quem recebeu a solicitação)', () => {
+  it('devolve o papel de cada um e a promoção; quem recebeu fica mudo só enquanto é solicitação', async () => {
+    const asAna = await conversationAccess(prisma, conv, ana);
+    const asBia = await conversationAccess(prisma, conv, bia);
+    expect(asAna).toEqual({ role: 'REQUESTER', promotedAt: null });
+    expect(asBia).toEqual({ role: 'RECIPIENT', promotedAt: null });
+    expect(typingMuted(asAna!)).toBe(false);
+    expect(typingMuted(asBia!)).toBe(true);
+    expect(await conversationAccess(prisma, conv, cris)).toBeNull();
+
+    const at = new Date('2026-09-29T12:00:00Z');
+    await prisma.conversation.update({
+      where: { id: conv },
+      data: { promotedAt: at, promotedReason: 'bounce' },
+    });
+    const promoted = await conversationAccess(prisma, conv, bia);
+    expect(promoted).toEqual({ role: 'RECIPIENT', promotedAt: at });
+    expect(typingMuted(promoted!)).toBe(false);
+  });
+
+  it('sem acesso (arquivada, Block, lixo) → null, igual ao canJoinConversation', async () => {
+    await prisma.block.create({ data: { blockerId: ana, blockedId: bia } });
+    expect(await conversationAccess(prisma, conv, bia)).toBeNull();
+    expect(await conversationAccess(prisma, 'nao-e-uuid', bia)).toBeNull();
   });
 });

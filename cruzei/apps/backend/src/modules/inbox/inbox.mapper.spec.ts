@@ -4,7 +4,9 @@ import {
   encodeCursor,
   factsFromRow,
   routeOf,
+  toChatMessage,
   toSummary,
+  type MessageRow,
   type SummaryRow,
 } from './inbox.mapper';
 
@@ -173,5 +175,38 @@ describe('ageOn', () => {
   it('aniversário hoje conta, amanhã não', () => {
     expect(ageOn(new Date('2000-09-29T00:00:00Z'), NOW)).toBe(26);
     expect(ageOn(new Date('2000-09-30T00:00:00Z'), NOW)).toBe(25);
+  });
+});
+
+describe('clientId só volta pra quem enviou', () => {
+  const ANA = '55555555-5555-4555-8555-555555555555';
+  const msg: MessageRow = {
+    id: '66666666-6666-4666-8666-666666666666',
+    conversationId: '11111111-1111-4111-8111-111111111111',
+    senderId: ANA,
+    body: 'oi',
+    mediaUrl: null,
+    messageType: 'text',
+    systemKind: null,
+    readAt: null,
+    createdAt: NOW,
+    clientId: 'c_1',
+  };
+
+  it('toChatMessage: com clientId só pro remetente; sem viewer ou pro outro, nem a chave', () => {
+    expect(toChatMessage(msg, ANA).clientId).toBe('c_1');
+    expect('clientId' in toChatMessage(msg)).toBe(false);
+    expect('clientId' in toChatMessage(msg, '22222222-2222-4222-8222-222222222222')).toBe(false);
+    expect('clientId' in toChatMessage({ ...msg, clientId: null }, ANA)).toBe(false);
+  });
+
+  it('toSummary: lastMessage minha traz clientId; a do peer não', () => {
+    const mine = toSummary(row({ lm_sender_id: ANA, lm_client_id: 'c_9' }), NOW);
+    expect(mine.lastMessage?.clientId).toBe('c_9');
+    const peers = toSummary(
+      row({ lm_sender_id: '22222222-2222-4222-8222-222222222222', lm_client_id: 'c_8' }),
+      NOW,
+    );
+    expect(peers.lastMessage && 'clientId' in peers.lastMessage).toBe(false);
   });
 });

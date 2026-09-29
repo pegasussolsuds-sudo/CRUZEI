@@ -11,11 +11,11 @@ import { PrismaService } from '../database/prisma.service';
 import { AccountStateService } from '../modules/account/account-state.service';
 import { RedisService } from '../redis/redis.service';
 
-import { ChatGateway } from './chat.gateway';
+import { ChatGateway, TYPING_RECHECK_MS } from './chat.gateway';
 
 // Gateway de verdade (Nest + socket.io numa porta aleatória) com clientes socket.io de verdade.
-// O banco é trocado por uma tabela de quem pode entrar em qual conversa; o SQL de canJoinConversation
-// é testado contra o Postgres em test/db/conversation-access.db-spec.ts.
+// O banco é trocado por uma tabela de quem pode entrar em qual conversa (com papel e promoção); o SQL de
+// conversationAccess é testado contra o Postgres em test/db/conversation-access.db-spec.ts.
 
 const SECRET = 'segredo-do-teste-do-gateway';
 const A = '0a000000-0000-4000-8000-00000000000a';
@@ -26,18 +26,27 @@ const BANNED = '0e000000-0000-4000-8000-00000000000e';
 const CONV_AB = 'ca000000-0000-4000-8000-0000000000ab';
 const CONV_AC = 'ca000000-0000-4000-8000-0000000000ac';
 
-// membro ativo sem bloqueio (o que a consulta devolveria)
-const allowed = new Set<string>();
+// membro ativo sem bloqueio → a linha que a consulta devolveria (papel + promoção).
+// CONV_AB: A pediu, B recebeu, ainda nas solicitações. CONV_AC: A pediu, C recebeu, já promovida.
+type Row = { role: 'REQUESTER' | 'RECIPIENT'; promoted_at: Date | null };
+const allowed = new Map<string, Row>();
 const resetAllowed = () => {
   allowed.clear();
-  [`${CONV_AB}:${A}`, `${CONV_AB}:${B}`, `${CONV_AC}:${A}`, `${CONV_AC}:${C}`].forEach((k) =>
-    allowed.add(k),
-  );
+  allowed.set(`${CONV_AB}:${A}`, { role: 'REQUESTER', promoted_at: null });
+  allowed.set(`${CONV_AB}:${B}`, { role: 'RECIPIENT', promoted_at: null });
+  allowed.set(`${CONV_AC}:${A}`, { role: 'REQUESTER', promoted_at: new Date(0) });
+  allowed.set(`${CONV_AC}:${C}`, { role: 'RECIPIENT', promoted_at: new Date(0) });
+};
+/** promove a conversa "no banco" (as duas linhas) */
+const promoteInDb = (conversationId: string) => {
+  for (const [k, row] of allowed)
+    if (k.startsWith(`${conversationId}:`)) row.promoted_at = new Date();
 };
 const prisma = {
-  $queryRaw: jest.fn(async (_sql: TemplateStringsArray, conversationId: string, userId: string) =>
-    allowed.has(`${conversationId}:${userId}`) ? [{ ok: 1 }] : [],
-  ),
+  $queryRaw: jest.fn(async (_sql: TemplateStringsArray, conversationId: string, userId: string) => {
+    const row = allowed.get(`${conversationId}:${userId}`);
+    return row ? [{ ...row }] : [];
+  }),
 };
 const accounts = {
   blockedReason: jest.fn(async (userId: string) =>
@@ -323,6 +332,109 @@ describe('ChatGateway — typing (sala conv:<id>)', () => {
     a.emit('typing', { conversationId: CONV_AB, isTyping: true });
     await processed(a);
     await flush(b);
+    expect(got).toEqual([]);
+  });
+});
+
+describe('ChatGateway — typing de quem RECEBEU a solicitação (não revela que abriu)', () => {
+  const typing = (s: ClientSocket, isTyping: boolean) =>
+    s.emit('typing', { conversationId: CONV_AB, isTyping });
+
+  it('solicitação: o "digitando" de quem recebeu não chega (true nem false); o de quem pediu chega', async () => {
+    const [a, b] = await Promise.all([connect(A), connect(B)]);
+    const got = [a, b].map(record);
+    await Promise.all([join(a, CONV_AB), join(b, CONV_AB)]);
+    expect(await inRoom(`conv:${CONV_AB}`)).toEqual([A, B]); // entra na sala: o bloqueio é só do "digitando"
+
+    typing(b, true);
+    typing(b, false);
+    typing(a, true);
+    await Promise.all([processed(a), processed(b)]);
+    await flush(a, b);
+
+    expect(got[0]).toEqual([]);
+    expect(got[1]).toEqual([
+      ['typing_indicator', { conversationId: CONV_AB, userId: A, isTyping: true }],
+    ]);
+    // dentro da janela nada de reconsulta: só os 2 joins foram ao banco
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('conversa já promovida: quem recebeu digita normal', async () => {
+    promoteInDb(CONV_AB);
+    const [a, b] = await Promise.all([connect(A), connect(B)]);
+    const got = record(a);
+    await Promise.all([join(a, CONV_AB), join(b, CONV_AB)]);
+    typing(b, true);
+    await processed(b);
+    await flush(a);
+    expect(got).toEqual([
+      ['typing_indicator', { conversationId: CONV_AB, userId: B, isTyping: true }],
+    ]);
+  });
+
+  it('promovida com o chat aberto: o conversation:promoted libera na hora, sem ir ao banco', async () => {
+    const [a, b] = await Promise.all([connect(A), connect(B)]);
+    const got = record(a);
+    await Promise.all([join(a, CONV_AB), join(b, CONV_AB)]);
+    typing(b, true);
+    await processed(b);
+
+    promoteInDb(CONV_AB);
+    gateway.emitToUsers([A, B], 'conversation:promoted', {
+      conversationId: CONV_AB,
+      reason: 'bounce',
+      promotedAt: new Date().toISOString(),
+    });
+    typing(b, true);
+    await processed(b);
+    await flush(a);
+
+    expect(got.filter(([ev]) => ev === 'typing_indicator')).toEqual([
+      ['typing_indicator', { conversationId: CONV_AB, userId: B, isTyping: true }],
+    ]);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2); // só os joins
+  });
+
+  it('promoção vista por outro processo: depois da janela reconsulta UMA vez e o próximo "digitando" passa', async () => {
+    const [a, b] = await Promise.all([connect(A), connect(B)]);
+    const got = record(a);
+    await Promise.all([join(a, CONV_AB), join(b, CONV_AB)]);
+    promoteInDb(CONV_AB); // sem o evento neste processo
+
+    typing(b, true); // ainda na janela: mudo, sem consulta
+    await processed(b);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+
+    const realNow = Date.now.bind(Date);
+    jest.spyOn(Date, 'now').mockImplementation(() => realNow() + TYPING_RECHECK_MS + 1);
+    typing(b, true); // janela vencida: descartado, dispara a reconsulta
+    typing(b, true); // mesma janela: não consulta de novo
+    await processed(b);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    typing(b, false); // já liberado
+    await processed(b);
+    await flush(a);
+
+    expect(got).toEqual([
+      ['typing_indicator', { conversationId: CONV_AB, userId: B, isTyping: false }],
+    ]);
+  });
+
+  it('reconsulta sem acesso (arquivou, bloqueio): sai da sala e continua sem "digitando"', async () => {
+    const [a, b] = await Promise.all([connect(A), connect(B)]);
+    const got = record(a);
+    await Promise.all([join(a, CONV_AB), join(b, CONV_AB)]);
+    allowed.delete(`${CONV_AB}:${B}`);
+
+    const realNow = Date.now.bind(Date);
+    jest.spyOn(Date, 'now').mockImplementation(() => realNow() + TYPING_RECHECK_MS + 1);
+    typing(b, true);
+    await processed(b);
+    expect(await inRoom(`conv:${CONV_AB}`)).toEqual([A]);
+    typing(b, true);
+    await processed(b);
+    await flush(a);
     expect(got).toEqual([]);
   });
 });

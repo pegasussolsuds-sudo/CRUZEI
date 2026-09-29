@@ -9,6 +9,7 @@ import {
   planReevaluation,
   route,
   ROUTING,
+  sendIntent,
   type ConversationFacts,
   type InboxFolder,
   type LikeStatus,
@@ -309,5 +310,20 @@ describe('conversa do começo ao fim', () => {
     c = { ...c, likeAB: true, likeBA: true };
     expect(planReevaluation(c)).toEqual(NOOP);
     expect(c.promotedAt).toBe(T1);
+  });
+});
+
+describe('sendIntent (o que a mensagem faz, pra regra de quem está em análise)', () => {
+  // prettier-ignore
+  it.each([
+    ['conversa acabou de ser criada',               'REQUESTER', f({}),                                                   true,  'start'  ],
+    ['REQUESTER, solicitação sem resposta',         'REQUESTER', f({ messageCount: 2, messagesFromA: 2 }),                false, 'request'],
+    ['REQUESTER, curtida de um lado só',            'REQUESTER', f({ messageCount: 1, messagesFromA: 1, likeAB: true }), false, 'request'],
+    ['REQUESTER, curtida mútua (principal)',        'REQUESTER', f({ messageCount: 1, messagesFromA: 1, likeAB: true, likeBA: true }), false, 'reply'],
+    ['REQUESTER, promovida (manual)',               'REQUESTER', f({ messageCount: 1, messagesFromA: 1, promotedAt: T0 }), false, 'reply'],
+    ['REQUESTER, o outro já respondeu',             'REQUESTER', f({ messageCount: 2, messagesFromA: 1, messagesFromB: 1 }), false, 'reply'],
+    ['RECIPIENT respondendo a solicitação',         'RECIPIENT', f({ messageCount: 1, messagesFromA: 1 }),                false, 'reply'],
+  ] as const)('%s → %s', (_label, role, fatos, opening, esperado) => {
+    expect(sendIntent(role, fatos, opening)).toBe(esperado);
   });
 });
