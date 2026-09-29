@@ -260,7 +260,7 @@ export function VibeOverlay({ visible, center, myLocation, paused = false, onClo
         : EMPTY_TEXT[filter];
 
   return (
-    <Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={onClose} onShow={() => inputRef.current?.focus()}>
+    <Modal visible transparent animationType="none" statusBarTranslucent navigationBarTranslucent onRequestClose={onClose} onShow={() => inputRef.current?.focus()}>
       <Animated.View style={[styles.root, panelStyle]}>
         {/* fundo sem canvas Skia (TextureView por abertura derrubava o HWUI do aparelho de teste): dois gradientes bastam */}
         <LinearGradient colors={['rgba(127,255,0,0.16)', 'rgba(255,20,147,0.08)', colors.black]} locations={[0, 0.45, 1]} style={StyleSheet.absoluteFill} pointerEvents="none" />

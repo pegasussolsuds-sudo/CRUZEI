@@ -275,6 +275,7 @@ export function MapScreen() {
   const [heading, setHeading] = useState<number | null>(null);
   const [containerH, setContainerH] = useState(0);
   const [sheetIndex, setSheetIndex] = useState(0);
+  const [peekH, setPeekH] = useState(0);
   const [canAskLocation, setCanAskLocation] = useState(true);
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -567,6 +568,11 @@ export function MapScreen() {
   const previewFraction = selectedUser ? USER_SHEET_FRACTION : selectedPoi ? PLACE_SHEET_FRACTION : null;
   const previewFractionRef = useRef<number | null>(null);
   previewFractionRef.current = previewFraction;
+  // altura da lista: recolhida = a que a sheet mediu (nunca corta título e filtros); aberta = 68%
+  const listSheetH = useCallback(
+    (i: number) => (i === 0 && peekH > 0 ? peekH : Math.round(containerH * SHEET_SNAP_FRACTIONS[i])),
+    [peekH, containerH],
+  );
 
   const sheetPosition = useSharedValue(0);
   const containerHRef = useRef(0);
@@ -589,8 +595,8 @@ export function MapScreen() {
   // fallback pro 1º layout (antes do gorhom animar), pra quando a altura muda e pra troca lista <-> preview
   useEffect(() => {
     if (containerH <= 0) return;
-    sendPadding(Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])));
-  }, [containerH, sheetIndex, previewFraction, sendPadding]);
+    sendPadding(previewFraction != null ? Math.round(containerH * previewFraction) : listSheetH(sheetIndex));
+  }, [containerH, sheetIndex, previewFraction, sendPadding, listSheetH]);
 
   // ---------- match: momento no mapa (doc §7) e depois a celebração ----------
   const pendingMatch = useRef<MatchInfo | null>(null);
@@ -1110,9 +1116,9 @@ export function MapScreen() {
     return users.filter((u) => u.poi?.id === poiFilter.id).map((u) => u.id);
   }, [poiFilter, users]);
 
-  const floatBottom = Math.round(containerH * (previewFraction ?? SHEET_SNAP_FRACTIONS[sheetIndex])) + spacing.sm;
+  const floatBottom = (previewFraction != null ? Math.round(containerH * previewFraction) : listSheetH(sheetIndex)) + spacing.sm;
   // logo e atribuição do Mapbox (obrigatórios pelos termos) logo acima da lista recolhida
-  const ornamentBottom = Math.round(containerH * SHEET_SNAP_FRACTIONS[0]) + 6;
+  const ornamentBottom = listSheetH(0) + 6;
   const peopleCount = users.length;
   const listLoading = Boolean(queryCenter) && (nearbyQuery.isPending || nearbyQuery.isPlaceholderData);
 
@@ -1232,6 +1238,8 @@ export function MapScreen() {
         radiusM={radiusM}
         isFree={isFree}
         isLoading={listLoading}
+        containerHeight={containerH}
+        onPeekHeight={setPeekH}
         poiFilter={poiFilter}
         poiFilterIds={poiFilterIds}
         onClearPoiFilter={clearPoiFilter}

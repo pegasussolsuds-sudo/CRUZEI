@@ -90,7 +90,7 @@ export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
     : undefined;
 
   return (
-    <Modal visible transparent statusBarTranslucent animationType="fade" onRequestClose={onClose}>
+    <Modal visible transparent statusBarTranslucent navigationBarTranslucent animationType="fade" onRequestClose={onClose}>
       {/* key = matchId → cada match novo remonta a celebração e roda todas as entradas do zero */}
       <Celebration
         key={match.matchId}

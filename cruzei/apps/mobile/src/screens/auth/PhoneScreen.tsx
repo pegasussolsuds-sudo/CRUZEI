@@ -4,6 +4,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -36,6 +37,15 @@ type Nav = NativeStackNavigationProp<RootStackParamList, 'Login'>;
 
 const BORDER_IDLE = 'rgba(250,250,250,0.14)';
 const FIELD_BG = 'rgba(250,250,250,0.06)';
+// "(11) 99999-9999" em JetBrains Mono: cada caractere avança 0,6em (+0,5 de letterSpacing).
+// A fonte encolhe até caber na largura do campo (em 360dp de tela, 22 corta o DDD).
+const PHONE_CHARS = 15;
+const INPUT_FS_MAX = 22;
+const INPUT_FS_MIN = 15;
+function inputFontSize(width: number): number {
+  const fs = Math.floor(((width - 4) / PHONE_CHARS - 0.5) / 0.6);
+  return Math.max(INPUT_FS_MIN, Math.min(INPUT_FS_MAX, fs));
+}
 
 /**
  * PhoneScreen (rota "Login"): o usuário digita o celular e recebe o código por SMS.
@@ -53,6 +63,7 @@ export function PhoneScreen() {
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inputFs, setInputFs] = useState(INPUT_FS_MAX);
 
   const valid = isValidPhoneBR(phone);
 
@@ -82,8 +93,8 @@ export function PhoneScreen() {
       borderColor: interpolateColor(focus.value, [0, 1], [BORDER_IDLE, colors.primary]),
       transform: [{ translateX: shake.value }],
     };
-    if (Platform.OS === 'android') base.elevation = 6 * focus.value;
-    else {
+    // no Android a elevation aparece por dentro do fundo translúcido (retângulo escuro); lá fica só a borda
+    if (Platform.OS === 'ios') {
       base.shadowOpacity = 0.55 * focus.value;
       base.shadowRadius = 6 + 14 * focus.value;
     }
@@ -154,111 +165,122 @@ export function PhoneScreen() {
 
       <SafeAreaView style={styles.safe}>
         <KeyboardAvoidingView behavior="padding" style={styles.kb}>
-          <FadeInView delay={60} fromX={-8} style={styles.topBar}>
-            <Pressable
-              onPress={() => nav.goBack()}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Voltar"
-              style={styles.back}
-            >
-              <Ionicons name="chevron-back" size={26} color={colors.white} />
-            </Pressable>
-          </FadeInView>
-
-          <View style={styles.content}>
-            <FadeInView delay={120} fromY={14}>
-              <Text style={styles.title}>Seu número.</Text>
-            </FadeInView>
-            <FadeInView delay={220} fromY={10}>
-              <Text style={styles.subtitle}>A gente manda um código, prometo que é rápido.</Text>
-            </FadeInView>
-
-            <View style={styles.row}>
-              <SlideInView from="left" distance={48} delay={320} springPreset="soft">
-                <View style={styles.chip} accessible accessibilityLabel="Brasil, código do país mais 55">
-                  <Text style={styles.flag}>🇧🇷</Text>
-                  <Text style={styles.chipText}>+55</Text>
-                </View>
-              </SlideInView>
-
-              <FadeInView delay={380} fromY={8} style={styles.fieldWrap}>
-                <Animated.View style={[styles.field, fieldStyle]}>
-                  <Animated.View style={[styles.inputWrap, textStyle]}>
-                    <TextInput
-                      ref={inputRef}
-                      value={phone}
-                      onChangeText={onChange}
-                      onFocus={() => {
-                        focus.value = withTiming(1, { duration: duration.base, easing: Easing.out(Easing.cubic) });
-                      }}
-                      onBlur={() => {
-                        focus.value = withTiming(0, { duration: duration.base });
-                      }}
-                      placeholder="(11) 99999-9999"
-                      placeholderTextColor="rgba(250,250,250,0.3)"
-                      keyboardType="phone-pad"
-                      textContentType="telephoneNumber"
-                      autoComplete="tel"
-                      autoFocus
-                      maxLength={15}
-                      returnKeyType="send"
-                      onSubmitEditing={onContinue}
-                      editable={!loading}
-                      selectionColor={colors.primary}
-                      style={styles.input}
-                      accessibilityLabel="Número de celular com DDD"
-                    />
-                  </Animated.View>
-                  <Animated.View style={[styles.check, checkStyle]} pointerEvents="none">
-                    <Ionicons name="checkmark-circle" size={26} color={colors.success} />
-                  </Animated.View>
-                </Animated.View>
-              </FadeInView>
-            </View>
-
-            <View style={styles.feedback}>
-              {error ? (
-                <FadeInView key={error} fromY={-4} durationMs={duration.fast} style={styles.errorRow}>
-                  <Ionicons name="alert-circle" size={16} color={colors.danger} />
-                  <Text style={styles.errorText} accessibilityLiveRegion="polite">
-                    {error}
-                  </Text>
-                </FadeInView>
-              ) : (
-                <FadeInView key="hint" fromY={-4} durationMs={duration.fast}>
-                  <Text style={styles.hint}>Só celular brasileiro, com DDD. Sem +55, a gente já cuida disso.</Text>
-                </FadeInView>
-              )}
-            </View>
-          </View>
-
-          <FadeInView delay={520} fromY={18} style={styles.footer}>
-            <Animated.View style={ctaStyle}>
-              <ScaleOnPress
-                onPress={onContinue}
-                glowColor={colors.primary}
-                disabled={loading}
+          {/* rola quando o teclado deixa pouca altura (no S23 sobram ~410dp); sem isso o rodapé cobre o campo */}
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            <FadeInView delay={60} fromX={-8} style={styles.topBar}>
+              <Pressable
+                onPress={() => nav.goBack()}
+                hitSlop={12}
                 accessibilityRole="button"
-                accessibilityLabel={loading ? 'Enviando código' : 'Continuar'}
-                accessibilityState={{ disabled: loading || !valid, busy: loading }}
-                style={styles.cta}
+                accessibilityLabel="Voltar"
+                style={styles.back}
               >
-                {loading ? (
-                  <>
-                    <ActivityIndicator color={colors.black} />
-                    <Text style={styles.ctaText}>Mandando o código…</Text>
-                  </>
+                <Ionicons name="chevron-back" size={26} color={colors.white} />
+              </Pressable>
+            </FadeInView>
+
+            <View style={styles.content}>
+              <FadeInView delay={120} fromY={14}>
+                <Text style={styles.title}>Seu número.</Text>
+              </FadeInView>
+              <FadeInView delay={220} fromY={10}>
+                <Text style={styles.subtitle}>A gente manda um código, prometo que é rápido.</Text>
+              </FadeInView>
+
+              <View style={styles.row}>
+                <SlideInView from="left" distance={48} delay={320} springPreset="soft">
+                  <View style={styles.chip} accessible accessibilityLabel="Brasil, código do país mais 55">
+                    <Text style={styles.flag}>🇧🇷</Text>
+                    <Text style={styles.chipText}>+55</Text>
+                  </View>
+                </SlideInView>
+
+                <FadeInView delay={380} fromY={8} style={styles.fieldWrap}>
+                  <Animated.View style={[styles.field, fieldStyle]}>
+                    <Animated.View
+                      style={[styles.inputWrap, textStyle]}
+                      onLayout={(e) => setInputFs(inputFontSize(e.nativeEvent.layout.width))}
+                    >
+                      <TextInput
+                        ref={inputRef}
+                        value={phone}
+                        onChangeText={onChange}
+                        onFocus={() => {
+                          focus.value = withTiming(1, { duration: duration.base, easing: Easing.out(Easing.cubic) });
+                        }}
+                        onBlur={() => {
+                          focus.value = withTiming(0, { duration: duration.base });
+                        }}
+                        placeholder="(11) 99999-9999"
+                        placeholderTextColor="rgba(250,250,250,0.3)"
+                        keyboardType="phone-pad"
+                        textContentType="telephoneNumber"
+                        autoComplete="tel"
+                        autoFocus
+                        maxLength={15}
+                        returnKeyType="send"
+                        onSubmitEditing={onContinue}
+                        editable={!loading}
+                        selectionColor={colors.primary}
+                        style={[styles.input, { fontSize: inputFs }]}
+                        accessibilityLabel="Número de celular com DDD"
+                      />
+                    </Animated.View>
+                    <Animated.View style={[styles.check, checkStyle]} pointerEvents="none">
+                      <Ionicons name="checkmark-circle" size={26} color={colors.success} />
+                    </Animated.View>
+                  </Animated.View>
+                </FadeInView>
+              </View>
+
+              <View style={styles.feedback}>
+                {error ? (
+                  <FadeInView key={error} fromY={-4} durationMs={duration.fast} style={styles.errorRow}>
+                    <Ionicons name="alert-circle" size={16} color={colors.danger} />
+                    <Text style={styles.errorText} accessibilityLiveRegion="polite">
+                      {error}
+                    </Text>
+                  </FadeInView>
                 ) : (
-                  <>
-                    <Text style={styles.ctaText}>Continuar</Text>
-                    <Ionicons name="arrow-forward" size={22} color={colors.black} />
-                  </>
+                  <FadeInView key="hint" fromY={-4} durationMs={duration.fast}>
+                    <Text style={styles.hint}>Só celular brasileiro, com DDD. Sem +55, a gente já cuida disso.</Text>
+                  </FadeInView>
                 )}
-              </ScaleOnPress>
-            </Animated.View>
-            <Text style={styles.legal}>Você recebe um SMS com 6 dígitos. Tarifas da sua operadora podem rolar.</Text>
-          </FadeInView>
+              </View>
+            </View>
+
+            <FadeInView delay={520} fromY={18} style={styles.footer}>
+              <Animated.View style={ctaStyle}>
+                <ScaleOnPress
+                  onPress={onContinue}
+                  glowColor={colors.primary}
+                  disabled={loading}
+                  accessibilityRole="button"
+                  accessibilityLabel={loading ? 'Enviando código' : 'Continuar'}
+                  accessibilityState={{ disabled: loading || !valid, busy: loading }}
+                  style={styles.cta}
+                >
+                  {loading ? (
+                    <>
+                      <ActivityIndicator color={colors.black} />
+                      <Text style={styles.ctaText}>Mandando o código…</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={styles.ctaText}>Continuar</Text>
+                      <Ionicons name="arrow-forward" size={22} color={colors.black} />
+                    </>
+                  )}
+                </ScaleOnPress>
+              </Animated.View>
+              <Text style={styles.legal}>Você recebe um SMS com 6 dígitos. Tarifas da sua operadora podem rolar.</Text>
+            </FadeInView>
+          </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
@@ -269,6 +291,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.black },
   safe: { flex: 1 },
   kb: { flex: 1 },
+  scroll: { flexGrow: 1 },
   topBar: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   back: {
     width: 44,
@@ -283,7 +306,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginTop: spacing.xxl },
   chip: {
     height: 64,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.sm,
     borderRadius: radius.lg,
     backgroundColor: FIELD_BG,
     borderWidth: 1,
@@ -303,8 +326,8 @@ const styles = StyleSheet.create({
     borderColor: BORDER_IDLE,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: spacing.lg,
-    paddingRight: spacing.md,
+    paddingLeft: spacing.md,
+    paddingRight: spacing.sm,
     shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 0 },
   },
@@ -317,7 +340,7 @@ const styles = StyleSheet.create({
     height: 60,
     letterSpacing: 0.5,
   },
-  check: { marginLeft: spacing.sm },
+  check: { marginLeft: spacing.xs },
   feedback: { minHeight: 44, marginTop: spacing.md },
   errorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs },
   errorText: { ...typography.body, color: colors.danger, flex: 1 },

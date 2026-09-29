@@ -44,7 +44,7 @@ export function TermsGate() {
   };
 
   return (
-    <Modal visible animationType="fade" onRequestClose={() => undefined} statusBarTranslucent>
+    <Modal visible animationType="fade" onRequestClose={() => undefined} statusBarTranslucent navigationBarTranslucent>
       <SafeAreaView style={styles.safe}>
         {/* fundo claro: ícones escuros na barra de status (o mapa por baixo pede claros) */}
         <StatusBar style="dark" />
@@ -71,7 +71,13 @@ export function TermsGate() {
         </Pressable>
       </SafeAreaView>
 
-      <Modal visible={reading !== null} animationType="slide" onRequestClose={() => setReading(null)}>
+      <Modal
+        visible={reading !== null}
+        animationType="slide"
+        onRequestClose={() => setReading(null)}
+        statusBarTranslucent
+        navigationBarTranslucent
+      >
         <SafeAreaView style={styles.readerSafe}>
           <View style={styles.readerHeader}>
             <Text style={styles.readerTitle}>{reading ? TITLES[reading] : ''}</Text>

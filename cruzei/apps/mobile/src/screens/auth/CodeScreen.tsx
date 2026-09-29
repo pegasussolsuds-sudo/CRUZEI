@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -210,140 +210,148 @@ export function CodeScreen() {
 
       <SafeAreaView style={styles.safe}>
         <KeyboardAvoidingView behavior="padding" style={styles.kb}>
-          <FadeInView delay={60} fromX={-8} style={styles.topBar}>
-            <Pressable
-              onPress={() => nav.goBack()}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Voltar e trocar número"
-              style={styles.back}
-              disabled={verified}
-            >
-              <Ionicons name="chevron-back" size={26} color={colors.white} />
-            </Pressable>
-          </FadeInView>
-
-          <View style={styles.content}>
-            <FadeInView delay={120} fromY={14}>
-              <Text style={styles.title}>
-                Chegou no <Text style={styles.titlePhone}>{maskPhoneBR(phone)}</Text>
-              </Text>
-            </FadeInView>
-            <FadeInView delay={220} fromY={10}>
-              <Text style={styles.subtitle}>
-                {verified ? 'Confirmado. Bora te encontrar 💚' : 'Digita os 6 dígitos do SMS. Se o celular preencher sozinho, melhor ainda.'}
-              </Text>
-            </FadeInView>
-
-            <View style={styles.otpArea}>
-              <Animated.View style={[styles.otpWrap, otpStyle]} pointerEvents={verified ? 'none' : 'auto'}>
-                <FadeInView delay={340} fromY={10}>
-                  <OtpInput
-                    value={code}
-                    onChange={onChangeCode}
-                    onComplete={onComplete}
-                    verified={verified}
-                    error={error}
-                    autoFocus
-                  />
-                </FadeInView>
-              </Animated.View>
-
-              {verified ? (
-                <Animated.View style={[styles.badge, badgeStyle]} pointerEvents="none" accessibilityLabel="Código verificado">
-                  <Canvas style={{ width: CHECK_SIZE, height: CHECK_SIZE }}>
-                    <Group>
-                      <Circle cx={CHECK_SIZE / 2} cy={CHECK_SIZE / 2} r={CHECK_SIZE / 2 - 2} color={colors.success} opacity={0.18} />
-                      <Circle cx={CHECK_SIZE / 2} cy={CHECK_SIZE / 2} r={CHECK_SIZE / 2 - 2} color={colors.success} style="stroke" strokeWidth={2.5} />
-                      <Path
-                        path={CHECK_PATH}
-                        color={colors.success}
-                        style="stroke"
-                        strokeWidth={7}
-                        strokeCap="round"
-                        strokeJoin="round"
-                        start={0}
-                        end={checkProgress}
-                      />
-                    </Group>
-                  </Canvas>
-                </Animated.View>
-              ) : null}
-            </View>
-
-            <View style={styles.feedback}>
-              {message ? (
-                <FadeInView key={message} fromY={-4} durationMs={duration.fast} style={styles.messageRow}>
-                  <Ionicons
-                    name={statusIsError ? 'alert-circle' : 'checkmark-circle'}
-                    size={16}
-                    color={statusIsError ? colors.danger : colors.success}
-                  />
-                  <Text style={[styles.messageText, statusIsError ? styles.messageError : styles.messageOk]} accessibilityLiveRegion="polite">
-                    {message}
-                  </Text>
-                </FadeInView>
-              ) : verifying ? (
-                <FadeInView key="verifying" fromY={-4} durationMs={duration.fast}>
-                  <Text style={styles.hint}>Conferindo…</Text>
-                </FadeInView>
-              ) : null}
-            </View>
-
-            {devCode && !verified ? (
-              <FadeInView delay={480} fromY={8}>
-                <ScaleOnPress
-                  onPress={() => setCode(devCode)}
-                  haptic={false}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Ambiente de desenvolvimento, código ${devCode}, toca pra preencher`}
-                  style={styles.devBox}
-                >
-                  <Ionicons name="construct-outline" size={16} color={colors.accent} />
-                  <Text style={styles.devText}>
-                    dev · código <Text style={styles.devCode}>{devCode}</Text> · toca pra preencher
-                  </Text>
-                </ScaleOnPress>
-              </FadeInView>
-            ) : null}
-          </View>
-
-          <FadeInView delay={520} fromY={18} style={styles.footer}>
-            {canResend ? (
-              <ScaleOnPress
-                onPress={onResend}
-                glowColor={colors.primary}
+          {/* rola quando o teclado deixa pouca altura (no S23 sobram ~410dp); sem isso o rodapé cobre o campo */}
+          <ScrollView
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            <FadeInView delay={60} fromX={-8} style={styles.topBar}>
+              <Pressable
+                onPress={() => nav.goBack()}
+                hitSlop={12}
                 accessibilityRole="button"
-                accessibilityLabel="Reenviar código"
-                style={styles.resendBtn}
+                accessibilityLabel="Voltar e trocar número"
+                style={styles.back}
+                disabled={verified}
               >
-                <Ionicons name="refresh" size={20} color={colors.black} />
-                <Text style={styles.resendBtnText}>Reenviar código</Text>
-              </ScaleOnPress>
-            ) : (
-              <View style={styles.timerBox} accessible accessibilityLabel={resending ? 'Reenviando código' : `Reenviar em ${seconds} segundos`}>
-                <View style={styles.timerRow}>
-                  <Text style={styles.timerLabel}>{resending ? 'Reenviando' : verified ? 'Tudo certo' : 'Reenviar em'}</Text>
-                  {!verified && !resending ? (
-                    <Animated.Text style={[styles.timerValue, tickStyle]}>{`${seconds}s`}</Animated.Text>
-                  ) : null}
-                </View>
-                <View style={styles.timerTrack}>
-                  <Animated.View style={[styles.timerFill, timerBarStyle]} />
-                </View>
-              </View>
-            )}
+                <Ionicons name="chevron-back" size={26} color={colors.white} />
+              </Pressable>
+            </FadeInView>
 
-            <Pressable
-              onPress={() => nav.goBack()}
-              disabled={verified}
-              accessibilityRole="button"
-              accessibilityLabel="Trocar número"
-              style={styles.swap}
-            >
-              <Text style={[styles.swapText, verified && styles.swapDisabled]}>Trocar número</Text>
-            </Pressable>
-          </FadeInView>
+            <View style={styles.content}>
+              <FadeInView delay={120} fromY={14}>
+                <Text style={styles.title}>
+                  Chegou no <Text style={styles.titlePhone}>{maskPhoneBR(phone)}</Text>
+                </Text>
+              </FadeInView>
+              <FadeInView delay={220} fromY={10}>
+                <Text style={styles.subtitle}>
+                  {verified ? 'Confirmado. Bora te encontrar 💚' : 'Digita os 6 dígitos do SMS. Se o celular preencher sozinho, melhor ainda.'}
+                </Text>
+              </FadeInView>
+
+              <View style={styles.otpArea}>
+                <Animated.View style={[styles.otpWrap, otpStyle]} pointerEvents={verified ? 'none' : 'auto'}>
+                  <FadeInView delay={340} fromY={10}>
+                    <OtpInput
+                      value={code}
+                      onChange={onChangeCode}
+                      onComplete={onComplete}
+                      verified={verified}
+                      error={error}
+                      autoFocus
+                    />
+                  </FadeInView>
+                </Animated.View>
+
+                {verified ? (
+                  <Animated.View style={[styles.badge, badgeStyle]} pointerEvents="none" accessibilityLabel="Código verificado">
+                    <Canvas style={{ width: CHECK_SIZE, height: CHECK_SIZE }}>
+                      <Group>
+                        <Circle cx={CHECK_SIZE / 2} cy={CHECK_SIZE / 2} r={CHECK_SIZE / 2 - 2} color={colors.success} opacity={0.18} />
+                        <Circle cx={CHECK_SIZE / 2} cy={CHECK_SIZE / 2} r={CHECK_SIZE / 2 - 2} color={colors.success} style="stroke" strokeWidth={2.5} />
+                        <Path
+                          path={CHECK_PATH}
+                          color={colors.success}
+                          style="stroke"
+                          strokeWidth={7}
+                          strokeCap="round"
+                          strokeJoin="round"
+                          start={0}
+                          end={checkProgress}
+                        />
+                      </Group>
+                    </Canvas>
+                  </Animated.View>
+                ) : null}
+              </View>
+
+              <View style={styles.feedback}>
+                {message ? (
+                  <FadeInView key={message} fromY={-4} durationMs={duration.fast} style={styles.messageRow}>
+                    <Ionicons
+                      name={statusIsError ? 'alert-circle' : 'checkmark-circle'}
+                      size={16}
+                      color={statusIsError ? colors.danger : colors.success}
+                    />
+                    <Text style={[styles.messageText, statusIsError ? styles.messageError : styles.messageOk]} accessibilityLiveRegion="polite">
+                      {message}
+                    </Text>
+                  </FadeInView>
+                ) : verifying ? (
+                  <FadeInView key="verifying" fromY={-4} durationMs={duration.fast}>
+                    <Text style={styles.hint}>Conferindo…</Text>
+                  </FadeInView>
+                ) : null}
+              </View>
+
+              {devCode && !verified ? (
+                <FadeInView delay={480} fromY={8}>
+                  <ScaleOnPress
+                    onPress={() => setCode(devCode)}
+                    haptic={false}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Ambiente de desenvolvimento, código ${devCode}, toca pra preencher`}
+                    style={styles.devBox}
+                  >
+                    <Ionicons name="construct-outline" size={16} color={colors.accent} />
+                    <Text style={styles.devText}>
+                      dev · código <Text style={styles.devCode}>{devCode}</Text> · toca pra preencher
+                    </Text>
+                  </ScaleOnPress>
+                </FadeInView>
+              ) : null}
+            </View>
+
+            <FadeInView delay={520} fromY={18} style={styles.footer}>
+              {canResend ? (
+                <ScaleOnPress
+                  onPress={onResend}
+                  glowColor={colors.primary}
+                  accessibilityRole="button"
+                  accessibilityLabel="Reenviar código"
+                  style={styles.resendBtn}
+                >
+                  <Ionicons name="refresh" size={20} color={colors.black} />
+                  <Text style={styles.resendBtnText}>Reenviar código</Text>
+                </ScaleOnPress>
+              ) : (
+                <View style={styles.timerBox} accessible accessibilityLabel={resending ? 'Reenviando código' : `Reenviar em ${seconds} segundos`}>
+                  <View style={styles.timerRow}>
+                    <Text style={styles.timerLabel}>{resending ? 'Reenviando' : verified ? 'Tudo certo' : 'Reenviar em'}</Text>
+                    {!verified && !resending ? (
+                      <Animated.Text style={[styles.timerValue, tickStyle]}>{`${seconds}s`}</Animated.Text>
+                    ) : null}
+                  </View>
+                  <View style={styles.timerTrack}>
+                    <Animated.View style={[styles.timerFill, timerBarStyle]} />
+                  </View>
+                </View>
+              )}
+
+              <Pressable
+                onPress={() => nav.goBack()}
+                disabled={verified}
+                accessibilityRole="button"
+                accessibilityLabel="Trocar número"
+                style={styles.swap}
+              >
+                <Text style={[styles.swapText, verified && styles.swapDisabled]}>Trocar número</Text>
+              </Pressable>
+            </FadeInView>
+          </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
@@ -354,6 +362,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.black },
   safe: { flex: 1 },
   kb: { flex: 1 },
+  scroll: { flexGrow: 1 },
   topBar: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   back: {
     width: 44,

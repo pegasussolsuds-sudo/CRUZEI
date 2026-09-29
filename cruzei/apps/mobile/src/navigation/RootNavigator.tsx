@@ -23,6 +23,7 @@ import { ModerationUserScreen } from '../screens/moderation/ModerationUserScreen
 import { AccountBlockedScreen } from '../components/safety/AccountBlockedScreen';
 import { TermsGate } from '../components/legal/TermsGate';
 import { useAccountBlockStore } from '../stores/accountBlock';
+import { useMapTheme } from '../hooks/useMapTheme';
 import { MainTabs, type MainTabParamList } from './MainTabs';
 import { colors } from '@cruzei/ui-mobile';
 
@@ -67,9 +68,13 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   const navRef = useNavigationContainerRef<RootStackParamList>();
   const [routeName, setRouteName] = useState<string | undefined>();
   const syncRoute = useCallback(() => setRouteName(navRef.getCurrentRoute()?.name), [navRef]);
+  const { theme: mapTheme } = useMapTheme();
 
   // única StatusBar do app logado: segue a rota focada (a splash escura por cima também pede ícones claros)
-  const barStyle = splashing || isLoading || !isAuthenticated || (routeName && DARK_ROUTES.has(routeName)) ? 'light' : 'dark';
+  // o mapa de noite e no entardecer é escuro (de dia é claro e pede ícones escuros)
+  const darkMap = routeName === 'Map' && mapTheme !== 'day';
+  const barStyle =
+    splashing || isLoading || !isAuthenticated || darkMap || (routeName && DARK_ROUTES.has(routeName)) ? 'light' : 'dark';
 
   // conta suspensa/banida: nada do app, só o aviso com o motivo e como contestar
   if (blocked) return <AccountBlockedScreen blocked={blocked} />;

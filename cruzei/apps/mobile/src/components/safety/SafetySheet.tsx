@@ -153,7 +153,7 @@ export function SafetySheet({ visible, onClose, target, matchId, source, onDone 
   const reasonLabel = REASON_OPTIONS.find((o) => o.reason === reason)?.label ?? '';
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={close} statusBarTranslucent>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={close} statusBarTranslucent navigationBarTranslucent>
       <Pressable style={styles.backdrop} onPress={close} accessibilityLabel="Fechar" />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.anchor} pointerEvents="box-none">
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>

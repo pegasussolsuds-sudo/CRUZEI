@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Linking } from 'react-native';
 import { create } from 'zustand';
 import type { MapTheme } from '../screens/map/bridge';
 
@@ -27,6 +27,19 @@ export const useMapThemeOverride = create<MapThemeOverrideState>((set) => ({
     set({ override: theme });
   },
 }));
+
+// Só em desenvolvimento: força o tema pra testar sem mexer no relógio do aparelho.
+//   adb shell am start -a android.intent.action.VIEW -d "metch://dev/theme/day" app.metch   (day | dusk | night | auto)
+if (__DEV__) {
+  const applyDevTheme = (url: string | null) => {
+    const m = url ? /^metch:\/\/dev\/theme\/(day|dusk|night|auto)\b/.exec(url) : null;
+    if (m) useMapThemeOverride.getState().setOverride(m[1] === 'auto' ? null : (m[1] as MapTheme));
+  };
+  Linking.addEventListener('url', (e) => applyDevTheme(e.url));
+  Linking.getInitialURL()
+    .then(applyDevTheme)
+    .catch(() => {});
+}
 
 export function useMapTheme(): {
   theme: MapTheme;

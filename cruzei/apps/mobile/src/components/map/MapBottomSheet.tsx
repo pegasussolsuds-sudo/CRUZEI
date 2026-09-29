@@ -1,5 +1,5 @@
-import React, { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 import BottomSheet, { BottomSheetFlatList, BottomSheetFooter, type BottomSheetFooterProps } from '@gorhom/bottom-sheet';
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
@@ -15,6 +15,15 @@ import { PersonRow } from './PersonRow';
 
 export const SHEET_SNAP_POINTS: string[] = ['22%', '68%'];
 export const SHEET_SNAP_FRACTIONS = [0.22, 0.68] as const;
+const HANDLE_H = 24; // = styles.handleWrap.height
+
+/**
+ * Altura da lista recolhida: 22% da tela, mas nunca menos que alça + título + filtros (+ CTA Premium).
+ * Em tela baixa (S23: ~670dp de mapa) os 22% davam 147dp e o CTA cobria os filtros.
+ */
+export function sheetPeekHeight(containerH: number, contentH: number): number {
+  return Math.max(Math.round(containerH * SHEET_SNAP_FRACTIONS[0]), Math.ceil(contentH));
+}
 // "Perto" = faixas bem perto + perto (≤ 250 m); o app nunca vê metros de outra pessoa
 const NEAR_RANK_MAX = 1;
 
@@ -46,6 +55,10 @@ export interface MapBottomSheetProps {
   radiusM: number;
   isFree: boolean;
   isLoading: boolean;
+  /** altura da área do mapa (a mesma base dos percentuais dos snap points) */
+  containerHeight: number;
+  /** altura real da lista recolhida em px, depois de medir o conteúdo (0 = ainda não mediu) */
+  onPeekHeight?: (px: number) => void;
   /** filtro por POI (tap num hotspot) */
   poiFilter: PoiFilter | null;
   /** ids de quem conta como 'nesse lugar' (check-in ou a poucos metros) — o MapScreen calcula */
@@ -75,12 +88,21 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
 ];
 
 export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
-  { users, bandById, hiddenCount = 0, radiusM, isFree, isLoading, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
+  { users, bandById, hiddenCount = 0, radiusM, isFree, isLoading, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
   const nav = useNavigation<NavigationProp<MainTabParamList>>();
   const [filter, setFilter] = useState<SheetFilter>('all');
+  const [headerH, setHeaderH] = useState(0);
+  const [footerH, setFooterH] = useState(0);
+  const onHeaderLayout = useCallback((e: LayoutChangeEvent) => setHeaderH(Math.round(e.nativeEvent.layout.height)), []);
+  const onFooterLayout = useCallback((e: LayoutChangeEvent) => setFooterH(Math.round(e.nativeEvent.layout.height)), []);
+  const peekH = containerHeight > 0 && headerH > 0 ? sheetPeekHeight(containerHeight, HANDLE_H + headerH + (isFree ? footerH : 0)) : 0;
+  const snapPoints = useMemo(() => (peekH > 0 ? [peekH, SHEET_SNAP_POINTS[1]] : SHEET_SNAP_POINTS), [peekH]);
+  useEffect(() => {
+    onPeekHeight?.(peekH);
+  }, [peekH, onPeekHeight]);
 
   useImperativeHandle(
     ref,
@@ -127,7 +149,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
   const renderFooter = useCallback(
     (props: BottomSheetFooterProps) => (
       <BottomSheetFooter {...props} bottomInset={0}>
-        <View style={styles.footer}>
+        <View style={styles.footer} onLayout={onFooterLayout}>
           <ScaleOnPress
             onPress={goPremium}
             accessibilityRole="button"
@@ -144,11 +166,11 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
         </View>
       </BottomSheetFooter>
     ),
-    [goPremium],
+    [goPremium, onFooterLayout],
   );
 
   const header = (
-    <View style={styles.header}>
+    <View style={styles.header} onLayout={onHeaderLayout}>
       <View style={styles.titleRow}>
         <Text style={styles.title} numberOfLines={1} accessibilityRole="header">
           👥 {title}
@@ -212,7 +234,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     <BottomSheet
       ref={sheetRef}
       index={0}
-      snapPoints={SHEET_SNAP_POINTS}
+      snapPoints={snapPoints}
       onChange={onChange}
       animatedPosition={animatedPosition}
       handleStyle={styles.handleWrap}
