@@ -12,11 +12,19 @@ import { RedisService } from '../../redis/redis.service';
 import type { InboxEvent } from '../inbox/inbox.events';
 import { InboxService } from '../inbox/inbox.service';
 import { likeStatus } from '../inbox/routing';
+import { MESSAGING_GATE_SELECT, messagingLocked } from '../inbox/visibility';
 import { seesLikesReceived } from '../location/peer-social';
 
 const DAILY_LIKE_LIMIT = 200;
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 const BLOCKED_MESSAGE = 'Não é possível interagir com esse usuário';
+
+/** invisível sem Premium não curte (a mesma regra e o mesmo erro das mensagens: o app mostra o convite) */
+const likeLockedError = () =>
+  new ForbiddenException({
+    error: 'anonymous_requires_premium',
+    message: 'No modo invisível, curtir é do Premium. Fica visível pra curtir.',
+  });
 
 /** Block entre os dois, em qualquer sentido */
 const pairBlocked = (a: string, b: string) => ({
@@ -29,6 +37,7 @@ const pairBlocked = (a: string, b: string) => ({
 /** resultado da transação da curtida: bloqueado (nada gravado) ou a curtida (nova ou já existente) */
 type LikeTxOut =
   | { blocked: true }
+  | { blocked: false; locked: true }
   | {
       blocked: false;
       likeId: bigint;
@@ -52,6 +61,8 @@ export class LikesService {
 
   async like(likerId: string, likedId: string, isSuper = false): Promise<LikeResult> {
     if (likerId === likedId) throw new BadRequestException('Não dá pra curtir você mesmo');
+    // quem curte, antes de tudo (nem o toque repetido passa, nem gasta cota)
+    await this.assertCanLike(this.prisma, likerId);
 
     const target = await this.prisma.user.findUnique({
       where: { id: likedId },
@@ -104,6 +115,12 @@ export class LikesService {
         select: { id: true },
       });
       if (blockedNow) return { blocked: true };
+      // ficou invisível (ou o Premium venceu) enquanto esperava a trava
+      const liker = await tx.user.findUnique({
+        where: { id: likerId },
+        select: MESSAGING_GATE_SELECT,
+      });
+      if (messagingLocked(liker)) return { blocked: false, locked: true };
       const again = await tx.like.findUnique({
         where: { likerId_likedId: { likerId, likedId } },
         select: { id: true },
@@ -144,6 +161,10 @@ export class LikesService {
       // bloqueio venceu a corrida: nada gravado; a cota volta
       await this.refundQuota(likerId);
       throw new BadRequestException(BLOCKED_MESSAGE);
+    }
+    if ('locked' in out) {
+      await this.refundQuota(likerId);
+      throw likeLockedError();
     }
     if (!out.fresh) {
       // a outra requisição (toque duplo) gravou enquanto esta esperava a trava: devolve a cota e o estado atual
@@ -197,6 +218,15 @@ export class LikesService {
   }
 
   /** devolve a curtida contada no limite diário (a curtida não foi gravada por esta requisição) */
+  /** invisível sem Premium não curte ninguém (curtida e super curtida) */
+  private async assertCanLike(db: Pick<PrismaService, 'user'>, likerId: string): Promise<void> {
+    const liker = await db.user.findUnique({
+      where: { id: likerId },
+      select: MESSAGING_GATE_SELECT,
+    });
+    if (messagingLocked(liker)) throw likeLockedError();
+  }
+
   private async refundQuota(likerId: string): Promise<void> {
     await this.redis.client.decr(`rate:${likerId}:like`).catch(() => undefined);
   }

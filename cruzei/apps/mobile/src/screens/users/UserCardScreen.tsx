@@ -32,6 +32,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Canvas, Group, Path, Skia, type SkPath } from '@shopify/react-native-skia';
 
+import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } from '../../hooks/useMessagingLock';
 import { api, toApiError } from '../../services/api';
 import { FadeInView, Glow, ScaleOnPress, SlideInView } from '../../components/animated';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
@@ -142,6 +143,10 @@ export function UserCardScreen() {
     retry: (count, err) => toApiError(err).status !== 404 && count < 2,
   });
 
+  // invisível sem Premium não curte: explica e oferece ficar visível ou o Premium (o servidor também barra)
+  const likeLocked = useMessagingLocked();
+  const askInvisibleLike = useInvisibleLikePrompt();
+
   const likeMutation = useMutation({
     mutationFn: async (isSuper: boolean) =>
       (await api.post<LikeResult>(isSuper ? '/likes/super' : '/likes', { userId })).data,
@@ -198,6 +203,11 @@ export function UserCardScreen() {
   const onLike = useCallback(
     async (isSuper: boolean) => {
       if (!user || likeMutation.isPending || sent) return;
+      // invisível sem Premium não curte: explica antes do coração voar
+      if (likeLocked) {
+        askInvisibleLike();
+        return;
+      }
       setActionError(null);
       fireBurst(isSuper ? 'star' : 'heart');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -220,10 +230,11 @@ export function UserCardScreen() {
           });
         }
       } catch (err) {
-        setActionError(toApiError(err).message);
+        if (isMessagingLockedError(err)) askInvisibleLike(true);
+        else setActionError(toApiError(err).message);
       }
     },
-    [conversationId, fireBurst, likeMutation, mainPhoto, qc, sent, user],
+    [conversationId, fireBurst, likeMutation, mainPhoto, qc, sent, user, likeLocked, askInvisibleLike],
   );
 
   const onPass = useCallback(() => {

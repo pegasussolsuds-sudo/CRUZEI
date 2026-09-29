@@ -74,7 +74,7 @@ type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const PERKS: { icon: IoniconName; label: string; hint: string }[] = [
   // só o que existe de verdade no Premium (nada de raio maior: descoberta é 350 m pra todo mundo)
-  { icon: 'eye-off-outline', label: 'Modo anônimo ilimitado', hint: 'No grátis ele vale 24 h por vez' },
+  { icon: 'eye-off-outline', label: 'Invisível sem limite', hint: 'Curte e conversa sem aparecer no mapa (no grátis: 24 h, sem curtir nem conversar)' },
   { icon: 'color-palette-outline', label: 'Itens exclusivos de avatar', hint: 'Auras, cores neon e roupas só pra Premium' },
   { icon: 'locate-outline', label: 'Destaque no mapa', hint: 'Anel e aura dourados no seu avatar' },
 ];

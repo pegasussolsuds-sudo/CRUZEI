@@ -43,7 +43,7 @@ export function useVisibility() {
     Alert.alert(
       'Quer ver sem aparecer?',
       isFree
-        ? 'No modo invisível você vê todo mundo, mas ninguém te vê no mapa nem te curte. No plano grátis vale por 24 h e as mensagens ficam pausadas: você não manda nem recebe até voltar a ficar visível (nada se perde). No Premium é sem limite e dá pra conversar invisível.'
+        ? 'No modo invisível você vê todo mundo, mas ninguém te vê no mapa nem te curte. No plano grátis vale por 24 h e ficam pausados curtir e as mensagens: você não curte, não manda nem recebe mensagem até voltar a ficar visível (nada se perde). No Premium é sem limite e dá pra curtir e conversar invisível.'
         : 'No modo invisível você vê todo mundo, mas ninguém te vê no mapa nem te curte. Suas conversas continuam normais.',
       [
         { text: 'Cancelar', style: 'cancel' },

@@ -10,6 +10,7 @@ import { runOnJS, useAnimatedReaction, useSharedValue } from 'react-native-reani
 import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 
+import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } from '../../hooks/useMessagingLock';
 import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
 import { useMyLocation } from '../../hooks/useMyLocation';
@@ -112,6 +113,9 @@ export function MapScreen() {
   // tracking: posição acompanhada + presença renovada só enquanto o mapa está em foco e o app em primeiro plano
   const { lat, lng, status: locStatus, locate, refresh: refreshLocation } = useMyLocation(true, active);
   const { isAnonymous, askToggle: askToggleVisibility, isPending: togglePending } = useVisibility();
+  // invisível sem Premium não curte: explica e oferece ficar visível ou o Premium (o servidor também barra)
+  const likeLocked = useMessagingLocked();
+  const askInvisibleLike = useInvisibleLikePrompt();
   const { theme } = useMapTheme();
   const boostQuery = useActiveBoost(Boolean(me), active);
   const boost = boostQuery.data ?? null;
@@ -823,6 +827,10 @@ export function MapScreen() {
         showToast(`Você já curtiu ${u.name} 💚`);
         return;
       }
+      if (likeLocked) {
+        askInvisibleLike();
+        return;
+      }
       if (likingRef.current.has(u.id)) return; // toque duplo: um POST só
       likingRef.current.add(u.id);
       try {
@@ -849,12 +857,13 @@ export function MapScreen() {
           showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
         }
       } catch (err) {
-        showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
+        if (isMessagingLockedError(err)) askInvisibleLike(true);
+        else showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
       } finally {
         likingRef.current.delete(u.id);
       }
     },
-    [qc, send, showToast, bandById, playMoment, likedIds, localMutual],
+    [qc, send, showToast, bandById, playMoment, likedIds, localMutual, likeLocked, askInvisibleLike],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);

@@ -1206,7 +1206,7 @@ describe('modo invisível: mandar e receber mensagens é do Premium', () => {
     expect(await prisma.conversation.count()).toBe(0);
   });
 
-  it('curtida mútua com quem está invisível grátis: promove e grava "Vocês se curtiram", mas só o lado visível recebe os eventos', async () => {
+  it('invisível grátis NÃO curte nem super curte: 403, nada gravado, cota intacta, nenhum evento; visível de novo curte', async () => {
     const ana = await newUser('Ana');
     const bia = await newUser('Bia');
     const conv = (await inbox.createConversation(ana, bia, 'oi')).conversation.id;
@@ -1214,35 +1214,29 @@ describe('modo invisível: mandar e receber mensagens é do Premium', () => {
     await anonFree(bia);
     gw.reset();
 
-    const r = await likes.like(bia, ana); // quem está invisível ainda curte quem está visível
+    await expectHttp(likes.like(bia, ana), 403, LOCKED);
+    await expectHttp(likes.like(bia, ana, true), 403, LOCKED);
+    expect(await prisma.like.count({ where: { likerId: bia } })).toBe(0);
+    expect(await redis.client.get(`rate:${bia}:like`)).toBeNull();
+    expect(gw.emitted).toHaveLength(0);
+    expect(await systemMessages(conv)).toHaveLength(0);
+
+    // Premium vencido também trava
+    await prisma.user.update({
+      where: { id: bia },
+      data: { premiumTier: 'premium', premiumExpiresAt: new Date(Date.now() - 1_000) },
+    });
+    await expectHttp(likes.like(bia, ana), 403, LOCKED);
+
+    // visível de novo: a curtida fecha o par e promove a conversa, com os eventos pros dois
+    await toVisible(bia);
+    const r = await likes.like(bia, ana);
     expect(r).toMatchObject({
       likeStatus: 'MUTUAL',
       isMutual: true,
       promotedConversationIds: [conv],
     });
-    expect(of('conversation:promoted').map((e) => e.to)).toEqual([[ana]]);
-    expect(of('message:new').map((e) => e.to)).toEqual([[ana]]);
-    expect(of('like_received')).toEqual([
-      {
-        to: [ana],
-        event: 'like_received',
-        payload: { fromUserId: bia, isSuper: false, isMutual: true },
-      },
-    ]);
-    expect(emittedTo(bia)).toEqual([]);
-    expect(await systemMessages(conv)).toHaveLength(1);
-
-    await toVisible(bia);
-    const biaInbox = await inbox.list(bia, 'inbox');
-    expect(biaInbox.items[0]).toMatchObject({
-      id: conv,
-      likeStatus: 'MUTUAL',
-      promotedReason: 'mutual',
-    });
-    expect(biaInbox.items[0].lastMessage).toMatchObject({
-      systemKind: 'mutual_like',
-      body: MUTUAL_LIKE_TEXT,
-    });
+    expect(of('conversation:promoted').map((e) => sorted(e.to))).toEqual([sorted([ana, bia])]);
   });
 
   it('curtida mútua com Premium invisível: os dois recebem tudo, como sempre', async () => {

@@ -3,7 +3,7 @@
 // que um id existe, nem que a pessoa bloqueou, pausou, está anônima ou foi banida).
 // Conversa que JÁ existe não passa por aqui: o chat nunca é bloqueado (só Block, conta apagada ou fora de 'active').
 // Quem ENVIA também é conferido (senderDenied), com a linha fresca do banco: o guard do JWT lê um cache de estado.
-// Invisível sem Premium (messagingLocked) não manda nem recebe mensagens — regra de plano, vale pros dois lados.
+// Invisível sem Premium (messagingLocked) não manda nem recebe mensagens e não curte — regra de plano.
 import type { SendIntent } from './routing';
 
 /** campos do alvo que decidem se o cartão aparece */
@@ -102,8 +102,10 @@ export function premiumActive(
 }
 
 /**
- * Mandar e receber mensagens no modo invisível é do Premium (decisão do dono, 29/09/2026). Invisível sem Premium vigente:
+ * Mandar e receber mensagens e curtir no modo invisível é do Premium (decisões do dono, 29/09/2026). Invisível sem
+ * Premium vigente:
  * - não manda, não abre conversa, não aceita solicitação, não marca lida (403 anonymous_requires_premium)
+ * - não curte nem super curte ninguém (LikesService, mesmo 403)
  * - não recebe: a mensagem do outro é gravada normalmente (quem envia não fica sabendo de nada — o envio dele passa
  *   igual), mas nenhum evento chega por socket e as listas ficam fechadas; tudo aparece quando a pessoa volta a ficar
  *   visível ou assina

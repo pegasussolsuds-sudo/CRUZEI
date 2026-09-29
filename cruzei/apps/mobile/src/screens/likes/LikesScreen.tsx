@@ -21,6 +21,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
+import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } from '../../hooks/useMessagingLock';
 import { api, toApiError } from '../../services/api';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
@@ -93,6 +94,10 @@ export function LikesScreen() {
   const hiddenReason = nearbyQuery.data?.me?.hiddenReason ?? null;
   const hidden = hiddenReason != null && hiddenReason !== 'no_presence';
 
+  // invisível sem Premium não curte: o cartão volta pro lugar e a explicação aparece (o servidor também barra)
+  const likeLocked = useMessagingLocked();
+  const askInvisibleLike = useInvisibleLikePrompt();
+
   const likeMutation = useMutation({
     mutationFn: async ({ userId, isSuper }: { userId: string; isSuper: boolean }) =>
       (await api.post<LikeResult>(isSuper ? '/likes/super' : '/likes', { userId })).data,
@@ -106,6 +111,10 @@ export function LikesScreen() {
       if (!card) return;
       setError(null);
       progress.value = 0;
+      if (likeLocked && action !== 'pass') {
+        askInvisibleLike();
+        return;
+      }
       setActed((s) => new Set(s).add(card.id));
       try {
         if (action === 'pass') {
@@ -126,10 +135,18 @@ export function LikesScreen() {
           qc.invalidateQueries({ queryKey: inboxKeys.all });
         }
       } catch (err) {
-        setError(toApiError(err).message);
+        if (isMessagingLockedError(err)) {
+          // o cartão já tinha saído: volta pro deck
+          setActed((s) => {
+            const next = new Set(s);
+            next.delete(card.id);
+            return next;
+          });
+          askInvisibleLike(true);
+        } else setError(toApiError(err).message);
       }
     },
-    [likeMutation, progress, qc, queue],
+    [likeMutation, progress, qc, queue, likeLocked, askInvisibleLike],
   );
 
   // Botões do rodapé: mesma animação de saída do swipe.
