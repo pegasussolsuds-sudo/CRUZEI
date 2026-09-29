@@ -22,6 +22,7 @@ import { iLiked, inboxKeys, likeStatusOf, likerIdOf } from '../../hooks/useInbox
 import { useAuthStore } from '../../stores/auth';
 import { useBootStore } from '../../stores/boot';
 import { useMapPerfStore } from '../../stores/mapPerf';
+import { useMapFocusStore } from '../../stores/mapFocus';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { MapBottomSheet, SHEET_SNAP_FRACTIONS, type GroupFilter, type MapBottomSheetHandle, type PoiFilter } from '../../components/map/MapBottomSheet';
 import { MapHeader, useActiveBoost } from '../../components/map/MapHeader';
@@ -1018,7 +1019,24 @@ export function MapScreen() {
     setVibeOpen(true);
   }, []);
   const closeVibe = useCallback(() => setVibeOpen(false), []);
-  // lugar escolhido na busca: câmera vai até lá, a sheet do lugar abre na hora e o destaque no mapa vem quando o recorte carregar
+  // lugar do Metch (busca ou aviso de evento/lugar): câmera vai até lá, a sheet do lugar abre na hora e o destaque no
+  // mapa vem quando o recorte carregar
+  const showPoi = useCallback(
+    (v: POI) => {
+      if (venue) clearVenue();
+      setPickedPoi(v);
+      setSelectedPoiId(v.id);
+      setUserCenter({ lat: v.latitude, lng: v.longitude });
+      if (poisRef.current.some((p) => p.id === v.id)) {
+        pendingFocus.current = null;
+        send(cmd.focusPoi(v.id));
+      } else {
+        pendingFocus.current = v.id;
+        send(cmd.setCenter(v.latitude, v.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1400 }));
+      }
+    },
+    [send, clearVenue, venue],
+  );
   const onPickVibePlace = useCallback(
     (place: VibePlace | CatalogPlace) => {
       setVibeOpen(false);
@@ -1037,20 +1055,36 @@ export function MapScreen() {
         showVenue(m);
         return;
       }
-      if (venue) clearVenue();
-      setPickedPoi(v);
-      setSelectedPoiId(v.id);
-      setUserCenter({ lat: v.latitude, lng: v.longitude });
-      if (poisRef.current.some((p) => p.id === v.id)) {
-        pendingFocus.current = null;
-        send(cmd.focusPoi(v.id));
-      } else {
-        pendingFocus.current = v.id;
-        send(cmd.setCenter(v.latitude, v.longitude, 16.5, { pitch: 58, bearing: -12, duration: 1400 }));
-      }
+      showPoi(v);
     },
-    [send, showVenue, clearVenue, venue],
+    [showVenue, showPoi],
   );
+
+  // toque num aviso de evento/lugar (push, central): foca o lugar quando o mapa estiver pronto. Fora do recorte, a
+  // coordenada vem do GET /pois/:id (lugar é público)
+  const focusRequest = useMapFocusStore((s) => s.pending);
+  const showPoiRef = useRef(showPoi);
+  showPoiRef.current = showPoi;
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+  useEffect(() => {
+    if (!focusRequest || !mapReady) return;
+    useMapFocusStore.getState().clear();
+    const { poiId } = focusRequest;
+    setVibeOpen(false);
+    setSelected(null);
+    setGroupFilter(null);
+    setPoiFilter(null);
+    const known = poisRef.current.find((p) => p.id === poiId);
+    if (known) {
+      showPoiRef.current(known);
+      return;
+    }
+    api
+      .get<POI>(`/pois/${poiId}`)
+      .then((res) => showPoiRef.current(res.data))
+      .catch(() => showToastRef.current('Esse lugar não tá mais no mapa'));
+  }, [focusRequest, mapReady]);
   // bairro/rua/cidade da busca: só leva a câmera (o recorte de lugares e pessoas re-centraliza sozinho)
   const onPickGeocode = useCallback(
     (r: GeocodeResult) => {

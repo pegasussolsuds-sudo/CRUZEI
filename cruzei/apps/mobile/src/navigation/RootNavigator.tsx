@@ -1,6 +1,7 @@
 import type { LegalSlug, ProximityBand } from '@cruzei/shared-types';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
+import { useQueryClient } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ActivityIndicator, View } from 'react-native';
@@ -20,12 +21,20 @@ import { BlockedUsersScreen } from '../screens/profile/BlockedUsersScreen';
 import { LegalScreen, LEGAL_TITLES } from '../screens/legal/LegalScreen';
 import { ModerationScreen } from '../screens/moderation/ModerationScreen';
 import { ModerationUserScreen } from '../screens/moderation/ModerationUserScreen';
+import { NotificationsScreen } from '../screens/notifications/NotificationsScreen';
+import { SupportChatScreen } from '../screens/support/SupportChatScreen';
+import { InAppNoticeHost } from '../components/notifications/InAppNoticeHost';
 import { AccountBlockedScreen } from '../components/safety/AccountBlockedScreen';
 import { TermsGate } from '../components/legal/TermsGate';
 import { useAccountBlockStore } from '../stores/accountBlock';
+import { useBootStore } from '../stores/boot';
+import { usePushRouteStore } from '../stores/pushRoute';
 import { useMapTheme } from '../hooks/useMapTheme';
+import { markNotificationRead } from '../hooks/useNotifications';
+import { askPushPermissionOnce } from '../services/notifications';
 import { MainTabs, type MainTabParamList } from './MainTabs';
 import { navigationRef } from './navigationRef';
+import { openTargetRoute } from './openTarget';
 import { colors } from '@cruzei/ui-mobile';
 
 export type RootStackParamList = {
@@ -44,6 +53,8 @@ export type RootStackParamList = {
   BlockedUsers: undefined;
   Moderation: undefined; // só moderador/admin
   ModerationUser: { userId: string };
+  Notifications: undefined; // central de avisos
+  SupportChat: undefined; // suporte ao vivo (Ajuda e segurança ou toque no push)
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -58,6 +69,9 @@ const lightHeader = {
   contentStyle: { backgroundColor: colors.background },
 } as const;
 
+/** tempo no mapa, depois de ele carregar pela 1ª vez, antes da explicação do push (nunca no primeiro segundo do app) */
+const PUSH_ASK_DELAY_MS = 8000;
+
 // rotas com fundo/header escuro (inclusive aninhadas: Paywall é aba, Chat está no InboxStack) → ícones claros na status bar
 const DARK_ROUTES = new Set(['UserCard', 'Boost', 'AvatarSetup', 'PhotoUpload', 'Paywall', 'Chat']);
 
@@ -70,7 +84,34 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   const navRef = navigationRef;
   const [routeName, setRouteName] = useState<string | undefined>();
   const syncRoute = useCallback(() => setRouteName(navRef.getCurrentRoute()?.name), [navRef]);
+  // a cada montagem do container (volta do carregamento/bloqueio): o toque de push guardado tenta de novo
+  const [navReadyTick, setNavReadyTick] = useState(0);
+  const onNavReady = useCallback(() => {
+    syncRoute();
+    setNavReadyTick((n) => n + 1);
+  }, [syncRoute]);
   const { theme: mapTheme } = useMapTheme();
+  const qc = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const mapLoaded = useBootStore((s) => s.mapReady);
+  const termsPending = Boolean(user?.legal && user.legal.acceptedVersion !== user.legal.currentVersion);
+
+  // toque num push (app frio ou quente): abre o destino quando o login e a navegação estiverem prontos
+  const pendingPush = usePushRouteStore((s) => s.pending);
+  useEffect(() => {
+    if (!pendingPush || navReadyTick === 0 || !isAuthenticated || isLoading || onboardingStep || blocked) return;
+    if (!openTargetRoute(pendingPush.route, qc)) return;
+    if (pendingPush.notificationId) void markNotificationRead(qc, pendingPush.notificationId);
+    usePushRouteStore.getState().clear();
+  }, [pendingPush, navReadyTick, isAuthenticated, isLoading, onboardingStep, blocked, qc]);
+
+  // pedido de push: uma vez, com o mapa já carregado e a pessoa nele há uns segundos (nada de splash, termos ou cadastro)
+  const onMap = routeName === 'Map';
+  useEffect(() => {
+    if (!isAuthenticated || splashing || !mapLoaded || !onMap || onboardingStep || termsPending || blocked) return;
+    const id = setTimeout(() => void askPushPermissionOnce(), PUSH_ASK_DELAY_MS);
+    return () => clearTimeout(id);
+  }, [isAuthenticated, splashing, mapLoaded, onMap, onboardingStep, termsPending, blocked]);
 
   // única StatusBar do app logado: segue a rota focada (a splash escura por cima também pede ícones claros)
   // o mapa de noite e no entardecer é escuro (de dia é claro e pede ícones escuros)
@@ -91,7 +132,7 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   }
 
   return (
-    <NavigationContainer ref={navRef} onReady={syncRoute} onStateChange={syncRoute}>
+    <NavigationContainer ref={navRef} onReady={onNavReady} onStateChange={syncRoute}>
       <StatusBar style={barStyle} />
       <Stack.Navigator
         // logo após o cadastro entra pela etapa pendente (avatar → fotos); nas demais aberturas, direto no mapa
@@ -149,11 +190,15 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
             <Stack.Screen name="BlockedUsers" component={BlockedUsersScreen} options={{ ...lightHeader, title: 'Pessoas bloqueadas' }} />
             <Stack.Screen name="Moderation" component={ModerationScreen} options={{ ...lightHeader, title: 'Moderação' }} />
             <Stack.Screen name="ModerationUser" component={ModerationUserScreen} options={{ ...lightHeader, title: 'Revisar conta' }} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ ...lightHeader, title: 'Avisos' }} />
+            <Stack.Screen name="SupportChat" component={SupportChatScreen} options={{ ...lightHeader, title: 'Suporte' }} />
           </>
         )}
       </Stack.Navigator>
       {/* aceite pendente dos Termos/Política trava o app logado até aceitar */}
       {isAuthenticated && !onboardingStep ? <TermsGate /> : null}
+      {/* notificação nova com o app aberto: aviso rápido no topo (toque abre o destino) */}
+      {isAuthenticated && !onboardingStep ? <InAppNoticeHost /> : null}
     </NavigationContainer>
   );
 }

@@ -1,0 +1,186 @@
+/* Identidade do Metch no painel: fundo noite #0A0A1A, verde-limão pra ação principal, rosa pro Premium,
+   dourado pra destaque. Tema escuro é o padrão; o claro troca só as superfícies e as cores de texto. */
+
+:root {
+  --font-display: 'Space Grotesk Variable', 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Mono', monospace;
+
+  --brand-ink: #0a0a1a;
+  --brand-lime: #7fff00;
+  --brand-pink: #ff1493;
+  --brand-gold: #ffd700;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 56px;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-pill: 999px;
+
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --text-3xl: 32px;
+
+  --sidebar-w: 244px;
+  --sidebar-w-collapsed: 72px;
+  --topbar-h: 64px;
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur: 160ms;
+
+  /* barra lateral: sempre escura, nos dois temas */
+  --side-bg: #07071a;
+  --side-border: rgba(255, 255, 255, 0.06);
+  --side-text: #a9a9c2;
+  --side-text-strong: #f4f4fb;
+  --side-hover: rgba(255, 255, 255, 0.05);
+  --side-active-bg: rgba(127, 255, 0, 0.1);
+  --side-active-text: #9dff3d;
+}
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0a0a1a;
+  --bg-raised: #0e0e22;
+  --surface: #13132a;
+  --surface-2: #1a1a35;
+  --surface-3: #232342;
+  --surface-hover: #1c1c38;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text: #f4f4fb;
+  --text-2: #b6b6cc;
+  --text-3: #80809a;
+  --text-inverse: #0a0a1a;
+
+  --accent: #7fff00;
+  --accent-hover: #9bff3a;
+  --accent-ink: #0a0a1a;
+  --accent-text: #9dff3d;
+  --accent-soft: rgba(127, 255, 0, 0.12);
+  --accent-border: rgba(127, 255, 0, 0.35);
+
+  --premium: #ff1493;
+  --premium-text: #ff62b4;
+  --premium-soft: rgba(255, 20, 147, 0.14);
+  --premium-border: rgba(255, 20, 147, 0.4);
+
+  --gold: #ffd700;
+  --gold-text: #ffdd33;
+  --gold-soft: rgba(255, 215, 0, 0.12);
+
+  --danger: #ff4d5e;
+  --danger-hover: #ff6b79;
+  --danger-text: #ff7a86;
+  --danger-soft: rgba(255, 77, 94, 0.13);
+  --danger-border: rgba(255, 77, 94, 0.4);
+
+  --warning: #ffb020;
+  --warning-text: #ffc154;
+  --warning-soft: rgba(255, 176, 32, 0.13);
+
+  --info: #5aa9ff;
+  --info-text: #86c0ff;
+  --info-soft: rgba(90, 169, 255, 0.13);
+
+  --success-text: #9dff3d;
+  --success-soft: rgba(127, 255, 0, 0.12);
+
+  --focus: #9dff3d;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --backdrop: rgba(4, 4, 14, 0.66);
+
+  /* gráficos (validados com o validador de paleta: faixa de luminosidade e contraste com a superfície) */
+  --chart-series: #52a800;
+  --chart-wash: rgba(82, 168, 0, 0.12);
+  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-axis: #80809a;
+  --chart-cursor: rgba(255, 255, 255, 0.28);
+
+  --skeleton-a: rgba(255, 255, 255, 0.04);
+  --skeleton-b: rgba(255, 255, 255, 0.09);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f4f8;
+  --bg-raised: #fafafd;
+  --surface: #ffffff;
+  --surface-2: #f3f3f8;
+  --surface-3: #e8e8f1;
+  --surface-hover: #f6f6fa;
+  --border: rgba(10, 10, 26, 0.09);
+  --border-strong: rgba(10, 10, 26, 0.18);
+
+  --text: #0a0a1a;
+  --text-2: #464660;
+  --text-3: #71718b;
+  --text-inverse: #ffffff;
+
+  --accent: #7fff00;
+  --accent-hover: #72ec00;
+  --accent-ink: #0a0a1a;
+  --accent-text: #2f7a00;
+  --accent-soft: rgba(95, 190, 0, 0.14);
+  --accent-border: rgba(63, 143, 0, 0.45);
+
+  --premium: #ff1493;
+  --premium-text: #c2006f;
+  --premium-soft: rgba(255, 20, 147, 0.1);
+  --premium-border: rgba(214, 0, 118, 0.4);
+
+  --gold: #ffd700;
+  --gold-text: #8a6d00;
+  --gold-soft: rgba(255, 196, 0, 0.18);
+
+  --danger: #d92d3f;
+  --danger-hover: #c21f31;
+  --danger-text: #b81c2e;
+  --danger-soft: rgba(217, 45, 63, 0.09);
+  --danger-border: rgba(217, 45, 63, 0.4);
+
+  --warning: #c77700;
+  --warning-text: #945800;
+  --warning-soft: rgba(255, 170, 0, 0.15);
+
+  --info: #1f6fd1;
+  --info-text: #185cad;
+  --info-soft: rgba(31, 111, 209, 0.1);
+
+  --success-text: #2f7a00;
+  --success-soft: rgba(95, 190, 0, 0.14);
+
+  --focus: #3f8f00;
+  --shadow-sm: 0 1px 2px rgba(10, 10, 26, 0.06);
+  --shadow: 0 8px 24px rgba(10, 10, 26, 0.08);
+  --shadow-lg: 0 24px 64px rgba(10, 10, 26, 0.18);
+  --backdrop: rgba(10, 10, 26, 0.45);
+
+  --chart-series: #3f8f00;
+  --chart-wash: rgba(63, 143, 0, 0.1);
+  --chart-grid: rgba(10, 10, 26, 0.07);
+  --chart-axis: #71718b;
+  --chart-cursor: rgba(10, 10, 26, 0.25);
+
+  --skeleton-a: rgba(10, 10, 26, 0.04);
+  --skeleton-b: rgba(10, 10, 26, 0.08);
+}

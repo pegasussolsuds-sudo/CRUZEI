@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="theme-color" content="#0A0A1A" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>metch admin</title>
+    <script>
+      // tema antes do primeiro desenho (sem piscar branco): escolha salva ou a do sistema
+      (function () {
+        var t = null;
+        try {
+          t = localStorage.getItem('metch-admin:theme');
+        } catch (e) {}
+        if (t !== 'light' && t !== 'dark') t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>O painel do Metch precisa de JavaScript ligado.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

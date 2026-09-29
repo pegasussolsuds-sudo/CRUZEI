@@ -29,10 +29,7 @@ export class AdminController {
     return this.svc.queue();
   }
 
-  @Get('users/:id')
-  user(@Param('id', ParseUUIDPipe) id: string) {
-    return this.svc.userDetail(id);
-  }
+  // GET /admin/users/:id mudou pro painel (AdminUsersController): devolve esta ficha + o resto, no mesmo formato
 
   @Post('users/:id/action')
   act(@CurrentUser() me: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ActionDto) {

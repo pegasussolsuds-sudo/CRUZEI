@@ -1,4 +1,4 @@
-import { ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma, type POICategory } from '@prisma/client';
 import * as ngeohash from 'ngeohash';
 import type { CatalogPlace, PlaceKind } from '@cruzei/shared-types';
@@ -125,7 +125,8 @@ export class PlaceDiscoveryService {
     if (!venueAllowed(place, USER_KINDS)) throw new UnprocessableEntityException({ error: 'place_kind_not_supported', message: 'Esse tipo de lugar não entra no mapa' });
 
     const existing = await this.findExisting(place);
-    if (existing) return { status: 'active', poi: existing };
+    // oculto pela equipe: resposta uniforme de "pedido" e nada de candidato novo (o mesmo lugar não volta pela galera)
+    if (existing) return existing.hidden ? { status: 'pending' } : { status: 'active', poi: lite(existing) };
 
     const me = await this.presence(userId);
     if (!me) throw new UnprocessableEntityException({ error: 'no_presence', message: 'Liga a localização pra ajudar a pôr lugares no mapa' });
@@ -168,12 +169,15 @@ export class PlaceDiscoveryService {
     if (!Number.isSafeInteger(poiId) || poiId <= 0) throw new NotFoundException({ error: 'not_found' });
     if (!(REPORT_REASONS as readonly string[]).includes(reason)) throw new UnprocessableEntityException({ error: 'invalid_reason' });
     await this.limit(userId, 'poi_report', 20);
-    const poi = await this.prisma.pOI.findUnique({ where: { id: BigInt(poiId) }, select: { id: true } });
+    // lugar oculto não existe pro app (404 igual a "não existe")
+    const poi = await this.prisma.pOI.findFirst({ where: { id: BigInt(poiId), hiddenAt: null }, select: { id: true } });
     if (!poi) throw new NotFoundException({ error: 'not_found' });
+    // denunciar de novo reabre uma denúncia que a equipe já tinha resolvido/descartado
     await this.prisma.$executeRaw`
       INSERT INTO poi_reports (poi_id, user_id, reason, reported_on)
       VALUES (${poi.id}, ${userId}::uuid, ${reason}, ${localDateBrazil(now)}::date)
-      ON CONFLICT (poi_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, reported_on = EXCLUDED.reported_on`;
+      ON CONFLICT (poi_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, reported_on = EXCLUDED.reported_on,
+        resolved_at = NULL, resolved_by = NULL, resolution = NULL`;
     return { ok: true };
   }
 
@@ -241,7 +245,7 @@ export class PlaceDiscoveryService {
       const subList: SubStay[] = [...subs].map(([sub, stays]) => ({ sub, stays }));
       const { picks, ambiguous } = pickVenues(venues, subList, cellTotal);
       for (const v of picks) {
-        if (await this.findExisting(v)) continue; // já está no mapa
+        if (await this.findExisting(v)) continue; // já está no mapa (ou oculto pela equipe)
         const c = await this.upsertCandidate(v, today, { crowdPassOn: today, ambiguous });
         if (c?.tombstone) sum.blocked++;
         else if (c) sum.candidatesTouched++;
@@ -277,7 +281,7 @@ export class PlaceDiscoveryService {
         }
         if (existing) {
           await this.prisma.$executeRaw`
-            UPDATE place_candidates SET status = 'promoted', poi_id = ${BigInt(existing.id)}, resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
+            UPDATE place_candidates SET status = 'promoted', poi_id = ${existing.id}, resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
           sum.merged++;
         } else if (tomb) {
           // lápide do mesmo lugar com outro id: vence (a faxina apaga; só volta a pendente depois que a lápide vencer)
@@ -300,7 +304,7 @@ export class PlaceDiscoveryService {
     // 5) lugares descobertos denunciados por várias pessoas saem do mapa (lápide de 90 dias no candidato)
     const flagged = await this.prisma.$queryRaw<{ poi_id: bigint }[]>`
       SELECT r.poi_id FROM poi_reports r JOIN pois p ON p.id = r.poi_id
-       WHERE p.source IN ('catalog', 'mapbox') AND r.reported_on >= ${addDays(today, -29)}::date
+       WHERE p.source IN ('catalog', 'mapbox') AND r.reported_on >= ${addDays(today, -29)}::date AND r.resolved_at IS NULL
        GROUP BY r.poi_id HAVING count(DISTINCT r.user_id) >= ${TAKEDOWN_REPORTS}`;
     for (const f of flagged) {
       await this.prisma.$transaction([
@@ -329,6 +333,60 @@ export class PlaceDiscoveryService {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // Equipe (painel admin)
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * A equipe põe o candidato no mapa, de qualquer status (pendente, recusado, vencido). Idempotente: já promovido
+   * devolve o mesmo POI com `changed: false`. Mesmo lugar já no mapa (ou oculto) → aponta pra ele (e desoculta).
+   * `voters`: quem pediu/confirmou (pra avisar), só quando esta chamada promoveu.
+   */
+  async approveCandidate(candidateId: bigint, now = new Date()): Promise<{ poiId: bigint; changed: boolean; voters: string[] }> {
+    const today = localDateBrazil(now);
+    const out = await this.prisma.$transaction(async (tx) => {
+      // trava a linha: duas aprovações ao mesmo tempo não criam dois POIs nem avisam duas vezes
+      const [c] = await tx.$queryRaw<CandidateRow[]>`
+        SELECT c.id, COALESCE(c.ext_id, c.mapbox_id) AS ext_id, c.cell, c.status, c.name, c.category::text AS category, c.kind,
+               c.latitude, c.longitude, c.address, c.neighborhood, c.city, c.state, c.ambiguous, c.poi_id
+          FROM place_candidates c WHERE c.id = ${candidateId} FOR UPDATE`;
+      if (!c) throw new NotFoundException({ error: 'not_found', message: 'Sugestão não encontrada' });
+      if (c.status === 'promoted' && c.poi_id != null) return { poiId: c.poi_id, changed: false };
+      // dado do Mapbox não pode virar lugar permanente (termos): só pelo catálogo próprio
+      if (c.ext_id.startsWith('mbx:')) {
+        throw new UnprocessableEntityException({ error: 'mapbox_candidate', message: 'Sugestão antiga (Mapbox): busque o lugar de novo no catálogo' });
+      }
+      const existing = await this.findExisting({ id: c.ext_id, name: c.name, latitude: Number(c.latitude), longitude: Number(c.longitude) });
+      if (existing) {
+        if (existing.hidden) await tx.pOI.update({ where: { id: existing.id }, data: { hiddenAt: null } });
+        await tx.$executeRaw`
+          UPDATE place_candidates SET status = 'promoted', poi_id = ${existing.id}, resolved_on = ${today}::date WHERE id = ${c.id}`;
+        return { poiId: existing.id, changed: true };
+      }
+      return { poiId: await this.publishCandidate(tx, c, today, true), changed: true };
+    });
+    this.location.invalidatePoiIndex();
+    const voters = out.changed
+      ? (
+          await this.prisma.$queryRaw<{ user_id: string }[]>`
+            SELECT user_id FROM place_votes WHERE candidate_id = ${candidateId} AND kind IN ('request', 'onsite')`
+        ).map((v) => v.user_id)
+      : [];
+    return { ...out, voters };
+  }
+
+  /** a equipe recusa: lápide de 90 dias (o robô não reabre o mesmo lugar). Já no mapa → 409 (oculte o lugar). */
+  async rejectCandidate(candidateId: bigint, now = new Date()): Promise<void> {
+    const today = localDateBrazil(now);
+    const [c] = await this.prisma.$queryRaw<{ status: string }[]>`SELECT status FROM place_candidates WHERE id = ${candidateId}`;
+    if (!c) throw new NotFoundException({ error: 'not_found', message: 'Sugestão não encontrada' });
+    if (c.status === 'promoted') {
+      throw new ConflictException({ error: 'already_on_map', message: 'Esse lugar já está no mapa: oculte o lugar em vez de recusar' });
+    }
+    await this.prisma.$executeRaw`
+      UPDATE place_candidates SET status = 'rejected', resolved_on = ${today}::date WHERE id = ${candidateId} AND status <> 'promoted'`;
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Internos
   // ---------------------------------------------------------------------------------------------
 
@@ -337,9 +395,17 @@ export class PlaceDiscoveryService {
    * criado "no começo do dia" (horário não revela quando alguém confirmou)
    */
   private async promote(c: CandidateRow, today: string): Promise<void> {
+    await this.prisma.$transaction((tx) => this.publishCandidate(tx, c, today, false));
+  }
+
+  /**
+   * Cria (ou acha, pela chave do catálogo) o POI do candidato e marca promovido. `byStaff`: a equipe aprova de
+   * qualquer status que não seja promovido (e desoculta o POI); o robô só publica pendente.
+   */
+  private async publishCandidate(tx: Prisma.TransactionClient, c: CandidateRow, today: string, byStaff: boolean): Promise<bigint> {
     const externalId = c.ext_id;
     const startOfDay = new Date(`${today}T03:00:00Z`); // 00:00 em Brasília
-    await this.prisma.$transaction(async (tx) => {
+    {
       const poi = await tx.pOI.upsert({
         where: { source_externalId: { source: 'catalog', externalId } },
         create: {
@@ -357,11 +423,17 @@ export class PlaceDiscoveryService {
           createdAt: startOfDay,
           lastVerifiedAt: startOfDay,
         },
-        update: {},
+        // a equipe aprovando um lugar que ela mesma tinha ocultado: aprovar = pôr no mapa
+        update: byStaff ? { hiddenAt: null } : {},
         select: { id: true },
       });
-      await tx.$executeRaw`UPDATE place_candidates SET status = 'promoted', poi_id = ${poi.id}, resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
-    });
+      if (byStaff) {
+        await tx.$executeRaw`UPDATE place_candidates SET status = 'promoted', poi_id = ${poi.id}, resolved_on = ${today}::date WHERE id = ${c.id} AND status <> 'promoted'`;
+      } else {
+        await tx.$executeRaw`UPDATE place_candidates SET status = 'promoted', poi_id = ${poi.id}, resolved_on = ${today}::date WHERE id = ${c.id} AND status = 'pending'`;
+      }
+      return poi.id;
+    }
   }
 
   /**
@@ -421,31 +493,37 @@ export class PlaceDiscoveryService {
         voted_on = EXCLUDED.voted_on`;
   }
 
-  /** o lugar já está no mapa? mesmo id do catálogo, ou POI a até 60 m com nome parecido, ou a até 8 m com qualquer nome */
-  private async findExisting(p: PlaceRef): Promise<SuggestResult['poi'] | null> {
+  /**
+   * o lugar já está no mapa? mesmo id do catálogo, ou POI a até 60 m com nome parecido, ou a até 8 m com qualquer nome.
+   * Acha também o OCULTO pela equipe (hidden: true) — quem chama decide; assim o mesmo lugar não volta duplicado.
+   * POI de evento é temporário: nunca conta como "o mesmo lugar".
+   */
+  private async findExisting(p: PlaceRef): Promise<ExistingPoi | null> {
     const same = await this.prisma.pOI.findUnique({
       where: { source_externalId: { source: 'catalog', externalId: p.id } },
-      select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true },
+      select: EXISTING_SELECT,
     });
-    if (same) return lite(same);
+    if (same) return existingOf(same);
     const dLat = SAME_PLACE_NAME_M / 111_195;
     const dLng = dLat / Math.cos((p.latitude * Math.PI) / 180);
     const near = await this.prisma.pOI.findMany({
       where: {
         latitude: { gte: p.latitude - dLat, lte: p.latitude + dLat },
         longitude: { gte: p.longitude - dLng, lte: p.longitude + dLng },
+        eventId: null,
       },
-      select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true },
+      select: EXISTING_SELECT,
       take: 50,
     });
     for (const q of near) {
-      if (samePlace(p, { name: q.name, latitude: Number(q.latitude), longitude: Number(q.longitude) })) return lite(q);
+      if (samePlace(p, { name: q.name, latitude: Number(q.latitude), longitude: Number(q.longitude) })) return existingOf(q);
     }
     return null;
   }
 
+  /** POI promovido, como o app vê: oculto = null */
   private async poiLite(id: bigint): Promise<SuggestResult['poi'] | null> {
-    const q = await this.prisma.pOI.findUnique({ where: { id }, select: { id: true, name: true, category: true, latitude: true, longitude: true, source: true } });
+    const q = await this.prisma.pOI.findFirst({ where: { id, hiddenAt: null }, select: EXISTING_SELECT });
     return q ? lite(q) : null;
   }
 
@@ -483,6 +561,17 @@ export class PlaceDiscoveryService {
   }
 }
 
-function lite(q: { id: bigint; name: string; category: string; latitude: Prisma.Decimal; longitude: Prisma.Decimal; source: string }): NonNullable<SuggestResult['poi']> {
+const EXISTING_SELECT = { id: true, name: true, category: true, latitude: true, longitude: true, source: true, hiddenAt: true } as const;
+
+type PoiLiteRow = { id: bigint; name: string; category: string; latitude: Prisma.Decimal; longitude: Prisma.Decimal; source: string };
+
+/** POI que já está no mapa (ou oculto pela equipe) */
+type ExistingPoi = PoiLiteRow & { hidden: boolean };
+
+function existingOf(q: PoiLiteRow & { hiddenAt: Date | null }): ExistingPoi {
+  return { id: q.id, name: q.name, category: q.category, latitude: q.latitude, longitude: q.longitude, source: q.source, hidden: q.hiddenAt !== null };
+}
+
+function lite(q: PoiLiteRow): NonNullable<SuggestResult['poi']> {
   return { id: Number(q.id), name: q.name, category: q.category, latitude: Number(q.latitude), longitude: Number(q.longitude), source: q.source };
 }

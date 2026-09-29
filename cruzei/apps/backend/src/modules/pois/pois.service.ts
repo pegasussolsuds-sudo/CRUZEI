@@ -118,8 +118,35 @@ function decodeSnapshot(raw: string): PlaceSnapshot | null {
   }
 }
 
+const SP_TIME = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+const SP_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+const SP_WEEKDAY = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'short', day: '2-digit', month: '2-digit' });
+
+/**
+ * Rótulo de evento do painel (hours.startsAt/endsAt em ISO, gravados ao publicar): calculado NA LEITURA, relativo a
+ * agora — "Agora · até 02:00", "Hoje · 20:00", "Amanhã · 20:00", "sáb., 04/10 · 20:00". null se não for desse formato.
+ */
+export function adminEventLabel(hours: unknown, now = new Date()): string | null {
+  if (!hours || typeof hours !== 'object') return null;
+  const h = hours as Record<string, unknown>;
+  if (typeof h.startsAt !== 'string' || typeof h.endsAt !== 'string') return null;
+  const start = new Date(h.startsAt);
+  const end = new Date(h.endsAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  if (start <= now && now < end) return `Agora · até ${SP_TIME.format(end)}`;
+  const today = SP_DAY.format(now);
+  const tomorrow = SP_DAY.format(new Date(now.getTime() + 86_400_000));
+  const day = SP_DAY.format(start);
+  const at = SP_TIME.format(start);
+  if (day === today) return `Hoje · ${at}`;
+  if (day === tomorrow) return `Amanhã · ${at}`;
+  return `${SP_WEEKDAY.format(start)} · ${at}`;
+}
+
 /** rótulo do evento a partir do JSON de horários (formato livre do seed/OSM); "Hoje" quando não dá pra saber */
 function eventLabel(hours: unknown): string {
+  const fromAdmin = adminEventLabel(hours);
+  if (fromAdmin) return fromAdmin;
   if (hours && typeof hours === 'object') {
     const h = hours as Record<string, unknown>;
     const start = typeof h.start === 'string' ? h.start : typeof h.open === 'string' ? h.open : null;
@@ -226,6 +253,7 @@ export class PoisService {
       where: {
         latitude: { gte: bbox.south, lte: bbox.north },
         longitude: { gte: bbox.west, lte: bbox.east },
+        hiddenAt: null, // oculto pela equipe não aparece em nenhuma leitura do app
         ...(categories && categories.length > 0 ? { category: { in: categories as never } } : {}),
       },
       take: 100,
@@ -260,7 +288,8 @@ export class PoisService {
   }
 
   async get(id: number) {
-    const poi = await this.prisma.pOI.findUnique({ where: { id: BigInt(id) } });
+    if (!Number.isSafeInteger(id) || id <= 0) throw new NotFoundException('POI não encontrado');
+    const poi = await this.prisma.pOI.findFirst({ where: { id: BigInt(id), hiddenAt: null } });
     if (!poi) throw new NotFoundException('POI não encontrado');
     const userCount = this.countFrom(await this.placeSnapshot(), id);
     return {
@@ -293,6 +322,7 @@ export class PoisService {
    * (piso de anonimato). Fora disso o lugar mostra só a contagem (também com piso).
    */
   async getPeople(requesterId: string, id: number) {
+    await this.assertVisible(id);
     const here = ((await this.placeSnapshot()).now.get(String(id)) ?? []).slice(0, 100);
     const rows = await this.prisma.user.findMany({
       where: { id: { in: here.map((r) => r.userId) } },
@@ -322,6 +352,7 @@ export class PoisService {
   }
 
   async checkin(userId: string, poiId: number) {
+    await this.assertVisible(poiId);
     const c = await this.prisma.poisCheckin.create({
       data: { userId, poiId: BigInt(poiId) },
     });
@@ -341,6 +372,7 @@ export class PoisService {
       where: {
         latitude: { gte: bbox.south, lte: bbox.north },
         longitude: { gte: bbox.west, lte: bbox.east },
+        hiddenAt: null,
         ...(q.categories && q.categories.length > 0 ? { category: { in: q.categories as never } } : {}),
       },
       take: 300,
@@ -452,7 +484,7 @@ export class PoisService {
   async hotspotsInCity(city: string) {
     // POIs com >= 3 usuários ativos via Redis ZSET
     const candidates = await this.prisma.pOI.findMany({
-      where: { city },
+      where: { city, hiddenAt: null },
       take: 200,
     });
     const snap = await this.placeSnapshot();
@@ -472,6 +504,13 @@ export class PoisService {
         lastUserAt: new Date().toISOString(),
       }))
       .sort((a, b) => b.userCount - a.userCount);
+  }
+
+  /** POI existe e não está oculto (senão 404, igual a "não existe") */
+  private async assertVisible(id: number): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new NotFoundException('POI não encontrado');
+    const ok = await this.prisma.pOI.findFirst({ where: { id: BigInt(id), hiddenAt: null }, select: { id: true } });
+    if (!ok) throw new NotFoundException('POI não encontrado');
   }
 
   private age(birth: Date): number {

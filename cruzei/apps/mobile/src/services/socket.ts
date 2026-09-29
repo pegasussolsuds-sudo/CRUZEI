@@ -1,11 +1,35 @@
 import { io, Socket } from 'socket.io-client';
-import type { ClientToServerEvents, ServerToClientEvents } from '@cruzei/shared-types';
+import type {
+  ClientToServerEvents,
+  NotificationNewPayload,
+  ServerToClientEvents,
+  SupportMessageEvent,
+  SupportTypingEvent,
+} from '@cruzei/shared-types';
 import { config } from '../config';
 import { getToken, refreshAccessToken, reportAccountBlocked } from './api';
 
-type CruzeiSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+/**
+ * Avisos e suporte ao vivo: os payloads estão no contrato (notifications.ts / support.ts), mas os eventos ainda não
+ * entraram em ServerToClientEvents/ClientToServerEvents do shared-types. Tipados aqui até entrarem lá.
+ */
+interface PanelServerEvents {
+  'notification:new': (data: NotificationNewPayload) => void;
+  'support:message': (data: SupportMessageEvent) => void;
+  'support:typing': (data: SupportTypingEvent) => void;
+  /** lugar entrou/saiu do mapa (evento publicado/cancelado, lugar aprovado/oculto pelo painel) */
+  'pois:changed': (data: { at: number }) => void;
+}
+interface PanelClientEvents {
+  /** "digitando" da pessoa no atendimento aberto (o servidor acha o atendimento pela sessão) */
+  'support:typing': (data: { isTyping: boolean }) => void;
+}
+
+type CruzeiSocket = Socket<ServerToClientEvents & PanelServerEvents, ClientToServerEvents & PanelClientEvents>;
 
 let socket: CruzeiSocket | null = null;
+/** conexão em andamento: duas telas pedindo o socket ao mesmo tempo ganham o MESMO (não abre dois) */
+let connecting: Promise<CruzeiSocket | null> | null = null;
 let recovering = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let lastRecoverAt = 0;
@@ -47,8 +71,17 @@ export function ensureSocketAlive(): void {
 
 export async function connectSocket(): Promise<CruzeiSocket | null> {
   if (socket) return socket;
+  if (!connecting) {
+    connecting = openSocket().finally(() => {
+      connecting = null;
+    });
+  }
+  return connecting;
+}
+
+async function openSocket(): Promise<CruzeiSocket | null> {
   const token = await getToken();
-  if (!token) return null;
+  if (!token || socket) return socket;
 
   socket = io(config.wsUrl, {
     transports: ['websocket'],

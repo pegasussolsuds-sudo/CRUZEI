@@ -91,6 +91,13 @@
           }
         }
       ],
+      [
+        "expo-notifications",
+        {
+          "color": "#7FFF00",
+          "defaultChannel": "default"
+        }
+      ],
       "@sentry/react-native/expo"
     ],
     "extra": {

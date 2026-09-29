@@ -2,6 +2,7 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { MapScreen } from '../screens/map/MapScreen';
@@ -10,6 +11,7 @@ import { PaywallScreen } from '../screens/paywall/PaywallScreen';
 import { InboxStack, type InboxStackParamList } from './InboxStack';
 import { ProfileStack, type ProfileStackParamList } from './ProfileStack';
 import { inboxBadge, useInboxCounts } from '../hooks/useInbox';
+import { unreadNotifications, useNotificationList } from '../hooks/useNotifications';
 import { colors } from '@cruzei/ui-mobile';
 
 export type MainTabParamList = {
@@ -28,6 +30,9 @@ export function MainTabs() {
   // badge da aba Mensagens: contagem do servidor (principal com não lidas + solicitações), nunca somada no app
   const counts = useInboxCounts();
   const badge = inboxBadge(counts.data);
+  // aviso não lido: só um ponto no Perfil (a central e o sininho ficam lá; nada por cima do mapa)
+  const notifications = useNotificationList();
+  const unreadNotices = unreadNotifications(notifications.data);
 
   return (
     <Tab.Navigator
@@ -62,10 +67,24 @@ export function MainTabs() {
         }}
       />
       <Tab.Screen name="Paywall" component={PaywallScreen} options={{ tabBarLabel: 'Premium' }} />
-      <Tab.Screen name="Profile" component={ProfileStack} options={{ tabBarLabel: 'Perfil' }} />
+      <Tab.Screen
+        name="Profile"
+        component={ProfileStack}
+        options={{
+          tabBarLabel: 'Perfil',
+          tabBarBadge: unreadNotices > 0 ? '' : undefined,
+          tabBarBadgeStyle: styles.dot,
+          tabBarAccessibilityLabel: unreadNotices > 0 ? `Perfil, ${unreadNotices} ${unreadNotices === 1 ? 'aviso novo' : 'avisos novos'}` : 'Perfil',
+        }}
+      />
     </Tab.Navigator>
   );
 }
+
+const styles = StyleSheet.create({
+  // ponto (badge vazio): menor que o contador das Mensagens
+  dot: { minWidth: 10, width: 10, height: 10, borderRadius: 5, paddingHorizontal: 0, backgroundColor: colors.primary, top: 0, end: 0 },
+});
 
 const ICONS: Record<string, string> = {
   Map: 'map',

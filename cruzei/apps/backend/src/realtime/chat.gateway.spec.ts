@@ -11,7 +11,7 @@ import { PrismaService } from '../database/prisma.service';
 import { AccountStateService } from '../modules/account/account-state.service';
 import { RedisService } from '../redis/redis.service';
 
-import { ChatGateway, TYPING_RECHECK_MS } from './chat.gateway';
+import { ChatGateway, STAFF_SUPPORT_ROOM, TYPING_RECHECK_MS } from './chat.gateway';
 
 // Gateway de verdade (Nest + socket.io numa porta aleatória) com clientes socket.io de verdade.
 // O banco é trocado por uma tabela de quem pode entrar em qual conversa (com papel e promoção); o SQL de
@@ -23,6 +23,7 @@ const B = '0b000000-0000-4000-8000-00000000000b';
 const C = '0c000000-0000-4000-8000-00000000000c';
 const D = '0d000000-0000-4000-8000-00000000000d';
 const BANNED = '0e000000-0000-4000-8000-00000000000e';
+const STAFF = '0f000000-0000-4000-8000-00000000000f';
 const CONV_AB = 'ca000000-0000-4000-8000-0000000000ab';
 const CONV_AC = 'ca000000-0000-4000-8000-0000000000ac';
 
@@ -54,6 +55,13 @@ const accounts = {
       ? { error: 'account_banned', message: 'Conta banida', reason: 'teste', until: null }
       : null,
   ),
+  // papel do estado da conta: STAFF é moderador (entra na sala do suporte)
+  get: jest.fn(async (userId: string) => ({
+    status: 'active',
+    until: null,
+    reason: null,
+    role: userId === STAFF ? 'moderator' : 'user',
+  })),
 };
 
 const jwt = new JwtService();
@@ -489,5 +497,33 @@ describe('ChatGateway — disconnectUser (mantido)', () => {
     await aDown;
     expect(got).toEqual([['account_blocked', { error: 'account_banned' }]]);
     expect(b.connected).toBe(true);
+  });
+});
+
+describe('ChatGateway — sala da equipe (suporte ao vivo)', () => {
+  it('equipe entra em staff:support ao conectar; emitToStaff só chega nela', async () => {
+    const [staff, a] = await Promise.all([connect(STAFF), connect(A)]);
+    const got = [staff, a].map(record);
+    expect(await inRoom(STAFF_SUPPORT_ROOM)).toEqual([STAFF]);
+
+    gateway.emitToStaff('support:thread', { thread: { id: 't1' } });
+    await flush(staff, a);
+    expect(got[0]).toEqual([['support:thread', { thread: { id: 't1' } }]]);
+    expect(got[1]).toEqual([]);
+  });
+
+  it('papel trocado no painel: setStaffMembership põe/tira os sockets já conectados', async () => {
+    const [staff, a] = await Promise.all([connect(STAFF), connect(A)]);
+    gateway.setStaffMembership(STAFF, false);
+    gateway.setStaffMembership(A, true);
+    await Promise.all([processed(staff), processed(a)]);
+    expect(await inRoom(STAFF_SUPPORT_ROOM)).toEqual([A]);
+  });
+
+  it('sem conseguir ler o papel, conecta como pessoa comum (nunca como equipe)', async () => {
+    accounts.get.mockRejectedValueOnce(new Error('redis fora'));
+    await connect(STAFF);
+    expect(await inRoom(`user:${STAFF}`)).toEqual([STAFF]);
+    expect(await inRoom(STAFF_SUPPORT_ROOM)).toEqual([]);
   });
 });

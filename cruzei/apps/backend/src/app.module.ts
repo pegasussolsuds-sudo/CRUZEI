@@ -37,6 +37,8 @@ import { AccountModule } from './modules/account/account.module';
 import { ModerationModule } from './modules/moderation/moderation.module';
 import { LegalModule } from './modules/legal/legal.module';
 import { TilesModule } from './modules/tiles/tiles.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { SupportModule } from './modules/support/support.module';
 
 import { HealthController } from './health/health.controller';
 
@@ -108,6 +110,9 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     ModerationModule,
     LegalModule,
     TilesModule,
+    // painel admin web (/v1/admin/*) e suporte ao vivo (/v1/support/* + /v1/admin/support/*)
+    AdminModule,
+    SupportModule,
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.

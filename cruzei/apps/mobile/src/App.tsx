@@ -21,6 +21,12 @@ import { SplashScreen } from './screens/auth/SplashScreen';
 import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
 import { cleanupLegacyMapbox } from './services/legacyMapboxCleanup';
 import { applyConversationNew, applyMessageNew, applyPromoted, applyRead, applyRemoved, inboxKeys } from './hooks/useInbox';
+import { applyNotificationNew, notificationKeys, toAppNotification } from './hooks/useNotifications';
+import { applySupportMessage, supportKeys } from './hooks/useSupport';
+import { showNotificationNotice } from './stores/inAppNotice';
+import { usePushRouteStore } from './stores/pushRoute';
+import { listenNotificationTaps, listenPushTokenChanges, registerPushDevice, setForegroundPushHandler } from './services/notifications';
+import type { AppNotification } from '@cruzei/shared-types';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
 // ao montar os nós (processProps) e enche o log no boot. Nosso código lê só em worklets/efeitos.
@@ -41,6 +47,15 @@ export const queryClient = new QueryClient({
     queries: { staleTime: 30_000, retry: 1 },
   },
 });
+
+/** notificação nova com o app aberto (socket ou push em primeiro plano): central atualizada + aviso rápido */
+function onNotificationNew(n: AppNotification): void {
+  applyNotificationNew(queryClient, n);
+  showNotificationNotice(n);
+}
+
+// toque em push (app quente e o toque que abriu o app frio): guardado até o login e a navegação ficarem prontos
+listenNotificationTaps((route, notificationId) => usePushRouteStore.getState().set(route, notificationId));
 
 export function App() {
   const hydrate = useAuthStore((s) => s.hydrate);
@@ -102,6 +117,28 @@ export function App() {
         queryClient.invalidateQueries({ queryKey: inboxKeys.all });
         queryClient.invalidateQueries({ queryKey: ['conversation'] });
         queryClient.invalidateQueries({ queryKey: ['messages'] });
+        queryClient.invalidateQueries({ queryKey: notificationKeys.all });
+        queryClient.invalidateQueries({ queryKey: supportKeys.all });
+      });
+      // central de avisos: aviso novo entra na lista e aparece no topo (o push em primeiro plano cai no mesmo lugar)
+      socket.on('notification:new', (p) => {
+        const n = toAppNotification(p?.notification);
+        if (!n) return;
+        onNotificationNew(n);
+        // Premium dado/tirado pelo painel: o /me novo tira (ou põe) os convites e libera o que é do plano na hora
+        if (n.type === 'premium_granted') {
+          queryClient.invalidateQueries({ queryKey: ['me'] });
+          useAuthStore.getState().refreshMe().catch(() => {});
+        }
+      });
+      // lugar entrou/saiu do mapa: busca de novo sem esperar o refetch de 45 s — com atraso aleatório de até 3 s pra
+      // os apps abertos não baterem todos no mesmo segundo
+      socket.on('pois:changed', () => {
+        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['nearby', 'pois'] }), Math.random() * 3_000);
+      });
+      // suporte ao vivo: a conversa com a equipe fica certa mesmo com o chat fechado (contador da Ajuda)
+      socket.on('support:message', (p) => {
+        if (p?.message && p.threadId) applySupportMessage(queryClient, p);
       });
       // Mensagens: o evento traz o estado do servidor (unread, pasta, promoção); o cache só troca a conversa de lugar
       socket.on('message:new', (p) => applyMessageNew(queryClient, p));
@@ -132,6 +169,19 @@ export function App() {
     })();
     return () => {
       active = false;
+    };
+  }, [isAuthenticated]);
+
+  // push (FCM): registra o aparelho a cada abertura logada (se a permissão já foi dada), acompanha a troca de token e
+  // transforma o push que chega com o app aberto no aviso do app. Quem pede a permissão é o RootNavigator (uma vez)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    void registerPushDevice();
+    const offToken = listenPushTokenChanges();
+    setForegroundPushHandler(onNotificationNew);
+    return () => {
+      offToken();
+      setForegroundPushHandler(null);
     };
   }, [isAuthenticated]);
 

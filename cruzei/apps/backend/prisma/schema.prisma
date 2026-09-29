@@ -189,6 +189,10 @@ model POI {
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamp(6)
   lastVerifiedAt DateTime?     @map("last_verified_at") @db.Timestamp(6)
+  /// oculto pela equipe: some de toda leitura do app (mapa, vibe, detalhe, check-in, presença); o painel ainda vê
+  hiddenAt       DateTime?     @map("hidden_at") @db.Timestamptz(6)
+  /// POI de mapa de um evento (source 'admin'); índice único parcial pois_event_id_uq na migration
+  eventId        String?       @map("event_id") @db.Uuid
   locations      Location[]    @relation("PoiLocations")
   matches        Match[]       @relation("PoiMatches")
   checkins       PoisCheckin[]
@@ -408,6 +412,10 @@ model Subscription {
   cancelledAt           DateTime?   @map("cancelled_at") @db.Timestamp(6)
   createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt             DateTime    @updatedAt @map("updated_at") @db.Timestamp(6)
+  /// motivo do Premium manual (platform 'manual')
+  note                  String?
+  /// admin que deu o Premium manual (FK users ON DELETE SET NULL na migration)
+  grantedBy             String?     @map("granted_by") @db.Uuid
   user                  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt(sort: Desc)])
@@ -442,6 +450,10 @@ model Notification {
   sentAt         DateTime  @default(now()) @map("sent_at") @db.Timestamp(6)
   deliveryStatus String    @default("pending") @map("delivery_status") @db.VarChar(20)
   retryCount     Int       @default(0) @map("retry_count") @db.SmallInt
+  /// campanha do painel que gerou (FK push_campaigns ON DELETE SET NULL na migration)
+  campaignId     String?   @map("campaign_id") @db.Uuid
+  /// a pessoa tocou (no push ou no item da central) — estatística "abriu" das campanhas
+  openedAt       DateTime? @map("opened_at") @db.Timestamp(6)
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, sentAt(sort: Desc)])
@@ -640,6 +652,120 @@ model AccessLog {
 
   @@index([userId, createdAt(sort: Desc)], map: "idx_access_logs_user")
   @@map("access_logs")
+}
+
+// ---------- painel admin (migration 20261002000000_admin_panel) ----------
+// FKs pra users/pois ficam só na migration (sem relação aqui: não mexe no modelo User nem no POI).
+
+/// evento criado pela equipe; publicado vira POI de mapa (pois.event_id) até ends_at. CHECKs de categoria/status/horário na migration.
+model Event {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title       String    @db.VarChar(120)
+  description String?
+  /// 'event' | 'show' | 'party' | 'festival' | 'sports' | 'other'
+  category    String    @db.VarChar(12)
+  /// 'draft' | 'published' | 'cancelled'
+  status      String    @default("draft") @db.VarChar(10)
+  startsAt    DateTime  @map("starts_at") @db.Timestamptz(6)
+  endsAt      DateTime  @map("ends_at") @db.Timestamptz(6)
+  venueName   String?   @map("venue_name") @db.VarChar(255)
+  latitude    Decimal   @db.Decimal(10, 8)
+  longitude   Decimal   @db.Decimal(11, 8)
+  address     String?   @db.VarChar(500)
+  city        String?   @db.VarChar(100)
+  coverUrl    String?   @map("cover_url") @db.VarChar(500)
+  poiId       BigInt?   @map("poi_id")
+  mapPoiId    BigInt?   @map("map_poi_id")
+  createdBy   String?   @map("created_by") @db.Uuid
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, startsAt], map: "events_status_starts_idx")
+  @@map("events")
+}
+
+/// campanha de push/aviso do painel; o envio agendado é "pego" com UPDATE ... FOR UPDATE SKIP LOCKED (nunca duas vezes)
+model PushCampaign {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title       String    @db.VarChar(80)
+  body        String    @db.VarChar(240)
+  /// NotificationTarget | null
+  target      Json?
+  /// CampaignAudience
+  audience    Json
+  /// CampaignChannels
+  channels    Json
+  /// 'draft' | 'scheduled' | 'sending' | 'sent' | 'cancelled' | 'failed'
+  status      String    @default("draft") @db.VarChar(10)
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(6)
+  startedAt   DateTime? @map("started_at") @db.Timestamptz(6)
+  sentAt      DateTime? @map("sent_at") @db.Timestamptz(6)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  eventId     String?   @map("event_id") @db.Uuid
+  createdBy   String?   @map("created_by") @db.Uuid
+  targetCount Int       @default(0) @map("target_count")
+  notified    Int       @default(0)
+  pushSent    Int       @default(0) @map("push_sent")
+  pushFailed  Int       @default(0) @map("push_failed")
+  opened      Int       @default(0)
+  error       String?   @db.VarChar(255)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([createdAt(sort: Desc)], map: "push_campaigns_created_idx")
+  @@map("push_campaigns")
+}
+
+/// preferências de aviso (PATCH /notifications/settings); sem linha = recebe tudo
+model NotificationPref {
+  userId    String   @id @map("user_id") @db.Uuid
+  campaigns Boolean  @default(true)
+  events    Boolean  @default(true)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("notification_prefs")
+}
+
+/// atendimento do suporte; no máximo UM não resolvido por pessoa (índice único parcial support_threads_one_open_uq)
+model SupportThread {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String           @map("user_id") @db.Uuid
+  /// 'open' (esperando a equipe) | 'pending' (esperando a pessoa) | 'resolved'
+  status          String           @default("open") @db.VarChar(10)
+  assignedTo      String?          @map("assigned_to") @db.Uuid
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  lastMessageAt   DateTime         @default(now()) @map("last_message_at") @db.Timestamptz(6)
+  userUnread      Int              @default(0) @map("user_unread")
+  staffUnread     Int              @default(0) @map("staff_unread")
+  firstResponseAt DateTime?        @map("first_response_at") @db.Timestamptz(6)
+  rating          Int?             @db.SmallInt
+  resolvedAt      DateTime?        @map("resolved_at") @db.Timestamptz(6)
+  messages        SupportMessage[]
+
+  @@index([status, lastMessageAt(sort: Desc)], map: "support_threads_queue_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "support_threads_user_idx")
+  @@map("support_threads")
+}
+
+model SupportMessage {
+  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  threadId  String        @map("thread_id") @db.Uuid
+  senderId  String?       @map("sender_id") @db.Uuid
+  /// 'user' | 'staff' | 'system'
+  author    String        @db.VarChar(8)
+  body      String
+  /// nota interna: só a equipe vê
+  internal  Boolean       @default(false)
+  clientId  String?       @map("client_id") @db.VarChar(64)
+  createdAt DateTime      @default(dbgenerated("clock_timestamp()")) @map("created_at") @db.Timestamptz(6)
+  thread    SupportThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, clientId], map: "support_messages_sender_client_uq")
+  @@index([threadId, createdAt], map: "support_messages_thread_idx")
+  @@map("support_messages")
 }
 
 // ---------- catálogo geográfico próprio (migration 20260930120000_geo_catalog; dados: scripts/geo) ----------

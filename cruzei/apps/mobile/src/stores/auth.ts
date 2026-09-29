@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User } from '@cruzei/shared-types';
 import { api, clearSession, getToken, setRefreshToken, setToken, setUnauthorizedHandler } from '../services/api';
+import { unregisterPushDevice } from '../services/notifications';
 
 interface RegisterInput {
   phone: string;
@@ -121,6 +122,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
     },
 
     async logout() {
+      // o token de push sai da conta antes (a rota precisa da sessão); falha não segura o logout
+      await unregisterPushDevice().catch(() => undefined);
       try {
         await api.post('/auth/logout');
       } catch {

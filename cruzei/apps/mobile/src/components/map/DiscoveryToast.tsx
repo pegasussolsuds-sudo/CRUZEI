@@ -13,11 +13,13 @@ export interface DiscoveryHint {
   tone: DiscoveryTone;
   /** tocar leva a câmera até o POI */
   poiId?: number;
+  /** ação própria do toque (aviso rápido do app: abre o destino da notificação); vale no lugar do poiId */
+  onPress?: () => void;
 }
 
 export interface DiscoveryToastProps {
   hint: DiscoveryHint | null;
-  onPress: (poiId: number) => void;
+  onPress?: (poiId: number) => void;
   onHide: () => void;
   hideAfterMs?: number;
 }
@@ -34,18 +36,19 @@ export function DiscoveryToast({ hint, onPress, onHide, hideAfterMs = 3400 }: Di
   }, [hint, hideAfterMs, onHide]);
 
   if (!hint) return null;
-  const tappable = hint.poiId != null;
+  const tappable = hint.poiId != null || hint.onPress != null;
 
   return (
     <SlideInView key={hint.key} from="up" distance={32} springPreset="snappy" style={styles.wrap} accessibilityLiveRegion="polite">
       <ScaleOnPress
         onPress={() => {
-          if (hint.poiId != null) onPress(hint.poiId);
+          if (hint.onPress) hint.onPress();
+          else if (hint.poiId != null) onPress?.(hint.poiId);
           onHide();
         }}
         disabled={!tappable}
         accessibilityRole={tappable ? 'button' : 'text'}
-        accessibilityLabel={tappable ? `${hint.text}. Tocar pra ver no mapa` : hint.text}
+        accessibilityLabel={hint.onPress ? `${hint.text}. Tocar pra abrir` : tappable ? `${hint.text}. Tocar pra ver no mapa` : hint.text}
         style={[styles.toast, ...(hint.tone === 'hot' ? [styles.hot] : hint.tone === 'event' ? [styles.event] : [])]}
         glowColor={hint.tone === 'hot' ? colors.secondary : undefined}
       >

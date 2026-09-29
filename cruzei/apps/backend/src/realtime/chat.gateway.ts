@@ -30,6 +30,9 @@ import {
 
 /** sala de cada pessoa: todo evento que precisa chegar (conversa, mensagem, curtida) sai por aqui */
 const userRoom = (userId: string) => `user:${userId}`;
+/** sala da equipe (admin/moderador): fila e mensagens do suporte ao vivo */
+export const STAFF_SUPPORT_ROOM = 'staff:support';
+const isStaffRole = (role: unknown) => role === 'admin' || role === 'moderator';
 /** sala da conversa aberta: SÓ o "digitando" (o resto vai pelas salas user:<id>) */
 const convRoom = (conversationId: string) => `conv:${conversationId}`;
 /** salas user:<id> sem repetição e sem id vazio */
@@ -94,9 +97,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       // conta banida/suspensa/excluída não conecta: o erro leva o código (account_banned…) e o motivo pro app
       this.accounts
         .blockedReason(payload.sub)
-        .then((blocked) => {
+        .then(async (blocked) => {
           if (!blocked) {
             client.data.userId = payload.sub;
+            // papel do estado da conta (cache de 15 s, já carregado pelo blockedReason): a equipe entra na sala do suporte
+            client.data.role = await this.roleOf(payload.sub);
             return next();
           }
           const err = new Error(blocked.error) as Error & { data?: unknown };
@@ -114,6 +119,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
     client.join(userRoom(userId));
+    if (isStaffRole(client.data.role)) client.join(STAFF_SUPPORT_ROOM);
     this.online.set(userId, (this.online.get(userId) ?? 0) + 1);
     this.logger.debug(`socket conectado user=${userId} id=${client.id}`);
   }
@@ -125,6 +131,15 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     if (n <= 0) this.online.delete(userId);
     else this.online.set(userId, n);
     this.logger.debug(`socket desconectado user=${userId} id=${client.id}`);
+  }
+
+  /** papel pra sala da equipe; sem conseguir ler o estado da conta, conecta como pessoa comum (nunca como equipe) */
+  private async roleOf(userId: string): Promise<string> {
+    try {
+      return (await this.accounts.get(userId)).role;
+    } catch {
+      return 'user';
+    }
   }
 
   isOnline(userId: string): boolean {
@@ -236,6 +251,27 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     for (const s of sockets) {
       for (const room of s.rooms) if (room.startsWith('conv:')) s.leave(room);
     }
+  }
+
+  /** fila do suporte: todos os sockets da equipe (admin/moderador), em todos os processos */
+  emitToStaff(event: string, payload: unknown) {
+    this.server?.to(STAFF_SUPPORT_ROOM).emit(event, payload);
+  }
+
+  /**
+   * Papel mudou (painel): põe/tira os sockets JÁ conectados da pessoa da sala da equipe, em todos os processos — quem
+   * perdeu o papel para de ver a fila do suporte na hora, sem esperar reconectar.
+   */
+  setStaffMembership(userId: string, isStaff: boolean) {
+    if (!this.server || !userId) return;
+    const sockets = this.server.in(userRoom(userId));
+    if (isStaff) sockets.socketsJoin(STAFF_SUPPORT_ROOM);
+    else sockets.socketsLeave(STAFF_SUPPORT_ROOM);
+  }
+
+  /** pra todo mundo conectado, em todos os processos (ex.: 'pois:changed' — o mapa busca os lugares de novo) */
+  broadcast(event: string, payload: unknown) {
+    this.server?.emit(event, payload);
   }
 
   /** conta banida/suspensa: derruba as conexões em todos os processos (o adaptador Redis repassa) */

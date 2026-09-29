@@ -37,6 +37,7 @@ import { Canvas, Circle, Path, Skia, SweepGradient, rect, vec } from '@shopify/r
 import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
 import { useVisibility } from '../../hooks/useVisibility';
+import { unreadNotifications, useNotificationList } from '../../hooks/useNotifications';
 import { FadeInView, Glow, Pulse, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
@@ -80,6 +81,9 @@ export function ProfileScreen() {
   const { logout, setUser } = useAuthStore();
   const { isAnonymous, askToggle: toggleAnonymous } = useVisibility();
   const [busy, setBusy] = useState(false);
+  // avisos não lidos: ponto no sininho (a mesma lista do ponto da aba)
+  const notifications = useNotificationList();
+  const unreadNotices = unreadNotifications(notifications.data);
 
   const query = useQuery({
     queryKey: ['me'],
@@ -203,6 +207,7 @@ export function ProfileScreen() {
   const goBoost = () => nav.navigate('Boost');
   const goPhotos = () => nav.navigate('PhotoUpload', { fromOnboarding: false });
   const goAvatar = () => nav.navigate('AvatarSetup', { fromOnboarding: false });
+  const goNotifications = () => nav.navigate('Notifications');
   const cruzeiAvatar = resolveAvatar(me.avatar, me.id, me.gender);
 
   return (
@@ -227,10 +232,21 @@ export function ProfileScreen() {
       >
         <FadeInView fromY={-8} style={styles.titleRow}>
           <Text style={styles.title}>seu perfil</Text>
-          <ScaleOnPress onPress={goEdit} style={styles.editBtn} accessibilityRole="button" accessibilityLabel="Editar perfil" glowColor={colors.primary}>
-            <Ionicons name="create-outline" size={18} color={colors.black} />
-            <Text style={styles.editText}>Editar</Text>
-          </ScaleOnPress>
+          <View style={styles.titleActions}>
+            <Pressable
+              onPress={goNotifications}
+              style={({ pressed }) => [styles.bellBtn, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel={unreadNotices > 0 ? `Avisos, ${unreadNotices} ${unreadNotices === 1 ? 'novo' : 'novos'}` : 'Avisos'}
+            >
+              <Ionicons name={unreadNotices > 0 ? 'notifications' : 'notifications-outline'} size={20} color={colors.black} />
+              {unreadNotices > 0 ? <View style={styles.bellDot} /> : null}
+            </Pressable>
+            <ScaleOnPress onPress={goEdit} style={styles.editBtn} accessibilityRole="button" accessibilityLabel="Editar perfil" glowColor={colors.primary}>
+              <Ionicons name="create-outline" size={18} color={colors.black} />
+              <Text style={styles.editText}>Editar</Text>
+            </ScaleOnPress>
+          </View>
         </FadeInView>
 
         {/* Header com parallax */}
@@ -368,6 +384,12 @@ export function ProfileScreen() {
         </Section>
 
         <Section title="conta" delay={620}>
+          <Link
+            icon="notifications-outline"
+            label="Avisos"
+            hint={unreadNotices > 0 ? `${unreadNotices > 99 ? '99+' : unreadNotices} ${unreadNotices === 1 ? 'novo' : 'novos'}` : 'eventos, suporte e novidades'}
+            onPress={goNotifications}
+          />
           <Link
             icon="shield-checkmark-outline"
             label="Verificação por selfie"
@@ -635,6 +657,29 @@ const styles = StyleSheet.create({
     borderRadius: radius.full,
   },
   editText: { ...typography.label, color: colors.black },
+  titleActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  // colors.white é o fundo: o botão redondo precisa de borda
+  bellBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+  },
+  bellDot: {
+    position: 'absolute',
+    top: 9,
+    right: 10,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.primary,
+    borderWidth: 1.5,
+    borderColor: colors.surface,
+  },
 
   header: { alignItems: 'center', marginBottom: spacing.lg },
   ringWrap: { width: RING, height: RING, alignItems: 'center', justifyContent: 'center' },

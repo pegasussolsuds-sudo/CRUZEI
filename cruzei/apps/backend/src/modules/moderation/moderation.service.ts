@@ -11,6 +11,7 @@ import type {
   ReportReason,
   UserRole,
 } from '@cruzei/shared-types';
+import { maskPhone } from '../../common/phone-mask';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
@@ -326,11 +327,4 @@ function ageOf(birth: Date): number {
   const m = t.getMonth() - birth.getMonth();
   if (m < 0 || (m === 0 && t.getDate() < birth.getDate())) a -= 1;
   return a;
-}
-
-/** +55 34 9••••-1234: o moderador confere o número sem ver ele inteiro */
-function maskPhone(phone: string | null): string | null {
-  if (!phone) return null;
-  const d = phone.replace(/\D/g, '');
-  return d.length < 8 ? '••••' : `+${d.slice(0, 2)} ${d.slice(2, 4)} ${d.slice(4, 5)}••••-${d.slice(-4)}`;
 }

@@ -10,6 +10,8 @@ import type {
 import type { NearbyUser, Hotspot } from '../location';
 import type { AvatarConfig } from '../avatar';
 import type { AccountBlockedError, PhotoStatus } from '../moderation';
+import type { NotificationNewPayload } from '../notifications';
+import type { SupportMessageEvent, SupportThreadEvent, SupportTypingEvent } from '../support';
 
 export interface ServerToClientEvents {
   // Presença
@@ -48,6 +50,17 @@ export interface ServerToClientEvents {
   /** uma foto minha foi aprovada/recusada */
   photo_moderated: (data: { photoId: string; status: PhotoStatus; reason: string | null }) => void;
 
+  // Central de avisos (sala user:<id>): aviso novo na hora, sem esperar o push
+  'notification:new': (data: NotificationNewPayload) => void;
+
+  // Suporte ao vivo
+  /** app: só as mensagens do MEU atendimento, sem nota interna; painel (sala staff:support): todas */
+  'support:message': (data: SupportMessageEvent) => void;
+  /** só o painel (sala staff:support): a fila mudou */
+  'support:thread': (data: SupportThreadEvent) => void;
+  /** o outro lado está digitando */
+  'support:typing': (data: SupportTypingEvent) => void;
+
   // Online status
   user_online: (data: { userId: string }) => void;
   user_offline: (data: { userId: string }) => void;
@@ -65,6 +78,9 @@ export interface ClientToServerEvents {
   join_conversation: (data: { conversationId: string }) => void;
   leave_conversation: (data: { conversationId: string }) => void;
   typing: (data: { conversationId: string; isTyping: boolean }) => void;
+
+  // Suporte: o app manda só {isTyping} (vai pro atendimento aberto dele); o painel manda {threadId, isTyping}
+  'support:typing': (data: { isTyping: boolean; threadId?: string }) => void;
 
   // Heartbeat
   heartbeat: () => void;

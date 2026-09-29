@@ -45,6 +45,8 @@ function setup(o: Setup = {}) {
     }),
     pOI: {
       findUnique: jest.fn(async (a: { where: { id?: bigint } }) => (a.where.id != null ? (o.poiById ?? null) : null)),
+      // leitura "como o app vê" (hiddenAt: null): o POI de teste nunca está oculto
+      findFirst: jest.fn(async (a: { where: { id?: bigint } }) => (a.where.id != null ? (o.poiById ?? null) : null)),
       findMany: jest.fn(async () => o.nearPois ?? []),
       upsert: jest.fn(async () => ({ id: 777n })),
     },

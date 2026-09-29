@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as ngeohash from 'ngeohash';
 import { PrismaService } from '../../database/prisma.service';
+import { ChatGateway } from '../../realtime/chat.gateway';
 import type { Redis } from 'ioredis';
 import { CANDIDATE_INVALIDATION_CHANNEL, RedisService } from '../../redis/redis.service';
 import { avatarOrFallback } from '../../common/avatar';
@@ -222,11 +223,14 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private readonly promptMemo = new TtlMemo<'all', Map<string, PromptOption[]>>(60_000, 1);
   private readonly salt: string;
   private invalidations: Redis | null = null;
+  /** junta várias mudanças de lugar seguidas (ex.: a rodada da galera) num aviso só pros apps */
+  private poisChangedTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     config: ConfigService,
+    @Optional() private readonly chat?: ChatGateway,
   ) {
     this.salt = config.get<string>('locationSalt') || DEV_SALT;
   }
@@ -454,7 +458,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   /** índice em memória dos lugares públicos (nome, coordenada, cidade) — recarrega a cada POI_INDEX_TTL_MS */
   private poiIndex(): Promise<PoiIndex> {
     return this.poiIndexMemo.get('all', async () => {
-      const rows = await this.prisma.pOI.findMany({ select: { id: true, name: true, latitude: true, longitude: true, city: true } });
+      // lugar oculto pela equipe não prende ninguém: some da presença, do "quem está aqui" e das contagens
+      const rows = await this.prisma.pOI.findMany({ where: { hiddenAt: null }, select: { id: true, name: true, latitude: true, longitude: true, city: true } });
       return new PoiIndex(rows.map((p) => ({ id: Number(p.id), name: p.name, lat: Number(p.latitude), lng: Number(p.longitude), city: p.city ?? null })));
     });
   }
@@ -462,6 +467,13 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   /** um lugar novo (ex.: descoberto pelos usuários) passa a valer na próxima atualização, sem esperar o minuto */
   invalidatePoiIndex(): void {
     this.poiIndexMemo.invalidate('all');
+    // lugar entrou/saiu do mapa (evento publicado/cancelado, lugar aprovado/oculto): os apps abertos buscam de novo
+    // na hora, sem esperar o refetch de 45 s. Coalescido em 2 s; o app espalha a busca com um atraso aleatório
+    if (!this.chat || this.poisChangedTimer) return;
+    this.poisChangedTimer = setTimeout(() => {
+      this.poisChangedTimer = null;
+      this.chat?.broadcast('pois:changed', { at: Date.now() });
+    }, 2_000);
   }
 
   /**

@@ -1,0 +1,108 @@
+// Suporte ao vivo: fila | conversa em tempo real | contexto da pessoa.
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router';
+import { Headphones, Inbox } from 'lucide-react';
+import { adminApi } from '@/api/admin';
+import { qk } from '@/api/keys';
+import { useCursorQuery } from '@/api/useCursorQuery';
+import { useMe } from '@/auth/AuthProvider';
+import { SUPPORT_FILTERS, type SupportFilter } from '@/lib/support';
+import { readPref, writePref } from '@/lib/prefs';
+import { useSupportLive } from '@/realtime/SupportLive';
+import { useSocket } from '@/realtime/SocketProvider';
+import { Segmented } from '@/components/ui/Choice';
+import { EmptyState, ErrorState, LoadMore, SkeletonRows } from '@/components/ui/States';
+import { usePageTitle } from '@/components/layout/title';
+import { ThreadRow } from './ThreadRow';
+import { Conversation } from './Conversation';
+
+function isFilter(v: string): v is SupportFilter {
+  return SUPPORT_FILTERS.some((f) => f.key === v);
+}
+
+export default function SupportPage() {
+  usePageTitle('Suporte');
+  const { threadId } = useParams();
+  const navigate = useNavigate();
+  const me = useMe();
+  const { connected, socket } = useSocket();
+  const { waiting } = useSupportLive();
+  const [filter, setFilterState] = useState<SupportFilter>(() => {
+    const saved = readPref('support-filter', 'open');
+    return isFilter(saved) ? saved : 'open';
+  });
+  const setFilter = (f: SupportFilter) => {
+    setFilterState(f);
+    writePref('support-filter', f);
+  };
+
+  const list = useCursorQuery(
+    qk.supportThreads(filter),
+    (cursor) => adminApi.supportThreads(filter === 'mine' ? { mine: true, cursor } : { status: filter, cursor }),
+    // socket caiu: a fila se atualiza sozinha de 20 em 20 s
+    { refetchInterval: connected ? false : 20_000 },
+  );
+  const threads = list.data?.pages.flatMap((p) => p.items) ?? [];
+
+  // Esc volta pra fila no tablet
+  useEffect(() => {
+    if (!threadId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && window.matchMedia('(max-width: 1023px)').matches) navigate('/suporte');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [threadId, navigate]);
+
+  return (
+    <div className="support" data-has-thread={!!threadId}>
+      <section className="support-queue" aria-label="Fila do suporte">
+        <header className="support-queue-head">
+          <div className="row">
+            <h1 className="support-title">Suporte</h1>
+            <span className="spacer" />
+            <span className="row xsmall faint" title={connected ? 'Mensagens chegam na hora' : 'Sem tempo real: atualizando de tempos em tempos'}>
+              <span className="live-dot" data-on={connected} aria-hidden="true" />
+              {socket ? (connected ? 'ao vivo' : 'reconectando') : 'offline'}
+            </span>
+          </div>
+          <div className="small muted">{waiting ? `${waiting} ${waiting === 1 ? 'pessoa esperando' : 'pessoas esperando'} resposta` : 'Ninguém esperando agora'}</div>
+          <Segmented<SupportFilter> label="Filtrar fila" value={filter} onChange={setFilter} options={SUPPORT_FILTERS.map((f) => ({ value: f.key, label: f.label }))} />
+        </header>
+        <div className="support-queue-list">
+          {list.isPending ? (
+            <SkeletonRows rows={7} height={64} />
+          ) : list.isError ? (
+            <ErrorState compact error={list.error} onRetry={() => void list.refetch()} />
+          ) : !threads.length ? (
+            <EmptyState
+              compact
+              icon={<Inbox size={22} />}
+              title={filter === 'open' ? 'Tudo respondido' : filter === 'mine' ? 'Nada com você' : 'Nada aqui'}
+              text={filter === 'open' ? 'Quando alguém chamar o suporte no app, aparece aqui na hora.' : undefined}
+            />
+          ) : (
+            <>
+              <ul className="list" aria-label="Atendimentos">
+                {threads.map((t) => (
+                  <li key={t.id}>
+                    <ThreadRow thread={t} active={t.id === threadId} meId={me.id} />
+                  </li>
+                ))}
+              </ul>
+              <LoadMore hasMore={!!list.hasNextPage} loading={list.isFetchingNextPage} onClick={() => void list.fetchNextPage()} />
+            </>
+          )}
+        </div>
+      </section>
+
+      {threadId ? (
+        <Conversation key={threadId} threadId={threadId} />
+      ) : (
+        <section className="support-empty" aria-label="Conversa">
+          <EmptyState icon={<Headphones size={22} />} title="Escolha um atendimento" text="As mensagens chegam em tempo real. Enter envia, Shift+Enter quebra a linha." />
+        </section>
+      )}
+    </div>
+  );
+}

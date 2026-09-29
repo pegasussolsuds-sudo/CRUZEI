@@ -8,6 +8,7 @@ import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobi
 import { BRAND } from '../../brand';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { EMERGENCY_NUMBERS } from '../../components/safety/reasons';
+import { supportUnread, useSupportThread } from '../../hooks/useSupport';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -22,11 +23,33 @@ const DATE_TIPS = [
 /** Ajuda e segurança: contato com o suporte, documentos legais, bloqueados, dicas e telefones de emergência */
 export function HelpScreen() {
   const nav = useNavigation<Nav>();
+  // respostas da equipe ainda não lidas (o atendimento atual; sem atendimento = 0)
+  const support = useSupportThread();
+  const unread = supportUnread(support.data);
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.section}>fale com a gente</Text>
         <View style={styles.card}>
+          <Pressable
+            style={({ pressed }) => [styles.supportBtn, pressed && { opacity: 0.7 }]}
+            onPress={() => nav.navigate('SupportChat')}
+            accessibilityRole="button"
+            accessibilityLabel={unread > 0 ? `Falar com o suporte, ${unread} ${unread === 1 ? 'resposta nova' : 'respostas novas'}` : 'Falar com o suporte'}
+          >
+            <Ionicons name="chatbubbles-outline" size={20} color={colors.black} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.supportLabel}>Falar com o suporte</Text>
+              <Text style={styles.supportHint}>{unread > 0 ? 'A Equipe Metch respondeu' : 'Chat com a Equipe Metch, aqui no app'}</Text>
+            </View>
+            {unread > 0 ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
+              </View>
+            ) : (
+              <Ionicons name="chevron-forward" size={18} color={colors.black} />
+            )}
+          </Pressable>
           <Pressable
             style={styles.row}
             onPress={() => Linking.openURL(`mailto:${BRAND.supportEmail}?subject=${encodeURIComponent('Ajuda com o Metch')}`)}
@@ -107,7 +130,8 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
   content: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   section: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', letterSpacing: 1, marginTop: spacing.lg, marginBottom: spacing.sm },
-  card: { backgroundColor: colors.white, borderRadius: radius.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+  // colors.white é o fundo: o cartão precisa de borda
+  card: { backgroundColor: colors.white, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.gray[200], paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -124,4 +148,28 @@ const styles = StyleSheet.create({
   tip: { flexDirection: 'row', gap: spacing.sm },
   tipDot: { ...typography.body, color: colors.gray[400], paddingVertical: spacing.sm },
   phone: { ...typography.h4, color: colors.danger, minWidth: 44 },
+  supportBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    minHeight: 56,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+    borderRadius: radius.md,
+    backgroundColor: colors.primary,
+  },
+  supportLabel: { ...typography.label, color: colors.black },
+  supportHint: { ...typography.caption, color: colors.gray[800], marginTop: 1 },
+  badge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    backgroundColor: colors.black,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: { ...typography.caption, fontFamily: fontFamily.bodyBold, color: colors.primary },
 });
