@@ -14,6 +14,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { AccountModule } from './modules/account/account.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AnonymousModule } from './modules/anonymous/anonymous.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BlocksModule } from './modules/blocks/blocks.module';
@@ -121,6 +122,8 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     // painel admin web (/v1/admin/*) e suporte ao vivo (/v1/support/* + /v1/admin/support/*)
     AdminModule,
     SupportModule,
+    // métricas próprias (/v1/analytics/*): funil do cadastro e retenção, sem empresa de fora
+    AnalyticsModule,
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.

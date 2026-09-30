@@ -10,6 +10,7 @@ import { useMe } from '@/auth/AuthProvider';
 import { formatRelative, formatShortDateTime } from '@/lib/format';
 import { canModerateAccount } from '@/lib/permissions';
 import { REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, URGENT_REASONS } from '@/lib/labels';
+import { reportConversationIds } from '@/lib/report-context';
 import { AccountStatusBadge } from '@/components/badges';
 import { ModerationActionDialog } from '@/components/moderation/ModerationActionDialog';
 import { PhotoDecisionButtons } from '@/components/moderation/PhotoDecision';
@@ -159,6 +160,12 @@ function ReportGroupCard({ group, onAct }: { group: ModerationReportGroup; onAct
               <Badge tone={URGENT_REASONS.has(r.reason) ? 'danger' : 'warning'}>{REPORT_REASON_LABEL[r.reason]}</Badge>
               {r.context?.source ? <span className="xsmall faint">pelo {REPORT_SOURCE_LABEL[r.context.source]}</span> : null}
               {!r.reporterId ? <span className="xsmall faint">· automática</span> : null}
+              {/* golpe em várias conversas: a ficha abre cada uma */}
+              {reportConversationIds(r.context).length > 1 ? (
+                <Link to={`/usuarios/${u.id}`} className="xsmall">
+                  em {reportConversationIds(r.context).length} conversas
+                </Link>
+              ) : null}
               <span className="spacer" />
               <span className="xsmall faint">{formatShortDateTime(r.createdAt)}</span>
             </div>

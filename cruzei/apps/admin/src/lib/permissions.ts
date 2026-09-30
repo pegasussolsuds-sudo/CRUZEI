@@ -1,7 +1,7 @@
 // O que cada pessoa da equipe vê. O servidor confere tudo de novo: aqui é só pra não mostrar botão que vai dar 403.
 import type { AdminMe, AdminPermission, UserRole } from '@cruzei/shared-types';
 
-export type NavKey = 'dashboard' | 'users' | 'moderation' | 'places' | 'events' | 'campaigns' | 'support' | 'audit';
+export type NavKey = 'dashboard' | 'metrics' | 'users' | 'moderation' | 'places' | 'events' | 'campaigns' | 'support' | 'audit';
 
 export interface NavItem {
   key: NavKey;
@@ -12,6 +12,8 @@ export interface NavItem {
 
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'dashboard', label: 'Painel', path: '/', permission: 'dashboard' },
+  // funil do cadastro, retenção e ativos: só admin
+  { key: 'metrics', label: 'Métricas', path: '/metricas', permission: 'metrics' },
   { key: 'users', label: 'Usuários', path: '/usuarios', permission: 'users.read' },
   { key: 'moderation', label: 'Moderação', path: '/moderacao', permission: 'users.moderate' },
   { key: 'places', label: 'Lugares', path: '/lugares', permission: 'places' },

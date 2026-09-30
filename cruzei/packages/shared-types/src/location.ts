@@ -103,8 +103,20 @@ export interface NearbyUser {
   likeStatus?: LikeStatus;
   /** conversa do par, se existe e não está arquivada por mim (o botão vira "Abrir conversa") */
   conversation?: ConversationRef | null;
+  /**
+   * essa pessoa me deu uma SUPER curtida que eu ainda não respondi (nem curti nem passei): no deck vem primeiro, com o
+   * selo "⭐ Te deu uma super curtida". A super curtida revela quem mandou (likeStatus RECEIVED mesmo sem Premium+);
+   * curtida normal continua escondida. Ausente = false.
+   */
+  superLikedMe?: boolean;
 }
 
+/**
+ * Filtros do "quem ver" que o servidor aplica no /nearby (mapa, lista e deck):
+ * - "Mostrar" (showMe) recíproco;
+ * - faixa de idade (settings.ageMin/ageMax) só pelo meu lado — quem esconde a idade entra pelo bloco de 5 anos
+ *   (AGE_BUCKET_YEARS: passa se o bloco encosta na faixa); a idade exata nunca sai do servidor.
+ */
 export interface DiscoveryResponse {
   users: NearbyUser[];
   /** pessoas por perto que existem mas não aparecem (região esparsa) — só o número */
@@ -116,6 +128,29 @@ export interface DiscoveryResponse {
    * número (nem o total). Nunca identidade: sem id, nome, foto nem avatar, e agrupada por lugar ou quadra.
    */
   invisible?: InvisiblePresence | null;
+}
+
+/**
+ * Pessoa no DECK de curtidas. Igual à NearbyUser, mas quem me deu super curtida pendente entra MESMO fora do raio: aí
+ * vem com proximityBand null, mapPosition null, lastSeen 'earlier' e isOnline false (a super curtida revela quem é,
+ * nunca onde está).
+ */
+export type DeckUser = Omit<NearbyUser, 'proximityBand'> & { proximityBand: ProximityBand | null };
+
+/**
+ * GET /v1/location/nearby?radius_meters=350&deck=1 — o deck ("Passar"/"Curtir"). Mesmos filtros do mapa (bloqueio,
+ * "Mostrar" recíproco, faixa de idade, descoberta) e mais:
+ * - fora: quem eu passei há menos de DISCOVERY_PASS_DAYS, quem eu já curti, invisíveis (anônimos);
+ * - primeiro: super curtidas RECEBIDAS e ainda não respondidas (superLikedMe true, a mais recente primeiro), de
+ *   qualquer distância — sem quem mandou estando invisível, pausado, em análise, suspenso/banido/apagado ou bloqueado
+ *   (qualquer lado); respeitam o MEU "Mostrar" e a MINHA faixa de idade;
+ * - depois: o resto na ordem de sempre (Boost primeiro).
+ * Sem deck=1 (mapa e lista) nada muda: passar não esconde ninguém do mapa.
+ */
+export interface DeckResponse extends Omit<DiscoveryResponse, 'users'> {
+  users: DeckUser[];
+  /** quantas super curtidas pendentes estão no topo de `users` */
+  superLikesPending: number;
 }
 
 /** grupo de invisíveis num lugar ou numa quadra: um marcador com a contagem, nunca uma pessoa */

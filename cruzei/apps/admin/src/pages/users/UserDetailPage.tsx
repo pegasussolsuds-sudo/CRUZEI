@@ -27,7 +27,7 @@ import { qk } from '@/api/keys';
 import { isHttpError } from '@/api/http';
 import { useMe } from '@/auth/AuthProvider';
 import { formatDate, formatDateTime, formatNumber, formatRelative, formatShortDateTime, isNoExpiry } from '@/lib/format';
-import { isOpenReport, moderationActionLabel, platformLabel, REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, REPORT_STATUS_LABEL, subscriptionState, TIER_LABEL, URGENT_REASONS } from '@/lib/labels';
+import { GENDER_LABEL, isOpenReport, moderationActionLabel, platformLabel, REPORT_REASON_LABEL, REPORT_SOURCE_LABEL, REPORT_STATUS_LABEL, subscriptionState, TIER_LABEL, URGENT_REASONS } from '@/lib/labels';
 import { canChangeRole, canModerateAccount, hasPermission } from '@/lib/permissions';
 import { AccountStatusBadge, PhotoStatusBadge, RoleBadge, SupportStatusBadge, TierBadge } from '@/components/badges';
 import { ModerationActionDialog } from '@/components/moderation/ModerationActionDialog';
@@ -40,6 +40,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
 import { EmptyState, ErrorState, Skeleton } from '@/components/ui/States';
 import { CopyId, PageHeader } from '@/components/ui/misc';
+import { convAnchor, openConversation, reportConversationIds } from '@/lib/report-context';
 import { PhoneHistory, ReleasedBadge } from './PhoneHistory';
 import { ReleasePhoneDialog } from './ReleasePhoneDialog';
 
@@ -238,6 +239,8 @@ function Photos({ u, canModerate }: { u: AdminUserDetail; canModerate: boolean }
 function Reports({ u }: { u: AdminUserDetail }) {
   // histórico (até 50): pendentes e já decididas, cada uma com a situação
   const reports = u.moderation.reports;
+  // conversas que a ficha trouxe (só as da pessoa): cada denúncia abre as dela
+  const loaded = new Set(u.moderation.conversations.map((c) => c.conversationId));
   return (
     <Card>
       <CardHead title="Denúncias recebidas" icon={<Flag size={16} />}>
@@ -257,6 +260,7 @@ function Reports({ u }: { u: AdminUserDetail }) {
                 <span className="xsmall faint">{formatShortDateTime(r.createdAt)}</span>
               </div>
               {r.description ? <p className="pre-wrap small">{r.description}</p> : <p className="small faint">Sem descrição.</p>}
+              <ReportConversations ids={reportConversationIds(r.context).filter((cid) => loaded.has(cid))} />
               {r.reporterId ? (
                 <Link to={`/usuarios/${r.reporterId}`} className="xsmall">
                   Ver quem denunciou
@@ -270,20 +274,42 @@ function Reports({ u }: { u: AdminUserDetail }) {
   );
 }
 
+/** conversas citadas numa denúncia (a automática de golpe lista várias): cada botão abre o bloco dela na ficha */
+function ReportConversations({ ids }: { ids: string[] }) {
+  if (!ids.length) return null;
+  return (
+    <div className="row row-wrap xsmall">
+      <span className="faint">{ids.length === 1 ? 'Conversa citada:' : `Em ${ids.length} conversas:`}</span>
+      {ids.map((cid, i) => (
+        <Button key={cid} variant="ghost" size="sm" onClick={() => openConversation(cid)} aria-label={`Abrir a conversa ${i + 1} citada`}>
+          {ids.length === 1 ? 'abrir' : `abrir ${i + 1}`}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 function Conversations({ u }: { u: AdminUserDetail }) {
   const convs = u.moderation.conversations;
   if (!convs.length) return null;
   return (
     <Card>
-      <CardHead title="Conversas citadas nas denúncias" icon={<MessageCircle size={16} />} />
+      <CardHead title="Conversas citadas nas denúncias" icon={<MessageCircle size={16} />}>
+        {convs.length > 1 ? <span className="small faint num">{convs.length}</span> : null}
+      </CardHead>
       <div className="card-body stack">
-        {convs.map((c) => (
-          <div key={c.conversationId} className="conv-block">
-            <div className="row small">
-              <span className="faint">Com</span>
+        {convs.map((c, i) => (
+          // fechadas (menos a 1ª): a denúncia automática pode citar até 10; o botão da denúncia abre a certa
+          <details key={c.conversationId} id={convAnchor(c.conversationId)} className="conv-block conv-details" open={i === 0}>
+            <summary className="row small">
+              <span className="strong">Conversa {i + 1}</span>
+              <span className="faint">com</span>
               <Link to={`/usuarios/${c.otherUserId}`}>a outra pessoa</Link>
+              <span className="faint">
+                · {c.messages.length} {c.messages.length === 1 ? 'mensagem' : 'mensagens'}
+              </span>
               <CopyId id={c.conversationId} label="id da conversa" />
-            </div>
+            </summary>
             <ol className="conv-messages">
               {c.messages.map((m) => {
                 const mine = m.senderId === u.id;
@@ -297,7 +323,7 @@ function Conversations({ u }: { u: AdminUserDetail }) {
                 );
               })}
             </ol>
-          </div>
+          </details>
         ))}
       </div>
     </Card>
@@ -347,6 +373,8 @@ function Profile({ u }: { u: AdminUserDetail }) {
           </dd>
           <dt>Cidade</dt>
           <dd>{u.city ?? '—'}</dd>
+          <dt>Gênero</dt>
+          <dd>{u.gender ? GENDER_LABEL[u.gender] : '—'}</dd>
           {/* @ público do cartão (spam, venda, perfil de outra pessoa). A orientação não entra no painel */}
           <dt>Instagram</dt>
           <dd>

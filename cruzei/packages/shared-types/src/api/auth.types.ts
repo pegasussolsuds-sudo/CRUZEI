@@ -102,6 +102,8 @@ export interface SessionRevokedError {
  * valem com orientation. showMe padrão 'everyone'. visibilityMode: o app manda sempre; 'anonymous' nasce com a janela
  * grátis de 24 h e ausente (app antigo) também. Se o número veio de conta banida/suspensa, a conta nova nasce em revisão
  * da moderação.
+ * Nome, bio e Instagram passam pelo filtro de abuso: 400 text_blocked (TextBlockedError, com `field`) → o app volta
+ * pra etapa do campo e mostra o `message`. App antigo ainda manda gender 'non_binary': o servidor grava 'other'.
  */
 export interface RegisterRequest {
   phone: string;
@@ -109,6 +111,17 @@ export interface RegisterRequest {
   /** 'AAAA-MM-DD' */
   birthDate: string;
   gender: Gender;
+  /** etapa opcional: até PROFILE_LIMITS.bioMax, com filtro de abuso; vazio/ausente = sem bio */
+  bio?: string;
+  /** etapa opcional: @ do Instagram (aceita @, link e maiúsculas; o servidor normaliza e valida — 400 instagram_invalid) */
+  instagram?: string;
+  /** NOMES do catálogo GET /v1/interests (até PROFILE_LIMITS.interestsMax; nome desconhecido é ignorado) */
+  interests?: string[];
+  /**
+   * id anônimo desta instalação (o mesmo do POST /v1/analytics/events): o servidor liga os eventos do cadastro a
+   * esta conta e grava 'signup_done'. Ausente (app antigo) = nada de métrica
+   */
+  installId?: string;
   lookingFor?: LookingFor;
   /** versão dos Termos aceita (LEGAL_VERSION) */
   termsVersion: string;

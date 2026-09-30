@@ -41,7 +41,10 @@ type Discover = {
 };
 const HIDDEN: Discover = { ok: false, band: null, poi: null };
 let discover: Discover = HIDDEN;
-const location = { discoverability: jest.fn(async () => discover) };
+const location = {
+  discoverability: jest.fn(async () => discover),
+  superLikedMeFrom: jest.fn(async () => new Set<string>()),
+};
 const cards = new PublicUsersController(db, location as unknown as LocationService);
 
 /** corpo do erro Nest (BadRequestException({error, message})) */

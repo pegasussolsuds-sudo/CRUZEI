@@ -27,12 +27,15 @@ import { AccountStateService, blockedBody } from '../account/account-state.servi
 import { lockPair } from '../inbox/inbox.queries';
 import { NotifyService } from '../notifications/notify.service';
 import {
-  contextConversationId,
+  contextConversationIds,
   sanitizeContext,
   type ReportContextInput,
 } from '../reports/report-context';
 
 import { PhotoModerationService } from './photo-moderation.service';
+
+/** conversas citadas que a ficha traz (a lista da denúncia automática tem até 10) */
+export const DETAIL_CONVERSATIONS_MAX = 12;
 
 const SUMMARY_SELECT = {
   id: true,
@@ -204,14 +207,11 @@ export class ModerationService {
       }),
     ]);
     // só as conversas citadas nas denúncias (a política de privacidade avisa que a moderação pode lê-las).
-    // Denúncia de antes da inbox tem context.matchId: a conversa foi criada com o mesmo id do match.
+    // Denúncia de antes da inbox tem context.matchId: a conversa foi criada com o mesmo id do match. A automática de
+    // golpe lista até 10 conversas (context.occurrences): todas entram, pra ficha abrir cada uma.
     const conversationIds = [
-      ...new Set(
-        reports
-          .map((r) => contextConversationId(r.context))
-          .filter((id): id is string => id !== null),
-      ),
-    ].slice(0, 5);
+      ...new Set(reports.flatMap((r) => contextConversationIds(r.context))),
+    ].slice(0, DETAIL_CONVERSATIONS_MAX);
     const conversations: ModerationUserDetail['conversations'] = [];
     for (const conversationId of conversationIds) {
       const c = await this.prisma.conversation.findUnique({
@@ -493,8 +493,8 @@ export class ModerationService {
       reason: r.reason as ReportReason,
       description: r.description,
       reporterId: r.reporterId,
-      // denúncia antiga (matchId, origem 'matches') sai no formato de hoje
-      context: sanitizeContext(r.context as ReportContextInput | null),
+      // denúncia antiga (matchId, origem 'matches') sai no formato de hoje; as de sistema (emergência, filtro) também
+      context: sanitizeContext(r.context as ReportContextInput | null, { stored: true }),
       priority: r.priority,
       createdAt: r.createdAt.toISOString(),
     };

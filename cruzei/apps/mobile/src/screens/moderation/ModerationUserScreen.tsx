@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { instagramUrl } from '@cruzei/shared-utils';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobi
 import { api, toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { reasonLabel } from './ModerationScreen';
+import { isConversationOpen, reportConversationIds } from './reportConversations';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ModerationUser'>;
 
@@ -19,6 +20,8 @@ const SOURCE_LABEL: Record<string, string> = {
   requests: 'pelas solicitações',
   map: 'pelo mapa',
   likes: 'pelas curtidas',
+  emergency: 'pelo botão de emergência',
+  auto_filter: 'pelo filtro automático',
 };
 const ACTION_LABEL: Record<string, string> = {
   auto_hold: 'fora da descoberta',
@@ -51,6 +54,15 @@ export function ModerationUserScreen({ route, navigation }: Props) {
   const { userId } = route.params;
   const qc = useQueryClient();
   const [reason, setReason] = useState('');
+  // conversas citadas: fechadas menos a 1ª; o botão da denúncia abre e rola até a certa
+  const [openConv, setOpenConv] = useState<Record<string, boolean>>({});
+  const scrollRef = useRef<ScrollView>(null);
+  const convY = useRef<Record<string, number>>({});
+  const showConversation = (id: string) => {
+    setOpenConv((o) => ({ ...o, [id]: true }));
+    const y = convY.current[id];
+    if (y !== undefined) scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.sm), animated: true });
+  };
   const q = useQuery({
     queryKey: ['admin', 'user', userId],
     queryFn: async () => (await api.get<ModerationUserDetail>(`/admin/users/${userId}`)).data,
@@ -80,6 +92,7 @@ export function ModerationUserScreen({ route, navigation }: Props) {
   }
   const d = q.data;
   const u = d.user;
+  const loadedConvs = new Set(d.conversations.map((c) => c.conversationId));
   const run = (a: (typeof ACTIONS)[number]) => {
     if ((a.action === 'suspend' || a.action === 'ban' || a.action === 'warn') && !reason.trim()) {
       Alert.alert('Falta o motivo', 'Escreva o motivo que a pessoa vai ver.');
@@ -97,7 +110,7 @@ export function ModerationUserScreen({ route, navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>
           {u.name}, {u.age}
         </Text>
@@ -139,25 +152,47 @@ export function ModerationUserScreen({ route, navigation }: Props) {
               {new Date(r.createdAt).toLocaleString('pt-BR')} · {SOURCE_LABEL[r.context?.source ?? ''] ?? 'pelo app'}
             </Text>
             {r.description ? <Text style={styles.cardText}>{r.description}</Text> : null}
+            <ReportConversationLinks ids={reportConversationIds(r.context, loadedConvs)} onOpen={showConversation} />
           </View>
         ))}
 
-        {d.conversations.map((c) => (
-          <View key={c.conversationId}>
-            <Text style={styles.section}>conversa denunciada</Text>
-            <View style={styles.card}>
-              {c.messages.length === 0 ? <Text style={styles.muted}>Sem mensagens.</Text> : null}
-              {c.messages.map((m) => (
-                <Text key={m.id} style={styles.msg}>
-                  <Text style={{ fontFamily: fontFamily.bodyBold, color: m.senderId === u.id ? colors.danger : colors.gray[600] }}>
-                    {m.senderId === u.id ? u.name : 'outra pessoa'}:
-                  </Text>{' '}
-                  {m.content ?? `[${m.messageType}]`}
+        {d.conversations.map((c, i) => {
+          const open = isConversationOpen(openConv, c.conversationId, i);
+          return (
+            <View
+              key={c.conversationId}
+              onLayout={(e) => {
+                convY.current[c.conversationId] = e.nativeEvent.layout.y;
+              }}
+            >
+              <Pressable
+                onPress={() => setOpenConv((o) => ({ ...o, [c.conversationId]: !open }))}
+                style={styles.convHead}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: open }}
+                accessibilityLabel={`Conversa denunciada ${i + 1}, ${c.messages.length} mensagens. Toque pra ${open ? 'fechar' : 'abrir'}`}
+              >
+                <Text style={[styles.section, styles.convTitle]}>
+                  {open ? '▾' : '▸'} conversa denunciada{d.conversations.length > 1 ? ` ${i + 1}` : ''} · {c.messages.length}{' '}
+                  {c.messages.length === 1 ? 'mensagem' : 'mensagens'}
                 </Text>
-              ))}
+              </Pressable>
+              {open ? (
+                <View style={styles.card}>
+                  {c.messages.length === 0 ? <Text style={styles.muted}>Sem mensagens.</Text> : null}
+                  {c.messages.map((m) => (
+                    <Text key={m.id} style={styles.msg}>
+                      <Text style={{ fontFamily: fontFamily.bodyBold, color: m.senderId === u.id ? colors.danger : colors.gray[600] }}>
+                        {m.senderId === u.id ? u.name : 'outra pessoa'}:
+                      </Text>{' '}
+                      {m.content ?? `[${m.messageType}]`}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
             </View>
-          </View>
-        ))}
+          );
+        })}
 
         {d.actions.length ? <Text style={styles.section}>histórico</Text> : null}
         {d.actions.map((a, i) => (
@@ -196,6 +231,28 @@ export function ModerationUserScreen({ route, navigation }: Props) {
   );
 }
 
+/** conversas citadas numa denúncia (a automática de golpe lista várias): cada uma abre o bloco dela na ficha */
+function ReportConversationLinks({ ids, onOpen }: { ids: string[]; onOpen: (id: string) => void }) {
+  if (!ids.length) return null;
+  return (
+    <View style={styles.convLinks}>
+      <Text style={styles.muted}>{ids.length === 1 ? 'conversa citada:' : `em ${ids.length} conversas:`}</Text>
+      {ids.map((id, i) => (
+        <Pressable
+          key={id}
+          onPress={() => onOpen(id)}
+          style={({ pressed }) => [styles.convLink, pressed && { opacity: 0.6 }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Abrir a conversa ${i + 1} citada`}
+          hitSlop={6}
+        >
+          <Text style={styles.convLinkText}>{ids.length === 1 ? 'abrir' : `abrir ${i + 1}`}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 function statusText(u: ModerationUserDetail['user']): string {
   if (u.accountStatus === 'banned') return 'banida';
   if (u.accountStatus === 'suspended') return u.suspendedUntil ? `suspensa até ${new Date(u.suspendedUntil).toLocaleDateString('pt-BR')}` : 'suspensa até revisão';
@@ -218,6 +275,11 @@ const styles = StyleSheet.create({
   cardTitle: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },
   cardText: { ...typography.body, color: colors.gray[800], marginTop: spacing.xs },
   msg: { ...typography.bodySmall, color: colors.gray[800], paddingVertical: 2 },
+  convHead: { minHeight: 44, justifyContent: 'flex-end' },
+  convTitle: { marginBottom: spacing.sm },
+  convLinks: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.xs, marginTop: spacing.xs },
+  convLink: { paddingVertical: 4, paddingHorizontal: spacing.sm, borderRadius: 999, borderWidth: 1, borderColor: colors.gray[300] },
+  convLinkText: { ...typography.caption, fontFamily: fontFamily.bodyBold, color: colors.black },
   history: { ...typography.caption, color: colors.gray[600], paddingVertical: 2 },
   input: {
     minHeight: 64,

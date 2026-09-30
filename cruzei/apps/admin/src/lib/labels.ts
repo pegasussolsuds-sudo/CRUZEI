@@ -1,5 +1,7 @@
 // Textos pt-BR dos valores do contrato (um lugar só pra tela nenhuma inventar nome diferente)
+import { GENDER_LABELS } from '@cruzei/shared-types';
 import type {
+  Gender,
   AccountStatus,
   AdminAuditEntry,
   AdminPermission,
@@ -10,13 +12,16 @@ import type {
   PhotoStatus,
   PremiumTier,
   AdminSubscriptionRow,
-  ReportReason,
-  ReportSource,
+  AnyReportReason,
+  AnyReportSource,
   ReportStatus,
   SupportThreadStatus,
   UserRole,
 } from '@cruzei/shared-types';
 import { formatDate, isNoExpiry } from './format';
+
+/** Mulher / Homem / Outro — o mesmo texto do app (sem "Não-binário") */
+export const GENDER_LABEL: Record<Gender, string> = GENDER_LABELS;
 
 export const ACCOUNT_STATUS_LABEL: Record<AccountStatus, string> = {
   active: 'Ativa',
@@ -42,8 +47,9 @@ export const PHOTO_STATUS_LABEL: Record<PhotoStatus, string> = {
   rejected: 'Recusada',
 };
 
-/** mesmo texto da lista de denúncia do app (components/safety/reasons.ts), visto do lado da moderação */
-export const REPORT_REASON_LABEL: Record<ReportReason, string> = {
+/** mesmo texto da lista de denúncia do app (components/safety/reasons.ts), visto do lado da moderação; + os de sistema */
+export const REPORT_REASON_LABEL: Record<AnyReportReason, string> = {
+  emergency: '🆘 Emergência',
   harassment: 'Assédio ou ofensa',
   fake: 'Perfil falso',
   scam: 'Golpe ou pedido de dinheiro',
@@ -56,9 +62,11 @@ export const REPORT_REASON_LABEL: Record<ReportReason, string> = {
 };
 
 /** motivos que pedem pressa (a fila mostra em vermelho) */
-export const URGENT_REASONS: ReadonlySet<ReportReason> = new Set<ReportReason>(['threat', 'child_safety', 'underage']);
+export const URGENT_REASONS: ReadonlySet<AnyReportReason> = new Set<AnyReportReason>(['emergency', 'threat', 'child_safety', 'underage']);
 
-export const REPORT_SOURCE_LABEL: Record<ReportSource, string> = {
+export const REPORT_SOURCE_LABEL: Record<AnyReportSource, string> = {
+  emergency: 'botão de emergência',
+  auto_filter: 'filtro automático',
   profile: 'perfil',
   chat: 'conversa',
   inbox: 'mensagens',
@@ -252,4 +260,5 @@ export const PERMISSION_LABEL: Record<AdminPermission, string> = {
   campaigns: 'Notificações',
   support: 'Suporte',
   audit: 'Auditoria',
+  metrics: 'Métricas',
 };

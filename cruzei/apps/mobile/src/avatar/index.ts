@@ -2,7 +2,7 @@
 // - `resolveAvatar` garante que TODO usuário tem um avatar (null no backend → determinístico pelo id).
 // - `buildAvatarLayers` produz as camadas usadas pelo <CruzeiAvatar/> e pelo mapa (defineAvatar).
 
-import type { AvatarConfig } from '@cruzei/shared-types';
+import type { AvatarConfig, Gender } from '@cruzei/shared-types';
 import { avatarKey, normalizeAvatarConfig, randomAvatarConfig } from '@cruzei/shared-utils';
 
 export { buildAvatarLayers, buildAvatarRig, AVATAR_VIEWBOX, AVATAR_BUST_VIEWBOX } from './layers';
@@ -17,7 +17,7 @@ const resolvedCache = new Map<string, AvatarConfig>();
 export function resolveAvatar(
   config: AvatarConfig | null | undefined,
   seed: string,
-  gender?: 'female' | 'male' | 'non_binary' | 'other' | null,
+  gender?: Gender | null,
 ): AvatarConfig {
   const cacheKey = config ? `${seed}|${JSON.stringify(config)}` : `${seed}|${gender ?? ''}`;
   const hit = resolvedCache.get(cacheKey);

@@ -3,7 +3,11 @@ import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 
-import { contextConversationId } from './report-context';
+import {
+  contextConversationId,
+  contextConversationIds,
+  contextOccurrences,
+} from './report-context';
 import { UserReportDto } from './report.dto';
 import { sanitizeContext } from './reports.service';
 
@@ -24,6 +28,18 @@ describe('sanitizeContext', () => {
   it('origem desconhecida ou contexto ausente → null', () => {
     expect(sanitizeContext(undefined)).toBeNull();
     expect(sanitizeContext({ source: 'feed' as never })).toBeNull();
+  });
+
+  it('origens de sistema (emergência, filtro automático): o app não manda; a leitura gravada aceita', () => {
+    for (const source of ['emergency', 'auto_filter'] as const) {
+      expect(sanitizeContext({ source: source as never })).toBeNull();
+      expect(
+        sanitizeContext({ source: source as never, conversationId: CONV }, { stored: true }),
+      ).toEqual({
+        source,
+        conversationId: CONV,
+      });
+    }
   });
 
   it('conversationId vale (normalizado em minúsculas)', () => {
@@ -82,6 +98,45 @@ describe('contextConversationId (moderação lendo denúncias antigas e novas)',
     expect(contextConversationId({ matchId: 42 })).toBeNull();
     expect(contextConversationId(null)).toBeNull();
     expect(contextConversationId('texto')).toBeNull();
+  });
+});
+
+describe('lista de conversas da denúncia automática (context.occurrences)', () => {
+  const conv = (i: number) => `c0000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+  const msg = (i: number) => `d0000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+
+  it('gravada: mantém a lista (uuids válidos, sem repetir conversa, até 10); o app não consegue mandar', () => {
+    const occurrences = [
+      { conversationId: conv(1), messageId: msg(1) },
+      { conversationId: conv(1).toUpperCase(), messageId: msg(2) },
+      { conversationId: 'lixo' },
+      { conversationId: conv(2), messageId: 'x' },
+      ...Array.from({ length: 12 }, (_, i) => ({ conversationId: conv(i + 3) })),
+    ];
+    const stored = sanitizeContext(
+      { source: 'auto_filter' as never, conversationId: conv(1), messageId: msg(1), occurrences },
+      { stored: true },
+    );
+    expect(stored?.occurrences).toHaveLength(10);
+    expect(stored?.occurrences?.[0]).toEqual({ conversationId: conv(1), messageId: msg(1) });
+    expect(stored?.occurrences?.[1]).toEqual({ conversationId: conv(2) });
+    expect(contextOccurrences({ occurrences })).toEqual(stored?.occurrences);
+    // entrada do app: descarta
+    expect(sanitizeContext({ source: 'chat', occurrences } as never)).toEqual({ source: 'chat' });
+    // lixo
+    expect(contextOccurrences({ occurrences: 'x' })).toEqual([]);
+    expect(contextOccurrences(null)).toEqual([]);
+  });
+
+  it('contextConversationIds: a do contexto + as da lista, sem repetir', () => {
+    expect(
+      contextConversationIds({
+        conversationId: conv(1),
+        occurrences: [{ conversationId: conv(1) }, { conversationId: conv(2) }],
+      }),
+    ).toEqual([conv(1), conv(2)]);
+    expect(contextConversationIds({ matchId: OTHER })).toEqual([OTHER]);
+    expect(contextConversationIds({ source: 'chat' })).toEqual([]);
   });
 });
 

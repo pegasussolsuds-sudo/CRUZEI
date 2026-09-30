@@ -289,10 +289,11 @@ describe('push de curtida (só push, fora da central)', () => {
     await like(dani, bia);
     expect(pushesTo('Bia').map((p) => p.title)).toEqual(['Alguém curtiu você 💚']);
 
+    // a super curtida revela quem mandou (mesmo pra quem não é Premium+)
     await like(eli, bia, true);
     expect(pushesTo('Bia').map((p) => p.title)).toEqual([
       'Alguém curtiu você 💚',
-      'Alguém te mandou uma super curtida ⭐',
+      'Eli te mandou uma super curtida ⭐',
     ]);
 
     await likes.unlike(ana, bia);
@@ -304,7 +305,7 @@ describe('push de curtida (só push, fora da central)', () => {
     await like(fabi, bia);
     expect(pushesTo('Bia').map((p) => p.title)).toEqual([
       'Alguém curtiu você 💚',
-      'Alguém te mandou uma super curtida ⭐',
+      'Eli te mandou uma super curtida ⭐',
       'Você tem 3 curtidas novas 💚',
     ]);
   });

@@ -46,6 +46,11 @@ interface Props {
   initialStep?: 'menu' | 'reasons';
   /** depois de bloquear/arquivar/denunciar-e-bloquear a tela costuma sair (a pessoa sumiu) */
   onDone?: (outcome: SafetyOutcome) => void;
+  /**
+   * com isso aparece "🆘 Emergência" no topo do menu (chat e cartão): a folha fecha e quem chama abre a
+   * EmergencySheet com a pessoa
+   */
+  onEmergency?: () => void;
 }
 
 /** atualiza o que mostra a pessoa depois de bloquear/denunciar/arquivar */
@@ -104,7 +109,7 @@ export function askBlock({
  * Menu de segurança de uma pessoa: denunciar (motivo → detalhes → pronto), bloquear e arquivar a conversa.
  * Modal simples (sem Reanimated por linha: listas com animação por item derrubavam o app no Moto).
  */
-export function SafetySheet({ visible, onClose, target, conversationId, source, initialStep = 'menu', onDone }: Props) {
+export function SafetySheet({ visible, onClose, target, conversationId, source, initialStep = 'menu', onDone, onEmergency }: Props) {
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
   const [step, setStep] = useState<Step>(initialStep);
@@ -205,6 +210,18 @@ export function SafetySheet({ visible, onClose, target, conversationId, source, 
           {step === 'menu' ? (
             <>
               <Text style={styles.title}>{name}</Text>
+              {onEmergency ? (
+                <Action
+                  icon="alert-circle"
+                  label="🆘 Emergência"
+                  hint="Pausa seu perfil, bloqueia e chama o suporte na hora"
+                  onPress={() => {
+                    onClose();
+                    onEmergency();
+                  }}
+                  danger
+                />
+              ) : null}
               <Action icon="flag-outline" label={`Denunciar ${name}`} hint="A moderação analisa. A pessoa não sabe quem denunciou." onPress={() => setStep('reasons')} danger />
               <Action icon="ban-outline" label={`Bloquear ${name}`} hint="Some do seu mapa e não fala mais com você" onPress={block} />
               {conversationId ? (

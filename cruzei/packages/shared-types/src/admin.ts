@@ -6,7 +6,7 @@
 import type { PhoneReleaseReason } from './api/auth.types';
 import type { AccountStatus, ModerationUserDetail, UserRole } from './moderation';
 import type { NotificationTarget } from './notifications';
-import type { PremiumTier } from './user';
+import type { Gender, PremiumTier } from './user';
 
 export type StaffRole = Extract<UserRole, 'admin' | 'moderator'>;
 
@@ -41,7 +41,9 @@ export type AdminPermission =
   | 'events.push'
   | 'campaigns'
   | 'support'
-  | 'audit';
+  | 'audit'
+  /** só admin: página Métricas (funil do cadastro, retenção, ativos) — analytics.ts */
+  | 'metrics';
 
 // ─────────────────────────── painel (dashboard) ───────────────────────────
 
@@ -68,7 +70,8 @@ export interface AdminStats {
   };
   moderation: { reportsPending: number; photosPending: number; reviewHold: number };
   places: { candidatesPending: number; poiReportsPending: number; eventsLive: number; eventsUpcoming: number };
-  support: { open: number; unassigned: number; waitingStaff: number; avgFirstResponseMin7d: number | null };
+  /** urgent: atendimentos URGENTES (botão de emergência) não resolvidos; ausente = servidor antigo */
+  support: { open: number; unassigned: number; waitingStaff: number; avgFirstResponseMin7d: number | null; urgent?: number };
   activity: { messages24h: number; likes24h: number; mutualLikes24h: number; conversationsNew24h: number };
   push: { devices: number; campaignsSent7d: number };
   /** últimos 30 dias */
@@ -157,6 +160,8 @@ export interface AdminSubscriptionRow {
 export interface AdminUserDetail extends AdminUserRow {
   moderation: ModerationUserDetail;
   bio: string | null;
+  /** Mulher / Homem / Outro (GENDER_LABELS); ausente = servidor de antes da leva de 04/10/2026 */
+  gender?: Gender;
   /** @ do Instagram (público); a orientação NÃO vem pro painel (minimização de dado sensível) */
   instagram?: string | null;
   /** histórico de liberação do número desta conta (vazio = nunca) */

@@ -64,7 +64,7 @@ function queues(s: AdminStats): QueueShortcut[] {
     { key: 'hold', label: 'Contas em revisão', hint: 'seguradas até alguém olhar', count: s.moderation.reviewHold, to: '/moderacao', icon: <ShieldAlert size={18} />, perm: 'users.moderate' },
     { key: 'candidates', label: 'Sugestões de lugar', hint: '"Pôr no Metch" da galera', count: s.places.candidatesPending, to: '/lugares', icon: <MapPinPlus size={18} />, perm: 'places' },
     { key: 'poiReports', label: 'Denúncias de lugar', hint: 'fechou, não existe, perigoso…', count: s.places.poiReportsPending, to: '/lugares?aba=denuncias', icon: <Flag size={18} />, perm: 'places' },
-    { key: 'support', label: 'Suporte esperando', hint: `${s.support.unassigned} sem ninguém atribuído`, count: s.support.waitingStaff, to: '/suporte', icon: <Headphones size={18} />, perm: 'support', urgent: true },
+    { key: 'support', label: 'Suporte esperando', hint: `${s.support.urgent ? `🆘 ${s.support.urgent} ${s.support.urgent === 1 ? 'emergência' : 'emergências'} · ` : ''}${s.support.unassigned} sem ninguém atribuído`, count: s.support.waitingStaff, to: '/suporte', icon: <Headphones size={18} />, perm: 'support', urgent: true },
   ];
 }
 

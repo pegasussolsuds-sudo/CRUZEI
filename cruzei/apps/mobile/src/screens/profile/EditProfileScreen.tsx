@@ -9,6 +9,7 @@ import {
   Text,
   TextInput,
   View,
+  type LayoutChangeEvent,
   type StyleProp,
   type TextInputProps,
   type ViewStyle,
@@ -29,13 +30,25 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { api, toApiError } from '../../services/api';
+import { profileFieldErrorOf, type ProfileTextField } from '../../services/fieldError';
 import { PhotoPermissionError, explainPhotoPermission, pickPhoto, takePhoto, uploadPhoto } from '../../services/photos';
 import { useAuthStore } from '../../stores/auth';
 import { FadeInView, ScaleOnPress, SlideInView } from '../../components/animated';
+import { interestEmoji, toggleInterest as toggleInterestIn, type CatalogItem } from '../../components/profile/interests';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, duration, radius, shadows, spacing, spring, typography } from '@cruzei/ui-mobile';
-import { ORIENTATIONS, ORIENTATION_LABELS, type Orientation, type User, type UserPhoto } from '@cruzei/shared-types';
-import { INSTAGRAM_HANDLE_MAX, isValidInstagramHandle, normalizeInstagramHandle } from '@cruzei/shared-utils';
+import {
+  GENDERS,
+  GENDER_LABELS,
+  ORIENTATIONS,
+  ORIENTATION_LABELS,
+  PROFILE_LIMITS,
+  type Gender,
+  type Orientation,
+  type User,
+  type UserPhoto,
+} from '@cruzei/shared-types';
+import { checkProfileText, INSTAGRAM_HANDLE_MAX, isValidInstagramHandle, normalizeInstagramHandle } from '@cruzei/shared-utils';
 
 const LOOKING_FOR = [
   { value: 'relationship', label: 'Namorar' },
@@ -45,7 +58,9 @@ const LOOKING_FOR = [
 ];
 
 const MAX_PHOTOS = 6;
-const MAX_INTERESTS = 10;
+const MAX_INTERESTS = PROFILE_LIMITS.interestsMax;
+const NAME_MAX = PROFILE_LIMITS.nameMax;
+const BIO_MAX = PROFILE_LIMITS.bioMax;
 // Tempo que o "Salvo ✅" fica na tela antes de voltar
 const SAVED_FEEDBACK_MS = 750;
 
@@ -61,12 +76,18 @@ export function EditProfileScreen() {
   const meQuery = useQuery({ queryKey: ['me'], queryFn: async () => (await api.get<User>('/me')).data });
   const interestsQuery = useQuery({
     queryKey: ['interests'],
-    queryFn: async () => (await api.get<{ id: number; name: string }[]>('/interests')).data,
+    queryFn: async () => (await api.get<CatalogItem[]>('/interests')).data,
+    staleTime: 60 * 60_000,
   });
 
   const [name, setName] = useState('');
   const [bio, setBio] = useState('');
+  const [gender, setGender] = useState<Gender | null>(null);
   const [lookingFor, setLookingFor] = useState('unspecified');
+  // campo recusado pelo servidor (filtro de abuso, @ fora da regra, nome curto): aparece embaixo dele até mexer
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<ProfileTextField, string>>>({});
+  const scrollRef = useRef<Animated.ScrollView>(null);
+  const fieldY = useRef<Partial<Record<ProfileTextField, number>>>({});
   const [interests, setInterests] = useState<string[]>([]);
   // orientação: null = não informar (apaga no servidor e revoga o consentimento)
   const [orientation, setOrientation] = useState<Orientation | null>(null);
@@ -81,6 +102,8 @@ export function EditProfileScreen() {
     if (meQuery.data && !loaded) {
       setName(meQuery.data.name);
       setBio(meQuery.data.bio ?? '');
+      // conta antiga com gênero fora da lista (não deveria sobrar nenhuma): fica sem marcar e não é mandado
+      setGender((GENDERS as readonly string[]).includes(meQuery.data.gender) ? meQuery.data.gender : null);
       setLookingFor(meQuery.data.lookingFor);
       setInterests(meQuery.data.interests ?? []);
       setOrientation(meQuery.data.orientation ?? null);
@@ -100,13 +123,19 @@ export function EditProfileScreen() {
     [],
   );
 
+  const setField = (field: ProfileTextField, value: string, set: (v: string) => void) => {
+    set(value);
+    if (fieldErrors[field]) setFieldErrors((cur) => ({ ...cur, [field]: undefined }));
+  };
+
   const save = useMutation({
     mutationFn: async () => {
       const patch: Record<string, unknown> = { name: name.trim(), bio: bio.trim(), lookingFor, interests };
-      // orientação e Instagram só quando mudaram (orientação nova recarimba o consentimento no servidor)
+      // orientação, Instagram e gênero só quando mudaram (orientação nova recarimba o consentimento no servidor)
       const before = meQuery.data;
       if (orientation !== (before?.orientation ?? null)) patch.orientation = orientation;
       if (instaHandle !== (before?.instagram ?? null)) patch.instagram = instaHandle;
+      if (gender && gender !== before?.gender) patch.gender = gender;
       const res = await api.patch<User>('/me', patch);
       return res.data;
     },
@@ -121,6 +150,12 @@ export function EditProfileScreen() {
     },
     onError: (err) => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      // campo recusado: mostra embaixo dele e rola até lá (em vez de um alerta genérico)
+      const f = profileFieldErrorOf(err);
+      if (f) {
+        showFieldError(f.field, f.message);
+        return;
+      }
       Alert.alert('Não salvou', toApiError(err).message);
     },
   });
@@ -194,14 +229,34 @@ export function EditProfileScreen() {
     ]);
 
   const toggleInterest = (n: string) => {
-    setInterests((cur) => {
-      if (cur.includes(n)) return cur.filter((x) => x !== n);
-      if (cur.length >= MAX_INTERESTS) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-        return cur;
-      }
-      return [...cur, n];
-    });
+    const r = toggleInterestIn(interests, n, MAX_INTERESTS);
+    if (r.full) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      return;
+    }
+    setInterests(r.list);
+  };
+
+  // posição de cada campo de texto (pra rolar até o que o servidor recusou)
+  const trackY = (field: ProfileTextField) => (e: LayoutChangeEvent) => {
+    fieldY.current[field] = e.nativeEvent.layout.y;
+  };
+
+  const showFieldError = (field: ProfileTextField, message: string) => {
+    setFieldErrors((cur) => ({ ...cur, [field]: message }));
+    const y = fieldY.current[field];
+    if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - spacing.xl), animated: true });
+  };
+
+  // filtro de abuso (mesma regra do servidor, que confere de novo) antes de mandar: avisa no campo na hora
+  const onSave = () => {
+    const blocked = checkProfileText({ name: name.trim(), bio: bio.trim() || null, instagram: instaInvalid ? null : instaHandle });
+    if (blocked && blocked.field !== 'message') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      showFieldError(blocked.field, blocked.message);
+      return;
+    }
+    save.mutate();
   };
 
   // /me falhou sem nada em cache: mostra o erro e deixa tentar de novo (em vez de spinner eterno)
@@ -228,7 +283,12 @@ export function EditProfileScreen() {
   return (
     // edge-to-edge (Android 15+): a janela não encolhe com o teclado — padding nas duas plataformas, descontando o header
     <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }} keyboardVerticalOffset={headerHeight}>
-      <Animated.ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <Animated.ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <FadeInView fromY={8}>
           <Text style={styles.label}>
             fotos ({photos.length}/{MAX_PHOTOS})
@@ -281,26 +341,77 @@ export function EditProfileScreen() {
         </View>
         <Text style={styles.hint}>Toca numa foto pra torná-la principal ou remover.</Text>
 
-        <FadeInView delay={160} fromY={12}>
+        <FadeInView delay={160} fromY={12} onLayout={trackY('name')}>
           <Text style={styles.label}>nome</Text>
-          <FocusInput value={name} onChangeText={setName} maxLength={50} placeholder="Seu nome" autoCapitalize="words" accessibilityLabel="Nome" />
+          <FocusInput
+            value={name}
+            onChangeText={(t) => setField('name', t, setName)}
+            maxLength={NAME_MAX}
+            placeholder="Seu nome"
+            autoCapitalize="words"
+            invalid={Boolean(fieldErrors.name)}
+            accessibilityLabel="Nome"
+          />
+          <FieldError message={fieldErrors.name} />
         </FadeInView>
 
-        <FadeInView delay={220} fromY={12}>
+        <FadeInView delay={220} fromY={12} onLayout={trackY('bio')}>
           <Text style={styles.label}>bio</Text>
           <FocusInput
             style={styles.multiline}
             value={bio}
-            onChangeText={setBio}
-            maxLength={500}
+            onChangeText={(t) => setField('bio', t, setBio)}
+            maxLength={BIO_MAX}
             multiline
             placeholder="Conta em uma frase o que você curte fazer por aí."
+            invalid={Boolean(fieldErrors.bio)}
             accessibilityLabel="Bio"
           />
-          <Text style={[styles.counter, bio.length >= 480 && { color: colors.warning }]}>{bio.length}/500</Text>
+          <Text style={[styles.counter, bio.length >= BIO_MAX - 20 && { color: colors.warning }]}>
+            {bio.length}/{BIO_MAX}
+          </Text>
+          <FieldError message={fieldErrors.bio} />
+        </FadeInView>
+
+        {/* Instagram logo depois da bio: antes ficava lá embaixo, depois da orientação, e ninguém achava */}
+        <FadeInView delay={250} fromY={12} onLayout={trackY('instagram')}>
+          <View style={styles.labelRow}>
+            <Ionicons name="logo-instagram" size={14} color={colors.gray[500]} />
+            <Text style={[styles.label, styles.labelInline]}>instagram</Text>
+          </View>
+          <InstagramInput
+            value={instagram}
+            onChangeText={(t) => setField('instagram', t, setInstagram)}
+            // colou o link do perfil: vira só o @ ao sair do campo
+            onBlur={() => {
+              if (instaHandle && !instaInvalid) setInstagram(instaHandle);
+            }}
+            invalid={instaInvalid || Boolean(fieldErrors.instagram)}
+          />
+          {fieldErrors.instagram ? (
+            <FieldError message={fieldErrors.instagram} />
+          ) : instaInvalid ? (
+            <Text style={[styles.hint, { color: colors.danger }]} accessibilityLiveRegion="polite">
+              Esse @ não rola no Instagram: só letras, números, ponto e _ (até {INSTAGRAM_HANDLE_MAX}), sem ponto no começo ou no fim.
+            </Text>
+          ) : instaHandle ? (
+            <Text style={[styles.hint, styles.hintOk]}>Aparece no seu perfil como @{instaHandle}, pra todo mundo que abrir.</Text>
+          ) : (
+            <Text style={styles.hint}>Aparece no seu perfil pra todo mundo que abrir. Deixa vazio pra não mostrar.</Text>
+          )}
         </FadeInView>
 
         <FadeInView delay={280} fromY={12}>
+          <Text style={styles.label}>gênero</Text>
+          <View style={styles.chips} accessibilityRole="radiogroup">
+            {GENDERS.map((g) => (
+              <Chip key={g} label={GENDER_LABELS[g]} on={gender === g} onPress={() => setGender(g)} radio />
+            ))}
+          </View>
+          <Text style={styles.hint}>Com "Outro", você aparece pra quem escolheu ver "Todos".</Text>
+        </FadeInView>
+
+        <FadeInView delay={300} fromY={12}>
           <Text style={styles.label}>o que você procura</Text>
           <View style={styles.chips}>
             {LOOKING_FOR.map((o) => (
@@ -309,7 +420,7 @@ export function EditProfileScreen() {
           </View>
         </FadeInView>
 
-        <FadeInView delay={300} fromY={12}>
+        <FadeInView delay={320} fromY={12}>
           <Text style={styles.label}>orientação (opcional)</Text>
           <View style={styles.chips} accessibilityRole="radiogroup">
             {ORIENTATIONS.map((o) => (
@@ -323,26 +434,6 @@ export function EditProfileScreen() {
           </Text>
         </FadeInView>
 
-        <FadeInView delay={320} fromY={12}>
-          <Text style={styles.label}>instagram</Text>
-          <InstagramInput
-            value={instagram}
-            onChangeText={setInstagram}
-            // colou o link do perfil: vira só o @ ao sair do campo
-            onBlur={() => {
-              if (instaHandle && !instaInvalid) setInstagram(instaHandle);
-            }}
-            invalid={instaInvalid}
-          />
-          {instaInvalid ? (
-            <Text style={[styles.hint, { color: colors.danger }]} accessibilityLiveRegion="polite">
-              Esse @ não rola no Instagram: só letras, números, ponto e _ (até {INSTAGRAM_HANDLE_MAX}), sem ponto no começo ou no fim.
-            </Text>
-          ) : (
-            <Text style={styles.hint}>Aparece no seu perfil pra todo mundo que abrir. Deixa vazio pra não mostrar.</Text>
-          )}
-        </FadeInView>
-
         <FadeInView delay={340} fromY={12}>
           <Text style={styles.label}>
             interesses ({interests.length}/{MAX_INTERESTS})
@@ -352,7 +443,13 @@ export function EditProfileScreen() {
           ) : (
             <View style={styles.chips}>
               {(interestsQuery.data ?? []).map((i) => (
-                <Chip key={i.id} label={i.name} on={interests.includes(i.name)} onPress={() => toggleInterest(i.name)} />
+                <Chip
+                  key={i.id}
+                  label={`${interestEmoji(i.icon)} ${i.name}`}
+                  a11yLabel={i.name}
+                  on={interests.includes(i.name)}
+                  onPress={() => toggleInterest(i.name)}
+                />
               ))}
             </View>
           )}
@@ -361,7 +458,7 @@ export function EditProfileScreen() {
 
         <View style={{ height: spacing.xl }} />
         <FadeInView delay={400} fromY={12}>
-          <Button title="Salvar" onPress={() => save.mutate()} loading={save.isPending} disabled={!canSave} fullWidth size="lg" />
+          <Button title="Salvar" onPress={onSave} loading={save.isPending} disabled={!canSave} fullWidth size="lg" />
         </FadeInView>
       </Animated.ScrollView>
 
@@ -471,9 +568,36 @@ function InstagramInput({
   );
 }
 
+/* ---------- Erro do servidor embaixo do campo (filtro de abuso, @ fora da regra, nome curto) ---------- */
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <FadeInView fromY={4} style={styles.fieldError}>
+      <Ionicons name="alert-circle" size={16} color={colors.danger} />
+      <Text style={styles.fieldErrorText} accessibilityLiveRegion="assertive" accessibilityRole="alert">
+        {message}
+      </Text>
+    </FadeInView>
+  );
+}
+
 /* ---------- Chip com seleção animada (scale bounce + cor) ---------- */
 
-function Chip({ label, on, onPress, radio }: { label: string; on: boolean; onPress: () => void; radio?: boolean }) {
+function Chip({
+  label,
+  a11yLabel,
+  on,
+  onPress,
+  radio,
+}: {
+  label: string;
+  /** leitor de tela sem o emoji */
+  a11yLabel?: string;
+  on: boolean;
+  onPress: () => void;
+  radio?: boolean;
+}) {
   const sel = useSharedValue(on ? 1 : 0);
   const bump = useSharedValue(1);
   const first = useRef(true);
@@ -515,7 +639,7 @@ function Chip({ label, on, onPress, radio }: { label: string; on: boolean; onPre
       haptic={false}
       pressedScale={0.94}
       accessibilityRole={radio ? 'radio' : 'checkbox'}
-      accessibilityLabel={label}
+      accessibilityLabel={a11yLabel ?? label}
       accessibilityState={{ selected: on, checked: on }}
     >
       <Animated.View style={[styles.chip, chipStyle]}>
@@ -534,6 +658,11 @@ const styles = StyleSheet.create({
   content: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   label: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', marginTop: spacing.lg, marginBottom: spacing.sm },
   hint: { ...typography.bodySmall, color: colors.gray[500], marginTop: spacing.xs },
+  hintOk: { color: '#3A7A00' },
+  labelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.lg, marginBottom: spacing.sm },
+  labelInline: { marginTop: 0, marginBottom: 0 },
+  fieldError: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: spacing.xs },
+  fieldErrorText: { ...typography.bodySmall, color: colors.danger, flex: 1 },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   tileWrap: { width: '31%', aspectRatio: 4 / 5 },

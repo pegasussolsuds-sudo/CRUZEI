@@ -1,12 +1,19 @@
-import type { AvatarTier, Orientation, ShowMe } from '@cruzei/shared-types';
-import { LEGAL_VERSION } from '@cruzei/shared-types';
+import type { AvatarTier, Gender, InterestItem, Orientation, ShowMe } from '@cruzei/shared-types';
+import { AGE_RANGE_DAILY_CHANGES, LEGAL_VERSION } from '@cruzei/shared-types';
 import {
   AVATAR_CONFIG_MAX_BYTES,
+  checkProfileText,
   FREE_TIERS,
   isValidAvatarConfig,
   normalizeAvatarConfig,
 } from '@cruzei/shared-utils';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { avatarOrFallback } from '../../common/avatar';
 import {
@@ -19,15 +26,25 @@ import {
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
+import { readSuperLikeQuota, superLikeDay, superLikeResetsAt } from '../likes/super-like-quota';
 import { PRIVACY } from '../location/discovery-privacy';
 import { PhotoModerationService } from '../moderation/photo-moderation.service';
 
 import {
+  AGE_RANGE_INVALID,
+  ageRangeLimitBody,
+  ageRangeUpdate,
+  cleanBio,
+  cleanInterestNames,
+  cleanName,
   INSTAGRAM_INVALID,
+  NAME_INVALID,
+  nextAgeRange,
   ORIENTATION_REQUIRED,
   orientationFlagsBlocked,
   orientationPatch,
   parseInstagramInput,
+  profileCompleteness,
 } from './profile-prefs';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
@@ -137,6 +154,8 @@ export class UsersService {
 
     // tier efetivo: assinatura vencida conta como free (mesma regra que o update() usa pra validar o avatar)
     const premiumTier = allowedTiersFor(user).has('premium') ? user.premiumTier : 'free';
+    // super curtidas de hoje (dia de São Paulo, plano efetivo); o cache abaixo não passa da meia-noite de lá
+    const superLikes = await readSuperLikeQuota(this.prisma, userId, user);
 
     const profile = {
       id: user.id,
@@ -190,13 +209,18 @@ export class UsersService {
         showOrientation: user.showOrientation,
         sameOrientationFirst: user.sameOrientationFirst,
         showMe: user.showMe,
+        // faixa de idade que eu vejo (não recíproca; 18–99 = sem limite)
+        ageMin: user.ageMin,
+        ageMax: user.ageMax,
         isPaused,
         pausedUntil: pausedUntil?.toISOString() ?? null,
       },
       stats: {
         likesReceived: user._count.likesReceived ?? 0,
         matches: matchesCount,
-        superLikesToday: 0, // TODO: integrar Redis
+        superLikesToday: superLikes.used,
+        superLikesRemainingToday: superLikes.remaining,
+        superLikeDailyLimit: superLikes.limit,
       },
       createdAt: user.createdAt.toISOString(),
       lastActiveAt: user.lastActiveAt.toISOString(),
@@ -210,6 +234,7 @@ export class UsersService {
       pausedUntil,
       user.premiumExpiresAt,
       visibilityMode === 'anonymous' ? anonymousUntil : null,
+      new Date(superLikes.resetsAt),
     ]
       .filter((d): d is Date => !!d && d.getTime() > now)
       .map((d) => Math.ceil((d.getTime() - now) / 1000));
@@ -222,6 +247,7 @@ export class UsersService {
     dto: {
       name?: string;
       bio?: string;
+      gender?: Gender;
       lookingFor?: string;
       orientation?: Orientation | null;
       instagram?: string | null;
@@ -230,14 +256,30 @@ export class UsersService {
     },
   ) {
     const data: Record<string, unknown> = {};
-    if (dto.name) data.name = dto.name.trim();
-    if (dto.bio !== undefined) data.bio = dto.bio.trim() || null;
+    // nome: sem espaços sobrando e com 2+ letras (só espaço não apaga o nome de ninguém)
+    if (dto.name !== undefined) {
+      const name = cleanName(dto.name);
+      if (!name) throw new BadRequestException(NAME_INVALID);
+      data.name = name;
+    }
+    const bio = cleanBio(dto.bio);
+    if (bio !== undefined) data.bio = bio;
+    // gênero: Mulher / Homem / Outro (o DTO já barra o resto; a descoberta relê do banco)
+    if (dto.gender) data.gender = dto.gender;
     if (dto.lookingFor) data.lookingFor = dto.lookingFor;
 
     // @ do Instagram: normaliza (@, link, maiúsculas) e valida pela regra do Instagram; '' ou null apaga
     const insta = parseInstagramInput(dto.instagram);
     if (insta && !insta.ok) throw new BadRequestException(INSTAGRAM_INVALID);
     if (insta?.ok) data.instagramHandle = insta.handle;
+
+    // filtro de abuso só no que está mudando (nome, bio, @), antes de gravar qualquer coisa: 400 text_blocked
+    const blocked = checkProfileText({
+      name: data.name as string | undefined,
+      bio: data.bio as string | null | undefined,
+      instagram: data.instagramHandle as string | null | undefined,
+    });
+    if (blocked) throw new BadRequestException(blocked);
 
     // orientação (dado sensível): null apaga e revoga (flags e carimbo zeram); valor novo carimba o consentimento
     if (dto.orientation !== undefined) {
@@ -265,16 +307,22 @@ export class UsersService {
     }
 
     if (dto.interests) {
-      await this.prisma.userInterest.deleteMany({ where: { userId } });
-      const interestRows = await this.prisma.interest.findMany({
-        where: { name: { in: dto.interests } },
-      });
-      if (interestRows.length > 0) {
-        await this.prisma.userInterest.createMany({
-          data: interestRows.map((i) => ({ userId, interestId: i.id })),
-          skipDuplicates: true,
+      // troca a lista inteira numa transação (nunca fica pela metade); nome fora do catálogo é ignorado
+      const names = cleanInterestNames(dto.interests);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.userInterest.deleteMany({ where: { userId } });
+        if (!names.length) return;
+        const rows = await tx.interest.findMany({
+          where: { name: { in: names } },
+          select: { id: true },
         });
-      }
+        if (rows.length > 0) {
+          await tx.userInterest.createMany({
+            data: rows.map((i) => ({ userId, interestId: i.id })),
+            skipDuplicates: true,
+          });
+        }
+      });
     }
 
     if (Object.keys(data).length > 0) {
@@ -296,19 +344,34 @@ export class UsersService {
       showOrientation?: boolean;
       sameOrientationFirst?: boolean;
       showMe?: ShowMe;
+      ageMin?: number;
+      ageMax?: number;
     },
   ) {
+    // faixa de idade: fora da regra = 400 age_range_invalid (nunca o 500 do CHECK users_age_range_chk)
+    const { ageMin, ageMax, visibilityMode, ...rest } = dto;
+    const age = ageRangeUpdate(ageMin, ageMax);
+    if (age && !age.ok) throw new BadRequestException(AGE_RANGE_INVALID);
     // exibir/ordenar pela orientação sem ter orientação: 400 claro (o CHECK users_orientation_flags_chk viraria 500)
-    if (dto.showOrientation === true || dto.sameOrientationFirst === true) {
+    if (rest.showOrientation === true || rest.sameOrientationFirst === true) {
       const cur = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { orientation: true },
       });
-      if (orientationFlagsBlocked(dto, cur?.orientation ?? null))
+      if (orientationFlagsBlocked(rest, cur?.orientation ?? null))
         throw new BadRequestException(ORIENTATION_REQUIRED);
     }
+    // a faixa grava antes do resto: uma ponta só trava contra a outra no próprio UPDATE (sem corrida com outro PATCH);
+    // se não pegar, nada mais foi gravado. Antes, gasta 1 das mudanças do dia (429 age_range_limit)
+    if (age?.ok) {
+      await this.spendAgeRangeChange(userId, age.data);
+      const r = await this.prisma.user.updateMany({
+        where: { id: userId, ...(age.guard ?? {}) },
+        data: age.data,
+      });
+      if (!r.count) throw new BadRequestException(AGE_RANGE_INVALID);
+    }
     // visibilidade tem regra própria (prazo do invisível grátis no banco): vai pelo setVisibility, depois dos outros
-    const { visibilityMode, ...rest } = dto;
     if (Object.keys(rest).length > 0) {
       await this.prisma.user.update({
         where: { id: userId },
@@ -320,6 +383,33 @@ export class UsersService {
       anonymousUntil = (await this.setVisibility(userId, visibilityMode)).anonymousUntil;
     await this.redis.invalidateProfile(userId);
     return { ok: true, ...dto, ...(visibilityMode ? { anonymousUntil } : {}) };
+  }
+
+  /**
+   * Faixa de idade: no máximo AGE_RANGE_DAILY_CHANGES mudanças por dia de São Paulo (contador no Redis por pessoa e
+   * dia). Igual ao gravado não gasta; faixa final fora da regra = 400 sem gastar. Sem o limite, trocar a faixa e olhar
+   * o /nearby achava o bloco de idade de quem esconde em poucos minutos.
+   */
+  private async spendAgeRangeChange(
+    userId: string,
+    data: { ageMin?: number; ageMax?: number },
+    now: Date = new Date(),
+  ): Promise<void> {
+    const cur = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { ageMin: true, ageMax: true },
+    });
+    if (!cur) throw new NotFoundException('Usuário não encontrado');
+    const next = nextAgeRange(cur, data);
+    if (!next) throw new BadRequestException(AGE_RANGE_INVALID);
+    if (!next.changed) return;
+    // chave com o dia: vira sozinha à meia-noite de São Paulo (o prazo de 2 dias só limpa o Redis)
+    const used = await this.redis.incrRate(userId, `age_range:${superLikeDay(now)}`, 2 * 86_400);
+    if (used > AGE_RANGE_DAILY_CHANGES)
+      throw new HttpException(
+        ageRangeLimitBody(superLikeResetsAt(now)),
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
   }
 
   /**
@@ -532,8 +622,11 @@ export class UsersService {
     return { ok: true };
   }
 
-  listInterests() {
-    return this.prisma.interest.findMany({ orderBy: { name: 'asc' } });
+  listInterests(): Promise<InterestItem[]> {
+    return this.prisma.interest.findMany({
+      select: { id: true, name: true, icon: true, category: true },
+      orderBy: { name: 'asc' },
+    });
   }
 
   /**
@@ -575,17 +668,14 @@ export class UsersService {
       include: { photos: true, userInterests: true },
     });
     if (!u) return 0;
-    let score = 0;
-    if (u.name) score += 10;
-    if (u.bio) score += 15;
-    if (u.photos.length >= 1) score += 20;
-    if (u.photos.length >= 2) score += 10;
-    if (u.photos.length >= 4) score += 5;
-    if (u.userInterests.length >= 3) score += 15;
-    if (u.userInterests.length >= 6) score += 5;
-    if (u.lookingFor && u.lookingFor !== 'unspecified') score += 5;
-    if (u.isVerified) score += 15;
-    return Math.min(100, score);
+    return profileCompleteness({
+      name: u.name,
+      bio: u.bio,
+      photos: u.photos.length,
+      interests: u.userInterests.length,
+      lookingFor: u.lookingFor,
+      isVerified: u.isVerified,
+    });
   }
 
   private age(birth: Date): number {

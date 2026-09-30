@@ -46,3 +46,35 @@ export function playChime(): void {
     // navegador sem áudio liberado ainda: fica só o título da aba
   }
 }
+
+let alarmAt = 0;
+
+/**
+ * Alarme do botão de emergência ('support:urgent'): três toques mais altos e insistentes, diferente do toque de
+ * mensagem. Toca mesmo com o som de mensagens desligado (emergência não pode passar batido).
+ */
+export function playAlarm(): void {
+  const now = Date.now();
+  if (now - alarmAt < 3000) return;
+  alarmAt = now;
+  try {
+    ctx ??= new AudioContext();
+    if (ctx.state === 'suspended') void ctx.resume();
+    const t0 = ctx.currentTime;
+    [988, 740, 988, 740, 988, 740].forEach((freq, i) => {
+      const osc = ctx!.createOscillator();
+      const gain = ctx!.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      const start = t0 + i * 0.18;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.09, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+      osc.connect(gain).connect(ctx!.destination);
+      osc.start(start);
+      osc.stop(start + 0.17);
+    });
+  } catch {
+    // navegador sem áudio liberado ainda: fica a faixa vermelha e o aviso
+  }
+}

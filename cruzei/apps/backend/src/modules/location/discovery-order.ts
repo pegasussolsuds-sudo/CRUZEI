@@ -3,15 +3,99 @@
 // Puro (sem Redis, sem banco): o LocationService monta as chaves e chama selectTop com compareDiscovery.
 // Ordem: boost ativo → mesma orientação (só de quem EXIBE a orientação) → faixa → rotação justa → id.
 // Privacidade: a orientação de quem NÃO exibe nunca entra na conta (senão a posição no deck vazaria o dado).
-import type { ProximityBand } from '@cruzei/shared-types';
-import { PROXIMITY_BAND_RANK } from '@cruzei/shared-utils';
+//
+// Faixa de idade (settings.ageMin/ageMax): só o MEU lado (não recíproco). Quem mostra a idade: idade exata. Quem
+// esconde: bloco de 5 anos (passa se o bloco encosta na faixa) — mexer na faixa nunca revela mais que o bloco, e a
+// idade nunca sai do servidor. Deck (GET /location/nearby?deck=1): super curtidas pendentes primeiro; fora quem eu
+// passei há menos de DECK.PASS_DAYS e quem eu já curti (o mapa e a lista não mudam).
+import {
+  AGE_MAX,
+  AGE_MIN,
+  DISCOVERY_PASS_DAYS_DEFAULT,
+  type ProximityBand,
+} from '@cruzei/shared-types';
+import { PROXIMITY_BAND_RANK, ageBucketInRange, ageInRange } from '@cruzei/shared-utils';
 
-/** gênero como vem do banco ('female' | 'male' | 'non_binary' | 'other'); null = desconhecido */
+/** DISCOVERY_PASS_DAYS (env): inteiro de 1 a 365; fora disso, o padrão */
+export function deckPassDays(raw: string | undefined = process.env.DISCOVERY_PASS_DAYS): number {
+  const n = Number(raw);
+  return raw && Number.isInteger(n) && n >= 1 && n <= 365 ? n : DISCOVERY_PASS_DAYS_DEFAULT;
+}
+
+export const DECK = {
+  /** quem eu passei não volta no deck por X dias (continua no mapa); também é a validade da super curtida pendente */
+  PASS_DAYS: deckPassDays(),
+  /** super curtidas pendentes no topo de uma resposta (as seguintes vêm depois de responder estas) */
+  SUPER_MAX: 50,
+  /** super curtidas lidas do banco antes dos filtros (bloqueio, conta fora do ar, "Mostrar", idade) */
+  SUPER_SCAN: 200,
+} as const;
+
+/** idade em anos completos em `now` — a MESMA conta da idade mostrada no /nearby (filtro e número nunca divergem) */
+export function ageOn(birth: Date, now: Date): number {
+  let a = now.getFullYear() - birth.getFullYear();
+  const m = now.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) a -= 1;
+  return a;
+}
+
+/** o que o filtro de idade olha no candidato */
+export interface AgeCandidate {
+  birthDate?: Date | null;
+  /** só true usa a idade exata; false/ausente = escondida (bloco de 5 anos) */
+  showAge?: boolean | null;
+}
+
+export type AgeOk = (cand: AgeCandidate) => boolean;
+
+/**
+ * Filtro de idade de quem vê. null = sem limite (18 até 80+): nenhum custo por candidato. Faixa inválida (min > max
+ * ou não inteira) também vira "sem limite" — nunca esvazia a descoberta por um valor quebrado. Quem mostra a idade
+ * passa pela idade exata (já é pública); quem esconde, pelo bloco de 5 anos (ageBucketInRange).
+ */
+export function ageFilter(
+  range: { ageMin?: number | null; ageMax?: number | null },
+  now: Date = new Date(),
+): AgeOk | null {
+  const min = range.ageMin ?? AGE_MIN;
+  const max = range.ageMax ?? AGE_MAX;
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min > max) return null;
+  if (min <= AGE_MIN && max >= AGE_MAX) return null;
+  return (c) => {
+    // sem data de nascimento com filtro ligado: fora (não dá pra garantir a faixa)
+    if (!c.birthDate) return false;
+    const age = ageOn(c.birthDate, now);
+    return c.showAge === true ? ageInRange(age, min, max) : ageBucketInRange(age, min, max);
+  };
+}
+
+/**
+ * Super curtida pendente que pode ir pro topo do MEU deck (o resto — bloqueio, invisível, pausa, análise, conta fora
+ * do ar — já foi filtrado antes). Vale o MEU "Mostrar" (um lado: ela já quis me ver) e a MINHA faixa de idade; quem
+ * está em "Ninguém" (fora da descoberta) não aparece.
+ */
+export function superLikerShown(
+  me: { showMe?: ShowMeLike },
+  liker: { gender?: GenderLike; discoveryMode?: string | null } & AgeCandidate,
+  ageOk: AgeOk | null,
+): boolean {
+  if (liker.discoveryMode === 'nobody') return false;
+  if (!showMeAllows(me.showMe, liker.gender)) return false;
+  return !ageOk || ageOk(liker);
+}
+
+/** deck: super curtidas pendentes primeiro (na ordem dada), depois o resto sem repetir ninguém */
+export function mergeDeck<T extends { id: string }>(superFirst: T[], rest: T[]): T[] {
+  const seen = new Set(superFirst.map((u) => u.id));
+  return superFirst.concat(rest.filter((u) => !seen.has(u.id)));
+}
+
+/** gênero como vem do banco ('female' | 'male' | 'other'); null = desconhecido */
 type GenderLike = string | null | undefined;
 /** 'women' | 'men' | 'everyone'; null/desconhecido conta como 'everyone' (coluna nova: nunca esvazia a descoberta) */
 type ShowMeLike = string | null | undefined;
 
-/** UM lado do "Mostrar": quem escolheu `showMe` aceita ver alguém do gênero `gender`? non_binary/other só em Todos */
+/** UM lado do "Mostrar": quem escolheu `showMe` aceita ver alguém do gênero `gender`? other só em Todos */
 export function showMeAllows(showMe: ShowMeLike, gender: GenderLike): boolean {
   if (showMe === 'women') return gender === 'female';
   if (showMe === 'men') return gender === 'male';

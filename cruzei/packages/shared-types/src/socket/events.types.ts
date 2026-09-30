@@ -13,7 +13,7 @@ import type { MatchCelebration } from '../like';
 import type { AccountChangedPayload } from '../user';
 import type { AccountBlockedError, PhotoStatus } from '../moderation';
 import type { NotificationNewPayload } from '../notifications';
-import type { SupportMessageEvent, SupportThreadEvent, SupportTypingEvent } from '../support';
+import type { SupportMessageEvent, SupportThreadEvent, SupportTypingEvent, SupportUrgentEvent } from '../support';
 
 export interface ServerToClientEvents {
   // Presença
@@ -24,8 +24,9 @@ export interface ServerToClientEvents {
 
   // Curtidas
   /**
-   * isMutual: essa curtida fechou o par (os dois se curtiram). fromUserId só vem pra Premium+ vigente ou na curtida
-   * mútua; pros demais o evento é só o sinal, sem quem curtiu
+   * isMutual: essa curtida fechou o par (os dois se curtiram). fromUserId só vem pra Premium+ vigente, na curtida
+   * mútua ou na SUPER curtida (a super revela quem mandou pra todo mundo); pros demais o evento é só o sinal. Quem
+   * curtiu invisível ou em análise nunca vai no fromUserId.
    */
   like_received: (data: { fromUserId?: string; isSuper: boolean; isMutual?: boolean }) => void;
   /** match fechado agora: só pra QUEM RECEBE (curtiu primeiro); também fica pendente em GET /likes/matches/pending */
@@ -68,6 +69,8 @@ export interface ServerToClientEvents {
   'support:thread': (data: SupportThreadEvent) => void;
   /** o outro lado está digitando */
   'support:typing': (data: SupportTypingEvent) => void;
+  /** só o painel (sala staff:support): alguém apertou o botão de emergência — alerta ao vivo (som + selo vermelho) */
+  'support:urgent': (data: SupportUrgentEvent) => void;
 
   // Online status
   user_online: (data: { userId: string }) => void;

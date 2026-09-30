@@ -48,6 +48,7 @@ import { FadeInView, ScaleOnPress, SlideInView, TypingDots } from '../../compone
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import { SafetySheet, askBlock } from '../../components/safety/SafetySheet';
+import { EmergencySheet } from '../../components/safety/EmergencySheet';
 import { MessagingLocked } from '../../components/inbox/MessagingLocked';
 import { isMessagingLockedError, useMessagingLocked } from '../../hooks/useMessagingLock';
 import {
@@ -337,6 +338,8 @@ function ChatScreenInner() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [safety, setSafety] = useState<null | 'menu' | 'reasons'>(null);
+  /** folha "🆘 Emergência" aberta (o bloqueio dela não pode virar o alerta de "conversa encerrada") */
+  const [emergency, setEmergency] = useState(false);
   const headerHeight = useHeaderHeight();
   const listRef = useRef<FlatList<LocalMessage>>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -421,13 +424,13 @@ function ChatScreenInner() {
     const socket = getSocket();
     if (!socket) return;
     const onRemoved = (d: ConversationRemovedPayload) => {
-      if (d.conversationId === conversationId && safety === null) leaveClosed('Essa conversa não está mais disponível.');
+      if (d.conversationId === conversationId && safety === null && !emergency) leaveClosed('Essa conversa não está mais disponível.');
     };
     socket.on('conversation:removed', onRemoved);
     return () => {
       socket.off('conversation:removed', onRemoved);
     };
-  }, [leaveClosed, conversationId, safety]);
+  }, [leaveClosed, conversationId, safety, emergency]);
   useEffect(() => {
     if (detailQuery.isError && toApiError(detailQuery.error).status === 404) leaveClosed('Essa conversa não está mais disponível.');
   }, [detailQuery.isError, detailQuery.error, leaveClosed]);
@@ -625,6 +628,14 @@ function ChatScreenInner() {
         // a resposta se perdeu mas o servidor já confirmou (eco do socket ou histórico): não é falha
         if (confirmedRef.current.has(clientId)) return;
         const e = toApiError(err);
+        if (e.error === 'text_blocked') {
+          // filtro de abuso: a mensagem não saiu e reenviar não adianta — tira o balão, devolve o texto pro campo
+          // (pra ajustar) e mostra o motivo que o servidor mandou ("Essa mensagem fere as regras do Metch…")
+          setOutbox((prev) => prev.filter((m) => m.clientId !== clientId));
+          setContent((cur) => cur || text);
+          setError(e.message);
+          return;
+        }
         setOutbox((prev) => prev.map((m) => (m.clientId === clientId && m.pending ? { ...m, pending: false, failed: true } : m)));
         if (e.status === 429) setError(rateLimitText(err));
         else if (isMessagingLockedError(err)) {
@@ -888,6 +899,16 @@ function ChatScreenInner() {
         onDone={(outcome) => {
           if (outcome !== 'reported') leaveByMe();
         }}
+        // a folha de segurança termina de fechar antes da de emergência abrir (duas Modal juntas falham no iOS)
+        onEmergency={() => setTimeout(() => setEmergency(true), 250)}
+      />
+      <EmergencySheet
+        visible={emergency}
+        onClose={() => setEmergency(false)}
+        target={{ id: peer.id, name }}
+        conversationId={conversationId ?? null}
+        // a pessoa foi bloqueada: sai do chat (sem o alerta de "conversa encerrada")
+        onDone={() => leaveByMe()}
       />
     </SafeAreaView>
   );

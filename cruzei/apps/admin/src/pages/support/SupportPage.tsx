@@ -1,6 +1,6 @@
 // Suporte ao vivo: fila | conversa em tempo real | contexto da pessoa.
 import { useState } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 import { Headphones, Inbox } from 'lucide-react';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
@@ -25,7 +25,7 @@ export default function SupportPage() {
   const { threadId } = useParams();
   const me = useMe();
   const { connected, socket } = useSocket();
-  const { waiting } = useSupportLive();
+  const { waiting, urgentCount, firstUrgent } = useSupportLive();
   const [filter, setFilterState] = useState<SupportFilter>(() => {
     const saved = readPref('support-filter', 'open');
     return isFilter(saved) ? saved : 'open';
@@ -63,6 +63,17 @@ export default function SupportPage() {
             {filter === 'open' && threads.length > 1 ? ' · quem espera há mais tempo em cima' : ''}
           </div>
           <Segmented<SupportFilter> label="Filtrar fila" value={filter} onChange={setFilter} options={SUPPORT_FILTERS.map((f) => ({ value: f.key, label: f.label }))} />
+          {/* botão de emergência sem resolver: faixa vermelha que abre o mais antigo (em qualquer filtro) */}
+          {urgentCount > 0 && firstUrgent ? (
+            <Link to={`/suporte/${firstUrgent.id}`} className="support-urgent-banner" role="alert">
+              <span aria-hidden="true">🆘</span>
+              <span className="grow">
+                {urgentCount === 1 ? '1 emergência' : `${urgentCount} emergências`} esperando: {firstUrgent.user.name}
+                {urgentCount > 1 ? ' e mais' : ''}
+              </span>
+              <span className="strong nowrap">Abrir</span>
+            </Link>
+          ) : null}
         </header>
         <div className="support-queue-list">
           {list.isPending ? (

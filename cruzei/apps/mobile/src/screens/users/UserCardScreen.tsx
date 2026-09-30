@@ -34,10 +34,13 @@ import Animated, {
 import { Canvas, Group, Path, Skia, type SkPath } from '@shopify/react-native-skia';
 
 import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } from '../../hooks/useMessagingLock';
+import { noteSuperLikeLimit, noteSuperLikeSent, useSuperLikeLimitPrompt } from '../../hooks/useSuperLikes';
+import { superLikeLimitOf } from '../../services/superLikes';
 import { api, toApiError } from '../../services/api';
 import { FadeInView, Glow, ScaleOnPress, SlideInView } from '../../components/animated';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { SafetySheet } from '../../components/safety/SafetySheet';
+import { EmergencySheet } from '../../components/safety/EmergencySheet';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
@@ -89,6 +92,8 @@ interface UserCardData extends LikeFlags, ConversationFlag {
   proximityBand: ProximityBand | null;
   /** avatar Cruzei (null/ausente → determinístico pelo id) */
   avatar?: AvatarConfig | null;
+  /** me deu super curtida que eu ainda não respondi (a super revela quem mandou); ausente = false */
+  superLikedMe?: boolean;
 }
 
 const AVATAR_CHIP = 52;
@@ -152,6 +157,7 @@ export function UserCardScreen() {
   const [sent, setSent] = useState<'like' | 'super' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [safetyOpen, setSafetyOpen] = useState(false);
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
   const likeBtnRef = useRef<View>(null);
   const superBtnRef = useRef<View>(null);
 
@@ -164,6 +170,8 @@ export function UserCardScreen() {
   // invisível sem Premium não curte: explica e oferece ficar visível ou o Premium (o servidor também barra)
   const likeLocked = useMessagingLocked();
   const askInvisibleLike = useInvisibleLikePrompt();
+  // super curtida acabou no dia (403 super_like_limit): no grátis, convite pro Premium
+  const askSuperLimit = useSuperLikeLimitPrompt();
 
   const likeMutation = useMutation({
     mutationFn: async (isSuper: boolean) =>
@@ -231,6 +239,7 @@ export function UserCardScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       try {
         const res = await likeMutation.mutateAsync(isSuper);
+        if (isSuper) noteSuperLikeSent(qc, res);
         setSent(isSuper ? 'super' : 'like');
         qc.invalidateQueries({ queryKey: ['nearby'] });
         // sem voltar sozinho: depois de curtir dá pra mandar mensagem daqui mesmo
@@ -248,11 +257,15 @@ export function UserCardScreen() {
           });
         }
       } catch (err) {
-        if (isMessagingLockedError(err)) askInvisibleLike(true);
+        const limit = superLikeLimitOf(err);
+        if (limit) {
+          noteSuperLikeLimit(qc, limit);
+          askSuperLimit(limit);
+        } else if (isMessagingLockedError(err)) askInvisibleLike(true);
         else setActionError(toApiError(err).message);
       }
     },
-    [conversationId, fireBurst, likeMutation, mainPhoto, qc, sent, user, likeLocked, askInvisibleLike],
+    [conversationId, fireBurst, likeMutation, mainPhoto, qc, sent, user, likeLocked, askInvisibleLike, askSuperLimit],
   );
 
   const onPass = useCallback(() => {
@@ -409,6 +422,14 @@ export function UserCardScreen() {
                 </View>
               </View>
             </SlideInView>
+          ) : user.superLikedMe && likeStatus !== 'SENT' ? (
+            // a super curtida revela quem mandou (pra todo mundo, não só Premium+)
+            <SlideInView from="left" distance={40} delay={120} springPreset="soft">
+              <View style={[styles.contextBox, styles.superLikedMeBox]}>
+                <Text style={styles.contextEmoji}>⭐</Text>
+                <Text style={[styles.contextText, { flex: 1 }]}>Te deu uma super curtida. Só falta você 😉</Text>
+              </View>
+            </SlideInView>
           ) : likeStatus === 'RECEIVED' ? (
             <SlideInView from="left" distance={40} delay={120} springPreset="soft">
               <View style={[styles.contextBox, styles.likedMeBox]}>
@@ -531,6 +552,16 @@ export function UserCardScreen() {
         source="profile"
         // bloqueou/arquivou/denunciou-e-bloqueou: o cartão não faz mais sentido
         onDone={(outcome) => (outcome === 'reported' ? undefined : nav.goBack())}
+        // a folha de segurança termina de fechar antes da de emergência abrir (duas Modal juntas falham no iOS)
+        onEmergency={() => setTimeout(() => setEmergencyOpen(true), 250)}
+      />
+      <EmergencySheet
+        visible={emergencyOpen}
+        onClose={() => setEmergencyOpen(false)}
+        target={{ id: user.id, name: user.name }}
+        conversationId={conversationId}
+        // a pessoa foi bloqueada: o cartão sai
+        onDone={() => nav.goBack()}
       />
 
       {/* ── rodapé fixo ── */}
@@ -985,6 +1016,7 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   likedMeBox: { backgroundColor: '#EDFFD6' },
+  superLikedMeBox: { backgroundColor: '#FFF6C7' },
   contextEmoji: { fontSize: 24 },
   contextEyebrow: { ...typography.caption, color: colors.secondary, letterSpacing: 1.5, textTransform: 'uppercase' },
   contextText: { ...typography.body, fontFamily: fontFamily.bodyMedium, color: colors.black },

@@ -78,6 +78,7 @@ Evitamos compartilhar com a pessoa denunciada detalhes que possam prejudicar uma
 - Cadastro só para maiores de 18 anos, com checagem da data de nascimento.
 - Moderação de todas as fotos novas, com estimativa de idade aparente e revisão humana nos casos duvidosos.
 - O chat do app aceita só mensagens de texto.
+- Um filtro automático bloqueia mensagens com conteúdo sexual envolvendo menores antes que cheguem à outra pessoa e recusa nomes, bios e @ com esse tipo de conteúdo. O filtro reconhece variações de escrita, como números no lugar de letras.
 - Ninguém vê a posição exata nem a distância exata de outra pessoa. A descoberta vai até 350 metros e esconde as pessoas nas suas áreas privadas e residências.
 - Bloqueio e denúncia disponíveis no perfil, no chat e na lista de Mensagens (Principal e Solicitações).
 - Limites de uso contra abuso e contas automatizadas.

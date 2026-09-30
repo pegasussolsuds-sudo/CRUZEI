@@ -18,10 +18,18 @@ export function useMyLocation(auto = true, tracking = false) {
   const setLocation = useLocationStore((s) => s.setLocation);
   const unverified = useLocationStore((s) => s.hiddenReason === 'location_unverified');
   const [status, setStatus] = useState<Status>(lat != null ? 'ready' : 'idle');
+  // pedido de permissão em andamento: o diálogo do sistema pode estar na tela (o tour do mapa não sobe por cima)
+  const [asking, setAsking] = useState(false);
 
   const locate = useCallback(async () => {
     setStatus('loading');
-    const ok = await requestPermissions();
+    setAsking(true);
+    let ok = false;
+    try {
+      ok = await requestPermissions();
+    } finally {
+      setAsking(false);
+    }
     if (!ok) {
       setStatus('denied');
       return null;
@@ -121,5 +129,5 @@ export function useMyLocation(auto = true, tracking = false) {
     };
   }, [canTrack, unverified, setLocation]);
 
-  return { lat, lng, status, locate, refresh };
+  return { lat, lng, status, asking, locate, refresh };
 }

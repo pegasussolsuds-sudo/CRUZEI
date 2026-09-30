@@ -11,6 +11,7 @@ import {
   type SupportThreadResponse,
   type SupportThreadStatus,
   type SupportThreadSummary,
+  type SupportUrgentEvent,
 } from '@cruzei/shared-types';
 import {
   BadRequestException,
@@ -33,6 +34,8 @@ import { NotifyService } from '../notifications/notify.service';
 
 import {
   CLOSING_TEXT,
+  claimUrgentAlert,
+  isUrgentRepeat,
   messageForStaff,
   messageForUser,
   messagesForUser,
@@ -59,6 +62,8 @@ interface ThreadDb {
   staff_unread: number;
   first_response_at: Date | null;
   rating: number | null;
+  urgent: boolean;
+  urgent_at: Date | null;
 }
 
 const toThreadRow = (t: ThreadDb): SupportThreadRow => ({
@@ -69,6 +74,7 @@ const toThreadRow = (t: ThreadDb): SupportThreadRow => ({
   lastMessageAt: t.last_message_at,
   userUnread: t.user_unread,
   rating: t.rating,
+  urgent: t.urgent,
 });
 
 const MSG_SELECT = {
@@ -84,6 +90,11 @@ const MSG_SELECT = {
 
 /** chave da fila "quem espera há mais tempo": desde quando espera (ou a última mensagem, se não está esperando) */
 const WAIT_KEY = Prisma.sql`COALESCE(w.since, t.last_message_at)`;
+
+/** urgente valendo (botão de emergência, não resolvido): sempre no topo da fila, fora da paginação */
+const URGENT_OPEN = Prisma.sql`(t.urgent AND t.status <> 'resolved')`;
+/** quantos urgentes cabem no topo da 1ª página (na prática são poucos) */
+const URGENT_TOP_MAX = 50;
 
 /** notificação da resposta: prévia curta do texto */
 const preview = (body: string) => (body.length > 140 ? `${body.slice(0, 137)}…` : body);
@@ -219,13 +230,73 @@ export class SupportService {
     };
   }
 
+  /**
+   * Botão de emergência (POST /v1/safety/emergency): abre ou usa o atendimento da pessoa e marca URGENTE — topo da
+   * fila, selo vermelho e 'support:urgent' pra equipe (alerta ao vivo). Três mensagens: a da pessoa (automática), a
+   * resposta do sistema dizendo o que aconteceu e uma nota interna com o contexto pra equipe. Apertar de novo em até
+   * URGENT_REPEAT_MS não repete as mensagens; o alarme toca no máximo 1 vez a cada URGENT_ALERT_GAP_MS por atendimento.
+   * urgent_at fica o da 1ª vez enquanto não resolver.
+   */
+  async openUrgent(
+    userId: string,
+    p: { body: string; reply: string; note: string },
+  ): Promise<SupportThreadSummary> {
+    const out = await this.prisma.$transaction(async (tx) => {
+      let t = await this.lockOpen(tx, userId);
+      if (!t) {
+        // mesmo índice único parcial do envio comum: duas emergências ao mesmo tempo abrem UM atendimento
+        const ins = await tx.$queryRaw<ThreadDb[]>`
+          INSERT INTO support_threads (user_id, status) VALUES (${userId}::uuid, 'open')
+          ON CONFLICT (user_id) WHERE status <> 'resolved' DO NOTHING
+          RETURNING *`;
+        t = ins[0] ?? (await this.lockOpen(tx, userId));
+      }
+      if (!t) throw new ConflictException({ error: 'thread_busy', message: 'Tente de novo' });
+      const repeat = isUrgentRepeat(t);
+      const msgs: SupportMessageRow[] = [];
+      if (!repeat) {
+        const mine = await this.insertMessage(tx, t.id, userId, 'user', p.body, false, null);
+        const reply = await this.insertMessage(tx, t.id, null, 'system', p.reply, false, null);
+        const note = await this.insertMessage(tx, t.id, null, 'system', p.note, true, null);
+        for (const m of [mine, reply, note]) if (m) msgs.push(m);
+      }
+      const [thread] = await tx.$queryRaw<ThreadDb[]>`
+        UPDATE support_threads
+           SET status = 'open', urgent = true,
+               urgent_at = CASE WHEN urgent AND urgent_at IS NOT NULL THEN urgent_at ELSE now() END,
+               last_message_at = CASE WHEN ${repeat} THEN last_message_at ELSE now() END,
+               updated_at = now(),
+               staff_unread = staff_unread + ${repeat ? 0 : 1}::int,
+               user_unread = user_unread + ${repeat ? 0 : 1}::int
+         WHERE id = ${t.id}::uuid RETURNING *`;
+      return { thread, msgs };
+    });
+    // depois do commit: a pessoa (outros aparelhos) e a equipe; o 'support:urgent' toca o alerta no painel, no máximo
+    // 1 vez por atendimento a cada URGENT_ALERT_GAP_MS (apertar de novo só atualiza a fila)
+    for (const m of out.msgs) await this.emitMessage(userId, m);
+    const summary = await this.emitThread(out.thread.id);
+    if (await claimUrgentAlert(this.redis.client, summary.id)) {
+      const ev: SupportUrgentEvent = { thread: summary };
+      this.gateway.emitToStaff(SUPPORT_EVENTS.urgent, ev);
+      this.log.warn(`suporte URGENTE (botão de emergência): atendimento ${summary.id}`);
+    }
+    return summary;
+  }
+
   // =============================================================================================
   // lado da equipe
   // =============================================================================================
 
   async listThreads(
     staff: AuthenticatedUser,
-    q: { status?: string; mine?: string; order?: string; cursor?: string; limit?: unknown },
+    q: {
+      status?: string;
+      mine?: string;
+      order?: string;
+      urgent?: string;
+      cursor?: string;
+      limit?: unknown;
+    },
   ): Promise<SupportThreadList> {
     const limit = pageSize(q.limit, 30, 100);
     const order = supportOrder(q.order);
@@ -235,7 +306,9 @@ export class SupportService {
     else if (q.status !== 'all') filters.push(Prisma.sql`t.status <> 'resolved'`);
     if (q.mine === '1' || q.mine === 'true')
       filters.push(Prisma.sql`t.assigned_to = ${staff.id}::uuid`);
-    const where = [...filters];
+    if (q.urgent === '1' || q.urgent === 'true') filters.push(Prisma.sql`t.urgent`);
+    // urgentes valendo vão no topo da 1ª página (urgentAt mais antigo primeiro); a paginação é só do resto
+    const where = [...filters, Prisma.sql`NOT ${URGENT_OPEN}`];
     const cur = decodeCursor(q.cursor, 2);
     if (cur) {
       const at = Prisma.sql`(${cursorTs(cur[0])}::timestamp AT TIME ZONE 'UTC')`;
@@ -246,7 +319,10 @@ export class SupportService {
       );
     }
     const cond = filters.length ? Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}` : Prisma.empty;
-    const [rows, total] = await Promise.all([
+    const [urgent, rows, total] = await Promise.all([
+      cur
+        ? Promise.resolve([] as SummaryDb[])
+        : this.summaryRows([...filters, URGENT_OPEN], URGENT_TOP_MAX, 'urgent'),
       this.summaryRows(where, limit + 1, order),
       // o total ignora o cursor: com status=open é o MESMO número do Painel (support.waitingStaff)
       this.prisma.$queryRaw<
@@ -256,7 +332,7 @@ export class SupportService {
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
     return {
-      items: page.map((r) => this.summaryOf(r)),
+      items: [...urgent, ...page].map((r) => this.summaryOf(r)),
       nextCursor:
         rows.length > limit && last
           ? encodeCursor([order === 'oldest' ? last.wait_cursor_at : last.cursor_at, last.id])
@@ -569,14 +645,21 @@ export class SupportService {
     return this.summaryOf(r);
   }
 
-  private summaryRows(where: Prisma.Sql[], limit: number, order: SupportOrder = 'recent') {
+  private summaryRows(
+    where: Prisma.Sql[],
+    limit: number,
+    order: SupportOrder | 'urgent' = 'recent',
+  ) {
     const cond = where.length ? Prisma.sql`WHERE ${Prisma.join(where, ' AND ')}` : Prisma.empty;
     const orderBy =
-      order === 'oldest'
-        ? Prisma.sql`${WAIT_KEY} ASC, t.id ASC`
-        : Prisma.sql`t.last_message_at DESC, t.id DESC`;
+      order === 'urgent'
+        ? Prisma.sql`t.urgent_at ASC, t.id ASC`
+        : order === 'oldest'
+          ? Prisma.sql`${WAIT_KEY} ASC, t.id ASC`
+          : Prisma.sql`t.last_message_at DESC, t.id DESC`;
     return this.prisma.$queryRaw<SummaryDb[]>`
       SELECT t.id, t.status, t.created_at, t.last_message_at, t.staff_unread, t.first_response_at, t.assigned_to,
+             t.urgent, t.urgent_at,
              to_char(t.last_message_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS cursor_at,
              w.since AS waiting_since,
              to_char(${WAIT_KEY} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') AS wait_cursor_at,
@@ -631,6 +714,8 @@ export class SupportService {
         ? Math.max(0, Math.round((r.first_response_at.getTime() - r.created_at.getTime()) / 60_000))
         : null,
       waitingSince: waitingSinceOf(r.status, r.waiting_since),
+      urgent: r.urgent,
+      urgentAt: r.urgent && r.urgent_at ? r.urgent_at.toISOString() : null,
     };
   }
 
@@ -656,6 +741,8 @@ interface SummaryDb {
   staff_unread: number;
   first_response_at: Date | null;
   assigned_to: string | null;
+  urgent: boolean;
+  urgent_at: Date | null;
   user_id: string;
   user_name: string;
   premium_tier: PremiumTier;

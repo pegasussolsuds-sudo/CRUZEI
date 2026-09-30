@@ -53,7 +53,8 @@ export class AdminSupportController {
 
   /**
    * SupportThreadList: ?status=open|pending|resolved|all (padrão: não resolvidos) &mine=1 &cursor=
-   * &order=oldest (quem espera há mais tempo primeiro; padrão: última mensagem mais recente)
+   * &order=oldest (quem espera há mais tempo primeiro; padrão: última mensagem mais recente) &urgent=1 (só urgentes).
+   * URGENTES não resolvidos (botão de emergência) vêm sempre no topo da 1ª página.
    */
   @Get()
   list(
@@ -61,10 +62,11 @@ export class AdminSupportController {
     @Query('status') status?: string,
     @Query('mine') mine?: string,
     @Query('order') order?: string,
+    @Query('urgent') urgent?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.svc.listThreads(me, { status, mine, order, cursor, limit });
+    return this.svc.listThreads(me, { status, mine, order, urgent, cursor, limit });
   }
 
   @Get(':id')

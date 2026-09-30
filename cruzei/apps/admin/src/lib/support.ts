@@ -32,15 +32,32 @@ function waitKey(t: SupportThreadSummary): number {
   return Date.parse(t.waitingSince ?? t.lastMessageAt);
 }
 
+/** URGENTE valendo (botão de emergência, não resolvido): topo da fila em qualquer filtro e ordem */
+export function isUrgentOpen(t: Pick<SupportThreadSummary, 'urgent' | 'status'>): boolean {
+  return !!t.urgent && t.status !== 'resolved';
+}
+
+/** urgentes primeiro (o mais antigo em cima, como o servidor); 0 = decide a ordem normal */
+function byUrgent(a: SupportThreadSummary, b: SupportThreadSummary): number {
+  const ua = isUrgentOpen(a);
+  const ub = isUrgentOpen(b);
+  if (ua !== ub) return ua ? -1 : 1;
+  if (!ua) return 0;
+  return Date.parse(a.urgentAt ?? a.createdAt) - Date.parse(b.urgentAt ?? b.createdAt);
+}
+
 /**
+ * Urgentes (botão de emergência) sempre em cima. Depois:
  * 'recent': quem espera primeiro; dentro de cada grupo, o mais recente em cima.
  * 'oldest' (Abertos): quem espera há mais tempo em cima — a mesma ordem do servidor.
  */
 export function sortThreads(list: readonly SupportThreadSummary[], order: SupportOrder = 'recent'): SupportThreadSummary[] {
   if (order === 'oldest') {
-    return [...list].sort((a, b) => waitKey(a) - waitKey(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return [...list].sort((a, b) => byUrgent(a, b) || waitKey(a) - waitKey(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
   return [...list].sort((a, b) => {
+    const u = byUrgent(a, b);
+    if (u) return u;
     const wa = isWaitingStaff(a) ? 1 : 0;
     const wb = isWaitingStaff(b) ? 1 : 0;
     if (wa !== wb) return wb - wa;
@@ -63,7 +80,7 @@ export function upsertThread(
 /**
  * Mesma coisa pra lista paginada (useInfiniteQuery). Mais recente primeiro: sai de todas as páginas e entra na
  * primeira. Quem espera há mais tempo primeiro (Abertos): fica na página onde estava; se é novo, entra na última
- * carregada (o novo é quem espera há menos tempo).
+ * carregada (o novo é quem espera há menos tempo). Urgente valendo: sempre na primeira (o servidor manda no topo).
  */
 export function upsertThreadInPages<P extends { items: SupportThreadSummary[] }>(
   pages: readonly P[],
@@ -75,8 +92,24 @@ export function upsertThreadInPages<P extends { items: SupportThreadSummary[] }>
   const cleaned = pages.map((p) => ({ ...p, items: p.items.filter((t) => t.id !== thread.id) }));
   if (!threadMatchesFilter(thread, filter, meId) || !cleaned.length) return cleaned;
   const order = filterOrder(filter);
-  const target = order === 'oldest' ? (at >= 0 ? at : cleaned.length - 1) : 0;
+  const target = isUrgentOpen(thread) ? 0 : order === 'oldest' ? (at >= 0 ? at : cleaned.length - 1) : 0;
   return cleaned.map((p, i) => (i === target ? { ...p, items: sortThreads([thread, ...p.items], order) } : p));
+}
+
+/** urgentes valendo que o painel conhece (faixa vermelha, título da aba): entra se é urgente e não resolvido, sai se não */
+export function applyUrgent(
+  known: ReadonlyMap<string, SupportThreadSummary>,
+  thread: SupportThreadSummary,
+): Map<string, SupportThreadSummary> {
+  const next = new Map(known);
+  if (isUrgentOpen(thread)) next.set(thread.id, thread);
+  else next.delete(thread.id);
+  return next;
+}
+
+/** o urgente mais antigo (o que a faixa vermelha abre) */
+export function oldestUrgent(known: ReadonlyMap<string, SupportThreadSummary>): SupportThreadSummary | null {
+  return sortThreads([...known.values()])[0] ?? null;
 }
 
 // ─── quem está esperando (topo, barra lateral, título da aba) ───

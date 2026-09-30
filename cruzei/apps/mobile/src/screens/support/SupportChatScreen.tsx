@@ -1,12 +1,12 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, Keyboard, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, Keyboard, KeyboardAvoidingView, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import { SUPPORT_LIMITS, type SupportMessageEvent, type SupportThreadResponse, type SupportTypingEvent } from '@cruzei/shared-types';
+import { EMERGENCY_PHONE, SUPPORT_LIMITS, type SupportMessageEvent, type SupportThreadResponse, type SupportTypingEvent } from '@cruzei/shared-types';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { timeAgo } from '@cruzei/shared-utils';
 import { TypingDots } from '../../components/animated';
@@ -415,6 +415,25 @@ export function SupportChatScreen() {
             contentContainerStyle={styles.list}
             keyboardShouldPersistTaps="handled"
             onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+            ListHeaderComponent={
+              // aberto pelo botão de emergência e ainda não resolvido: lembra da prioridade e do 190
+              thread?.urgent && !resolved ? (
+                <Pressable
+                  onPress={() => Linking.openURL(`tel:${EMERGENCY_PHONE}`).catch(() => {})}
+                  style={({ pressed }) => [styles.urgentBanner, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Atendimento urgente. Em perigo agora? Toque pra ligar ${EMERGENCY_PHONE}`}
+                >
+                  <Text style={styles.urgentIcon} accessibilityElementsHidden importantForAccessibility="no">
+                    🆘
+                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.urgentTitle}>Atendimento urgente</Text>
+                    <Text style={styles.urgentText}>A equipe foi avisada e responde com prioridade. Em perigo agora? Toque pra ligar {EMERGENCY_PHONE}.</Text>
+                  </View>
+                </Pressable>
+              ) : null
+            }
             ListEmptyComponent={
               <View style={styles.empty}>
                 <View style={styles.emptyIcon}>
@@ -481,6 +500,20 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.6 },
 
   list: { padding: spacing.lg, paddingBottom: spacing.md, gap: spacing.sm, flexGrow: 1 },
+  urgentBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    backgroundColor: 'rgba(255,59,48,0.07)',
+    marginBottom: spacing.sm,
+  },
+  urgentIcon: { fontSize: 22 },
+  urgentTitle: { ...typography.bodySmall, fontFamily: fontFamily.bodyBold, color: colors.danger },
+  urgentText: { ...typography.caption, color: colors.gray[700], marginTop: 1 },
   bubbleRow: { alignItems: 'flex-start' },
   bubbleRowMe: { alignItems: 'flex-end' },
   staffName: { ...typography.caption, fontFamily: fontFamily.bodySemiBold, color: colors.info, marginBottom: 2, marginLeft: spacing.xs },

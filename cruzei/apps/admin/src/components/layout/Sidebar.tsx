@@ -4,6 +4,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Headphones,
+  ChartLine,
   LayoutDashboard,
   MapPin,
   Megaphone,
@@ -20,6 +21,7 @@ import { CountPill } from '@/components/ui/Badge';
 
 const ICONS: Record<NavKey, LucideIcon> = {
   dashboard: LayoutDashboard,
+  metrics: ChartLine,
   users: Users,
   moderation: ShieldAlert,
   places: MapPin,
@@ -30,7 +32,7 @@ const ICONS: Record<NavKey, LucideIcon> = {
 };
 
 const GROUPS: { title: string; keys: NavKey[] }[] = [
-  { title: 'Visão geral', keys: ['dashboard'] },
+  { title: 'Visão geral', keys: ['dashboard', 'metrics'] },
   { title: 'Pessoas', keys: ['users', 'moderation', 'support'] },
   { title: 'Cidade', keys: ['places', 'events'] },
   { title: 'Comunicação', keys: ['campaigns'] },

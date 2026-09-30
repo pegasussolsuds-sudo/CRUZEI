@@ -3,7 +3,7 @@
 // Usa dois fakes do seed-dev (Aline e Rafael) e a conta de teste como "atacante". Assina tokens com o JWT_SECRET
 // do .env (só funciona em dev). Cada teste imprime PASS/FAIL; o processo sai com 1 se algum falhar.
 import 'dotenv/config';
-import { encodeGeohash } from '@cruzei/shared-utils';
+import { ageBucket, encodeGeohash } from '@cruzei/shared-utils';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import * as jwt from 'jsonwebtoken';
@@ -660,6 +660,159 @@ async function main() {
       );
       await clear();
       await presenceAt(b.id, B.lat, B.lng);
+    }
+  }
+
+  // TESTE 18 — faixa de idade (só o MEU lado): A tira o bloco de 5 anos de B da faixa → B (idade escondida) some pra A
+  // (mapa e deck), B continua vendo A; faixa que tira só a idade exata mas encosta no bloco não esconde B (mexer na
+  // faixa não revela mais que o bloco); B nunca tem a idade (nem a data) na resposta, dentro ou fora da faixa
+  {
+    const [ra0, rb0] = await Promise.all([
+      prisma.user.findUnique({ where: { id: a.id }, select: { ageMin: true, ageMax: true } }),
+      prisma.user.findUnique({ where: { id: b.id }, select: { showAge: true, birthDate: true } }),
+    ]);
+    await presenceAt(a.id, A.lat, A.lng);
+    await presenceAt(b.id, B.lat, B.lng);
+    const now = new Date();
+    const bd = rb0!.birthDate;
+    let bAge = now.getFullYear() - bd.getFullYear();
+    if (
+      now.getMonth() < bd.getMonth() ||
+      (now.getMonth() === bd.getMonth() && now.getDate() < bd.getDate())
+    )
+      bAge -= 1;
+    try {
+      await prisma.user.update({ where: { id: b.id }, data: { showAge: false } });
+      await redis.publish('metch:cand-inv', b.id);
+      // faixa aberta: A vê B, sem idade
+      await prisma.user.update({ where: { id: a.id }, data: { ageMin: 18, ageMax: 99 } });
+      const open = await call(tA, 'GET', '/location/nearby');
+      const bOpen = ((open.json as { users?: { id: string; age: unknown }[] })?.users ?? []).find(
+        (u) => u.id === b.id,
+      );
+      // faixa que exclui o BLOCO de 5 anos de B (acima dele se der, senão abaixo; vão mínimo de 4 anos)
+      const bucket = ageBucket(bAge);
+      const range =
+        bucket.hi + 1 <= 95
+          ? { ageMin: bucket.hi + 1, ageMax: 99 }
+          : { ageMin: 18, ageMax: bucket.lo - 1 };
+      await prisma.user.update({ where: { id: a.id }, data: range });
+      const [ra, rd, rb] = await Promise.all([
+        call(tA, 'GET', '/location/nearby'),
+        call(tA, 'GET', '/location/nearby?deck=1'),
+        call(tB, 'GET', '/location/nearby'),
+      ]);
+      // faixa que tira só a idade exata de B mas encosta no bloco (quando dá): B continua pra A
+      let sameBucket: Awaited<ReturnType<typeof call>> | null = null;
+      if (bAge + 1 <= bucket.hi && bAge + 1 <= 95) {
+        await prisma.user.update({ where: { id: a.id }, data: { ageMin: bAge + 1, ageMax: 99 } });
+        sameBucket = await call(tA, 'GET', '/location/nearby');
+      }
+      const leak = [open, ra, rd, rb, ...(sameBucket ? [sameBucket] : [])].some((r) =>
+        /birth/i.test(JSON.stringify(r.json)),
+      );
+      report(
+        '18 faixa de idade só do meu lado; idade escondida pelo bloco de 5 anos (sem vazar idade/data)',
+        ra.status === 200 &&
+          rd.status === 200 &&
+          !ids(ra).includes(b.id) &&
+          !ids(rd).includes(b.id) &&
+          (!bOpen || bOpen.age === null) &&
+          (!ids(open).includes(b.id) || ids(rb).includes(a.id)) &&
+          (!sameBucket || !ids(open).includes(b.id) || ids(sameBucket).includes(b.id)) &&
+          !leak,
+        `B na faixa aberta: ${!!bOpen} (idade ${bOpen ? String(bOpen.age) : '-'}); fora do bloco, A vê B: ${ids(ra).includes(b.id)} / deck: ${ids(rd).includes(b.id)}; B vê A: ${ids(rb).includes(a.id)}; só a idade exata fora: ${sameBucket ? ids(sameBucket).includes(b.id) : 'n/a'}; vazou data: ${leak}`,
+      );
+    } finally {
+      await prisma.user.update({
+        where: { id: a.id },
+        data: { ageMin: ra0?.ageMin ?? 18, ageMax: ra0?.ageMax ?? 99 },
+      });
+      await prisma.user.update({ where: { id: b.id }, data: { showAge: rb0?.showAge ?? true } });
+      await redis.publish('metch:cand-inv', b.id);
+    }
+  }
+
+  // TESTE 19 — deck (?deck=1): super curtida de longe vem no topo SEM faixa/posição/lugar; o mapa não muda; quem eu passei
+  // some do deck mas não do mapa. Tudo criado aqui é desfeito no fim (só o que não existia antes)
+  {
+    await presenceAt(a.id, A.lat, A.lng);
+    await presenceAt(me.id, ME.lat, ME.lng);
+    // B longe (~4 km, sem boost): fora do raio do mapa
+    await prisma.boost.deleteMany({ where: { userId: b.id } });
+    await presenceAt(b.id, ME.lat + 0.036, ME.lng);
+    const [likeBefore, passBefore, myLike] = await Promise.all([
+      prisma.like.findUnique({ where: { likerId_likedId: { likerId: b.id, likedId: me.id } } }),
+      prisma.pass.findUnique({ where: { userId_targetId: { userId: me.id, targetId: a.id } } }),
+      prisma.like.findUnique({ where: { likerId_likedId: { likerId: me.id, likedId: b.id } } }),
+    ]);
+    const blocked = await prisma.block.findFirst({
+      where: {
+        OR: [
+          { blockerId: me.id, blockedId: b.id },
+          { blockerId: b.id, blockedId: me.id },
+        ],
+      },
+    });
+    if (likeBefore || myLike || blocked) {
+      report(
+        '19 deck: super curtida no topo',
+        true,
+        'pulado: já existe curtida/bloqueio entre a conta de teste e B',
+      );
+    } else {
+      // antes do passar: A aparece no meu mapa? (base pra conferir que passar não esconde do mapa)
+      const aBefore = ids(await call(tMe, 'GET', '/location/nearby')).includes(a.id);
+      try {
+        await prisma.like.create({ data: { likerId: b.id, likedId: me.id, isSuper: true } });
+        if (!passBefore) await prisma.pass.create({ data: { userId: me.id, targetId: a.id } });
+        const [deck, map] = await Promise.all([
+          call(tMe, 'GET', '/location/nearby?deck=1'),
+          call(tMe, 'GET', '/location/nearby'),
+        ]);
+        const d = deck.json as {
+          users?: {
+            id: string;
+            superLikedMe?: boolean;
+            proximityBand: unknown;
+            mapPosition: unknown;
+            poi: unknown;
+            lastSeen: string;
+          }[];
+          superLikesPending?: number;
+        };
+        const top = d?.users?.[0];
+        const bInDeck = (d?.users ?? []).find((u) => u.id === b.id);
+        const badDeck = findForbiddenKeys(deck.json);
+        report(
+          '19 deck: super curtida de longe no topo sem faixa/posição/lugar; mapa sem ela; sem chave proibida',
+          deck.status === 200 &&
+            (!bInDeck ||
+              (top?.id === b.id &&
+                top.superLikedMe === true &&
+                top.proximityBand === null &&
+                top.mapPosition === null &&
+                top.poi === null &&
+                top.lastSeen === 'earlier' &&
+                (d.superLikesPending ?? 0) >= 1)) &&
+            !ids(map).includes(b.id) &&
+            badDeck.length === 0,
+          `status ${deck.status}/${map.status}; ` +
+            (bInDeck
+              ? `topo: ${top?.id === b.id}; faixa ${String(top?.proximityBand)}; pendentes ${d.superLikesPending}`
+              : 'B não aparece no deck (conferir seed: "Mostrar"/faixa de idade/visibilidade da conta de teste)'),
+        );
+        const aInMap = ids(map).includes(a.id);
+        report(
+          '19b passar esconde do deck, não do mapa',
+          !ids(deck).includes(a.id) && aInMap === aBefore,
+          `A no mapa antes/depois: ${aBefore}/${aInMap}; A no deck: ${ids(deck).includes(a.id)}`,
+        );
+      } finally {
+        await prisma.like.deleteMany({ where: { likerId: b.id, likedId: me.id } });
+        if (!passBefore) await prisma.pass.deleteMany({ where: { userId: me.id, targetId: a.id } });
+        await presenceAt(b.id, B.lat, B.lng);
+      }
     }
   }
 

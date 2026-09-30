@@ -298,6 +298,25 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+/* conversa citada como <details>: o botão da denúncia abre a certa */
+.conv-details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.conv-details > summary::-webkit-details-marker {
+  display: none;
+}
+.conv-details > summary::before {
+  content: '▸';
+  color: var(--text-3);
+  transition: transform 0.15s ease;
+}
+.conv-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.conv-details > .conv-messages {
+  margin-top: var(--space-2);
+}
 .conv-messages {
   list-style: none;
   margin: 0;
@@ -733,6 +752,40 @@
 .thread-row[data-active='true'] {
   background: var(--accent-soft);
   border-left-color: var(--accent);
+}
+/* botão de emergência sem resolver: vermelho mesmo quando aberto */
+.thread-row[data-urgent='true'],
+.thread-row[data-urgent='true'][data-active='true'] {
+  background: var(--danger-soft);
+  border-left-color: var(--danger);
+}
+.support-urgent-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  text-decoration: none;
+  animation: support-urgent-pulse 1.6s ease-in-out infinite;
+}
+.support-urgent-banner:hover {
+  text-decoration: none;
+  border-color: var(--danger);
+}
+@keyframes support-urgent-pulse {
+  50% {
+    border-color: var(--danger);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .support-urgent-banner {
+    animation: none;
+  }
 }
 .thread-row:focus-visible {
   outline: 2px solid var(--focus);

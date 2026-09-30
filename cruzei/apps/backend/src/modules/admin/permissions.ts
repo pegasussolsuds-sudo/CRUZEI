@@ -14,6 +14,8 @@ export const ALL_PERMISSIONS: readonly AdminPermission[] = [
   'campaigns',
   'support',
   'audit',
+  // página Métricas (funil do cadastro, retenção, ativos): só admin
+  'metrics',
 ];
 
 /**

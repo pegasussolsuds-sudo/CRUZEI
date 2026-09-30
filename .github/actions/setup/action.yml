@@ -1,0 +1,32 @@
+# Preparo comum dos jobs do CI: pnpm (versão do packageManager), Node (versão do .nvmrc), dependências e o dist dos
+# pacotes compartilhados. O dist não vai pro git e o backend e o app leem @cruzei/shared-* pelo dist.
+name: Preparar o monorepo
+description: pnpm + Node + pnpm install + build de shared-types e shared-utils (pasta cruzei/)
+
+runs:
+  using: composite
+  steps:
+    - name: pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        # packageManager do package.json (pnpm@9.12.0); o package.json fica em cruzei/, não na raiz do repositório
+        package_json_file: cruzei/package.json
+
+    - name: Node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: cruzei/.nvmrc
+        cache: pnpm
+        cache-dependency-path: cruzei/pnpm-lock.yaml
+
+    - name: Dependências
+      shell: bash
+      working-directory: cruzei
+      run: pnpm install --frozen-lockfile
+
+    - name: Pacotes compartilhados (dist)
+      shell: bash
+      working-directory: cruzei
+      run: |
+        pnpm --filter @cruzei/shared-types build
+        pnpm --filter @cruzei/shared-utils build

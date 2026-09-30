@@ -229,7 +229,10 @@ export class AdminUsersService {
     const row = await this.row(viewer, id);
     const [moderation, extra, subs, devices, counts, threads, city] = await Promise.all([
       this.moderation.userDetail(id),
-      this.prisma.user.findUnique({ where: { id }, select: { bio: true, instagramHandle: true } }),
+      this.prisma.user.findUnique({
+        where: { id },
+        select: { bio: true, instagramHandle: true, gender: true },
+      }),
       this.prisma.subscription.findMany({
         where: { userId: id },
         orderBy: { createdAt: 'desc' },
@@ -279,6 +282,7 @@ export class AdminUsersService {
       ...row,
       moderation,
       bio: extra?.bio ?? null,
+      ...(extra?.gender ? { gender: extra.gender } : {}),
       phoneReleases: await this.phoneReleasesOf(viewer, id),
       // @ do Instagram (público no cartão); a orientação fica fora do painel (dado sensível)
       instagram: extra?.instagramHandle ?? null,

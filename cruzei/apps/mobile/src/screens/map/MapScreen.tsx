@@ -11,6 +11,8 @@ import * as Location from 'expo-location';
 import * as Haptics from 'expo-haptics';
 
 import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } from '../../hooks/useMessagingLock';
+import { noteSuperLikeLimit, noteSuperLikeSent, useSuperLikeLimitPrompt } from '../../hooks/useSuperLikes';
+import { superLikeLimitOf } from '../../services/superLikes';
 import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
 import { useMyLocation } from '../../hooks/useMyLocation';
@@ -38,6 +40,7 @@ import type { GeocodeResult } from '../../hooks/useGeocodeSearch';
 import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } from '../../components/map/UserPreviewSheet';
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
+import { MapTourHost } from '../../components/tour/MapTourHost';
 import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../avatar';
 import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand, type MapEvent, type MapUser, type PerfTier, type PinPayload } from './bridge';
 import { NativeMap, type NativeMapHandle } from './native/NativeMap';
@@ -98,6 +101,8 @@ function addTo(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
 
 export function MapScreen() {
   const mapRef = useRef<NativeMapHandle>(null);
+  // raiz da tela: o tour do mapa mede dela o boneco, a lista e as abas
+  const rootRef = useRef<View>(null);
   const sheetRef = useRef<MapBottomSheetHandle>(null);
   const userSheetRef = useRef<UserPreviewSheetHandle>(null);
   const placeSheetRef = useRef<PlacePreviewSheetHandle>(null);
@@ -115,11 +120,13 @@ export function MapScreen() {
   // ---------- dados próprios ----------
   const me = useAuthStore((s) => s.user);
   // tracking: posição acompanhada + presença renovada só enquanto o mapa está em foco e o app em primeiro plano
-  const { lat, lng, status: locStatus, locate, refresh: refreshLocation } = useMyLocation(true, active);
+  const { lat, lng, status: locStatus, asking: locAsking, locate, refresh: refreshLocation } = useMyLocation(true, active);
   const { isAnonymous, askToggle: askToggleVisibility, isPending: togglePending } = useVisibility();
   // invisível sem Premium não curte: explica e oferece ficar visível ou o Premium (o servidor também barra)
   const likeLocked = useMessagingLocked();
   const askInvisibleLike = useInvisibleLikePrompt();
+  // super curtida acabou no dia (403 super_like_limit): no grátis, convite pro Premium
+  const askSuperLimit = useSuperLikeLimitPrompt();
   const { theme } = useMapTheme();
   const boostQuery = useActiveBoost(Boolean(me), active);
   const boost = boostQuery.data ?? null;
@@ -859,6 +866,7 @@ export function MapScreen() {
       likingRef.current.add(u.id);
       try {
         const res = await api.post<LikeResult>('/likes', { userId: u.id, isSuper });
+        if (isSuper) noteSuperLikeSent(qc, res.data);
         setLikedIds((prev) => addTo(prev, u.id));
         send(cmd.emote(u.id, 'like')); // a pessoa reage no mapa
         if (res.data.isMutual) {
@@ -881,13 +889,17 @@ export function MapScreen() {
           showToast(isSuper ? `Super curtida enviada pra ${u.name} ⭐` : `Curtida enviada pra ${u.name} 💚`);
         }
       } catch (err) {
-        if (isMessagingLockedError(err)) askInvisibleLike(true);
+        const limit = superLikeLimitOf(err);
+        if (limit) {
+          noteSuperLikeLimit(qc, limit);
+          askSuperLimit(limit);
+        } else if (isMessagingLockedError(err)) askInvisibleLike(true);
         else showToast(toApiError(err).message || 'Ops, deu ruim. Tenta de novo?');
       } finally {
         likingRef.current.delete(u.id);
       }
     },
-    [qc, send, showToast, bandById, playMoment, likedIds, localMutual, likeLocked, askInvisibleLike],
+    [qc, send, showToast, bandById, playMoment, likedIds, localMutual, likeLocked, askInvisibleLike, askSuperLimit],
   );
   const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
   const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
@@ -1156,6 +1168,13 @@ export function MapScreen() {
   const clearGroupFilter = useCallback(() => setGroupFilter(null), []);
   const onSheetChange = useCallback((index: number) => setSheetIndex(Math.max(0, index)), []);
   const onLayout = useCallback((e: LayoutChangeEvent) => setContainerH(e.nativeEvent.layout.height), []);
+  // tour do mapa: tela limpa antes de começar (sem sheet de pessoa/lugar, lista recolhida)
+  const prepareTour = useCallback(() => {
+    setSelected(null);
+    setSelectedPoiId(null);
+    setVenueCardOpen(false);
+    sheetRef.current?.snapToIndex(0);
+  }, []);
 
   // pessoas no filtro por lugar = quem o servidor diz que está no lugar (mesma regra da sheet do lugar)
   const poiFilterIds = useMemo(() => {
@@ -1179,7 +1198,7 @@ export function MapScreen() {
   const nearbyFailKind = nearbyError && toApiError(nearbyQuery.error).status !== undefined ? 'server' : 'network';
 
   return (
-    <View style={styles.container} onLayout={onLayout}>
+    <View ref={rootRef} collapsable={false} style={styles.container} onLayout={onLayout}>
       <NativeMap
         key={mapKey}
         ref={mapRef}
@@ -1345,6 +1364,20 @@ export function MapScreen() {
       ) : null}
 
       <MatchModal match={match} onClose={onMatchClosed} onViewOnMap={onViewMatchOnMap} />
+
+      {/* tour do mapa: 1x no primeiro mapa pós-cadastro ou revisto pela Ajuda */}
+      <MapTourHost
+        rootRef={rootRef}
+        headerH={headerH}
+        listH={listSheetH(0)}
+        hasMe={lat != null && lng != null}
+        // posição resolvida (tenho, negada ou GPS fora): o automático espera isso, nunca por cima do diálogo de permissão
+        locationSettled={(lat != null && lng != null) || locStatus === 'denied' || locStatus === 'unavailable'}
+        locationAsking={locAsking}
+        screenReady={mapReady && active && !mapError && !vibeOpen && !match && !moment}
+        onPrepare={prepareTour}
+        onFocusMe={onCenter}
+      />
     </View>
   );
 }

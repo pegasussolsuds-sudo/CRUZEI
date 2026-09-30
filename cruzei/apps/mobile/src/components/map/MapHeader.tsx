@@ -14,6 +14,7 @@ import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { VibeSearchBar } from './VibeSearchBar';
+import { TourTarget } from '../tour/targets';
 
 export interface ActiveBoost {
   id: string;
@@ -105,7 +106,10 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
     <SafeAreaView style={styles.wrap} pointerEvents="box-none" edges={['top']} onLayout={onHeaderHeight ? (e) => onHeaderHeight(e.nativeEvent.layout.height) : undefined}>
       {onOpenVibe ? (
         <View style={styles.searchWrap} pointerEvents="box-none">
-          <VibeSearchBar onPress={onOpenVibe} hotCount={indicators?.hot ?? 0} paused={paused} />
+          {/* alvos do tour do mapa (busca, visível/anônimo, localizar) */}
+          <TourTarget id="vibe">
+            <VibeSearchBar onPress={onOpenVibe} hotCount={indicators?.hot ?? 0} paused={paused} />
+          </TourTarget>
         </View>
       ) : null}
       <View style={styles.row} pointerEvents="box-none">
@@ -117,30 +121,34 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
           </Text>
         </View>
 
-        <ScaleOnPress
-          onPress={onToggleVisibility}
-          disabled={togglePending}
-          accessibilityRole="switch"
-          accessibilityState={{ checked: isAnonymous, disabled: togglePending }}
-          accessibilityLabel={isAnonymous ? 'Modo anônimo ativo. Tocar pra ficar visível' : 'Modo visível ativo. Tocar pra ficar anônimo'}
-          style={styles.toggle}
-        >
-          <Animated.View style={[styles.toggleInner, chipBgStyle]}>
-            <Animated.View style={[styles.toggleFace, visibleStyle]}>
-              <Ionicons name="eye" size={16} color={colors.primary} />
-              <Text style={[styles.toggleText, { color: colors.primary }]}>Visível</Text>
+        <TourTarget id="visibility">
+          <ScaleOnPress
+            onPress={onToggleVisibility}
+            disabled={togglePending}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: isAnonymous, disabled: togglePending }}
+            accessibilityLabel={isAnonymous ? 'Modo anônimo ativo. Tocar pra ficar visível' : 'Modo visível ativo. Tocar pra ficar anônimo'}
+            style={styles.toggle}
+          >
+            <Animated.View style={[styles.toggleInner, chipBgStyle]}>
+              <Animated.View style={[styles.toggleFace, visibleStyle]}>
+                <Ionicons name="eye" size={16} color={colors.primary} />
+                <Text style={[styles.toggleText, { color: colors.primary }]}>Visível</Text>
+              </Animated.View>
+              <Animated.View style={[styles.toggleFace, styles.toggleFaceAbs, anonStyle]}>
+                <Ionicons name="glasses" size={16} color={colors.gray[300]} />
+                <Text style={[styles.toggleText, { color: colors.gray[300] }]}>Anônimo</Text>
+                <Ionicons name="checkmark" size={14} color={colors.primary} />
+              </Animated.View>
             </Animated.View>
-            <Animated.View style={[styles.toggleFace, styles.toggleFaceAbs, anonStyle]}>
-              <Ionicons name="glasses" size={16} color={colors.gray[300]} />
-              <Text style={[styles.toggleText, { color: colors.gray[300] }]}>Anônimo</Text>
-              <Ionicons name="checkmark" size={14} color={colors.primary} />
-            </Animated.View>
-          </Animated.View>
-        </ScaleOnPress>
+          </ScaleOnPress>
+        </TourTarget>
 
-        <ScaleOnPress onPress={onCenter} accessibilityRole="button" accessibilityLabel="Centralizar em mim" style={styles.fab} glowColor={colors.primary}>
-          <Ionicons name="locate" size={20} color={colors.black} />
-        </ScaleOnPress>
+        <TourTarget id="locate">
+          <ScaleOnPress onPress={onCenter} accessibilityRole="button" accessibilityLabel="Centralizar em mim" style={styles.fab} glowColor={colors.primary}>
+            <Ionicons name="locate" size={20} color={colors.black} />
+          </ScaleOnPress>
+        </TourTarget>
       </View>
 
       {indicators && ((indicators.hot > 0 && !onOpenVibe) || indicators.near > 0 || indicators.fresh) ? (

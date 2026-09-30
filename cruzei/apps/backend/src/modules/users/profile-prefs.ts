@@ -1,8 +1,19 @@
-// Regras puras dos campos do perfil: orientação (dado sensível, opcional; exibir por escolha), @ do Instagram e a
-// última atividade em FAIXA no cartão público. Sem banco nem Nest: o users.service e o cartão (GET /users/:id) usam
+// Regras puras dos campos do perfil: orientação (dado sensível, opcional; exibir por escolha), @ do Instagram, nome,
+// bio, interesses, completude, faixa de idade do "quem ver" e a última atividade em FAIXA no cartão público. Sem banco nem Nest: o users.service e o cartão (GET /users/:id) usam
 // daqui. O filtro "Mostrar" e a ordem "mesma orientação primeiro" moram na descoberta (location/discovery-order.ts).
-import type { Orientation } from '@cruzei/shared-types';
-import { isValidInstagramHandle, normalizeInstagramHandle } from '@cruzei/shared-utils';
+import {
+  AGE_MAX,
+  AGE_MIN,
+  AGE_RANGE_DAILY_CHANGES,
+  AGE_RANGE_MIN_GAP,
+  PROFILE_LIMITS,
+  type Orientation,
+} from '@cruzei/shared-types';
+import {
+  isValidAgeRange,
+  isValidInstagramHandle,
+  normalizeInstagramHandle,
+} from '@cruzei/shared-utils';
 
 import { PRIVACY } from '../location/discovery-privacy';
 
@@ -74,6 +85,131 @@ export function parseInstagramInput(raw: string | null | undefined): InstagramIn
   const handle = normalizeInstagramHandle(raw);
   if (handle == null) return { ok: true, handle: null };
   return isValidInstagramHandle(handle) ? { ok: true, handle } : { ok: false };
+}
+
+// ---- nome, bio e interesses (cadastro e PATCH /me) ----
+
+/** corpo do 400 quando o nome fica curto demais depois de tirar os espaços */
+export const NAME_INVALID = {
+  error: 'name_invalid',
+  message: 'Seu nome precisa ter pelo menos 2 letras',
+} as const;
+
+/** nome sem espaços sobrando (nas pontas e repetidos no meio); curto (< 2) ou longo demais → null */
+export function cleanName(raw: string | null | undefined): string | null {
+  const name = (raw ?? '').replace(/\s+/g, ' ').trim();
+  return name.length >= 2 && name.length <= PROFILE_LIMITS.nameMax ? name : null;
+}
+
+/** bio: undefined = não mexe; só espaço ou vazio = sem bio (null); o resto vai sem as pontas */
+export function cleanBio(raw: string | null | undefined): string | null | undefined {
+  if (raw === undefined) return undefined;
+  const bio = (raw ?? '').trim();
+  return bio ? bio.slice(0, PROFILE_LIMITS.bioMax) : null;
+}
+
+/** nomes do catálogo: sem pontas, sem vazio, sem repetido, no máximo PROFILE_LIMITS.interestsMax (o resto some) */
+export function cleanInterestNames(names: readonly string[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of names ?? []) {
+    const n = typeof raw === 'string' ? raw.trim() : '';
+    if (n && !out.includes(n)) out.push(n);
+    if (out.length >= PROFILE_LIMITS.interestsMax) break;
+  }
+  return out;
+}
+
+/** completude do perfil (0–100): mesma conta no cadastro e depois de cada edição */
+export function profileCompleteness(p: {
+  name?: string | null;
+  bio?: string | null;
+  photos: number;
+  interests: number;
+  lookingFor?: string | null;
+  isVerified?: boolean;
+}): number {
+  let score = 0;
+  if (p.name) score += 10;
+  if (p.bio) score += 15;
+  if (p.photos >= 1) score += 20;
+  if (p.photos >= 2) score += 10;
+  if (p.photos >= 4) score += 5;
+  if (p.interests >= 3) score += 15;
+  if (p.interests >= 6) score += 5;
+  if (p.lookingFor && p.lookingFor !== 'unspecified') score += 5;
+  if (p.isVerified) score += 15;
+  return Math.min(100, score);
+}
+
+// ---- faixa de idade do "quem ver" (PATCH /me/settings) ----
+
+/** corpo do 400 (ApiErrorCode 'age_range_invalid'); o CHECK users_age_range_chk viraria 500 */
+export const AGE_RANGE_INVALID = {
+  error: 'age_range_invalid',
+  message: `A faixa de idade vai de ${AGE_MIN} a 80+, com pelo menos ${AGE_RANGE_MIN_GAP} anos entre o "de" e o "até"`,
+} as const;
+
+/**
+ * Corpo do 429 (ApiErrorCode 'age_range_limit'): a faixa já mudou AGE_RANGE_DAILY_CHANGES vezes hoje. O limite existe
+ * porque trocar a faixa sem parar e olhar quem some ajudaria a descobrir a idade de quem esconde.
+ */
+export function ageRangeLimitBody(resetsAt: Date) {
+  return {
+    error: 'age_range_limit' as const,
+    message: `Dá pra mudar a faixa de idade ${AGE_RANGE_DAILY_CHANGES} vezes por dia. Amanhã libera de novo 😉`,
+    limit: AGE_RANGE_DAILY_CHANGES,
+    resetsAt: resetsAt.toISOString(),
+  };
+}
+
+/**
+ * A faixa depois do PATCH (a ponta que não veio sai do banco): null = fora da regra; `changed` = muda algo (igual ao
+ * gravado não gasta mudança do dia).
+ */
+export function nextAgeRange(
+  cur: { ageMin: number; ageMax: number },
+  data: { ageMin?: number; ageMax?: number },
+): { ageMin: number; ageMax: number; changed: boolean } | null {
+  const ageMin = data.ageMin ?? cur.ageMin;
+  const ageMax = data.ageMax ?? cur.ageMax;
+  if (!isValidAgeRange(ageMin, ageMax)) return null;
+  return { ageMin, ageMax, changed: ageMin !== cur.ageMin || ageMax !== cur.ageMax };
+}
+
+/**
+ * O que gravar da faixa. As duas pontas: confere a regra inteira (com o vão mínimo). Só uma: confere os limites dela
+ * e devolve a trava (`guard`) contra a outra ponta que está no banco — o UPDATE só pega se a faixa continuar válida,
+ * vão incluído (sem corrida com outro PATCH). Nada → null (não mexe).
+ */
+export function ageRangeUpdate(
+  ageMin: number | undefined,
+  ageMax: number | undefined,
+):
+  | null
+  | { ok: false }
+  | {
+      ok: true;
+      data: { ageMin?: number; ageMax?: number };
+      guard: { ageMax: { gte: number } } | { ageMin: { lte: number } } | null;
+    } {
+  if (ageMin === undefined && ageMax === undefined) return null;
+  if (ageMin !== undefined && ageMax !== undefined) {
+    return isValidAgeRange(ageMin, ageMax)
+      ? { ok: true, data: { ageMin, ageMax }, guard: null }
+      : { ok: false };
+  }
+  if (ageMin !== undefined) {
+    return isValidAgeRange(ageMin, AGE_MAX)
+      ? { ok: true, data: { ageMin }, guard: { ageMax: { gte: ageMin + AGE_RANGE_MIN_GAP } } }
+      : { ok: false };
+  }
+  return isValidAgeRange(AGE_MIN, ageMax)
+    ? {
+        ok: true,
+        data: { ageMax: ageMax as number },
+        guard: { ageMin: { lte: (ageMax as number) - AGE_RANGE_MIN_GAP } },
+      }
+    : { ok: false };
 }
 
 // ---- última atividade (cartão público) ----

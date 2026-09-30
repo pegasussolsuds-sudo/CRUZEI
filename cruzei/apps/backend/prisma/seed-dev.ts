@@ -5,14 +5,16 @@
 //
 // Acima de 8 pessoas o seed gera gente sintética cobrindo a matriz de testes do mapa (brief FOTO AVATAR §23):
 // sem foto, foto quebrada (404), foto desligada no mapa, nome longo/curto, gente nova, multidão no evento.
-import { PrismaClient } from '@prisma/client';
-import Redis from 'ioredis';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
 import { encodeGeohash, randomAvatarConfig } from '@cruzei/shared-utils';
-import { UPLOAD_DIR } from '../src/modules/uploads/uploads.constants';
+import { PrismaClient } from '@prisma/client';
+import Redis from 'ioredis';
+
 import { makeThumbnail, thumbNameFor } from '../src/modules/uploads/thumbnails';
+import { UPLOAD_DIR } from '../src/modules/uploads/uploads.constants';
 
 // seed de DEV: apaga/reescreve fotos e datas das contas fake — nunca contra produção
 if (process.env.NODE_ENV === 'production' || /prod/i.test(process.env.DATABASE_URL ?? '')) {
@@ -53,33 +55,155 @@ type Fake = {
   instagram?: string;
 };
 
-function fakePhoto(n: number): string { return `${PHOTO_BASE}/uploads/fakes/fake-${n}.jpg`; }
+function fakePhoto(n: number): string {
+  return `${PHOTO_BASE}/uploads/fakes/fake-${n}.jpg`;
+}
 
 const FAKES: Fake[] = [
-  { name: 'Aline', gender: 'female', birth: '2001-04-12', bio: 'Designer. Bar de sexta e trilha de domingo.', photo: fakePhoto(1), tier: 'premium_plus', verified: true, daysOld: 40, where: 'bar', orientation: 'bisexual', showOrientation: true, instagram: 'aline.designer' },
-  { name: 'Rafael', gender: 'male', birth: '1997-09-03', bio: 'Engenheiro recém-chegado. Me mostra a cidade?', photo: fakePhoto(2), boosted: true, daysOld: 3, where: 'bar' },
-  { name: 'Bia', gender: 'female', birth: '1999-01-25', bio: 'Café forte, playlist melhor ainda.', photo: fakePhoto(3), daysOld: 60, where: 'bar', orientation: 'lesbian', showOrientation: true, sameOrientationFirst: true, instagram: 'bia_cafe' },
-  { name: 'Caio', gender: 'male', birth: '1995-11-17', bio: 'Corrida no parque 6h. Cerveja às 18h.', photo: fakePhoto(4), daysOld: 25, where: 'bar' },
-  { name: 'Marina', gender: 'female', birth: '2000-07-08', bio: 'Fotógrafa. Sempre no show de alguém.', photo: fakePhoto(5), tier: 'premium', verified: true, daysOld: 90, where: 'bar' },
-  { name: 'Theo', gender: 'non_binary', birth: '1998-03-30', bio: 'Boêmio de carteirinha.', photo: fakePhoto(6), showPhotoOnMap: false, daysOld: 12, where: 'spread', orientation: 'queer', showOrientation: true },
-  { name: 'Lívia', gender: 'female', birth: '1996-12-02', bio: 'Yoga, praia e um bom vinho.', photo: fakePhoto(7), daysOld: 45, where: 'spread', orientation: 'straight', instagram: 'livia.yoga' },
-  { name: 'Pedro', gender: 'male', birth: '1994-05-21', bio: 'Games e churrasco. Nessa ordem.', photo: fakePhoto(8), daysOld: 200, where: 'spread', orientation: 'gay', showMe: 'men' },
+  {
+    name: 'Aline',
+    gender: 'female',
+    birth: '2001-04-12',
+    bio: 'Designer. Bar de sexta e trilha de domingo.',
+    photo: fakePhoto(1),
+    tier: 'premium_plus',
+    verified: true,
+    daysOld: 40,
+    where: 'bar',
+    orientation: 'bisexual',
+    showOrientation: true,
+    instagram: 'aline.designer',
+  },
+  {
+    name: 'Rafael',
+    gender: 'male',
+    birth: '1997-09-03',
+    bio: 'Engenheiro recém-chegado. Me mostra a cidade?',
+    photo: fakePhoto(2),
+    boosted: true,
+    daysOld: 3,
+    where: 'bar',
+  },
+  {
+    name: 'Bia',
+    gender: 'female',
+    birth: '1999-01-25',
+    bio: 'Café forte, playlist melhor ainda.',
+    photo: fakePhoto(3),
+    daysOld: 60,
+    where: 'bar',
+    orientation: 'lesbian',
+    showOrientation: true,
+    sameOrientationFirst: true,
+    instagram: 'bia_cafe',
+  },
+  {
+    name: 'Caio',
+    gender: 'male',
+    birth: '1995-11-17',
+    bio: 'Corrida no parque 6h. Cerveja às 18h.',
+    photo: fakePhoto(4),
+    daysOld: 25,
+    where: 'bar',
+  },
+  {
+    name: 'Marina',
+    gender: 'female',
+    birth: '2000-07-08',
+    bio: 'Fotógrafa. Sempre no show de alguém.',
+    photo: fakePhoto(5),
+    tier: 'premium',
+    verified: true,
+    daysOld: 90,
+    where: 'bar',
+  },
+  {
+    name: 'Theo',
+    gender: 'other',
+    birth: '1998-03-30',
+    bio: 'Boêmio de carteirinha.',
+    photo: fakePhoto(6),
+    showPhotoOnMap: false,
+    daysOld: 12,
+    where: 'spread',
+    orientation: 'queer',
+    showOrientation: true,
+  },
+  {
+    name: 'Lívia',
+    gender: 'female',
+    birth: '1996-12-02',
+    bio: 'Yoga, praia e um bom vinho.',
+    photo: fakePhoto(7),
+    daysOld: 45,
+    where: 'spread',
+    orientation: 'straight',
+    instagram: 'livia.yoga',
+  },
+  {
+    name: 'Pedro',
+    gender: 'male',
+    birth: '1994-05-21',
+    bio: 'Games e churrasco. Nessa ordem.',
+    photo: fakePhoto(8),
+    daysOld: 200,
+    where: 'spread',
+    orientation: 'gay',
+    showMe: 'men',
+  },
 ];
 
 // gente sintética (teste de carga + matriz de casos)
-const FIRST = ['Maria Eduarda', 'João Pedro', 'Leonardo', 'Ana', 'Guilherme Henrique', 'Lu', 'Fernanda', 'Vinícius', 'Wellington', 'Isa', 'Carolina', 'Matheus', 'Bárbara', 'Kauã', 'Letícia', 'Rodrigo'];
-const LAST = ['Albuquerque', 'Silva', 'da Costa', 'Souza', 'de Oliveira', 'Nascimento', 'Ferreira', 'dos Santos', 'Ribeiro', 'Cavalcanti'];
-const BIOS = ['Novo por aqui, indicações?', 'Café, livros e um rolê à noite.', 'Trabalho remoto, vida presencial.', 'Só na paz.', 'Bora conhecer a cidade?'];
+const FIRST = [
+  'Maria Eduarda',
+  'João Pedro',
+  'Leonardo',
+  'Ana',
+  'Guilherme Henrique',
+  'Lu',
+  'Fernanda',
+  'Vinícius',
+  'Wellington',
+  'Isa',
+  'Carolina',
+  'Matheus',
+  'Bárbara',
+  'Kauã',
+  'Letícia',
+  'Rodrigo',
+];
+const LAST = [
+  'Albuquerque',
+  'Silva',
+  'da Costa',
+  'Souza',
+  'de Oliveira',
+  'Nascimento',
+  'Ferreira',
+  'dos Santos',
+  'Ribeiro',
+  'Cavalcanti',
+];
+const BIOS = [
+  'Novo por aqui, indicações?',
+  'Café, livros e um rolê à noite.',
+  'Trabalho remoto, vida presencial.',
+  'Só na paz.',
+  'Bora conhecer a cidade?',
+];
 function extraFake(i: number): Fake {
   const k = i - FAKES.length;
-  const name = k % 7 === 6 ? FIRST[k % FIRST.length].split(' ')[0] : `${FIRST[k % FIRST.length]} ${LAST[(k * 3) % LAST.length]}`;
+  const name =
+    k % 7 === 6
+      ? FIRST[k % FIRST.length].split(' ')[0]
+      : `${FIRST[k % FIRST.length]} ${LAST[(k * 3) % LAST.length]}`;
   let photo: string | null = fakePhoto((k % 8) + 1);
   if (k % 5 === 4) photo = null; // sem foto → só avatar
   if (k % 17 === 3) photo = `${PHOTO_BASE}/uploads/fakes/missing-${k}.jpg`; // foto quebrada (404) → não pode quebrar o mapa
   const where: Fake['where'] = k % 6 === 5 ? 'event' : k % 4 === 1 ? 'crowd' : 'spread';
   return {
     name,
-    gender: k % 3 === 0 ? 'female' : k % 3 === 1 ? 'male' : 'non_binary',
+    gender: k % 3 === 0 ? 'female' : k % 3 === 1 ? 'male' : 'other',
     birth: `${1990 + (k % 15)}-${String((k % 12) + 1).padStart(2, '0')}-${String((k % 27) + 1).padStart(2, '0')}`,
     bio: BIOS[k % BIOS.length],
     photo,
@@ -102,12 +226,15 @@ async function main() {
   const fakesDir = path.join(UPLOAD_DIR, 'fakes');
   for (let n = 1; n <= 8; n++) {
     const src = path.join(fakesDir, `fake-${n}.jpg`);
-    if (fs.existsSync(src) && !fs.existsSync(path.join(fakesDir, thumbNameFor(`fake-${n}.jpg`)))) await makeThumbnail(src);
+    if (fs.existsSync(src) && !fs.existsSync(path.join(fakesDir, thumbNameFor(`fake-${n}.jpg`))))
+      await makeThumbnail(src);
   }
   const thumbOf = (photo: string | null): string | null => {
     if (!photo) return null;
     const file = photo.split('/').pop() ?? '';
-    return fs.existsSync(path.join(fakesDir, thumbNameFor(file))) ? photo.replace(/[^/]+$/, thumbNameFor(file)) : photo;
+    return fs.existsSync(path.join(fakesDir, thumbNameFor(file)))
+      ? photo.replace(/[^/]+$/, thumbNameFor(file))
+      : photo;
   };
 
   // POI de demo a ~180m do ponto: vira hotspot (>= 5 pessoas) pra exercitar o pulso no mapa
@@ -116,7 +243,18 @@ async function main() {
   const hotPoi = await prisma.pOI.upsert({
     where: { source_externalId: { source: 'dev', externalId: 'dev-bar-do-leo' } },
     update: { latitude: hotLat, longitude: hotLng },
-    create: { externalId: 'dev-bar-do-leo', name: 'Bar do Léo', category: 'bar', latitude: hotLat, longitude: hotLng, city: 'Uberlândia', state: 'MG', source: 'dev', isPartner: true, partnerOffer: 'Chopp em dobro pra quem cruzou aqui' },
+    create: {
+      externalId: 'dev-bar-do-leo',
+      name: 'Bar do Léo',
+      category: 'bar',
+      latitude: hotLat,
+      longitude: hotLng,
+      city: 'Uberlândia',
+      state: 'MG',
+      source: 'dev',
+      isPartner: true,
+      partnerOffer: 'Chopp em dobro pra quem cruzou aqui',
+    },
   });
   console.log('🍺 POI de demo', hotPoi.name, '@', hotLat.toFixed(5), hotLng.toFixed(5));
 
@@ -126,7 +264,17 @@ async function main() {
   const evPoi = await prisma.pOI.upsert({
     where: { source_externalId: { source: 'dev', externalId: 'dev-sunset-praca' } },
     update: { latitude: evLat, longitude: evLng, subcategory: 'hoje' },
-    create: { externalId: 'dev-sunset-praca', name: 'Sunset na Praça', category: 'event', subcategory: 'hoje', latitude: evLat, longitude: evLng, city: 'Uberlândia', state: 'MG', source: 'dev' },
+    create: {
+      externalId: 'dev-sunset-praca',
+      name: 'Sunset na Praça',
+      category: 'event',
+      subcategory: 'hoje',
+      latitude: evLat,
+      longitude: evLng,
+      city: 'Uberlândia',
+      state: 'MG',
+      source: 'dev',
+    },
   });
   console.log('🌇 POI de evento', evPoi.name, '@', evLat.toFixed(5), evLng.toFixed(5));
 
@@ -135,7 +283,10 @@ async function main() {
   const crowdLng = lng + 220 / mPerLng;
 
   // catálogo de interesses (seed.ts) → 3 por fake, escolhidos de forma determinística
-  const interests = await prisma.interest.findMany({ orderBy: { id: 'asc' }, select: { id: true } });
+  const interests = await prisma.interest.findMany({
+    orderBy: { id: 'asc' },
+    select: { id: true },
+  });
 
   for (let i = 0; i < qty; i++) {
     const f = i < FAKES.length ? FAKES[i] : extraFake(i);
@@ -145,9 +296,18 @@ async function main() {
     // posição: no bar (raio ~40m → hotspot), no evento (~30m), na aglomeração (~45m) ou espalhado até ~1,5km
     const where = f.where ?? 'spread';
     const angle = where === 'spread' ? i * 2.399963 : (i / 7) * Math.PI * 2;
-    const dist = where === 'bar' ? 15 + (i % 5) * 6 : where === 'event' ? 8 + (i % 6) * 5 : where === 'crowd' ? 6 + (i % 9) * 5 : 120 + ((i * 137) % 1400);
-    const baseLat = where === 'bar' ? hotLat : where === 'event' ? evLat : where === 'crowd' ? crowdLat : lat;
-    const baseLng = where === 'bar' ? hotLng : where === 'event' ? evLng : where === 'crowd' ? crowdLng : lng;
+    const dist =
+      where === 'bar'
+        ? 15 + (i % 5) * 6
+        : where === 'event'
+          ? 8 + (i % 6) * 5
+          : where === 'crowd'
+            ? 6 + (i % 9) * 5
+            : 120 + ((i * 137) % 1400);
+    const baseLat =
+      where === 'bar' ? hotLat : where === 'event' ? evLat : where === 'crowd' ? crowdLat : lat;
+    const baseLng =
+      where === 'bar' ? hotLng : where === 'event' ? evLng : where === 'crowd' ? crowdLng : lng;
     const uLat = baseLat + (dist * Math.cos(angle)) / 111_320;
     const uLng = baseLng + (dist * Math.sin(angle)) / mPerLng;
     const createdAt = new Date(Date.now() - (f.daysOld ?? 30) * 86_400_000);
@@ -167,8 +327,16 @@ async function main() {
     const user = await prisma.user.upsert({
       where: { phone },
       update: {
-        name: f.name, bio: f.bio, visibilityMode: 'visible', lastActiveAt: new Date(), premiumTier: (f.tier ?? 'free') as never, isVerified: Boolean(f.verified), avatarConfig: avatar,
-        showPhotoOnMap: f.showPhotoOnMap ?? true, createdAt, ...profileFields,
+        name: f.name,
+        bio: f.bio,
+        visibilityMode: 'visible',
+        lastActiveAt: new Date(),
+        premiumTier: (f.tier ?? 'free') as never,
+        isVerified: Boolean(f.verified),
+        avatarConfig: avatar,
+        showPhotoOnMap: f.showPhotoOnMap ?? true,
+        createdAt,
+        ...profileFields,
       },
       create: {
         id: crypto.randomUUID(),
@@ -191,13 +359,25 @@ async function main() {
 
     if (interests.length > 0) {
       const picks = [0, 1, 2].map((k) => interests[(i * 3 + k) % interests.length].id);
-      await prisma.userInterest.createMany({ data: picks.map((interestId) => ({ userId: user.id, interestId })), skipDuplicates: true });
+      await prisma.userInterest.createMany({
+        data: picks.map((interestId) => ({ userId: user.id, interestId })),
+        skipDuplicates: true,
+      });
     }
 
     if (f.boosted) {
-      const hasBoost = await prisma.boost.findFirst({ where: { userId: user.id, expiresAt: { gt: new Date() } } });
+      const hasBoost = await prisma.boost.findFirst({
+        where: { userId: user.id, expiresAt: { gt: new Date() } },
+      });
       if (!hasBoost) {
-        await prisma.boost.create({ data: { userId: user.id, expiresAt: new Date(Date.now() + 6 * 3_600_000), amountCents: 0, platform: 'dev' } });
+        await prisma.boost.create({
+          data: {
+            userId: user.id,
+            expiresAt: new Date(Date.now() + 6 * 3_600_000),
+            amountCents: 0,
+            platform: 'dev',
+          },
+        });
       }
     }
 
@@ -206,7 +386,10 @@ async function main() {
     if (f.photo) {
       const data = { url: f.photo, thumbnailUrl: thumbOf(f.photo) };
       if (existing) await prisma.photo.update({ where: { id: existing.id }, data });
-      else await prisma.photo.create({ data: { userId: user.id, ...data, isMain: true, orderIndex: 0 } });
+      else
+        await prisma.photo.create({
+          data: { userId: user.id, ...data, isMain: true, orderIndex: 0 },
+        });
     } else if (existing) {
       await prisma.photo.deleteMany({ where: { userId: user.id } });
     }
@@ -214,7 +397,14 @@ async function main() {
     const geohash = encodeGeohash(uLat, uLng, PRESENCE_PRECISION);
     const ttl = 18_000;
     await prisma.location.create({
-      data: { userId: user.id, latitude: uLat, longitude: uLng, geohash, expiresAt: new Date(Date.now() + ttl * 1000), poiId },
+      data: {
+        userId: user.id,
+        latitude: uLat,
+        longitude: uLng,
+        geohash,
+        expiresAt: new Date(Date.now() + ttl * 1000),
+        poiId,
+      },
     });
     const p = redis.pipeline();
     p.zadd(`presence:${geohash}`, Date.now(), user.id);
@@ -232,11 +422,20 @@ async function main() {
     p.del(`profile:${user.id}`);
     await p.exec();
 
-    if (i < FAKES.length || i % 25 === 0) console.log(`👤 ${f.name.padEnd(14)} ${phone}  @ ${uLat.toFixed(5)}, ${uLng.toFixed(5)}  (${where}, ${dist}m)`);
+    if (i < FAKES.length || i % 25 === 0)
+      console.log(
+        `👤 ${f.name.padEnd(14)} ${phone}  @ ${uLat.toFixed(5)}, ${uLng.toFixed(5)}  (${where}, ${dist}m)`,
+      );
   }
   console.log(`✅ ${qty} usuários fake com presença ativa em volta de ${lat}, ${lng}`);
 }
 
 main()
-  .catch((e) => { console.error(e); process.exit(1); })
-  .finally(async () => { await prisma.$disconnect(); redis.disconnect(); });
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+    redis.disconnect();
+  });

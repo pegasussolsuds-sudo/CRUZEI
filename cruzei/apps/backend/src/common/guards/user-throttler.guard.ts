@@ -1,7 +1,26 @@
-import { HttpException, HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Optional,
+  SetMetadata,
+  type ExecutionContext,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { ThrottlerGuard } from '@nestjs/throttler';
+
+/** corpo do 429 (mesmo formato dos outros erros da API) */
+export interface ThrottleBody {
+  error: string;
+  message: string;
+}
+
+export const THROTTLE_MESSAGE_KEY = 'metch:throttle-message';
+
+/** 429 próprio da rota (junto do @Throttle): troca o "Muitas tentativas" genérico */
+export const ThrottleMessage = (body: ThrottleBody) => SetMetadata(THROTTLE_MESSAGE_KEY, body);
 
 /** chave do rate limit por IP (o primeiro de req.ips quando o Express confia no proxy) */
 export function ipTracker(req: Record<string, unknown>): string {
@@ -71,10 +90,17 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     return t;
   }
 
-  // 429 em pt-BR e no mesmo formato do cooldown do SMS (o padrão é "ThrottlerException: Too Many Requests")
-  protected async throwThrottlingException(): Promise<void> {
+  // 429 em pt-BR e no mesmo formato do cooldown do SMS (o padrão é "ThrottlerException: Too Many Requests"); a rota
+  // pode trocar o corpo com @ThrottleMessage (ex.: emergência lembra do 190)
+  protected async throwThrottlingException(context?: ExecutionContext): Promise<void> {
+    const custom = context
+      ? this.reflector.getAllAndOverride<ThrottleBody | undefined>(THROTTLE_MESSAGE_KEY, [
+          context.getHandler(),
+          context.getClass(),
+        ])
+      : undefined;
     throw new HttpException(
-      {
+      custom ?? {
         error: 'too_many_requests',
         message: 'Muitas tentativas. Espera um minuto e tenta de novo.',
       },

@@ -63,7 +63,10 @@ const gateway = {
 };
 const accounts = { invalidate: jest.fn(async (_id: string): Promise<void> => undefined) };
 // cartão público: faixa/lugar não interessam aqui (a pessoa não está "descoberta")
-const location = { discoverability: jest.fn(async () => ({ ok: false, band: null, poi: null })) };
+const location = {
+  discoverability: jest.fn(async () => ({ ok: false, band: null, poi: null })),
+  superLikedMeFrom: jest.fn(async () => new Set<string>()),
+};
 
 const blocks = new BlocksService(
   db,
@@ -651,8 +654,12 @@ describe('cartão público e mapa (likeStatus + conversa do par)', () => {
 describe('curtida (LikesService): like_received só identifica quem pode saber', () => {
   const likeEvents = () => emitted().filter((e) => e.event === 'like_received');
 
-  it('curtida não mútua: sem quem curtiu (só isSuper) fora do Premium+ vigente; Premium+ vigente recebe o id', async () => {
-    const a = await newUser('Ana');
+  it('curtida não mútua: sem quem curtiu (só isSuper) fora do Premium+ vigente; Premium+ vigente recebe o id; a SUPER revela pra todos', async () => {
+    // Ana Premium: 7 super curtidas por dia (no grátis é 1)
+    const a = await newUser('Ana', {
+      premiumTier: 'premium',
+      premiumExpiresAt: new Date(Date.now() + 86_400_000),
+    });
     const b = await newUser('Bia'); // grátis
     const c = await newUser('Cris', {
       premiumTier: 'premium_plus',
@@ -676,13 +683,13 @@ describe('curtida (LikesService): like_received só identifica quem pode saber',
 
     expect(likeEvents().map((ev) => [ev.to, ev.payload])).toEqual([
       [[b.id], { isSuper: false }],
-      [[f.id], { isSuper: true }],
+      [[f.id], { fromUserId: a.id, isSuper: true }],
       [[e.id], { isSuper: false }],
       [[c.id], { fromUserId: a.id, isSuper: true }],
       [[d.id], { fromUserId: a.id, isSuper: false }],
     ]);
     // nada do id de quem curtiu nos eventos sem identidade (nem com outro nome de campo)
-    for (const ev of likeEvents().slice(0, 3))
+    for (const ev of [likeEvents()[0], likeEvents()[2]])
       expect(JSON.stringify(ev.payload)).not.toContain(a.id);
   });
 

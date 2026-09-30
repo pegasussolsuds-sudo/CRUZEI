@@ -3,6 +3,9 @@ import type { SupportMessage, SupportThreadSummary } from '@cruzei/shared-types'
 import {
   applyMessageToSummary,
   applyToLiveQueue,
+  applyUrgent,
+  isUrgentOpen,
+  oldestUrgent,
   closedWhileReplying,
   escGoesBackToQueue,
   filterOrder,
@@ -214,5 +217,44 @@ describe('conversa', () => {
     expect(closedWhileReplying('resolved', 'resolved', true)).toBe(false);
     expect(closedWhileReplying(undefined, 'resolved', true)).toBe(false);
     expect(closedWhileReplying('open', 'pending', true)).toBe(false);
+  });
+});
+
+describe('urgente (botão de emergência)', () => {
+  const normalNew = thread({ id: 'n', lastMessageAt: '2026-10-04T12:00:00Z', staffUnread: 2, lastMessage: { body: 'oi', author: 'user', createdAt: '2026-10-04T12:00:00Z' } });
+  const u1 = thread({ id: 'u1', urgent: true, urgentAt: '2026-10-04T10:00:00Z', lastMessageAt: '2026-10-04T10:00:00Z' });
+  const u2 = thread({ id: 'u2', urgent: true, urgentAt: '2026-10-04T09:00:00Z', status: 'pending', lastMessageAt: '2026-10-04T09:00:00Z' });
+  const done = thread({ id: 'd', urgent: true, urgentAt: '2026-10-04T08:00:00Z', status: 'resolved' });
+
+  it('urgente valendo = marcado e não resolvido', () => {
+    expect(isUrgentOpen(u1)).toBe(true);
+    expect(isUrgentOpen(u2)).toBe(true);
+    expect(isUrgentOpen(done)).toBe(false);
+    expect(isUrgentOpen(normalNew)).toBe(false);
+  });
+
+  it('sempre no topo, nas duas ordens (o mais antigo primeiro)', () => {
+    expect(sortThreads([normalNew, u1, u2]).map((t) => t.id)).toEqual(['u2', 'u1', 'n']);
+    expect(sortThreads([normalNew, u1, u2], 'oldest').map((t) => t.id)).toEqual(['u2', 'u1', 'n']);
+    // resolvido volta pra ordem comum
+    expect(sortThreads([done, normalNew]).map((t) => t.id)[0]).toBe('n');
+  });
+
+  it('lista paginada: urgente novo entra na 1ª página, em cima (mesmo em Abertos, que põe o novo no fim)', () => {
+    const pages = [{ items: [thread({ id: 'a', waitingSince: '2026-10-04T08:00:00Z' })] }, { items: [thread({ id: 'b', waitingSince: '2026-10-04T09:00:00Z' })] }];
+    const out = upsertThreadInPages(pages, u1, 'open', null);
+    expect(out[0]?.items.map((t) => t.id)).toEqual(['u1', 'a']);
+    expect(out[1]?.items.map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('conhecidos: entra, atualiza e sai quando resolve', () => {
+    let m = applyUrgent(new Map(), u1);
+    m = applyUrgent(m, u2);
+    m = applyUrgent(m, normalNew);
+    expect([...m.keys()].sort()).toEqual(['u1', 'u2']);
+    expect(oldestUrgent(m)?.id).toBe('u2');
+    m = applyUrgent(m, { ...u2, status: 'resolved' });
+    expect([...m.keys()]).toEqual(['u1']);
+    expect(oldestUrgent(new Map())).toBeNull();
   });
 });

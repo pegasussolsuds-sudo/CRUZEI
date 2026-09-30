@@ -394,6 +394,7 @@ describe('cadastro: campos novos', () => {
       phone,
       name: 'Dani',
       birthDate: new Date('1996-05-05'),
+      // app antigo ainda manda "Não-binário": grava 'other'
       gender: 'non_binary',
       termsVersion: '1.2',
       orientation: 'queer',
@@ -404,6 +405,7 @@ describe('cadastro: campos novos', () => {
     });
     const u = await prisma.user.findUniqueOrThrow({ where: { id: r.user.id } });
     expect(u).toMatchObject({
+      gender: 'other',
       orientation: 'queer',
       showOrientation: true,
       sameOrientationFirst: true,

@@ -15,19 +15,46 @@ export const REPORT_REASONS = [
 ] as const;
 export type ReportReason = (typeof REPORT_REASONS)[number];
 
+/**
+ * motivos que só o SERVIDOR grava (o app não escolhe; POST /reports recusa): 'emergency' = botão de emergência
+ * (POST /v1/safety/emergency), prioridade máxima na fila. A denúncia automática do filtro de abuso usa 'scam'.
+ */
+export const SYSTEM_REPORT_REASONS = ['emergency'] as const;
+export type SystemReportReason = (typeof SYSTEM_REPORT_REASONS)[number];
+/** motivo como pode estar gravado (fila da moderação e painel) */
+export type AnyReportReason = ReportReason | SystemReportReason;
+
 /** de onde a denúncia saiu (a moderação usa pra achar a conversa ou a foto) */
 export type ReportSource = 'profile' | 'chat' | 'inbox' | 'requests' | 'map' | 'likes';
 /** origens aceitas no POST /reports e /users/:id/report */
 export const REPORT_SOURCES: readonly ReportSource[] = ['profile', 'chat', 'inbox', 'requests', 'map', 'likes'];
 
+/**
+ * origens que só o servidor grava: 'emergency' (botão de emergência) e 'auto_filter' (filtro de abuso viu golpe numa
+ * mensagem: reporterId null, reason 'scam', no máximo UMA pendente por pessoa+motivo — reports_auto_filter_pending_uq)
+ */
+export const SYSTEM_REPORT_SOURCES = ['emergency', 'auto_filter'] as const;
+export type SystemReportSource = (typeof SYSTEM_REPORT_SOURCES)[number];
+export type AnyReportSource = ReportSource | SystemReportSource;
+
 /** type (e não interface): vai direto pro Json do Prisma, que exige índice implícito */
 export type ReportContext = {
-  source: ReportSource;
+  /** o app só manda ReportSource; as de sistema vêm do servidor */
+  source: AnyReportSource;
   /** conversa denunciada (a moderação lê as últimas mensagens dela) */
   conversationId?: string;
   messageId?: string;
   photoId?: string;
+  /**
+   * só 'auto_filter' (gravado pelo servidor): onde o golpe apareceu, uma entrada por conversa, até
+   * REPORT_CONTEXT_OCCURRENCES_MAX (a 1ª = conversationId/messageId acima). A ficha da moderação abre cada conversa.
+   */
+  occurrences?: ReportOccurrence[];
 };
+
+/** conversa (e a 1ª mensagem que bateu nela) citada numa denúncia automática */
+export type ReportOccurrence = { conversationId: string; messageId?: string };
+export const REPORT_CONTEXT_OCCURRENCES_MAX = 10;
 
 export interface ReportPayload {
   userId: string;
@@ -35,7 +62,8 @@ export interface ReportPayload {
   description?: string;
   /** bloqueia a pessoa junto (padrão no app: sim) */
   block?: boolean;
-  context?: ReportContext;
+  /** do app: só as origens de REPORT_SOURCES (occurrences é só do servidor) */
+  context?: Omit<ReportContext, 'source' | 'occurrences'> & { source: ReportSource };
 }
 
 /** corpo do POST /users/:id/report (o alvo vem na rota) */
@@ -71,6 +99,45 @@ export interface AccountBlockedError {
 
 export const ACCOUNT_BLOCKED_ERRORS = ['account_banned', 'account_suspended'] as const;
 
+// ---- botão de emergência ----
+
+/** perfil pausado por tantos dias ao apertar "🆘 Emergência" (a pessoa pode despausar antes: DELETE /v1/me/pause) */
+export const EMERGENCY_PAUSE_DAYS = 7;
+/** atalho "Ligar 190" da confirmação (Polícia Militar) */
+export const EMERGENCY_PHONE = '190';
+/** `error` do 429 do botão (3 por hora, 10 por dia): a equipe já foi avisada; o app oferece o suporte e o 190 */
+export const EMERGENCY_THROTTLED_ERROR = 'emergency_throttled';
+
+/**
+ * POST /v1/safety/emergency — um botão só: no menu do chat e no cartão da pessoa (com a pessoa) e em Ajuda e segurança
+ * (sem pessoa). O app mostra antes a confirmação com o que vai acontecer + "Ligar 190". Ao confirmar o servidor, numa
+ * tacada: pausa o perfil por EMERGENCY_PAUSE_DAYS (some do mapa), bloqueia a pessoa (se houver), cria denúncia de
+ * segurança contra ela (reason 'emergency', context.source 'emergency', prioridade máxima) e abre/usa o atendimento do
+ * suporte com mensagem automática marcada URGENTE (topo da fila, selo vermelho, 'support:urgent' pra equipe).
+ * NUNCA manda localização. Idempotente o bastante: repetir não duplica bloqueio nem atendimento. Limite por conta: 3 por
+ * hora e 10 por dia (429 EMERGENCY_THROTTLED_ERROR, que lembra do 190).
+ */
+export interface EmergencyRequest {
+  /**
+   * a pessoa envolvida (chat/cartão); ausente = emergência sem pessoa (Ajuda e segurança). Só bloqueia/denuncia com
+   * relação registrada (conversa, curtida em qualquer sentido, passe ou aceno recente); sem relação = sem pessoa
+   */
+  targetUserId?: string;
+  /** a conversa (quando veio do chat): a moderação lê as últimas mensagens dela */
+  conversationId?: string;
+}
+
+export interface EmergencyResult {
+  /** fim da pausa (ISO) */
+  pausedUntil: string;
+  /** bloqueou a pessoa agora (ou já estava bloqueada); false sem pessoa (ou sem relação com ela) */
+  blocked: boolean;
+  /** denúncia criada/somada contra a pessoa; null sem pessoa, sem relação ou fora do limite de denúncias */
+  reportId: string | null;
+  /** atendimento URGENTE do suporte (o app abre a tela do suporte) */
+  supportThreadId: string;
+}
+
 // ---- fila de moderação ----
 
 /** situação da denúncia: pending/reviewing esperam decisão; resolved = teve ação (aviso, suspensão…); dismissed = dispensada */
@@ -80,10 +147,11 @@ export interface ModerationReport {
   id: string;
   /** a ficha traz o histórico (até 50): pendentes e já decididas */
   status: ReportStatus;
-  reason: ReportReason;
+  /** inclui os de sistema ('emergency') */
+  reason: AnyReportReason;
   description: string | null;
   reporterId: string | null;
-  context: ReportPayload['context'] | null;
+  context: ReportContext | null;
   priority: number;
   createdAt: string;
 }

@@ -1,6 +1,9 @@
 // Todas as rotas que o painel chama, num lugar só. Tipos do @cruzei/shared-types; o pouco que o contrato
 // ainda não descreve está marcado com "FORA DO CONTRATO".
 import type {
+  AdminActive,
+  AdminFunnel,
+  AdminRetention,
   AdminAuditList,
   AdminCampaign,
   AdminCampaignList,
@@ -99,6 +102,8 @@ export interface SupportListParams {
   mine?: boolean;
   /** 'oldest': quem espera há mais tempo primeiro (padrão: última mensagem mais recente) */
   order?: 'oldest';
+  /** só os urgentes (botão de emergência); sem isso os urgentes valendo já vêm no topo */
+  urgent?: boolean;
   cursor?: string | null;
   limit?: number;
 }
@@ -116,6 +121,11 @@ export const adminApi = {
   /** a equipe (admin/moderador ativos), pro "Passar pra…" do suporte */
   staff: () => request<AdminStaffList>('/admin/staff'),
   stats: () => request<AdminStats>('/admin/stats'),
+
+  // métricas (só admin): funil do cadastro, retenção por semana de cadastro, ativos
+  metricsFunnel: (days: number) => request<AdminFunnel>('/admin/metrics/funnel', { query: { days } }),
+  metricsRetention: (weeks: number) => request<AdminRetention>('/admin/metrics/retention', { query: { weeks } }),
+  metricsActive: (days: number) => request<AdminActive>('/admin/metrics/active', { query: { days } }),
 
   // usuários
   users: (p: UserListParams, signal?: AbortSignal) =>
@@ -175,7 +185,7 @@ export const adminApi = {
   // suporte
   supportThreads: (p: SupportListParams) =>
     request<SupportThreadList>('/admin/support/threads', {
-      query: { status: p.status, mine: p.mine ? '1' : undefined, order: p.order, cursor: p.cursor, limit: p.limit },
+      query: { status: p.status, mine: p.mine ? '1' : undefined, order: p.order, urgent: p.urgent ? '1' : undefined, cursor: p.cursor, limit: p.limit },
     }),
   supportThread: (id: string) => request<SupportThreadDetail>(`/admin/support/threads/${enc(id)}`),
   supportSend: (id: string, body: StaffSupportSendPayload) =>

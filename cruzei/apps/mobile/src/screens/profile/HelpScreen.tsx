@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,7 +8,9 @@ import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobi
 import { BRAND } from '../../brand';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { EMERGENCY_NUMBERS } from '../../components/safety/reasons';
+import { EmergencySheet } from '../../components/safety/EmergencySheet';
 import { supportUnread, useSupportThread } from '../../hooks/useSupport';
+import { useTourStore } from '../../stores/tour';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -26,9 +28,27 @@ export function HelpScreen() {
   // respostas da equipe ainda não lidas (o atendimento atual; sem atendimento = 0)
   const support = useSupportThread();
   const unread = supportUnread(support.data);
+  // "🆘 Emergência" sem pessoa: pausa o perfil e chama o suporte URGENTE (a folha explica antes e tem o 190)
+  const [sosOpen, setSosOpen] = useState(false);
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.content}>
+        <Pressable
+          style={({ pressed }) => [styles.sosBtn, pressed && { opacity: 0.75 }]}
+          onPress={() => setSosOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Emergência: pausa seu perfil e chama a equipe do Metch na hora"
+        >
+          <Text style={styles.sosIcon} accessibilityElementsHidden importantForAccessibility="no">
+            🆘
+          </Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.sosLabel}>Emergência</Text>
+            <Text style={styles.sosHint}>Pausa seu perfil e chama a equipe na hora</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.white} />
+        </Pressable>
+
         <Text style={styles.section}>fale com a gente</Text>
         <View style={styles.card}>
           <Pressable
@@ -66,6 +86,20 @@ export function HelpScreen() {
             <Ionicons name="open-outline" size={18} color={colors.gray[400]} />
           </Pressable>
           <Text style={styles.note}>Contestação de suspensão ou banimento também é por aqui.</Text>
+        </View>
+
+        <Text style={styles.section}>como usar</Text>
+        <View style={styles.card}>
+          {/* o tour entra na fila e aparece assim que o mapa estiver na tela */}
+          <LinkRow
+            icon="sparkles-outline"
+            label="Ver o tour do mapa"
+            onPress={() => {
+              useTourStore.getState().replay();
+              nav.navigate('Main', { screen: 'Map' });
+            }}
+            last
+          />
         </View>
 
         <Text style={styles.section}>denunciar e bloquear</Text>
@@ -112,6 +146,7 @@ export function HelpScreen() {
           ))}
         </View>
       </ScrollView>
+      <EmergencySheet visible={sosOpen} onClose={() => setSosOpen(false)} />
     </SafeAreaView>
   );
 }
@@ -148,6 +183,19 @@ const styles = StyleSheet.create({
   tip: { flexDirection: 'row', gap: spacing.sm },
   tipDot: { ...typography.body, color: colors.gray[400], paddingVertical: spacing.sm },
   phone: { ...typography.h4, color: colors.danger, minWidth: 44 },
+  sosBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    minHeight: 60,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.lg,
+    backgroundColor: colors.danger,
+  },
+  sosIcon: { fontSize: 24 },
+  sosLabel: { ...typography.label, fontFamily: fontFamily.bodyBold, color: colors.white },
+  sosHint: { ...typography.caption, color: colors.white, opacity: 0.9, marginTop: 1 },
   supportBtn: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,5 +1,10 @@
-import type { AccountClaim, PhoneReleaseReason } from '@cruzei/shared-types';
-import { isAtLeast18, normalizePhoneBR, randomAvatarConfig } from '@cruzei/shared-utils';
+import type { AccountClaim, Gender, PhoneReleaseReason } from '@cruzei/shared-types';
+import {
+  checkProfileText,
+  isAtLeast18,
+  normalizePhoneBR,
+  randomAvatarConfig,
+} from '@cruzei/shared-utils';
 import {
   BadRequestException,
   HttpException,
@@ -16,6 +21,15 @@ import { decideAnonymous } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { AccountStateService } from '../account/account-state.service';
+import {
+  cleanBio,
+  cleanInterestNames,
+  cleanName,
+  INSTAGRAM_INVALID,
+  NAME_INVALID,
+  parseInstagramInput,
+  profileCompleteness,
+} from '../users/profile-prefs';
 
 import { claimFailsKey, PhoneReleaseService, type RequestMeta } from './phone-release.service';
 import { SmsService } from './sms.service';
@@ -231,9 +245,26 @@ export class AuthService {
     showMe?: string;
     /** ausente = app antigo: nasce invisível com a janela grátis de 24 h (como antes) */
     visibilityMode?: 'visible' | 'anonymous' | null;
+    /** etapas opcionais: bio (vazia = sem), @ do Instagram (aceita @/link; fora da regra = 400) e NOMES do catálogo */
+    bio?: string | null;
+    instagram?: string | null;
+    interests?: string[] | null;
   }): Promise<SessionResult> {
     const phone = normalizePhoneBR(payload.phone);
     if (!phone) throw new UnauthorizedException('Telefone inválido');
+    // "Não-binário" saiu (só Mulher/Homem/Outro): app antigo que ainda manda non_binary grava other
+    const gender: Gender = payload.gender === 'non_binary' ? 'other' : (payload.gender as Gender);
+    // campos de texto validados ANTES de gastar a prova do SMS: um 400 aqui não obriga a pedir código de novo
+    const name = cleanName(payload.name);
+    if (!name) throw new BadRequestException(NAME_INVALID);
+    const bio = cleanBio(payload.bio) ?? null;
+    const insta = parseInstagramInput(payload.instagram);
+    if (insta && !insta.ok) throw new BadRequestException(INSTAGRAM_INVALID);
+    const instagramHandle = insta?.ok ? insta.handle : null;
+    // filtro de abuso (nome, bio, @): 400 text_blocked com o campo e o que ajustar (o app volta pra etapa dele)
+    const blocked = checkProfileText({ name, bio, instagram: instagramHandle });
+    if (blocked) throw new BadRequestException(blocked);
+    const interestNames = cleanInterestNames(payload.interests);
 
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) throw new UnauthorizedException('Telefone já cadastrado');
@@ -268,13 +299,22 @@ export class AuthService {
       // número liberado de outra conta: liga o histórico; se ela estava banida/suspensa, esta nasce em revisão
       const releases = await this.phones.pendingReleases(tx, phone);
       const from = releases.find((r) => PhoneReleaseService.needsHold([r])) ?? null;
+      // interesses do cadastro: só os que existem no catálogo (nome desconhecido é ignorado, como no PATCH /me)
+      const interestRows = interestNames.length
+        ? await tx.interest.findMany({
+            where: { name: { in: interestNames } },
+            select: { id: true },
+          })
+        : [];
       const created = await tx.user.create({
         data: {
           id,
           phone,
-          name: payload.name,
+          name,
+          bio,
+          instagramHandle,
           birthDate: payload.birthDate,
-          gender: payload.gender as never,
+          gender,
           orientation: (orientation ?? undefined) as never,
           orientationConsentedAt: orientation ? now : null,
           showOrientation: !!orientation && !!payload.showOrientation,
@@ -284,17 +324,26 @@ export class AuthService {
           anonymousUntil,
           lookingFor: (payload.lookingFor ?? 'unspecified') as never,
           // avatar inicial determinístico (seed = id → mesmo visual em qualquer cliente)
-          avatarConfig: randomAvatarConfig(id, {
-            gender: payload.gender as 'female' | 'male' | 'non_binary' | 'other',
-          }) as never,
-          // completude inicial: nome (10) + intenção definida (5) — resto vem de fotos/bio/interesses
-          profileCompleteness:
-            10 + (payload.lookingFor && payload.lookingFor !== 'unspecified' ? 5 : 0),
+          avatarConfig: randomAvatarConfig(id, { gender }) as never,
+          // completude inicial (mesma conta do PATCH /me): nome, intenção, bio e interesses — as fotos vêm depois
+          profileCompleteness: profileCompleteness({
+            name,
+            bio,
+            photos: 0,
+            interests: interestRows.length,
+            lookingFor: payload.lookingFor,
+          }),
           termsVersion: payload.termsVersion,
           termsAcceptedAt: now,
           reviewHoldAt: from ? now : null,
         },
       });
+      if (interestRows.length) {
+        await tx.userInterest.createMany({
+          data: interestRows.map((i) => ({ userId: id, interestId: i.id })),
+          skipDuplicates: true,
+        });
+      }
       await this.phones.linkNewAccount(
         tx,
         releases.map((r) => r.id),

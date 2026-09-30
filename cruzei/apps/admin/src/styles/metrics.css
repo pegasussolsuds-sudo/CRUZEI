@@ -1,0 +1,178 @@
+/* Página Métricas: funil do cadastro (barras finas), retenção (mapa de calor de um tom só) e ativos.
+   Escala da retenção validada (validate_palette --ordinal) contra a superfície de cada tema; o texto dentro da
+   célula troca entre tinta escura e clara pelo contraste de cada tom (>= 4,5:1). */
+
+:root,
+:root[data-theme='dark'] {
+  --heat-1: #396c11;
+  --heat-2: #458a08;
+  --heat-3: #52a800;
+  --heat-4: #7dbe40;
+  --heat-5: #a9d480;
+  --heat-ink-1: #f4f4fb;
+  --heat-ink-2: #0a0a1a;
+  --heat-ink-3: #0a0a1a;
+  --heat-ink-4: #0a0a1a;
+  --heat-ink-5: #0a0a1a;
+}
+:root[data-theme='light'] {
+  --heat-1: #97c375;
+  --heat-2: #6ba93b;
+  --heat-3: #3f8f00;
+  --heat-4: #2c6400;
+  --heat-5: #1c4000;
+  --heat-ink-1: #0a0a1a;
+  --heat-ink-2: #0a0a1a;
+  --heat-ink-3: #0a0a1a;
+  --heat-ink-4: #ffffff;
+  --heat-ink-5: #ffffff;
+}
+
+/* recarregando: mantém o quadro anterior, meio apagado (sem esqueleto piscando) */
+.metrics-refetching {
+  opacity: 0.55;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.metrics-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.metrics-note {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+/* ─── funil ─── */
+.funnel-table td {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.funnel-table tbody tr:hover td {
+  background: var(--surface-hover);
+}
+.funnel-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+.funnel-index {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  width: 20px;
+  text-align: right;
+}
+.funnel-bar-cell {
+  width: 38%;
+  min-width: 140px;
+}
+@media (max-width: 900px) {
+  .funnel-bar-cell {
+    min-width: 72px;
+  }
+}
+/* trilho + barra: 12px de espessura, ponta arredondada de 4px, reta na base */
+.funnel-bar {
+  position: relative;
+  height: 12px;
+  background: var(--surface-2);
+  border-radius: 0 4px 4px 0;
+}
+.funnel-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--chart-series);
+  border-radius: 0 4px 4px 0;
+  min-width: 2px;
+}
+/* maior queda: fundo de aviso (sempre com o selo "maior queda" junto — cor nunca sozinha) */
+.funnel-table tr[data-worst='true'] td,
+.funnel-table tr[data-worst='true']:hover td {
+  background: var(--warning-soft);
+}
+
+/* ─── retenção ─── */
+.retention-table td.heat {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  border-bottom: 2px solid var(--surface);
+  border-left: 2px solid var(--surface);
+  min-width: 92px;
+}
+.retention-table td.heat:hover,
+.retention-table td.heat:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.retention-table td.heat .sub {
+  display: block;
+  font-size: var(--text-xs);
+  opacity: 0.8;
+}
+.retention-table td.heat[data-level='0'] {
+  color: var(--text-2);
+}
+.retention-table td.heat[data-level='1'] {
+  background: var(--heat-1);
+  color: var(--heat-ink-1);
+}
+.retention-table td.heat[data-level='2'] {
+  background: var(--heat-2);
+  color: var(--heat-ink-2);
+}
+.retention-table td.heat[data-level='3'] {
+  background: var(--heat-3);
+  color: var(--heat-ink-3);
+}
+.retention-table td.heat[data-level='4'] {
+  background: var(--heat-4);
+  color: var(--heat-ink-4);
+}
+.retention-table td.heat[data-level='5'] {
+  background: var(--heat-5);
+  color: var(--heat-ink-5);
+}
+.retention-table td.heat[data-pending='true'] {
+  color: var(--text-3);
+}
+
+.heat-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.heat-legend .swatch {
+  display: inline-block;
+  width: 22px;
+  height: 12px;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.heat-legend .swatch[data-level='0'] {
+  background: var(--surface-2);
+}
+.heat-legend .swatch[data-level='1'] {
+  background: var(--heat-1);
+}
+.heat-legend .swatch[data-level='2'] {
+  background: var(--heat-2);
+}
+.heat-legend .swatch[data-level='3'] {
+  background: var(--heat-3);
+}
+.heat-legend .swatch[data-level='4'] {
+  background: var(--heat-4);
+}
+.heat-legend .swatch[data-level='5'] {
+  background: var(--heat-5);
+}

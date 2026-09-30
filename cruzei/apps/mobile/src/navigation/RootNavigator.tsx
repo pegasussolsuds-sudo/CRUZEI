@@ -31,6 +31,7 @@ import { TermsGate } from '../components/legal/TermsGate';
 import { useAccountBlockStore } from '../stores/accountBlock';
 import { useBootStore } from '../stores/boot';
 import { usePushRouteStore } from '../stores/pushRoute';
+import { isTourBusy, useTourStore } from '../stores/tour';
 import { useMapTheme } from '../hooks/useMapTheme';
 import { markNotificationRead } from '../hooks/useNotifications';
 import { askPushPermissionOnce } from '../services/notifications';
@@ -114,13 +115,20 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
     usePushRouteStore.getState().clear();
   }, [pendingPush, navReadyTick, isAuthenticated, isLoading, onboardingStep, blocked, qc]);
 
-  // pedido de push: uma vez, com o mapa já carregado e a pessoa nele há uns segundos (nada de splash, termos ou cadastro)
+  // tour do mapa: espera a splash sair; enquanto ele está na fila ou na tela, o pedido do push espera
+  const tourBusy = useTourStore(isTourBusy);
+  useEffect(() => {
+    useTourStore.getState().setSplashing(splashing);
+  }, [splashing]);
+
+  // pedido de push: uma vez, com o mapa já carregado e a pessoa nele há uns segundos (nada de splash, termos, cadastro
+  // ou tour do mapa)
   const onMap = routeName === 'Map';
   useEffect(() => {
-    if (!isAuthenticated || splashing || !mapLoaded || !onMap || onboardingStep || termsPending || blocked) return;
+    if (!isAuthenticated || splashing || !mapLoaded || !onMap || onboardingStep || termsPending || blocked || tourBusy) return;
     const id = setTimeout(() => void askPushPermissionOnce(), PUSH_ASK_DELAY_MS);
     return () => clearTimeout(id);
-  }, [isAuthenticated, splashing, mapLoaded, onMap, onboardingStep, termsPending, blocked]);
+  }, [isAuthenticated, splashing, mapLoaded, onMap, onboardingStep, termsPending, blocked, tourBusy]);
 
   // única StatusBar do app logado: segue a rota focada (a splash escura por cima também pede ícones claros)
   // o mapa de noite e no entardecer é escuro (de dia é claro e pede ícones escuros)

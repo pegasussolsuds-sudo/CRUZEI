@@ -61,10 +61,13 @@ export class PublicUsersController {
     if (u.visibilityMode === 'anonymous') throw notFound();
 
     // está descoberta por mim agora? (mesmas regras do /nearby) — decide a faixa/lugar e a última atividade
-    const [d, peers] = await Promise.all([
+    const [d, peers, superFrom] = await Promise.all([
       this.location.discoverability(me.id, id),
       loadPeerSocial(this.prisma, me.id, [id]),
+      // super curtida pendente pra mim (mesma regra do topo do deck)
+      this.location.superLikedMeFrom(me.id, [id]),
     ]);
+    const superLikedMe = superFrom.has(id);
     // faixa e lugar só se a pessoa deixou ("mostrar distância") E está descoberta por mim agora
     let proximityBand: PublicUserCard['proximityBand'] = null;
     let placeName: string | null = null;
@@ -73,9 +76,11 @@ export class PublicUsersController {
       placeName = d.poi?.name ?? null;
     }
 
-    // curtida nos dois sentidos + conversa do par (a mesma consulta do /nearby); RECEIVED só pra Premium+
+    // curtida nos dois sentidos + conversa do par (a mesma consulta do /nearby); RECEIVED só pra Premium+,
+    // menos na super curtida pendente: ela revela quem mandou pra qualquer plano
     const social = peers.get(id);
-    const likeStatus = social?.likeStatus ?? 'NONE';
+    const baseStatus = social?.likeStatus ?? 'NONE';
+    const likeStatus = superLikedMe && baseStatus === 'NONE' ? 'RECEIVED' : baseStatus;
     // última atividade: nunca o horário exato; faixa só pra quem a descobre agora ou deu match (senão null)
     const lastSeen = cardLastSeen(u.lastActiveAt, d.ok || likeStatus === 'MUTUAL');
 
@@ -114,6 +119,7 @@ export class PublicUsersController {
       orientation: publicOrientation(u),
       instagram: u.instagramHandle ?? null,
       lastSeen,
+      ...(superLikedMe ? { superLikedMe: true } : {}),
     };
   }
 

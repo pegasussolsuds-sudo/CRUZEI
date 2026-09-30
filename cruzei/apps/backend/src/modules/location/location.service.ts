@@ -16,6 +16,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import type { Redis } from 'ioredis';
 import * as ngeohash from 'ngeohash';
 
@@ -37,11 +38,17 @@ import {
   type GuardState,
 } from './anti-spoof';
 import {
+  DECK,
+  ageFilter,
+  ageOn,
+  type AgeOk,
   compareDiscovery,
   discoveryKey,
+  mergeDeck,
   rotationSeed,
   sameOrientationHit,
   showMeMutual,
+  superLikerShown,
 } from './discovery-order';
 import {
   CROWD,
@@ -120,6 +127,18 @@ const ID_CHUNK = 5_000;
 const CELL_PRESENCE_TTL_MS = 2_000;
 /** células guardadas pra recarga incremental antes de podar as esquecidas */
 const CELL_STATE_MAX = 4_000;
+
+/** campos do cartão que dependem de onde a pessoa está (o resto é identityOf) */
+type LocatedKey =
+  | 'proximityBand'
+  | 'presenceType'
+  | 'poi'
+  | 'mapPosition'
+  | 'lastSeen'
+  | 'isOnline';
+
+/** super curtida pendente: revela quem mandou (RECEIVED mesmo sem Premium+) e ainda não curti de volta */
+const SUPER_PENDING = { superLikedMe: true, likedByMe: false, likeStatus: 'RECEIVED' as const };
 
 /** thumbnail pra bolha do mapa: só quando existe um thumb de verdade (diferente da foto original) */
 function mapThumb(photo: { url: string; thumbnailUrl: string | null } | undefined): string | null {
@@ -217,7 +236,14 @@ export interface DiscoveryUserDto {
   likeStatus: LikeStatus;
   /** conversa do par não arquivada por mim */
   conversation: ConversationRef | null;
+  /** só no deck: super curtida dela pendente pra mim (vem no topo; revela quem mandou, likeStatus RECEIVED) */
+  superLikedMe?: boolean;
 }
+
+/** pessoa no deck: super curtida pendente fora do raio (ou sem marcador) vem sem faixa e sem posição */
+export type DeckUserDto = Omit<DiscoveryUserDto, 'proximityBand'> & {
+  proximityBand: ProximityBand | null;
+};
 
 export interface DiscoveryResult {
   users: DiscoveryUserDto[];
@@ -231,6 +257,24 @@ export interface DiscoveryResult {
     hiddenReason: HiddenReason | null;
     placePrompt?: PlacePrompt | null;
   };
+}
+
+/** GET /location/nearby?deck=1 (DeckResponse): super curtidas pendentes no topo de `users` */
+export interface DeckResult extends Omit<DiscoveryResult, 'users'> {
+  users: DeckUserDto[];
+  superLikesPending: number;
+}
+
+/** estado do deck entre a descoberta e a montagem do topo (super curtidas) */
+interface DeckCtx {
+  /** super curtidas pendentes pra mim (a mais recente primeiro): saem do corte normal e vão pro topo */
+  superIds: Set<string>;
+  /** as que estavam no raio e passaram no piso de anonimato: cartão com faixa/posição visual */
+  superShown: Map<string, DiscoveryUserDto>;
+  /** preenchidos pela descoberta (evita reler) */
+  me?: Party | null;
+  gps?: GuardFlag | null;
+  blocked?: Set<string>;
 }
 
 /** candidato que pode aparecer no convite "Tá rolando algo aqui?" (posição só pra filtrar aqui dentro; nunca sai) */
@@ -259,6 +303,9 @@ interface Party {
   sameOrientationFirst?: boolean;
   /** só no consultante (loadParty): Premium vigente — decide se vê os invisíveis agrupados */
   premium?: boolean;
+  /** só no consultante (loadParty): faixa de idade que ELE vê (não recíproca) */
+  ageMin?: number;
+  ageMax?: number;
 }
 
 /** flags de privacidade do candidato: recarregadas a cada DISCOVERY_CANDIDATE_TTL_MS (consulta leve, só colunas) */
@@ -806,8 +853,32 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   // Descoberta por proximidade — centro = MINHA posição no servidor (o cliente não escolhe o centro)
   // ---------------------------------------------------------------------------------------------
   async discover(requesterId: string, requestedRadiusM?: number): Promise<DiscoveryResult> {
+    return this.inSlot(() => this.discoverNow(requesterId, requestedRadiusM));
+  }
+
+  /**
+   * Deck de curtidas (GET /location/nearby?deck=1): a mesma descoberta do mapa (faixa de idade, "Mostrar", bloqueio,
+   * piso de anonimato, Boost) sem quem eu passei há menos de DECK.PASS_DAYS e sem quem eu já curti; no topo, as super
+   * curtidas pendentes pra mim (a mais recente primeiro), de qualquer distância — fora do raio sem faixa nem posição.
+   */
+  async discoverDeck(requesterId: string, requestedRadiusM?: number): Promise<DeckResult> {
+    return this.inSlot(async () => {
+      const pending = await this.pendingSuperLikes(requesterId);
+      const ctx: DeckCtx = { superIds: new Set(pending), superShown: new Map() };
+      const base = await this.discoverNow(requesterId, requestedRadiusM, ctx);
+      const top = await this.superLikeCards(requesterId, pending, ctx);
+      return {
+        ...base,
+        users: mergeDeck<DeckUserDto>(top, base.users),
+        superLikesPending: top.length,
+      };
+    });
+  }
+
+  /** no máximo N descobertas por processo ao mesmo tempo; fila cheia → 503 (o app tenta de novo) */
+  private async inSlot<T>(fn: () => Promise<T>): Promise<T> {
     try {
-      return await this.discoverSlots.run(() => this.discoverNow(requesterId, requestedRadiusM));
+      return await this.discoverSlots.run(fn);
     } catch (e) {
       if (e instanceof SaturatedError) {
         this.log.warn(
@@ -825,6 +896,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
   private async discoverNow(
     requesterId: string,
     requestedRadiusM?: number,
+    deck?: DeckCtx,
   ): Promise<DiscoveryResult> {
     const radiusM = Math.min(
       PRIVACY.DISCOVERY_RADIUS_M,
@@ -841,12 +913,15 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     });
 
     const me = await this.loadParty(requesterId);
+    if (deck) deck.me = me;
     if (!me) return empty('paused');
-    if (me.premium) invisible = { total: 0, groups: [] };
+    // invisíveis agrupados: só no mapa/lista (o deck não mostra invisíveis; lá vem sempre null)
+    if (me.premium && !deck) invisible = { total: 0, groups: [] };
     const [presences, gpsFlag] = await Promise.all([
       this.getPresences([requesterId]),
       this.gpsFlag(requesterId),
     ]);
+    if (deck) deck.gps = gpsFlag;
     // GPS falso detectado agora (salto impossível / posição simulada): não aparece e não vê ninguém até normalizar
     if (gpsFlag) return empty(gpsFlag === 'mock' ? 'location_mocked' : 'location_unverified');
     const mine = presences.get(requesterId);
@@ -902,28 +977,38 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     if (triage.inRadius.size === 0 && farSpots.length === 0) return empty(myReason);
 
     const blocked = await this.blockedWith(requesterId);
+    if (deck) deck.blocked = blocked;
     const rows = await this.loadCandidates(triage.needed.filter((id) => !blocked.has(id)));
     // linhas do boost de longe à parte: não entram nas contagens de anonimato do raio (o piso delas já foi aplicado)
     const farRows = farSpots.length
       ? await this.loadCandidates(farSpots.map((s) => s.id).filter((id) => !blocked.has(id)))
       : [];
+    // faixa de idade de quem vê (só o meu lado; quem esconde a idade entra pelo bloco de 5 anos) — null = sem limite
+    const ageOk = ageFilter(me);
 
     // 0) invisíveis (só Premium): agrupados por lugar/quadra, sem identidade — ver location/invisible.ts
-    if (me.premium) invisible = await this.invisibleNearby(me, mine, triage, pres, rows, blocked);
+    if (me.premium && !deck)
+      invisible = await this.invisibleNearby(me, mine, triage, pres, rows, blocked, ageOk);
 
-    // 1) elegibilidade (visível, com presença, não oculto, regras de descoberta dos DOIS lados) + raio REAL
+    // 1) elegibilidade (visível, com presença, não oculto, regras de descoberta dos DOIS lados, minha faixa de
+    //    idade) + raio REAL. Quem sai pela idade não entra no "+N por perto" (igual ao "Mostrar"), mas continua nas
+    //    contagens de anonimato abaixo (mais gente na conta = esconder mais conservador)
     const eligible: { u: CandidateRow; p: Presence; dist: number }[] = [];
     for (const u of rows) {
       const dist = triage.inRadius.get(u.id);
       const p = pres.get(u.id);
       if (dist == null || !p || !this.mutuallyDiscoverable(me, this.partyOfCached(u), p)) continue;
+      if (ageOk && !ageOk(u)) continue;
       eligible.push({ u, p, dist });
     }
-    // boost de longe: as mesmas regras dos dois lados (visível, não oculto/casa, bloqueio, "Ninguém", "Mostrar")
+    // boost de longe: as mesmas regras dos dois lados (visível, não oculto/casa, bloqueio, "Ninguém", "Mostrar") e
+    // a minha faixa de idade
     const spotById = new Map(farSpots.map((s) => [s.id, s]));
     const farShown = farRows.flatMap((u) => {
       const s = spotById.get(u.id);
-      return s && this.mutuallyDiscoverable(me, this.partyOfCached(u), s.p) ? [{ u, s }] : [];
+      return s && this.mutuallyDiscoverable(me, this.partyOfCached(u), s.p) && (!ageOk || ageOk(u))
+        ? [{ u, s }]
+        : [];
     });
     if (eligible.length === 0 && farShown.length === 0) return empty(myReason);
 
@@ -992,6 +1077,20 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     for (const { u, s } of farShown)
       shown.push({ u, p: s.p, pos: s.pos, type: s.type, band: 'boost', poi: s.poi });
 
+    // deck: super curtidas pendentes saem do corte (vão pro topo, discoverDeck); fora quem eu passei há menos de
+    // DECK.PASS_DAYS e quem eu já curti. Só depois do piso de anonimato: as contagens e o "esparso" são os do mapa
+    let pool = shown;
+    const supers: typeof shown = [];
+    if (deck) {
+      pool = [];
+      for (const s of shown) (deck.superIds.has(s.u.id) ? supers : pool).push(s);
+      const out = await this.deckExcluded(
+        requesterId,
+        pool.map((s) => s.u.id),
+      );
+      if (out.size) pool = pool.filter((s) => !out.has(s.u.id));
+    }
+
     // 3) teto de pessoas por resposta — boost → mesma orientação (só quem EXIBE) → faixa → rotação justa: numa multidão,
     //    cada pessoa vê um recorte pseudoaleatório estável na janela (DISCOVERY_ROTATION_MIN) em vez de sempre os mesmos
     //    (antes: corte por nome). Seleção parcial, sem ordenar milhares; quem sobra entra no "+N por perto"
@@ -1001,7 +1100,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       Date.now(),
       PRIVACY.DISCOVERY_ROTATION_MIN * 60_000,
     );
-    const keyed = shown.map((s) => ({
+    const keyed = pool.map((s) => ({
       s,
       ...discoveryKey({
         id: s.u.id,
@@ -1017,39 +1116,24 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
 
     // 4) enriquecimento social (curtida nos dois sentidos, conversa do par) — uma consulta com os mostrados num
     //    parâmetro de array só (antes: IN do Prisma com os 300 mostrados, a maior parte da CPU ia pro motor montando listas)
-    const now = new Date();
-    const social = chosen.length
-      ? await loadPeerSocial(
-          this.prisma,
-          requesterId,
-          chosen.map((c) => c.u.id),
-        )
+    const socialIds = chosen.map((c) => c.u.id).concat(supers.map((s) => s.u.id));
+    const social = socialIds.length
+      ? await loadPeerSocial(this.prisma, requesterId, socialIds)
       : new Map<string, PeerSocialRow>();
-    const newSince = now.getTime() - NEW_USER_MS;
+    const newSince = Date.now() - NEW_USER_MS;
 
-    const users: DiscoveryUserDto[] = chosen.map(({ u, p, pos, type, band, poi }) => ({
-      id: u.id,
-      name: u.name,
-      age: u.showAge ? this.age(u.birthDate) : null,
-      mainPhotoUrl: u.photos[0]?.url ?? null,
-      mapPhotoUrl: u.showPhotoOnMap ? mapThumb(u.photos[0]) : null,
-      isNew: u.createdAt.getTime() > newSince,
+    const card = ({ u, p, pos, type, band, poi }: (typeof shown)[number]): DiscoveryUserDto => ({
+      ...this.identityOf(u, boosted.has(u.id), social.get(u.id), newSince),
       proximityBand: band,
       presenceType: type,
       poi: poi ? { id: poi.id, name: poi.name } : null,
       mapPosition: pos,
       lastSeen: lastSeenBand(p.updatedAt),
       isOnline: lastSeenBand(p.updatedAt) === 'online',
-      isAnonymous: false,
-      premiumTier: u.premiumTier,
-      isVerified: u.isVerified,
-      isBoosted: boosted.has(u.id),
-      orientation: u.showOrientation && u.orientation ? (u.orientation as Orientation) : null,
-      avatar: avatarOrFallback(u),
-      likedByMe: social.get(u.id)?.likedByMe ?? false,
-      likeStatus: social.get(u.id)?.likeStatus ?? 'NONE',
-      conversation: social.get(u.id)?.conversation ?? null,
-    }));
+    });
+    const users: DiscoveryUserDto[] = chosen.map(card);
+    // super curtida pendente no raio e com marcador: o cartão do topo leva faixa e posição visual como no mapa
+    for (const s of supers) deck?.superShown.set(s.u.id, { ...card(s), ...SUPER_PENDING });
 
     return {
       users,
@@ -1058,6 +1142,138 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       me: { discoverable: myReason === null, hiddenReason: myReason, placePrompt },
       invisible,
     };
+  }
+
+  /** parte do cartão que não depende de onde a pessoa está (idade só de quem mostra; orientação só de quem exibe) */
+  private identityOf(
+    u: CandidateRow,
+    isBoosted: boolean,
+    social: PeerSocialRow | undefined,
+    newSince: number,
+  ): Omit<DiscoveryUserDto, LocatedKey> {
+    return {
+      id: u.id,
+      name: u.name,
+      age: u.showAge ? this.age(u.birthDate) : null,
+      mainPhotoUrl: u.photos[0]?.url ?? null,
+      mapPhotoUrl: u.showPhotoOnMap ? mapThumb(u.photos[0]) : null,
+      isNew: u.createdAt.getTime() > newSince,
+      isAnonymous: false,
+      premiumTier: u.premiumTier,
+      isVerified: u.isVerified,
+      isBoosted,
+      orientation: u.showOrientation && u.orientation ? (u.orientation as Orientation) : null,
+      avatar: avatarOrFallback(u),
+      likedByMe: social?.likedByMe ?? false,
+      likeStatus: social?.likeStatus ?? 'NONE',
+      conversation: social?.conversation ?? null,
+    };
+  }
+
+  /**
+   * Topo do deck: super curtidas pendentes pra mim, na ordem (a mais recente primeiro). Quem estava no raio com
+   * marcador já veio da descoberta (faixa/posição visual); o resto vem SEM faixa, posição, lugar ou "online" — a
+   * super curtida revela quem é, nunca onde está. Some quem: bloqueio (qualquer lado), invisível, pausado, em análise,
+   * suspenso/banido/apagado (loadCandidates), "Ninguém", fora do MEU "Mostrar" ou da MINHA faixa de idade. Eu com GPS
+   * falso, em "Ninguém" ou sem conta: nada.
+   */
+  private async superLikeCards(
+    requesterId: string,
+    pending: string[],
+    ctx: DeckCtx,
+  ): Promise<DeckUserDto[]> {
+    const me = ctx.me;
+    if (pending.length === 0 || !me || ctx.gps || me.discoveryMode === 'nobody') return [];
+    const blocked = ctx.blocked ?? (await this.blockedWith(requesterId));
+    const rows = new Map(
+      (
+        await this.loadCandidates(
+          pending.filter((id) => !blocked.has(id) && !ctx.superShown.has(id)),
+        )
+      ).map((r) => [r.id, r]),
+    );
+    const ageOk = ageFilter(me);
+    const picked: (DiscoveryUserDto | CandidateRow)[] = [];
+    for (const id of pending) {
+      if (picked.length >= DECK.SUPER_MAX) break;
+      const shown = ctx.superShown.get(id);
+      if (shown) {
+        picked.push(shown);
+        continue;
+      }
+      const u = rows.get(id);
+      if (u && superLikerShown(me, u, ageOk)) picked.push(u);
+    }
+    const far = picked.filter((x): x is CandidateRow => 'photos' in x);
+    if (far.length === 0) return picked as DiscoveryUserDto[];
+    const [social, boosted] = await Promise.all([
+      loadPeerSocial(
+        this.prisma,
+        requesterId,
+        far.map((u) => u.id),
+      ),
+      this.activeBoosts(),
+    ]);
+    const newSince = Date.now() - NEW_USER_MS;
+    return picked.map((x) =>
+      'photos' in x
+        ? {
+            ...this.identityOf(x, boosted.has(x.id), social.get(x.id), newSince),
+            proximityBand: null,
+            presenceType: 'nearby' as const,
+            poi: null,
+            mapPosition: null,
+            lastSeen: 'earlier' as const,
+            isOnline: false,
+            ...SUPER_PENDING,
+          }
+        : x,
+    );
+  }
+
+  /**
+   * Super curtidas recebidas e ainda não respondidas (a mais recente primeiro): eu não curti de volta e não passei
+   * DEPOIS dela (passar antes não conta: a super curtida é a segunda chance). Valem DECK.PASS_DAYS dias — assim um
+   * "passar" que já venceu nunca ressuscita uma super curtida antiga. Índice likes_super_received_idx.
+   */
+  private async pendingSuperLikes(me: string, only?: string[]): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+      SELECT l.liker_id::text AS id
+        FROM likes l
+       WHERE l.liked_id = ${me}::uuid AND l.is_super
+         ${only ? Prisma.sql`AND l.liker_id = ANY(${only}::uuid[])` : Prisma.empty}
+         AND l.created_at > (now() AT TIME ZONE 'UTC') - make_interval(days => ${DECK.PASS_DAYS}::int)
+         AND NOT EXISTS (SELECT 1 FROM likes r WHERE r.liker_id = ${me}::uuid AND r.liked_id = l.liker_id)
+         AND NOT EXISTS (SELECT 1 FROM passes p WHERE p.user_id = ${me}::uuid AND p.target_id = l.liker_id
+                           AND p.created_at >= (l.created_at AT TIME ZONE 'UTC'))
+       ORDER BY l.created_at DESC, l.liker_id
+       LIMIT ${DECK.SUPER_SCAN}::int`;
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Pro cartão público (GET /users/:id → PublicUserCard.superLikedMe) e quem mais precisar: quais destes me deram super
+   * curtida AINDA pendente — a mesma regra do topo do deck (não curti de volta, não passei depois, até DECK.PASS_DAYS).
+   * Só a curtida: não olha distância, "Mostrar" nem idade (quem chama já decidiu que pode mostrar a pessoa).
+   */
+  async superLikedMeFrom(requesterId: string, peerIds: string[]): Promise<Set<string>> {
+    const ids = [...new Set(peerIds.filter((id) => id && id !== requesterId))];
+    if (ids.length === 0) return new Set();
+    return new Set(await this.pendingSuperLikes(requesterId, ids));
+  }
+
+  /** dos ids, quem sai do deck: passei há menos de DECK.PASS_DAYS (tabela passes) ou já curti (PK/único dos dois) */
+  private async deckExcluded(me: string, ids: string[]): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const part of chunk(ids, ID_CHUNK)) {
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT t.id::text AS id FROM unnest(${part}::uuid[]) AS t(id)
+         WHERE EXISTS (SELECT 1 FROM passes p WHERE p.user_id = ${me}::uuid AND p.target_id = t.id
+                         AND p.created_at > now() - make_interval(days => ${DECK.PASS_DAYS}::int))
+            OR EXISTS (SELECT 1 FROM likes l WHERE l.liker_id = ${me}::uuid AND l.liked_id = t.id)`;
+      for (const r of rows) out.add(r.id);
+    }
+    return out;
   }
 
   /**
@@ -1149,6 +1365,11 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       return p && p.poi?.id === poiId && this.mutuallyDiscoverable(me, this.partyOf(u), p);
     });
     if (ok.length < PRIVACY.MIN_PLACE_K) return [];
+    // minha faixa de idade (só o meu lado) DEPOIS do piso: o lugar tem gente o bastante, eu só escolho quem vejo
+    // (igual ao mapa, onde o piso do lugar conta todo mundo)
+    const ageOk = ageFilter(me);
+    const seen = ageOk ? ok.filter((u) => ageOk(u)) : ok;
+    if (seen.length === 0) return [];
     const boosted = await this.activeBoosts();
     const seed = rotationSeed(
       this.salt,
@@ -1156,7 +1377,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       Date.now(),
       PRIVACY.DISCOVERY_ROTATION_MIN * 60_000,
     );
-    return ok
+    return seen
       .map((u) =>
         discoveryKey({
           id: u.id,
@@ -1286,6 +1507,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     pres: Map<string, Presence>,
     rows: CandidateRow[],
     blocked: Set<string>,
+    ageOk: AgeOk | null = null,
   ): Promise<InvisiblePresence> {
     const loaded = new Set(rows.map((r) => r.id));
     const ids = [...triage.inRadius.keys()].filter((id) => !loaded.has(id) && !blocked.has(id));
@@ -1307,6 +1529,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       discoveryMode: DiscoveryMode;
       gender: string | null;
       showMe: string | null;
+      birthDate: Date | null;
+      showAge: boolean;
       interests: number[] | null;
     };
     const found: InvisibleRow[] = [];
@@ -1314,6 +1538,7 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       found.push(
         ...(await this.prisma.$queryRaw<InvisibleRow[]>`
           SELECT u.id::text AS id, u.discovery_mode::text AS "discoveryMode", u.gender::text AS gender, u.show_me::text AS "showMe",
+                 u.birth_date AS "birthDate", u.show_age AS "showAge",
                  (SELECT array_agg(ui.interest_id) FROM user_interests ui WHERE ui.user_id = u.id) AS interests
             FROM users u
            WHERE u.id = ANY(${part}::uuid[]) AND u.visibility_mode = 'anonymous' AND u.deleted_at IS NULL
@@ -1324,6 +1549,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     for (const r of found) {
       const p = pres.get(r.id);
       if (!p || p.hidden) continue;
+      // minha faixa de idade vale pra contagem de invisíveis também (idade escondida: bloco de 5 anos)
+      if (ageOk && !ageOk(r)) continue;
       if (
         !this.discoveryRulesAllow(me, {
           discoveryMode: r.discoveryMode,
@@ -1522,6 +1749,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
         showMe: true,
         orientation: true,
         sameOrientationFirst: true,
+        ageMin: true,
+        ageMax: true,
         userInterests: { select: { interestId: true } },
       },
     });
@@ -1538,6 +1767,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       orientation: u.orientation,
       sameOrientationFirst: u.sameOrientationFirst,
       premium: effectiveTier(u.premiumTier, u.premiumExpiresAt) !== 'free',
+      ageMin: u.ageMin,
+      ageMax: u.ageMax,
     };
   }
 
@@ -1688,11 +1919,8 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
     return p ? { id: p.id, name: p.name } : null;
   }
 
+  /** mesma conta do filtro de idade (ageOn): o número mostrado e a faixa nunca divergem */
   private age(birth: Date): number {
-    const today = new Date();
-    let a = today.getFullYear() - birth.getFullYear();
-    const m = today.getMonth() - birth.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) a -= 1;
-    return a;
+    return ageOn(birth, new Date());
   }
 }

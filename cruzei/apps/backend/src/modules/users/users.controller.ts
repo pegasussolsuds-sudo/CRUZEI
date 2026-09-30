@@ -1,4 +1,12 @@
-import { ORIENTATIONS, SHOW_ME, type Orientation, type ShowMe } from '@cruzei/shared-types';
+import {
+  GENDERS,
+  ORIENTATIONS,
+  PROFILE_LIMITS,
+  SHOW_ME,
+  type Gender,
+  type Orientation,
+  type ShowMe,
+} from '@cruzei/shared-types';
 import {
   Body,
   Controller,
@@ -16,6 +24,8 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNumber,
@@ -34,8 +44,12 @@ import { assertPhotoHost } from '../../common/photo-host';
 import { UsersService } from './users.service';
 
 class UpdateMeDto {
-  @IsOptional() @IsString() @MaxLength(50) name?: string;
-  @IsOptional() @IsString() @MaxLength(500) bio?: string;
+  /** 2 a 50 letras depois de tirar os espaços (senão 400 name_invalid); passa pelo filtro de abuso */
+  @IsOptional() @IsString() @MaxLength(PROFILE_LIMITS.nameMax) name?: string;
+  /** vazio apaga; passa pelo filtro de abuso */
+  @IsOptional() @IsString() @MaxLength(PROFILE_LIMITS.bioMax) bio?: string;
+  /** Mulher / Homem / Outro ("Outro" só aparece pra quem escolheu "Todos") */
+  @IsOptional() @IsIn([...GENDERS]) gender?: Gender;
   @IsOptional()
   @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified'])
   lookingFor?: string;
@@ -43,7 +57,13 @@ class UpdateMeDto {
   @IsOptional() @IsEnum([...ORIENTATIONS]) orientation?: Orientation | null;
   /** @ do Instagram (público): aceita @, link colado e maiúsculas — o service normaliza e valida; '' ou null apaga */
   @IsOptional() @IsString() @MaxLength(100) instagram?: string | null;
-  @IsOptional() @IsArray() @ArrayMaxSize(10) interests?: string[];
+  /** NOMES do catálogo (GET /interests); nome desconhecido é ignorado */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(PROFILE_LIMITS.interestsMax)
+  @IsString({ each: true })
+  @MaxLength(50, { each: true })
+  interests?: string[];
   // AvatarConfig (validada no service contra o catálogo + tier do usuário)
   @IsOptional() @IsObject() avatar?: Record<string, unknown>;
 }
@@ -65,6 +85,13 @@ class SettingsDto {
   @IsOptional() @IsBoolean() sameOrientationFirst?: boolean;
   /** "Mostrar: Mulheres / Homens / Todos" (recíproco) */
   @IsOptional() @IsEnum([...SHOW_ME]) showMe?: ShowMe;
+  /**
+   * faixa de idade que EU vejo (não recíproca): 18 <= ageMin, ageMin + 4 <= ageMax <= 99 (o topo "80+" grava 99). Sem
+   * @Min/@Max de propósito: fora da regra o service responde 400 age_range_invalid (o código que o app entende). Até 5
+   * mudanças por dia (429 age_range_limit)
+   */
+  @IsOptional() @IsInt() ageMin?: number;
+  @IsOptional() @IsInt() ageMax?: number;
 }
 
 class PrivateAreaDto {
@@ -175,8 +202,8 @@ export class UsersController {
   }
 }
 
-// Catálogo de interesses (pra tela de edição de perfil)
-@UseGuards(JwtAuthGuard)
+// Catálogo de interesses (InterestItem[]): público porque o cadastro pede antes de a conta existir (sem dado pessoal;
+// o limite global de requisições vale aqui também)
 @Controller('interests')
 export class InterestsController {
   constructor(private readonly svc: UsersService) {}

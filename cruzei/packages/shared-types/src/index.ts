@@ -12,3 +12,4 @@ export * from './notifications';
 export * from './support';
 export * from './admin';
 export * from './premium';
+export * from './analytics';

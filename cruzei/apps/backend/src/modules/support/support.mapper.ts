@@ -4,6 +4,7 @@ import type {
   SupportThreadForUser,
   SupportThreadStatus,
 } from '@cruzei/shared-types';
+import type { Redis } from 'ioredis';
 
 // Regras puras do suporte: o que o APP vê (sem nota interna, atendente sempre "Equipe Metch") e o que a EQUIPE vê.
 // Testadas em support.mapper.spec.ts.
@@ -43,6 +44,8 @@ export interface SupportThreadRow {
   lastMessageAt: Date;
   userUnread: number;
   rating: number | null;
+  /** botão de emergência (ausente = false) */
+  urgent?: boolean;
 }
 
 /**
@@ -108,6 +111,8 @@ export function threadForUser(t: SupportThreadRow): SupportThreadForUser {
     lastMessageAt: t.lastMessageAt.toISOString(),
     unread: t.userUnread,
     rating: t.rating,
+    // só aparece quando é urgente (atendimento comum continua com o mesmo formato de antes)
+    ...(t.urgent ? { urgent: true } : {}),
   };
 }
 
@@ -131,4 +136,43 @@ export function supportOrder(raw: unknown): SupportOrder {
  */
 export function waitingSinceOf(status: string, since: Date | null): string | null {
   return status === 'open' && since ? since.toISOString() : null;
+}
+
+// ─── botão de emergência (suporte URGENTE) ───
+
+/** apertar de novo dentro desse tempo não repete as mensagens automáticas (só reavisa a fila) */
+export const URGENT_REPEAT_MS = 2 * 60_000;
+
+/** urgente ainda valendo: vai pro topo da fila */
+export function isUrgentOpen(t: { urgent?: boolean | null; status: string }): boolean {
+  return Boolean(t.urgent) && t.status !== 'resolved';
+}
+
+/** repetição do botão (mesmo atendimento urgente há menos de URGENT_REPEAT_MS) */
+export function isUrgentRepeat(
+  t: { urgent: boolean; urgent_at: Date | null },
+  now = Date.now(),
+): boolean {
+  return t.urgent && t.urgent_at !== null && now - t.urgent_at.getTime() < URGENT_REPEAT_MS;
+}
+
+/** alarme 'support:urgent' (toque no painel): no máximo 1 por atendimento nesse intervalo */
+export const URGENT_ALERT_GAP_MS = 10 * 60_000;
+
+export const urgentAlertKey = (threadId: string) => `support:urgent-alert:${threadId}`;
+
+/**
+ * Vez do alarme do atendimento (SET NX PX no Redis): true = toca agora; apertar de novo dentro do intervalo = false
+ * (só a fila atualiza). Redis fora do ar → toca (alarme a mais é melhor que alarme perdido).
+ */
+export async function claimUrgentAlert(
+  redis: Pick<Redis, 'set'>,
+  threadId: string,
+): Promise<boolean> {
+  try {
+    const r = await redis.set(urgentAlertKey(threadId), '1', 'PX', URGENT_ALERT_GAP_MS, 'NX');
+    return r === 'OK';
+  } catch {
+    return true;
+  }
 }

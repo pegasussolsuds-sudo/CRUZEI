@@ -17,13 +17,14 @@ import { qk } from '@/api/keys';
 import { errorMessage } from '@/api/http';
 import { useMe } from '@/auth/AuthProvider';
 import { formatShortDateTime, formatTime, TIME_ZONE } from '@/lib/format';
-import { closedWhileReplying, escGoesBackToQueue, isPendingMessage, mergeMessage, PENDING_PREFIX, QUICK_REPLIES, readDraft, writeDraft } from '@/lib/support';
+import { closedWhileReplying, escGoesBackToQueue, isPendingMessage, isUrgentOpen, mergeMessage, PENDING_PREFIX, QUICK_REPLIES, readDraft, writeDraft } from '@/lib/support';
 import { useDismiss } from '@/lib/hooks';
 import { ROLE_LABEL } from '@/lib/labels';
 import { useSocket, useSocketEvent } from '@/realtime/SocketProvider';
 import { useSupportLive } from '@/realtime/SupportLive';
 import { SupportStatusBadge } from '@/components/badges';
 import { Avatar } from '@/components/ui/Avatar';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ErrorState, LoadingState, Spinner } from '@/components/ui/States';
@@ -297,6 +298,11 @@ export function Conversation({ threadId }: { threadId: string }) {
                 {t.user.name}
               </Link>
               <SupportStatusBadge status={t.status} />
+              {t.urgent ? (
+                <Badge tone={isUrgentOpen(t) ? 'danger' : 'neutral'} title={t.urgentAt ? `Emergência em ${formatShortDateTime(t.urgentAt)}` : undefined}>
+                  🆘 {isUrgentOpen(t) ? 'URGENTE' : 'Emergência'}
+                </Badge>
+              ) : null}
             </div>
             <div className="xsmall faint truncate">
               {t.assignedTo ? (mine ? 'Com você' : `Com ${t.assignedTo.name}`) : 'Sem atribuição'} · aberto {formatShortDateTime(t.createdAt)}
@@ -377,7 +383,8 @@ export function Conversation({ threadId }: { threadId: string }) {
               return (
                 <li key={m.id} className="bubble-row" data-author={m.author} data-internal={m.internal}>
                   {showDay ? <div className="day-sep">{new Date(m.createdAt).toLocaleDateString('pt-BR', { timeZone: TIME_ZONE, weekday: 'long', day: '2-digit', month: 'long' })}</div> : null}
-                  {m.author === 'system' ? (
+                  {/* nota interna do sistema (botão de emergência) vira balão de nota, não a linha cinza */}
+                  {m.author === 'system' && !m.internal ? (
                     <div className="bubble-system">{m.body}</div>
                   ) : (
                     <div className="bubble" data-pending={isPendingMessage(m)}>
@@ -388,7 +395,7 @@ export function Conversation({ threadId }: { threadId: string }) {
                       ) : null}
                       <div className="pre-wrap">{m.body}</div>
                       <div className="bubble-meta">
-                        {m.author === 'staff' ? `${m.senderName ?? 'Equipe'} · ` : ''}
+                        {m.author === 'staff' ? `${m.senderName ?? 'Equipe'} · ` : m.author === 'system' ? 'Sistema · ' : ''}
                         {isPendingMessage(m) ? 'enviando…' : formatTime(m.createdAt)}
                       </div>
                     </div>

@@ -29,6 +29,8 @@ export interface SupportThreadForUser {
   /** mensagens da equipe ainda não lidas pela pessoa */
   unread: number;
   rating: number | null;
+  /** aberto (ou marcado) pelo botão de emergência; ausente = false */
+  urgent?: boolean;
 }
 
 /** GET /v1/support/thread → atendimento atual (ou o último resolvido) + mensagens sem as internas */
@@ -80,6 +82,13 @@ export interface SupportThreadSummary {
    * está esperando (atendimento pendente/resolvido, ou reaberto sem mensagem nova)
    */
   waitingSince: string | null;
+  /**
+   * URGENTE (botão de emergência): enquanto não resolvido vai pro TOPO da fila em qualquer ordem, com selo vermelho.
+   * Fica marcado depois de resolvido (histórico). Ausente = false (servidor antigo)
+   */
+  urgent?: boolean;
+  /** quando virou urgente (ISO); null quando não é */
+  urgentAt?: string | null;
 }
 
 /** GET /v1/admin/support/threads/:id */
@@ -97,9 +106,10 @@ export interface SupportThreadDetail extends SupportThreadSummary {
 }
 
 /**
- * GET /v1/admin/support/threads?status=&mine=1&order=&cursor= — status: open | pending | resolved | all
- * (sem status = os não resolvidos, open + pending). Ordem: última mensagem mais recente primeiro; order=oldest = quem
- * espera há mais tempo primeiro (waitingSince, ou a última mensagem de quem não está esperando).
+ * GET /v1/admin/support/threads?status=&mine=1&order=&urgent=1&cursor= — status: open | pending | resolved | all
+ * (sem status = os não resolvidos, open + pending). Ordem: URGENTES não resolvidos sempre primeiro (urgentAt mais
+ * antigo primeiro), depois última mensagem mais recente primeiro; order=oldest = quem espera há mais tempo primeiro
+ * (waitingSince, ou a última mensagem de quem não está esperando). urgent=1: só os urgentes.
  */
 export interface SupportThreadList {
   items: SupportThreadSummary[];
@@ -155,10 +165,19 @@ export interface SupportTypingEvent {
   isTyping: boolean;
 }
 
+/**
+ * 'support:urgent' → sala staff:support: botão de emergência apertado agora (o painel toca alerta e destaca). No máximo
+ * 1 por atendimento a cada 10 min (apertar de novo só atualiza a fila). O 'support:thread' de sempre também sai.
+ */
+export interface SupportUrgentEvent {
+  thread: SupportThreadSummary;
+}
+
 export const SUPPORT_EVENTS = {
   message: 'support:message',
   thread: 'support:thread',
   typing: 'support:typing',
+  urgent: 'support:urgent',
 } as const;
 
 export const SUPPORT_LIMITS = {

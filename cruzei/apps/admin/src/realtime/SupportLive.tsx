@@ -1,5 +1,6 @@
 // Suporte ao vivo em qualquer tela do painel: mantém a fila em cache atualizada pelo socket, conta quem
-// está esperando (topo e barra lateral), põe o número no título da aba e toca um som discreto.
+// está esperando (topo e barra lateral), põe o número no título da aba e toca um som discreto. Botão de emergência
+// ('support:urgent'): alarme, aviso vermelho e a lista de urgentes valendo (faixa vermelha na fila, 🆘 no título).
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { SUPPORT_EVENTS, type SupportThreadDetail, type SupportThreadList, type SupportThreadSummary } from '@cruzei/shared-types';
@@ -7,10 +8,23 @@ import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { useAuth } from '@/auth/AuthProvider';
 import { hasPermission } from '@/lib/permissions';
-import { applyMessageToSummary, applyToLiveQueue, EMPTY_LIVE_QUEUE, mergeMessage, seedLiveQueue, SUPPORT_FILTERS, upsertThreadInPages, type LiveQueue } from '@/lib/support';
+import {
+  applyMessageToSummary,
+  applyToLiveQueue,
+  applyUrgent,
+  EMPTY_LIVE_QUEUE,
+  isUrgentOpen,
+  mergeMessage,
+  oldestUrgent,
+  seedLiveQueue,
+  SUPPORT_FILTERS,
+  upsertThreadInPages,
+  type LiveQueue,
+} from '@/lib/support';
 import { readPref, writePref } from '@/lib/prefs';
+import { useToast } from '@/components/ui/Toast';
 import { useSocketEvent } from './SocketProvider';
-import { playChime, unlockAudioOnFirstGesture } from './chime';
+import { playAlarm, playChime, unlockAudioOnFirstGesture } from './chime';
 
 interface SupportLiveValue {
   enabled: boolean;
@@ -24,6 +38,10 @@ interface SupportLiveValue {
   setViewing: (threadId: string | null) => void;
   /** resposta de read/assign/status: aplica já, sem esperar o socket */
   applyThread: (thread: SupportThreadSummary) => void;
+  /** atendimentos URGENTES não resolvidos (botão de emergência) */
+  urgentCount: number;
+  /** o urgente mais antigo (a faixa vermelha abre ele) */
+  firstUrgent: SupportThreadSummary | null;
 }
 
 const SupportLiveContext = createContext<SupportLiveValue>({
@@ -34,6 +52,8 @@ const SupportLiveContext = createContext<SupportLiveValue>({
   setSoundOn: () => undefined,
   setViewing: () => undefined,
   applyThread: () => undefined,
+  urgentCount: 0,
+  firstUrgent: null,
 });
 
 export function SupportLiveProvider({ children }: { children: ReactNode }) {
@@ -45,6 +65,8 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
   const [live, setLive] = useState<LiveQueue>(EMPTY_LIVE_QUEUE);
   const [unseen, setUnseen] = useState(0);
   const [soundOn, setSoundOnState] = useState(() => readPref('sound', 'on') !== 'off');
+  const [urgent, setUrgent] = useState<ReadonlyMap<string, SupportThreadSummary>>(() => new Map());
+  const toast = useToast();
 
   // semente: os abertos agora + o TOTAL do servidor (a lista vem paginada; o número não); o socket mantém daí em
   // diante e o refetch periódico cobre queda do socket
@@ -59,6 +81,19 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (seed.data) setLive(seedLiveQueue(seed.data.items, seed.data.total));
   }, [seed.data]);
+
+  // urgentes valendo (abertos ou pendentes): semente do servidor; o socket mantém daí em diante
+  const urgentSeed = useQuery({
+    queryKey: qk.supportUrgent,
+    queryFn: () => adminApi.supportThreads({ urgent: true, limit: 50 }),
+    enabled,
+    refetchInterval: 60_000,
+    staleTime: 20_000,
+  });
+
+  useEffect(() => {
+    if (urgentSeed.data) setUrgent(new Map(urgentSeed.data.items.filter(isUrgentOpen).map((t) => [t.id, t])));
+  }, [urgentSeed.data]);
 
   // saiu dos abertos alguém fora da lista carregada: o total do servidor confirma (uma busca por rajada)
   const recheckTimer = useRef<number | undefined>(undefined);
@@ -75,6 +110,7 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
         if (r.recheck) recheck();
         return r.queue;
       });
+      setUrgent((m) => (isUrgentOpen(thread) || m.has(thread.id) ? applyUrgent(m, thread) : m));
       for (const f of SUPPORT_FILTERS) {
         qc.setQueryData<InfiniteData<SupportThreadList, string | null>>(qk.supportThreads(f.key), (old) =>
           old ? { ...old, pages: upsertThreadInPages(old.pages, thread, f.key, meId) } : old,
@@ -87,6 +123,15 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
 
   useSocketEvent(SUPPORT_EVENTS.thread, ({ thread }) => {
     if (enabled) applyThread(thread);
+  });
+
+  // botão de emergência apertado agora: alarme (mesmo com o som de mensagens desligado) + aviso vermelho
+  useSocketEvent(SUPPORT_EVENTS.urgent, ({ thread }) => {
+    if (!enabled) return;
+    applyThread(thread);
+    playAlarm();
+    toast.error(`🆘 Emergência: ${thread.user.name} apertou o botão de emergência. Atendimento no topo da fila.`);
+    if (document.hidden) setUnseen((n) => n + 1);
   });
 
   useSocketEvent(SUPPORT_EVENTS.message, ({ threadId, message }) => {
@@ -110,7 +155,8 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  useEffect(() => (enabled && soundOn ? unlockAudioOnFirstGesture() : undefined), [enabled, soundOn]);
+  // o alarme de emergência toca sempre: o áudio é liberado no 1º gesto mesmo com o som de mensagens desligado
+  useEffect(() => (enabled ? unlockAudioOnFirstGesture() : undefined), [enabled]);
 
   useEffect(() => {
     const onVisible = () => {
@@ -130,10 +176,12 @@ export function SupportLiveProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const waiting = live.total;
+  const urgentCount = enabled ? urgent.size : 0;
+  const firstUrgent = useMemo(() => (enabled ? oldestUrgent(urgent) : null), [enabled, urgent]);
 
   const value = useMemo<SupportLiveValue>(
-    () => ({ enabled, waiting: enabled ? waiting : 0, unseen, soundOn, setSoundOn, setViewing, applyThread }),
-    [enabled, waiting, unseen, soundOn, setSoundOn, setViewing, applyThread],
+    () => ({ enabled, waiting: enabled ? waiting : 0, unseen, soundOn, setSoundOn, setViewing, applyThread, urgentCount, firstUrgent }),
+    [enabled, waiting, unseen, soundOn, setSoundOn, setViewing, applyThread, urgentCount, firstUrgent],
   );
 
   return <SupportLiveContext.Provider value={value}>{children}</SupportLiveContext.Provider>;

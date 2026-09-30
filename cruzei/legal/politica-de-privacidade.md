@@ -7,7 +7,9 @@ Esta Política explica quais dados pessoais o Metch trata, para quê, com quem c
 
 - Ninguém vê sua posição exata nem sua distância exata. Nem outras pessoas, nem os serviços que usamos.
 - Sua posição exata fica no servidor por no máximo 2 horas depois da última atualização. O histórico que guardamos é arredondado (cerca de 110 metros) e é apagado em poucos dias.
-- Não vendemos dados. O app não usa ferramentas de publicidade nem de análise de uso (analytics).
+- Não vendemos dados. O app não usa ferramentas de publicidade nem de análise de uso (analytics) de outras empresas. Medimos o uso do app com uma ferramenta própria, sem localização, e apagamos esses dados em 13 meses (seção 2.15).
+- Mensagens, nomes, bios e @ passam por um filtro automático contra ofensas, ameaças e golpes, que roda no nosso próprio servidor (seção 2.16).
+- O botão 🆘 Emergência pausa seu perfil, bloqueia a pessoa, denuncia e chama o suporte. Ele nunca envia sua localização (seção 2.17).
 - Toda foto nova passa por análise automática da Amazon Web Services (AWS), nos Estados Unidos, e, quando necessário, por revisão humana antes de aparecer.
 - Informar orientação sexual é opcional. Ela só aparece no seu perfil se você escolher mostrar, e você apaga quando quiser no próprio app.
 - Sua última atividade nunca aparece com horário: no máximo "online agora" ou "ativo há pouco", e só para quem está descobrindo você ou deu match com você.
@@ -27,7 +29,7 @@ Esta Política vale para o app Metch e para os serviços ligados a ele.
 
 ### 2.1 Cadastro e conta
 
-- **Dados:** número de celular, nome, data de nascimento, gênero, quem você quer ver no app ("Mostrar": Mulheres, Homens ou Todos), o que você procura no app (intenção) e a versão e a data em que você aceitou os Termos e esta Política.
+- **Dados:** número de celular, nome, data de nascimento, gênero (Mulher, Homem ou Outro), quem você quer ver no app ("Mostrar": Mulheres, Homens ou Todos), o que você procura no app (intenção) e a versão e a data em que você aceitou os Termos e esta Política.
 - **Para quê:** criar e proteger sua conta; confirmar que o número é seu com um código por SMS; garantir que só maiores de 18 anos usem o app; montar seu avatar inicial; aplicar a opção "Mostrar", que decide quem você vê e quem vê você (usamos o gênero para isso, veja a seção 3.3); mostrar sua idade e sua intenção no perfil; comprovar o seu aceite.
 - **Base legal:** execução do contrato (art. 7º, V), legítimo interesse na segurança da plataforma (art. 7º, IX) e exercício regular de direitos, para comprovar o aceite (art. 7º, VI).
 - Seu número de telefone nunca aparece para outras pessoas do app.
@@ -47,7 +49,7 @@ Esta Política vale para o app Metch e para os serviços ligados a ele.
 
 ### 2.3 Perfil
 
-- **Dados:** fotos, bio, interesses, avatar, intenção, o @ do Instagram (se você informar) e suas configurações de privacidade (modo anônimo, pausa, modo de descoberta, "Mostrar", mostrar idade, mostrar distância, mostrar foto no mapa, mostrar orientação, mesma orientação primeiro e áreas privadas).
+- **Dados:** fotos, bio, interesses, avatar, intenção, o @ do Instagram (se você informar) e suas configurações de privacidade (modo anônimo, pausa, modo de descoberta, "Mostrar", faixa de idade de quem aparece para você, mostrar idade, mostrar distância, mostrar foto no mapa, mostrar orientação, mesma orientação primeiro e áreas privadas).
 - **Para quê:** mostrar você para outras pessoas e respeitar suas escolhas de privacidade.
 - **Base legal:** execução do contrato (art. 7º, V).
 
@@ -76,10 +78,12 @@ Explicamos em detalhe na seção 3.
 
 ### 2.5 Interações
 
-- **Dados:** curtidas e supercurtidas, perfis que você dispensa, conversas (quem começou, se estão na Principal ou em Solicitações e desde quando, quantas mensagens você ainda não leu e se você arquivou ou silenciou), mensagens (texto, data, hora, confirmação de leitura e avisos do próprio app, como "Vocês se curtiram"), acenos e bloqueios (com o motivo, se você informar).
+- **Dados:** curtidas e supercurtidas (e quantas super curtidas você usou em cada dia), perfis que você dispensa ("Passar"), conversas (quem começou, se estão na Principal ou em Solicitações e desde quando, quantas mensagens você ainda não leu e se você arquivou ou silenciou), mensagens (texto, data, hora, confirmação de leitura e avisos do próprio app, como "Vocês se curtiram"), acenos e bloqueios (com o motivo, se você informar).
 - **Para quê:** fazer o app funcionar, separar as conversas entre Principal e Solicitações e limitar abusos, como o número de curtidas e de conversas novas por dia e de mensagens por minuto.
 - **Base legal:** execução do contrato (art. 7º, V) e legítimo interesse na segurança (art. 7º, IX).
 - A pessoa que você curtiu pode ficar sabendo da curtida. Quem não tem um plano que mostra quem curtiu recebe só "Alguém curtiu você", sem seu nome.
+- **A super curtida é a exceção:** ela mostra quem mandou (nome e foto) e coloca você em destaque no começo das curtidas da pessoa, qualquer que seja o plano dela e mesmo que vocês estejam longe. Nesse caso, ela não vê faixa de proximidade nem posição sua. Quem está no modo anônimo ou em análise da moderação não é revelado. O limite é de 1 super curtida por dia no plano gratuito e 7 no Premium e no Premium+ (o dia vira à meia-noite, no horário de Brasília); para isso guardamos quantas você usou em cada dia.
+- **Passar:** guardamos quem você dispensou e quando, para essa pessoa não voltar nas suas curtidas por 30 dias. Depois disso, o registro é apagado. O botão "Voltar" apaga na hora o último "Passar". Dispensar alguém não tira a pessoa do mapa.
 - **Comemoração do match:** quando alguém que você curtiu curte você de volta, o app comemora com as duas pessoas. Se você não estava com o app aberto, guardamos um aviso pendente (quem deu match com você e quando) para mostrar a comemoração quando você abrir o app, e registramos quando ela foi vista.
 - Quem consegue ver seu perfil pode mandar mensagem para você. A conversa chega nas suas Solicitações, com o nome e a foto principal (ou o avatar) de quem mandou e o começo da mensagem. Ela passa para a Principal quando você responde, quando você a move para lá ou quando vocês se curtem.
 - Enquanto a conversa está nas suas Solicitações, quem mandou não vê a confirmação de leitura.
@@ -87,8 +91,8 @@ Explicamos em detalhe na seção 3.
 
 ### 2.6 Denúncias e moderação
 
-- **Dados:** denúncias que você faz ou recebe (motivo, descrição, de onde a denúncia saiu e a conversa ou foto citada), resultado da análise das fotos, alertas automáticos (como suspeita de localização falsa, seção 3.6, sempre sem coordenadas), decisões de moderação (advertência, suspensão, banimento, motivo e prazo) e a situação da conta.
-- **Leitura de conversa denunciada:** quando alguém denuncia a partir de uma conversa, inclusive em Solicitações, a equipe de moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
+- **Dados:** denúncias que você faz ou recebe (motivo, descrição, de onde a denúncia saiu e a conversa ou foto citada), resultado da análise das fotos, alertas automáticos (como suspeita de localização falsa, seção 3.6, sempre sem coordenadas, e denúncias automáticas de possível golpe, seção 2.16), denúncias do botão de emergência (seção 2.17), decisões de moderação (advertência, suspensão, banimento, motivo e prazo) e a situação da conta.
+- **Leitura de conversa denunciada:** quando alguém denuncia a partir de uma conversa, inclusive em Solicitações, a equipe de moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia. O mesmo vale para a denúncia automática de possível golpe (seção 2.16) e para a denúncia do botão de emergência usado no chat (seção 2.17).
 - **Para quê:** proteger as pessoas, fazer valer os Termos, prevenir fraudes, proteger crianças e adolescentes, cumprir a lei e nos defender em processos.
 - **Base legal:** legítimo interesse na segurança dos usuários (art. 7º, IX), execução do contrato para fazer valer os Termos (art. 7º, V), cumprimento de obrigação legal (art. 7º, II), exercício regular de direitos (art. 7º, VI) e, em emergências, proteção da vida ou da integridade física (art. 7º, VII).
 - O acesso da equipe de moderação é restrito. Os moderadores veem seu telefone mascarado, não o número completo.
@@ -122,7 +126,7 @@ Explicamos na seção 4.
 
 ### 2.11 Atendimento
 
-- Se você falar com a gente por e-mail, tratamos seu endereço de e-mail e o conteúdo da conversa para responder e comprovar o atendimento.
+- Se você falar com a gente pelo chat de suporte do app ou por e-mail, tratamos as mensagens (e, no e-mail, o seu endereço) para responder e comprovar o atendimento. No chat de suporte, a equipe pode deixar notas internas, que só ela vê.
 - **Base legal:** execução do contrato (art. 7º, V), legítimo interesse (art. 7º, IX) e exercício regular de direitos (art. 7º, VI).
 
 ### 2.12 O que não coletamos
@@ -139,7 +143,7 @@ Explicamos na seção 4.
 - **Para quê:** avisar você de mensagens novas, curtidas, matches, respostas do suporte e avisos da conta (como o fim do Premium ou do modo anônimo), além de eventos e novidades que você escolheu receber.
 - **Como é entregue:** usamos o Firebase Cloud Messaging, serviço do Google, que entrega no Android e, no iPhone, pelo serviço de notificações da Apple. Esses serviços recebem o token e o conteúdo da notificação: o título e o texto, como o nome de quem mandou a mensagem ou deu match e, se "Mostrar o texto da mensagem" estiver ligado (vem ligado), o começo da mensagem.
 - **Tela bloqueada:** no Android, se o aparelho tem bloqueio de tela (senha, PIN, padrão ou biometria), as notificações de mensagem não aparecem na tela bloqueada, nem o nome de quem mandou nem o texto: elas aparecem quando você desbloqueia. Nas notificações de match e de curtida com nome, o nome aparece na tela bloqueada, a não ser que você tenha escolhido esconder o conteúdo sensível das notificações nas configurações do aparelho. No iPhone, o que aparece na tela bloqueada segue o ajuste de pré-visualização de notificações do aparelho.
-- **Curtidas:** se o seu plano não mostra quem curtiu você, o aviso diz só "Alguém curtiu você 💚", sem nome. Nunca mostramos no aviso o nome de quem está no modo anônimo. Curtida de quem está em análise da moderação não gera aviso.
+- **Curtidas:** se o seu plano não mostra quem curtiu você, o aviso diz só "Alguém curtiu você 💚", sem nome. A super curtida é a exceção: o aviso traz o nome de quem mandou (seção 2.5). Nunca mostramos no aviso o nome de quem está no modo anônimo. Curtida de quem está em análise da moderação não gera aviso.
 - **Limites contra excesso:** no máximo um aviso por conversa a cada minuto; curtidas agrupadas em no máximo um aviso a cada 15 minutos, com as que chegaram nesse intervalo somadas num aviso só no fim dele, sem nomes (a super curtida avisa na hora); e até 30 avisos de mensagens e curtidas por hora. O aviso de match sempre chega.
 - Com o app aberto, esses avisos não aparecem, porque a tela já se atualiza sozinha.
 - Não mandamos aviso de mensagens de pessoas bloqueadas, de conversas silenciadas, de mensagens guardadas enquanto você está no modo anônimo sem Premium, nem de contas em análise da moderação.
@@ -159,6 +163,33 @@ As operadoras reaproveitam números de celular que ficam sem uso. Para proteger 
 - **O que guardamos da liberação:** o número, o motivo ("não é minha", data de nascimento errada, conta excluída ou liberação feita pela equipe), a situação da conta, quando ela foi usada pela última vez, a data e a hora, o endereço IP, a porta e a identificação do app de quem liberou, qual conta foi criada depois com o número e, se a liberação foi feita pela equipe, qual pessoa da equipe fez.
 - **Para quê:** impedir que alguém entre na conta de outra pessoa por causa de um número reaproveitado, permitir que o dono recupere a conta e evitar que uma conta banida volte por esse caminho.
 - **Base legal:** legítimo interesse na segurança das contas e na prevenção a fraudes (art. 7º, IX) e exercício regular de direitos (art. 7º, VI).
+
+### 2.15 Métricas de uso (ferramenta própria)
+
+- **Dados:** um identificador aleatório da instalação do app, criado pelo próprio app e guardado no seu aparelho (não é o identificador do aparelho nem o de publicidade), e uma lista fechada de eventos: a abertura do app (no máximo uma por dia), cada etapa do cadastro que você viu e concluiu, a criação da conta e se você concluiu ou pulou o tour do mapa. Junto vão a data e a hora, o sistema (Android ou iOS), a versão do app e, no tour, quanto tempo ele levou e em que passo parou.
+- Antes de você criar a conta, os eventos ficam ligados só ao identificador da instalação. Quando você cria a conta ou entra nela nesse aparelho, os eventos daquela instalação passam a ficar ligados à sua conta.
+- **Não incluem** localização, telefone, nome, fotos, conteúdo de conversas nem o que você digita.
+- **Para quê:** saber em que etapa do cadastro as pessoas desistem, quantas voltam ao app 1, 7 e 30 dias depois do cadastro e quantas usam o app por dia e por semana, para melhorar o app. Para contar quem volta e quem usa, também usamos a data e a hora dos registros de acesso (seção 2.10), sem o endereço IP.
+- Os números aparecem só somados, num painel interno restrito à administração. Tudo fica no nosso servidor: não enviamos esses dados a nenhuma outra empresa.
+- **Por quanto tempo:** 13 meses. Depois, os eventos são apagados automaticamente.
+- **Base legal:** legítimo interesse em entender e melhorar o app (art. 7º, IX). Você pode se opor pelo {{EMAIL_PRIVACIDADE}}.
+
+### 2.16 Filtro automático de abuso
+
+- Um filtro automático confere o texto das mensagens, do nome, da bio e do @ do Instagram. Ele roda no nosso próprio servidor e não envia nada a outras empresas.
+- Ele procura discurso de ódio, ameaça, conteúdo sexual envolvendo menores, palavrão e ofensa, conteúdo sexual explícito e golpes, e reconhece variações de escrita, como acentos, números no lugar de letras e letras repetidas ou separadas.
+- **Nome, bio e @:** se o texto for barrado, ele não é salvo e o app diz o que ajustar.
+- **Mensagens:** discurso de ódio, ameaça e conteúdo sexual envolvendo menores são bloqueados. A mensagem bloqueada não chega à outra pessoa e não é guardada. Palavrão comum entre adultos é permitido.
+- **Possível golpe numa mensagem** (como pedir Pix ou dinheiro, ou mandar link encurtado): a mensagem é entregue normalmente, mas criamos uma denúncia automática para a moderação, contra quem mandou, com o trecho que chamou a atenção e a indicação da conversa e da mensagem. A moderação pode ler aquela conversa (seção 2.6). Uma pessoa da equipe analisa; não há punição automática por isso.
+- **Base legal:** legítimo interesse na segurança dos usuários e na prevenção a fraudes (art. 7º, IX) e execução do contrato, para fazer valer os Termos (art. 7º, V).
+- O filtro pode errar. Você pode pedir revisão por uma pessoa (art. 20 da LGPD) pelo {{EMAIL_SUPORTE}}.
+
+### 2.17 Botão de emergência
+
+- O botão **🆘 Emergência** fica no menu do chat, no perfil de outra pessoa e em Ajuda e segurança. Depois da sua confirmação, ele pausa seu perfil por 7 dias (se já houver uma pausa mais longa, ela continua), bloqueia a pessoa envolvida, se houver, cria uma denúncia de segurança contra ela, com prioridade máxima na moderação e citando a conversa quando o botão é usado no chat, e abre um atendimento urgente no chat de suporte, com uma mensagem automática sua e a resposta do sistema.
+- A equipe recebe um alerta e vê também uma nota interna com o nome da outra pessoa, a conversa, a denúncia e o bloqueio. Essa nota não aparece para você nem para a outra pessoa, e a outra pessoa não é avisada.
+- **Não enviamos sua localização** a ninguém, nem à equipe. O botão não chama a polícia: o atalho "Ligar 190" só abre o discador do seu aparelho.
+- **Base legal:** proteção da vida ou da integridade física (art. 7º, VII) e legítimo interesse na segurança dos usuários (art. 7º, IX).
 
 ## 3. Localização em detalhe
 
@@ -192,14 +223,15 @@ Só quem está a até 350 metros de você (calculado no servidor) e também pode
 
 **Boost:** enquanto seu Boost está ativo, você aparece primeiro no mapa, na lista e nas curtidas de quem está perto e, além disso, também para quem está **a até 5 km** de você. Para quem está a mais de 350 metros, no lugar da faixa de proximidade aparece "em destaque na região", e seu marcador fica sempre numa posição aproximada (o centro da área em que você está), nunca na posição exata. Todas as outras regras continuam valendo com o Boost: bloqueio, pausa, modo anônimo, "Mostrar", modo de descoberta, áreas privadas e residência. O Boost não deixa ninguém ver você com mais precisão e não deixa você ver pessoas mais longe.
 
-**Ordem em que as pessoas aparecem:** primeiro quem está com Boost; depois, se você ligou "Mesma orientação primeiro", quem mostra no perfil a mesma orientação que a sua; depois a proximidade. Num lugar muito cheio, o app mostra uma parte das pessoas de cada vez, num sorteio que é diferente para cada pessoa que olha e muda a cada 10 minutos, para que todo mundo que está ali tenha sua vez de aparecer.
+**Ordem em que as pessoas aparecem:** primeiro quem está com Boost; depois, se você ligou "Mesma orientação primeiro", quem mostra no perfil a mesma orientação que a sua; depois a proximidade. Nas curtidas, antes de todos vêm as super curtidas que você recebeu e ainda não respondeu (por até 30 dias), mesmo de quem está longe; quem está a mais de 350 metros aparece sem faixa de proximidade e sem posição. Num lugar muito cheio, o app mostra uma parte das pessoas de cada vez, num sorteio que é diferente para cada pessoa que olha e muda a cada 10 minutos, para que todo mundo que está ali tenha sua vez de aparecer.
 
 Outras proteções:
 
 - **Área com pouca gente:** se na sua região (área de cerca de 1,2 km por 0,6 km) houver menos de 2 pessoas visíveis, ninguém aparece com identidade nem marcador. O app mostra só "+N por perto".
 - **Quem está no lugar:** os nomes de quem está num lugar só aparecem se houver pelo menos 2 pessoas ali e se quem consulta estiver a até 350 metros.
 - **Reciprocidade:** a descoberta respeita as escolhas dos dois lados. "Ninguém" esconde você e também esconde os outros de você. "Interesses compatíveis" exige pelo menos um interesse em comum.
-- **"Mostrar" (Mulheres, Homens ou Todos) também vale para os dois lados:** você só aparece para quem quer ver pessoas do seu gênero, e só vê quem quer ver pessoas do seu. Pessoas não binárias ou de outro gênero aparecem só para quem escolheu "Todos". Vale no mapa, na lista e nas curtidas. Quem já tinha conta começa com "Todos". Como vale para os dois lados, quem testar o app com contas de gêneros diferentes pode perceber, pelo que aparece ou não, qual opção você escolheu.
+- **"Mostrar" (Mulheres, Homens ou Todos) também vale para os dois lados:** você só aparece para quem quer ver pessoas do seu gênero, e só vê quem quer ver pessoas do seu. Quem escolheu "Outro" como gênero aparece só para quem escolheu "Todos". Vale no mapa, na lista e nas curtidas. Quem já tinha conta começa com "Todos". Como vale para os dois lados, quem testar o app com contas de gêneros diferentes pode perceber, pelo que aparece ou não, qual opção você escolheu.
+- **Faixa de idade:** você escolhe de que idade a que idade quer ver pessoas (de 18 a "80+", com pelo menos 4 anos entre as duas), no mapa, na lista e nas curtidas. Vale só para o que você vê: não muda quem vê você. Dá para mudar a faixa até 5 vezes por dia. Quem escondeu a idade não é filtrado pela idade exata, e sim por um bloco de 5 anos (18 a 22, 23 a 27, 28 a 32 e assim por diante), calculado no servidor a partir da data de nascimento: a pessoa aparece se o bloco dela encostar na faixa escolhida. A idade exata e a data de nascimento não aparecem para ninguém.
 - **Você some** da descoberta quando está no modo anônimo, com o perfil pausado, com a descoberta em "Ninguém", dentro de uma área privada ou da residência, ou enquanto o app não consegue confirmar sua localização (seção 3.6). Quem você bloqueou, ou quem bloqueou você, não vê você.
 - **Limites contra rastreamento:** limitamos quantas vezes cada pessoa pode consultar quem está por perto e a frequência das atualizações de posição.
 - **Contexto do match:** quando dá match, o app pode mostrar aos dois uma frase como "Vocês se cruzaram no [lugar]" ou "Vocês estiveram perto hoje", calculada a partir do histórico arredondado das últimas horas. Nunca mostra metros.
@@ -209,6 +241,7 @@ O que ainda é possível saber, para você decidir com clareza:
 - Quem está fisicamente a até 350 metros de você consegue saber em qual área de cerca de 150 metros você está. É assim que a descoberta funciona.
 - Com o Boost ativo, quem está a até 5 km também consegue saber em qual área aproximada você está.
 - Quem usar contas de gêneros diferentes consegue deduzir o que você escolheu em "Mostrar" (Mulheres, Homens ou Todos), porque essa opção vale para os dois lados.
+- Mesmo com a idade escondida, quem mudar a própria faixa de idade e observar quando você some pode deduzir o seu bloco de 5 anos (por exemplo, "entre 23 e 27"), mas não a sua idade exata. O limite de 5 mudanças por dia deixa isso mais lento.
 - Se você está num lugar público com outras pessoas, quem está por perto pode ver o nome desse lugar.
 - O app leva 3 noites para aprender sua residência. Até lá, cadastre sua casa como área privada no Perfil.
 
@@ -309,7 +342,9 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 - **Sinal de multidão:** 4 dias.
 - **Referência contra localização falsa:** até 12 horas. Contagem de ocorrências: 24 horas. Alertas enviados à moderação: como os registros de moderação.
 - **Pedidos e confirmações de lugares:** até 14 dias. Avisos de "não é lugar público": cerca de 3 dias. Denúncias de lugares: 30 dias.
-- **Curtidas, dispensas, conversas e bloqueios:** enquanto a conta existir.
+- **Curtidas, conversas e bloqueios:** enquanto a conta existir.
+- **Dispensas ("Passar"):** 30 dias. Depois, são apagadas.
+- **Quantas super curtidas você usou em cada dia:** 7 dias.
 - **Mensagens:** enquanto a conta existir. As conversas não expiram. Quando uma conversa é arquivada, por exemplo por um bloqueio, as mensagens não são apagadas.
 - **Acenos:** 24 horas.
 - **Comemorações de match** (quem, quando e se já foi vista): enquanto a conta existir.
@@ -323,6 +358,9 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 - **Planos pagos:** enquanto a conta existir e, depois, pelo prazo exigido pelas leis fiscal e de defesa do consumidor.
 - **Contadores de uso contra abuso:** até 24 horas. Os que evitam avisos repetidos de curtida e de match: até 7 dias. A contagem de erros da data de nascimento de uma conta parada (seção 2.14): até a data certa ser confirmada ou o número ser liberado.
 - **Relatórios de falha (Sentry):** até 90 dias.
+- **Métricas de uso (seção 2.15):** 13 meses.
+- **Mensagens barradas pelo filtro de abuso (seção 2.16):** não são guardadas. O trecho citado numa denúncia automática de possível golpe fica como os demais registros de moderação.
+- **Atendimentos pelo chat de suporte do app** (mensagens, notas internas e a marca de urgente do botão de emergência): enquanto a conta existir.
 - **Cópias temporárias do perfil (cache):** até 1 hora.
 - **Resultados de busca de lugares** (sem ligação com você): até 6 horas.
 - **E-mails de atendimento:** pelo tempo necessário para atender e comprovar o atendimento.
@@ -342,6 +380,7 @@ Algumas das medidas que usamos:
 - Conta suspensa ou banida perde o acesso na hora.
 - Conta sem uso há 90 dias ou mais não abre só com o código do SMS: é preciso confirmar a data de nascimento (seção 2.14). Quando o número é liberado, todas as sessões da conta antiga são encerradas.
 - Proteção contra localização falsa (seção 3.6).
+- Filtro automático de abuso em mensagens, nomes, bios e @ (seção 2.16).
 
 Nenhum sistema é totalmente seguro. Se acontecer um incidente de segurança que possa causar risco ou dano relevante a você, avisaremos você e a ANPD, como manda a LGPD (art. 48).
 
@@ -366,8 +405,8 @@ Pela LGPD (art. 18), você pode pedir:
 - Respondemos em até 15 dias, sem custo.
 - **Excluir a conta:** por enquanto, a exclusão é feita por esse e-mail. O app ainda não faz a exclusão automática. Ao excluir a conta, você exerce também o direito previsto no Marco Civil da Internet (art. 7º, X), com as exceções de guarda obrigatória da seção 7.
 - **Cópia dos dados:** também é pedida por esse e-mail. Enviamos em formato eletrônico.
-- Você corrige a maior parte dos dados no próprio app: nome, bio, fotos, interesses, intenção, avatar, orientação sexual (inclusive apagar) e @ do Instagram. Para corrigir data de nascimento ou gênero, use o e-mail.
-- No app, você também controla o modo anônimo, a pausa, o modo de descoberta, "Mostrar", as áreas privadas, o que aparece no perfil (inclusive a orientação), "Mesma orientação primeiro", as notificações e os bloqueios.
+- Você corrige a maior parte dos dados no próprio app: nome, bio, fotos, interesses, intenção, avatar, gênero, orientação sexual (inclusive apagar) e @ do Instagram. Para corrigir a data de nascimento, use o e-mail.
+- No app, você também controla o modo anônimo, a pausa, o modo de descoberta, "Mostrar", a faixa de idade, as áreas privadas, o que aparece no perfil (inclusive a orientação), "Mesma orientação primeiro", as notificações e os bloqueios.
 
 Se não ficar satisfeito com a nossa resposta, você pode reclamar à Autoridade Nacional de Proteção de Dados (ANPD).
 
@@ -380,11 +419,11 @@ Se não ficar satisfeito com a nossa resposta, você pode reclamar à Autoridade
 
 ## 11. Cookies, rastreadores e publicidade
 
-- O app não usa ferramentas (SDKs) de publicidade nem de análise de uso (analytics).
+- O app não usa ferramentas (SDKs) de publicidade nem de análise de uso (analytics) de outras empresas. As métricas de uso da seção 2.15 são feitas com ferramenta própria e ficam no nosso servidor.
 - Não usamos o identificador de publicidade do aparelho e não rastreamos você em outros apps ou sites.
 - Não usamos cookies de rastreamento.
 - Os componentes de terceiros que se comunicam diretamente com o próprio fornecedor são o download das partes do mapa (OpenFreeMap) e do relevo (Amazon Web Services), descrito na seção 3.5, o diagnóstico de falhas do Sentry, descrito na seção 2.10, e o recebimento de notificações push (Google e Apple), descrito na seção 2.13. O Sentry não é ferramenta de publicidade nem de análise de uso: recebe só dados técnicos para corrigir falhas.
-- No seu aparelho, o app guarda as credenciais da sessão no armazenamento seguro do sistema.
+- No seu aparelho, o app guarda no armazenamento seguro do sistema as credenciais da sessão, o identificador aleatório da instalação usado nas métricas (seção 2.15) e pequenas marcas de uso, como se você já viu o tour do mapa.
 
 ## 12. Mudanças nesta Política
 

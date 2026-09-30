@@ -1,6 +1,13 @@
-import { MATCH_EVENTS, type LikeResult, type MatchCelebration } from '@cruzei/shared-types';
+import {
+  MATCH_EVENTS,
+  type LikeResult,
+  type MatchCelebration,
+  type PremiumTier,
+  type SuperLikeQuota,
+} from '@cruzei/shared-types';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -23,6 +30,16 @@ import {
   toMatchCelebration,
   upsertCelebration,
 } from './match-celebrations';
+import { PASS_UNDO_WINDOW_MIN } from './passes';
+import {
+  readSuperLikeQuota,
+  spendSuperLike,
+  superLikeDay,
+  superLikeLimit,
+  superLikeLimitError,
+  superLikesUsed,
+  superLikeTier,
+} from './super-like-quota';
 
 const DAILY_LIKE_LIMIT = 200;
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
@@ -33,6 +50,13 @@ const likeLockedError = () =>
   new ForbiddenException({
     error: 'anonymous_requires_premium',
     message: 'No modo invisível, curtir é do Premium. Fica visível pra curtir.',
+  });
+
+/** "Voltar" fora da regra (não é o último passar ou já passou do prazo) */
+const passUndoError = () =>
+  new ConflictException({
+    error: 'pass_undo_unavailable',
+    message: `Esse não dá mais pra voltar: o Voltar desfaz só o último passar, até ${PASS_UNDO_WINDOW_MIN} minutos depois.`,
   });
 
 /** Block entre os dois, em qualquer sentido */
@@ -47,6 +71,8 @@ const pairBlocked = (a: string, b: string) => ({
 type LikeTxOut =
   | { blocked: true }
   | { blocked: false; locked: true }
+  /** super curtida sem cota no dia (nada gravado); o plano efetivo decide a mensagem */
+  | { blocked: false; superLimit: PremiumTier }
   | {
       blocked: false;
       likeId: bigint;
@@ -60,6 +86,8 @@ type LikeTxOut =
       likerOnHold?: boolean;
       /** match fechado agora: comemoração pra quem curtiu primeiro (null = já comemorado há pouco ou em análise) */
       celebration?: MatchCelebration | null;
+      /** super curtida gravada agora: quantas ainda restam hoje */
+      superRemaining?: number;
     };
 
 // Curtidas: uma linha por direção (tabela likes). Não existe estado "match": mútuo = as duas linhas existem, e o
@@ -78,8 +106,11 @@ export class LikesService {
 
   async like(likerId: string, likedId: string, isSuper = false): Promise<LikeResult> {
     if (likerId === likedId) throw new BadRequestException('Não dá pra curtir você mesmo');
+    // um relógio só pra toda a curtida: o dia de São Paulo da cota não muda no meio do caminho
+    const now = new Date();
+    const day = superLikeDay(now);
     // quem curte, antes de tudo (nem o toque repetido passa, nem gasta cota)
-    await this.assertCanLike(this.prisma, likerId);
+    const likerPlan = await this.assertCanLike(this.prisma, likerId);
 
     const target = await this.prisma.user.findUnique({
       where: { id: likedId },
@@ -119,6 +150,13 @@ export class LikesService {
     });
     if (existing) return this.currentState(likerId, likedId, existing.id);
 
+    // super curtida sem cota hoje: recusa antes de gastar o limite anti-abuso (quem vale é o gasto atômico lá dentro)
+    if (isSuper) {
+      const tier = superLikeTier(likerPlan, now);
+      const usedToday = await superLikesUsed(this.prisma, likerId, day);
+      if (usedToday >= superLikeLimit(tier)) throw superLikeLimitError(tier, now);
+    }
+
     // rate limit diário (só curtida nova conta)
     const used = await this.redis.incrRate(likerId, 'like', 86_400);
     if (used > DAILY_LIKE_LIMIT) {
@@ -157,6 +195,17 @@ export class LikesService {
           events: [] as InboxEvent[],
         };
 
+      // super curtida: gasta a cota do dia AQUI, junto da curtida (se a transação não gravar, o gasto volta junto).
+      // Plano pela linha fresca: o Premium pode ter vencido no meio do caminho
+      let superRemaining: number | undefined;
+      if (isSuper) {
+        const tier = superLikeTier(liker, now);
+        const limit = superLikeLimit(tier);
+        const usedNow = await spendSuperLike(tx, likerId, day, limit);
+        if (usedNow == null) return { blocked: false, superLimit: tier };
+        superRemaining = Math.max(0, limit - usedNow);
+      }
+
       const like = await tx.like.create({
         data: { likerId, likedId, isSuper },
         select: { id: true },
@@ -175,6 +224,7 @@ export class LikesService {
           events: [] as InboxEvent[],
           likerHidden,
           likerOnHold,
+          superRemaining,
         };
       // virou mútua agora: promove a conversa do par (se existir) + "Vocês se curtiram…", tudo nesta transação
       const promoted = await this.inbox.onMutualLike(tx, likerId, likedId);
@@ -192,6 +242,7 @@ export class LikesService {
         likerHidden,
         likerOnHold,
         celebration,
+        superRemaining,
       };
     }, TX_OPTIONS);
 
@@ -204,6 +255,11 @@ export class LikesService {
       await this.refundQuota(likerId);
       throw likeLockedError();
     }
+    if ('superLimit' in out) {
+      // acabou a super curtida do dia (corrida com outra requisição): nada gravado; o limite anti-abuso volta
+      await this.refundQuota(likerId);
+      throw superLikeLimitError(out.superLimit, now);
+    }
     if (!out.fresh) {
       // a outra requisição (toque duplo) gravou enquanto esta esperava a trava: devolve a cota e o estado atual
       await this.refundQuota(likerId);
@@ -212,10 +268,10 @@ export class LikesService {
 
     // depois do commit: eventos da conversa promovida, depois o aviso da curtida.
     // Quem curtiu só vai no evento se o destinatário pode saber: Premium+ vigente ("já te curtiu", a mesma regra do
-    // cartão e do mapa) e quem curtiu visível e fora de análise, ou curtida mútua (MUTUAL aparece pra todos). Pros
-    // demais é só o sinal, sem identidade.
+    // cartão e do mapa) ou SUPER curtida (a super revela quem mandou pra todo mundo), sempre com quem curtiu visível e
+    // fora de análise; ou curtida mútua (MUTUAL aparece pra todos). Pros demais é só o sinal, sem identidade.
     this.inbox.flush(out.events);
-    const revealLiker = seesLikesReceived(target) && !out.likerHidden;
+    const revealLiker = (isSuper || seesLikesReceived(target)) && !out.likerHidden;
     const reveal = out.mutual || revealLiker;
     // quem curtiu está em análise: a curtida fica guardada, sem aviso nenhum (nem ao vivo nem push). Se a análise
     // terminar sem punição, segue a vida — igual à comemoração do match (que já vem null em análise)
@@ -236,10 +292,10 @@ export class LikesService {
     } else if (!out.likerOnHold) {
       void this.social?.like({ to: likedId, likerId, isSuper, reveal: revealLiker });
     }
-    // stats do perfil (likesReceived; na mútua, os pares mútuos dos dois)
+    // stats do perfil (likesReceived; na mútua, os pares mútuos dos dois; na super, as que me restam hoje)
     await Promise.all([
       this.redis.invalidateProfile(likedId),
-      ...(out.mutual ? [this.redis.invalidateProfile(likerId)] : []),
+      ...(out.mutual || isSuper ? [this.redis.invalidateProfile(likerId)] : []),
     ]);
 
     return {
@@ -248,7 +304,18 @@ export class LikesService {
       isMutual: out.mutual,
       promotedConversationIds: out.promotedConversationIds,
       remainingToday: Math.max(0, DAILY_LIKE_LIMIT - used),
+      ...(out.superRemaining !== undefined ? { superLikesRemainingToday: out.superRemaining } : {}),
     };
+  }
+
+  /** GET /likes/super/quota: super curtidas de hoje pelo plano efetivo (dia de São Paulo) */
+  async superQuota(userId: string): Promise<SuperLikeQuota> {
+    const plan = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { premiumTier: true, premiumExpiresAt: true },
+    });
+    if (!plan) throw new NotFoundException('Usuário não encontrado');
+    return readSuperLikeQuota(this.prisma, userId, plan);
   }
 
   /**
@@ -276,28 +343,54 @@ export class LikesService {
     if (count > 0) await this.redis.invalidateProfile(likedId); // stats.likesReceived
   }
 
-  async pass(userId: string, targetId: string) {
-    // pass = like reverso registrado como skipped (não armazenamos, só audit)
-    await this.prisma.auditLog.create({
-      data: {
-        userId,
-        action: 'pass',
-        metadata: { target_id: targetId } as never,
-      },
-    });
-    return { ok: true };
+  /**
+   * POST /passes: quem eu passei some do MEU deck por DISCOVERY_PASS_DAYS (tabela passes; o mapa continua mostrando).
+   * Idempotente: passar de novo renova o prazo. Id que não existe não grava nada e responde igual (não confirma se
+   * alguém existe). Não vai mais pro audit_log.
+   */
+  async pass(userId: string, targetId: string): Promise<void> {
+    if (userId === targetId) throw new BadRequestException('Não dá pra passar você mesmo');
+    await this.prisma.$executeRaw`
+      INSERT INTO passes (user_id, target_id)
+      SELECT ${userId}::uuid, u.id FROM users u WHERE u.id = ${targetId}::uuid
+      ON CONFLICT (user_id, target_id) DO UPDATE SET created_at = now()`;
   }
 
-  /** devolve a curtida contada no limite diário (a curtida não foi gravada por esta requisição) */
-  /** invisível sem Premium não curte ninguém (curtida e super curtida) */
-  private async assertCanLike(db: Pick<PrismaService, 'user'>, likerId: string): Promise<void> {
+  /**
+   * DELETE /passes/:userId: o "Voltar" do deck desfaz ESSE passar, só se for o MEU passar mais recente e de até
+   * PASS_UNDO_WINDOW_MIN minutos (uma instrução só: sem corrida com outro passar). Sem passar gravado: nada a fazer
+   * (idempotente, o app pode repetir). Passar velho ou que não é o último: 409.
+   */
+  async unpass(userId: string, targetId: string): Promise<void> {
+    const n = await this.prisma.$executeRaw`
+      DELETE FROM passes p
+       WHERE p.user_id = ${userId}::uuid AND p.target_id = ${targetId}::uuid
+         AND p.created_at > now() - make_interval(mins => ${PASS_UNDO_WINDOW_MIN}::int)
+         AND NOT EXISTS (
+           SELECT 1 FROM passes q WHERE q.user_id = p.user_id AND q.created_at > p.created_at
+         )`;
+    if (n > 0) return;
+    const still = await this.prisma.pass.findUnique({
+      where: { userId_targetId: { userId, targetId } },
+      select: { createdAt: true },
+    });
+    if (still) throw passUndoError();
+  }
+
+  /** invisível sem Premium não curte ninguém (curtida e super curtida); devolve o plano de quem curte */
+  private async assertCanLike(
+    db: Pick<PrismaService, 'user'>,
+    likerId: string,
+  ): Promise<{ premiumTier: string; premiumExpiresAt: Date | null } | null> {
     const liker = await db.user.findUnique({
       where: { id: likerId },
       select: MESSAGING_GATE_SELECT,
     });
     if (messagingLocked(liker)) throw likeLockedError();
+    return liker;
   }
 
+  /** devolve a curtida contada no limite diário (a curtida não foi gravada por esta requisição) */
   private async refundQuota(likerId: string): Promise<void> {
     await this.redis.client.decr(`rate:${likerId}:like`).catch(() => undefined);
   }

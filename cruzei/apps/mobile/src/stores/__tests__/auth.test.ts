@@ -1,6 +1,11 @@
 // Sessão salva + servidor fora no boot: o store fica "logado sem perfil" e precisa buscar o /me de novo sozinho.
 
 jest.mock('../../services/notifications', () => ({ unregisterPushDevice: jest.fn(() => Promise.resolve()) }));
+// métricas: id anônimo da instalação + ligar os eventos à conta (o serviço de verdade é testado à parte)
+jest.mock('../../services/analytics', () => ({
+  getInstallId: jest.fn(() => Promise.resolve(null)),
+  linkInstallToUser: jest.fn(() => Promise.resolve()),
+}));
 jest.mock('../../services/api', () => ({
   api: { get: jest.fn(), post: jest.fn(() => Promise.resolve({ data: {} })) },
   clearSession: jest.fn(() => Promise.resolve()),
@@ -11,8 +16,11 @@ jest.mock('../../services/api', () => ({
 }));
 
 import { AppState } from 'react-native';
+import * as analytics from '../../services/analytics';
 import * as apiModule from '../../services/api';
 import { useAuthStore } from '../auth';
+
+const analyticsMock = analytics as unknown as { getInstallId: jest.Mock; linkInstallToUser: jest.Mock };
 
 // o mock do AppState do preset é objeto simples: dá pra trocar o estado na mão
 const appState = AppState as { currentState: string };
@@ -310,7 +318,7 @@ describe('cadastro: campos do perfil (orientação opcional, "Mostrar")', () => 
       phone: '+5534999990000',
       name: 'Ana',
       birthDate: '1995-01-01',
-      gender: 'non_binary',
+      gender: 'other',
       termsVersion: '1.2',
       showMe: 'everyone',
     });
@@ -319,5 +327,52 @@ describe('cadastro: campos do perfil (orientação opcional, "Mostrar")', () => 
     expect(body).not.toHaveProperty('showOrientation');
     expect(body).not.toHaveProperty('sameOrientationFirst');
     expect(body).toMatchObject({ showMe: 'everyone' });
+  });
+});
+
+describe('cadastro: bio, Instagram, interesses e métricas', () => {
+  const input = {
+    phone: '+5534999990000',
+    name: 'Ana',
+    birthDate: '1995-01-01',
+    gender: 'female' as const,
+    termsVersion: '1.2',
+    showMe: 'everyone' as const,
+    bio: 'café e praia',
+    instagram: 'ana.souza',
+    interests: ['Música', 'Praia'],
+  };
+
+  it('manda bio, @ e interesses e o installId da instalação; depois liga os eventos à conta', async () => {
+    analyticsMock.getInstallId.mockResolvedValueOnce('inst-123');
+    apiMock.api.post.mockResolvedValueOnce({ data: { token: 't', refreshToken: 'r', user: { id: 'u1' } } });
+    apiMock.api.get.mockResolvedValueOnce({ data: ME });
+    await useAuthStore.getState().register(input);
+    const [url, body] = apiMock.api.post.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect(url).toBe('/auth/register');
+    expect(body).toMatchObject({ bio: 'café e praia', instagram: 'ana.souza', interests: ['Música', 'Praia'], installId: 'inst-123' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(analyticsMock.linkInstallToUser).toHaveBeenCalledWith('u1');
+  });
+
+  it('sem installId (métrica ainda não pronta ou falhou): o corpo vai sem o campo e o cadastro segue', async () => {
+    analyticsMock.getInstallId.mockRejectedValueOnce(new Error('sem storage'));
+    analyticsMock.linkInstallToUser.mockRejectedValueOnce(new Error('offline'));
+    apiMock.api.post.mockResolvedValueOnce({ data: { token: 't', refreshToken: 'r', user: { id: 'u1' } } });
+    apiMock.api.get.mockResolvedValueOnce({ data: ME });
+    await useAuthStore.getState().register(input);
+    const [, body] = apiMock.api.post.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect(body).not.toHaveProperty('installId');
+    expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: true, onboardingStep: 'avatar' });
+  });
+
+  it('servidor recusou (text_blocked): lança pro cadastro tratar e não abre sessão', async () => {
+    const blocked = Object.assign(new Error('HTTP 400'), {
+      response: { status: 400, data: { error: 'text_blocked', field: 'bio', reason: 'hate', message: 'Tira isso da bio' } },
+    });
+    apiMock.api.post.mockRejectedValueOnce(blocked);
+    await expect(useAuthStore.getState().register(input)).rejects.toBe(blocked);
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 });

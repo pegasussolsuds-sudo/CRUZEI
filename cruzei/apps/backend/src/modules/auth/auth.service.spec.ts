@@ -90,7 +90,21 @@ function resetUsers() {
 
 /** o que o cadastro gravou (tx.user.create) */
 const created: Record<string, unknown>[] = [];
+/** catálogo de interesses falso (GET /interests) */
+const CATALOG = [
+  { id: 1, name: 'Música' },
+  { id: 2, name: 'Viagem' },
+  { id: 9, name: 'Praia' },
+];
 const tx = {
+  interest: {
+    findMany: jest.fn(async ({ where }: { where: { name: { in: string[] } } }) =>
+      CATALOG.filter((c) => where.name.in.includes(c.name)).map(({ id }) => ({ id })),
+    ),
+  },
+  userInterest: {
+    createMany: jest.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length })),
+  },
   user: {
     create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
       created.push(data);
@@ -629,6 +643,93 @@ describe('cadastro: visibilidade', () => {
     await service.register({ ...base, phone: other, visibilityMode: 'anonymous' });
     expect(created[1].visibilityMode).toBe('anonymous');
     expect(window(created[1], before)).toBeGreaterThanOrEqual(H24);
+  });
+});
+
+describe('cadastro: nome, bio, Instagram e interesses', () => {
+  const NEW = '+5534977770100';
+  const base = {
+    phone: NEW,
+    name: 'Nova',
+    birthDate: new Date('1998-02-02'),
+    gender: 'female',
+    termsVersion: '1.2',
+    visibilityMode: 'visible' as const,
+  };
+  const createMany = tx.userInterest.createMany as jest.Mock;
+
+  it('grava bio sem as pontas, o @ normalizado e só os interesses do catálogo (sem repetido)', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await service.register({
+      ...base,
+      name: '  Nova   Silva ',
+      bio: '  café, praia e samba \n',
+      instagram: 'https://www.instagram.com/Nova.Silva/?hl=pt-br',
+      interests: ['Música', 'Música', 'Praia', 'Não existe'],
+      lookingFor: 'casual',
+    });
+    expect(created[0]).toMatchObject({
+      name: 'Nova Silva',
+      bio: 'café, praia e samba',
+      instagramHandle: 'nova.silva',
+      // nome 10 + intenção 5 + bio 15 (2 interesses ainda não somam)
+      profileCompleteness: 30,
+    });
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        { userId: created[0].id, interestId: 1 },
+        { userId: created[0].id, interestId: 9 },
+      ],
+      skipDuplicates: true,
+    });
+  });
+
+  it('sem as etapas opcionais: bio e @ nulos, nenhum interesse gravado', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await service.register({ ...base, bio: '   ', instagram: '' });
+    expect(created[0]).toMatchObject({ bio: null, instagramHandle: null, profileCompleteness: 10 });
+    expect(tx.interest.findMany).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it('3+ interesses do catálogo contam na completude', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await service.register({ ...base, interests: ['Música', 'Viagem', 'Praia'] });
+    expect(created[0].profileCompleteness).toBe(25);
+  });
+
+  it('@ fora da regra ou nome vazio: 400 claro e a prova do SMS continua valendo (dá pra corrigir e seguir)', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await expect(service.register({ ...base, instagram: '.fulana' })).rejects.toMatchObject({
+      response: { error: 'instagram_invalid' },
+    });
+    await expect(service.register({ ...base, name: '  a ' })).rejects.toMatchObject({
+      response: { error: 'name_invalid' },
+    });
+    expect(proofOf(NEW)).toBe(true);
+    expect(created).toHaveLength(0);
+    // corrigiu: agora cria
+    await service.register({ ...base, instagram: '@fulana' });
+    expect(created[0].instagramHandle).toBe('fulana');
+    expect(proofOf(NEW)).toBe(false);
+  });
+
+  it('filtro de abuso: 400 text_blocked com o campo (o app volta pra etapa) e a prova do SMS continua valendo', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await expect(service.register({ ...base, bio: 'vou te matar' })).rejects.toMatchObject({
+      response: { error: 'text_blocked', field: 'bio', reason: 'threat' },
+    });
+    await expect(service.register({ ...base, name: 'Caralho' })).rejects.toMatchObject({
+      response: { error: 'text_blocked', field: 'name' },
+    });
+    expect(created).toHaveLength(0);
+    expect(proofOf(NEW)).toBe(true);
+  });
+
+  it('app antigo mandando "non_binary": grava "other"', async () => {
+    kv.set(`sms:verified:${NEW}`, '1');
+    await service.register({ ...base, gender: 'non_binary' });
+    expect(created[0].gender).toBe('other');
   });
 });
 

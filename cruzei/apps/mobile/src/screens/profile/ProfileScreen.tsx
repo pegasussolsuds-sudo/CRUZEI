@@ -45,7 +45,9 @@ import { SHOW_ME_RECIPROCAL_NOTE } from '../../components/showMeNote';
 import { resolveAvatar } from '../../avatar';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import { ORIENTATION_LABELS, SHOW_ME, SHOW_ME_LABELS, type ShowMe, type User } from '@cruzei/shared-types';
+import { AGE_MAX, AGE_MIN, AGE_RANGE_DAILY_CHANGES, ORIENTATION_LABELS, SHOW_ME, SHOW_ME_LABELS, type ShowMe, type User } from '@cruzei/shared-types';
+import { AgeRangeSlider } from '../../components/profile/AgeRangeSlider';
+import { useAgeRangeDraft } from '../../components/profile/ageRangeDraft';
 import type { ProfileStackParamList } from '../../navigation/ProfileStack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { BRAND } from '../../brand';
@@ -82,6 +84,9 @@ type SettingsPatch = {
   showOrientation?: boolean;
   sameOrientationFirst?: boolean;
   showMe?: ShowMe;
+  /** faixa de idade que eu vejo (não recíproca); 99 = sem limite em cima */
+  ageMin?: number;
+  ageMax?: number;
 };
 
 export function ProfileScreen() {
@@ -122,9 +127,15 @@ export function ProfileScreen() {
       if (ctx?.prev) qc.setQueryData(['me'], ctx.prev);
       Alert.alert('Ops', toApiError(err).message);
     },
-    // "Mostrar" e "mesma orientação primeiro" mudam quem aparece e a ordem: mapa, lista e deck buscam de novo
+    // "Mostrar", faixa de idade e "mesma orientação primeiro" mudam quem aparece e a ordem: mapa, lista e deck buscam de novo
     onSuccess: (_data, patch) => {
-      if (patch.showMe !== undefined || patch.sameOrientationFirst !== undefined) qc.invalidateQueries({ queryKey: ['nearby'] });
+      if (
+        patch.showMe !== undefined ||
+        patch.sameOrientationFirst !== undefined ||
+        patch.ageMin !== undefined ||
+        patch.ageMax !== undefined
+      )
+        qc.invalidateQueries({ queryKey: ['nearby'] });
     },
     // só refaz o /me quando o último toque terminar (senão um refetch no meio desfaz o seguinte)
     onSettled: () => {
@@ -322,6 +333,22 @@ export function ProfileScreen() {
           </View>
         ) : null}
 
+        {/* @ do Instagram à vista (é público no cartão); sem @, o atalho pra pôr em Editar perfil */}
+        <FadeInView delay={350} fromScale={0.92} style={styles.instaWrap}>
+          <ScaleOnPress
+            onPress={goEdit}
+            pressedScale={0.96}
+            style={me.instagram ? styles.instaPill : [styles.instaPill, styles.instaPillEmpty]}
+            accessibilityRole="button"
+            accessibilityLabel={me.instagram ? `Seu Instagram: @${me.instagram}. Toque pra editar` : 'Adicionar seu Instagram'}
+          >
+            <Ionicons name={me.instagram ? 'logo-instagram' : 'add'} size={16} color={colors.black} />
+            <Text style={styles.instaText} numberOfLines={1}>
+              {me.instagram ? `@${me.instagram}` : 'Adicionar seu Instagram'}
+            </Text>
+          </ScaleOnPress>
+        </FadeInView>
+
         <FadeInView delay={380} fromY={16} style={styles.statsRow}>
           <Stat label="curtidas" value={me.stats?.likesReceived ?? 0} delay={450} />
           <View style={styles.statDivider} />
@@ -394,6 +421,11 @@ export function ProfileScreen() {
         {/* quem aparece pra você (recíproco) e a orientação: exibir no perfil / mesma orientação primeiro */}
         <Section title="quem você vê" delay={560}>
           <ShowMeRow value={me.settings.showMe ?? 'everyone'} onChange={(showMe) => settings.mutate({ showMe })} />
+          <AgeRangeRow
+            min={me.settings.ageMin ?? AGE_MIN}
+            max={me.settings.ageMax ?? AGE_MAX}
+            onChange={(ageMin, ageMax) => settings.mutate({ ageMin, ageMax })}
+          />
           {me.orientation ? (
             <>
               <Row
@@ -625,6 +657,27 @@ function ShowMeRow({ value, onChange }: { value: ShowMe; onChange: (v: ShowMe) =
   );
 }
 
+/** "Idade: de X a Y anos" — só o que EU vejo (não recíproco), no mapa, na lista e nas curtidas */
+function AgeRangeRow({ min, max, onChange }: { min: number; max: number; onChange: (min: number, max: number) => void }) {
+  // grava 1,5 s depois de soltar: mexer no "de" e no "até" em seguida gasta 1 das 5 mudanças do dia
+  const draft = useAgeRangeDraft([min, max], onChange);
+  return (
+    <View style={styles.row}>
+      <View style={[styles.rowIcon, styles.rowIconOn, styles.rowIconTop]}>
+        <Ionicons name="options-outline" size={20} color={colors.black} />
+      </View>
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text style={styles.rowLabel}>Idade</Text>
+        <AgeRangeSlider min={draft.value[0]} max={draft.value[1]} onChange={draft.change} />
+        <Text style={styles.rowHint}>
+          Só muda quem aparece pra você (não é recíproco). Quem esconde a idade entra pelo bloco de 5 anos dela, sem a
+          idade aparecer. Dá pra mudar a faixa {AGE_RANGE_DAILY_CHANGES} vezes por dia.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function Section({ title, delay, children }: { title: string; delay: number; children: React.ReactNode }) {
   return (
     <FadeInView delay={delay} fromY={18} style={styles.section}>
@@ -784,6 +837,21 @@ const styles = StyleSheet.create({
   chip: { backgroundColor: colors.white, borderWidth: 1, borderColor: colors.gray[200], borderRadius: radius.full, paddingHorizontal: spacing.md, paddingVertical: 6 },
   chipText: { ...typography.bodySmall, color: colors.black },
 
+  instaWrap: { alignItems: 'center', marginBottom: spacing.lg },
+  instaPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: '100%',
+    minHeight: 36,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.full,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.gray[200],
+  },
+  instaPillEmpty: { borderStyle: 'dashed', borderColor: colors.gray[400], backgroundColor: 'transparent' },
+  instaText: { ...typography.label, color: colors.black, flexShrink: 1 },
   statsRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.white, borderRadius: radius.lg, marginBottom: spacing.md, ...shadows.light },
   stat: { flex: 1, alignItems: 'center', paddingVertical: spacing.md },
   statDivider: { width: StyleSheet.hairlineWidth, height: 28, backgroundColor: colors.gray[200] },
@@ -823,6 +891,7 @@ const styles = StyleSheet.create({
   rowLast: { borderBottomWidth: 0 },
   rowIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },
   rowIconOn: { backgroundColor: '#E9FFC7' },
+  rowIconTop: { alignSelf: 'flex-start' },
   rowIconDanger: { backgroundColor: '#FFECEB' },
   rowLabel: { ...typography.body, color: colors.black },
   rowHint: { ...typography.bodySmall, color: colors.gray[500] },

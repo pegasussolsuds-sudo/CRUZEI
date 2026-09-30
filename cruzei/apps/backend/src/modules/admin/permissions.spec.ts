@@ -15,12 +15,13 @@ const ADMIN_ONLY: AdminPermission[] = [
   'campaigns',
   'events.push',
   'audit',
+  'metrics',
 ];
 
 describe('permissões por papel', () => {
   it('admin tem tudo', () => {
     expect(permissionsFor('admin').sort()).toEqual([...ALL_PERMISSIONS].sort());
-    expect(ALL_PERMISSIONS).toHaveLength(11);
+    expect(ALL_PERMISSIONS).toHaveLength(12);
   });
 
   it('moderador: painel, usuários (ver + moderar), lugares, eventos e suporte — nada só-admin', () => {

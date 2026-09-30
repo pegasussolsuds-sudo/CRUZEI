@@ -15,6 +15,15 @@ export interface ApiError {
  * - 409 boost_hidden: comprar Boost estando invisível, pausada ou com descoberta 'nobody' (ninguém veria)
  * - 402 payment_unavailable: produção sem validação de loja (Boost) — nada cobrado nem ativado
  * - 402 receipt_invalid: recibo recusado (fora de produção, só 'dev' vale)
+ * Leva 04/10/2026:
+ * - 400 text_blocked {field, reason}: filtro de abuso recusou nome/bio/@ (PATCH /me, POST /auth/register) ou a
+ *   mensagem (POST /conversations, POST /conversations/:id/messages) — TextBlockedError
+ * - 403 super_like_limit {limit, resetsAt, canUpgrade}: acabaram as super curtidas do dia — SuperLikeLimitError (like.ts)
+ * - 400 age_range_invalid: ageMin/ageMax fora de AGE_MIN <= ageMin, ageMin + AGE_RANGE_MIN_GAP <= ageMax <= AGE_MAX
+ *   (PATCH /me/settings)
+ * - 429 age_range_limit {limit, resetsAt}: já mudou a faixa de idade AGE_RANGE_DAILY_CHANGES vezes hoje (PATCH /me/settings)
+ * - 409 pass_undo_unavailable: "Voltar" (DELETE /passes/:userId) de um passar que não é o meu último ou tem mais de
+ *   10 min — o passar fica; o app tira o botão e mostra a mensagem
  */
 export type ApiErrorCode =
   | 'session_revoked'
@@ -22,9 +31,42 @@ export type ApiErrorCode =
   | 'claim_expired'
   | 'orientation_required'
   | 'instagram_invalid'
+  /** nome com menos de 2 letras depois de tirar os espaços (cadastro e PATCH /me) */
+  | 'name_invalid'
   | 'boost_hidden'
   | 'payment_unavailable'
-  | 'receipt_invalid';
+  | 'receipt_invalid'
+  | 'text_blocked'
+  | 'super_like_limit'
+  | 'age_range_invalid'
+  | 'age_range_limit'
+  | 'pass_undo_unavailable';
+
+// ---------- filtro de abuso (pt-BR) ----------
+
+/** campo que o filtro de abuso olha */
+export const TEXT_FIELDS = ['message', 'name', 'bio', 'instagram'] as const;
+export type TextField = (typeof TEXT_FIELDS)[number];
+
+/**
+ * por que o texto foi recusado:
+ * - hate: discurso de ódio / injúria racial ou LGBTfóbica · threat: ameaça · minor: sexual envolvendo menor
+ *   (os três BLOQUEIAM mensagem: "Essa mensagem fere as regras do Metch")
+ * - profanity: palavrão/ofensa (só em nome, bio e @; em mensagem entre adultos é permitido)
+ * - sexual: conteúdo sexual explícito (só em nome, bio e @)
+ * - scam: golpe (Pix, pagamento, "me manda dinheiro", link encurtado). Em MENSAGEM não bloqueia: passa e gera denúncia
+ *   automática (reason 'scam', context.source 'auto_filter'). Em nome/bio/@ recusa.
+ */
+export const TEXT_BLOCK_REASONS = ['hate', 'threat', 'minor', 'profanity', 'sexual', 'scam'] as const;
+export type TextBlockReason = (typeof TEXT_BLOCK_REASONS)[number];
+
+/** corpo do 400 text_blocked; `message` é amigável e diz o que ajustar (o app mostra como veio) */
+export interface TextBlockedError {
+  error: 'text_blocked';
+  message: string;
+  field: TextField;
+  reason: TextBlockReason;
+}
 
 export const HTTP_STATUS = {
   OK: 200,

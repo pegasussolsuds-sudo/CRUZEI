@@ -1,7 +1,8 @@
 import { AppState } from 'react-native';
 import { create } from 'zustand';
-import type { AccountClaim, LoginResponse, Orientation, PhoneReleaseReason, ShowMe, User } from '@cruzei/shared-types';
+import type { AccountClaim, Gender, LoginResponse, Orientation, PhoneReleaseReason, ShowMe, User } from '@cruzei/shared-types';
 import { api, clearSession, getToken, setRefreshToken, setToken, setUnauthorizedHandler } from '../services/api';
+import { getInstallId, linkInstallToUser } from '../services/analytics';
 import { unregisterPushDevice } from '../services/notifications';
 
 function statusOf(err: unknown): number | undefined {
@@ -58,11 +59,18 @@ function stopMeRetry(): void {
   meRetryAttempt = 0;
 }
 
-interface RegisterInput {
+export interface RegisterInput {
   phone: string;
   name: string;
   birthDate: string; // YYYY-MM-DD
-  gender: string;
+  /** Mulher / Homem / Outro */
+  gender: Gender;
+  /** etapas opcionais do cadastro (puladas = ausentes): bio, @ do Instagram e NOMES do catálogo de interesses */
+  bio?: string;
+  instagram?: string;
+  interests?: string[];
+  /** id anônimo da instalação (métricas do funil); ausente = o store busca em getInstallId() */
+  installId?: string;
   /** opcional (dado sensível: só com consentimento) */
   orientation?: Orientation;
   /** exibir no perfil / mesma orientação primeiro: só mandar junto com a orientação */
@@ -207,11 +215,19 @@ export const useAuthStore = create<AuthState>((set, get) => {
     },
 
     async register(input) {
-      const res = await api.post('/auth/register', input);
+      // id anônimo da instalação: o servidor liga a esta conta os eventos do funil do cadastro (métricas próprias)
+      const installId = input.installId ?? (await getInstallId().catch(() => null));
+      const body = installId ? { ...input, installId } : input;
+      const res = await api.post('/auth/register', body);
       await setToken(res.data.token);
       await setRefreshToken(res.data.refreshToken);
       const me = await api.get('/me');
       set({ user: me.data, isAuthenticated: true, onboardingStep: 'avatar' });
+      // métrica nunca segura nem derruba o cadastro
+      const userId = (me.data as User | null)?.id;
+      void Promise.resolve()
+        .then(() => linkInstallToUser(userId))
+        .catch(() => undefined);
     },
 
     async refreshMe() {

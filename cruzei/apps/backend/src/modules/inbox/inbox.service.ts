@@ -28,6 +28,8 @@ import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
 import { blockedBody } from '../account/account-state.service';
 import { SocialPushService } from '../notifications/social-push.service';
+import { autoReportScam } from '../safety/auto-report';
+import { screenMessage } from '../safety/text-guard';
 
 import {
   emitEvent,
@@ -217,6 +219,8 @@ export class InboxService {
     clientIdRaw?: string,
   ): Promise<CreateConversationResponse> {
     const text = cleanBody(body);
+    // filtro de abuso: ódio/ameaça/menor → 400 text_blocked antes de tudo; golpe passa e vira denúncia depois do envio
+    const screen = screenMessage(text);
     if (toUserId === me) throw userNotFound();
     const clientId = normClientId(clientIdRaw);
     const [low, high] = pairOf(me, toUserId);
@@ -320,6 +324,14 @@ export class InboxService {
       this.flush(out.events);
       // push da 1ª mensagem pra quem recebeu (reenvio não avisa de novo)
       if (!out.replayed) void this.social?.messages(messagePushTargets(out.events));
+      if (screen.scam && !out.replayed) {
+        void autoReportScam(this.prisma, {
+          reportedId: me,
+          conversationId: out.result.conversation.id,
+          messageId: out.result.message.id,
+          match: screen.scam,
+        });
+      }
       return out.result;
     } catch (e) {
       if (countedNew) await this.refund(me, 'conv:new');
@@ -335,12 +347,24 @@ export class InboxService {
     clientId?: string,
   ): Promise<ChatMessageWithClientId> {
     const text = cleanBody(body);
-    return this.send(
+    // filtro de abuso (mesma regra do POST /conversations)
+    const screen = screenMessage(text);
+    const message = await this.send(
       me,
       conversationId,
       { body: text, messageType: 'text', mediaUrl: null },
       clientId,
     );
+    // golpe: denúncia automática depois do envio (reenvio cai no dedupe da pendente)
+    if (screen.scam) {
+      void autoReportScam(this.prisma, {
+        reportedId: me,
+        conversationId: message.conversationId,
+        messageId: message.id,
+        match: screen.scam,
+      });
+    }
+    return message;
   }
 
   /** POST /conversations/:id/media: mídia ainda não passa pela moderação de fotos → desligada até ter */

@@ -26,6 +26,9 @@ model User {
   sameOrientationFirst  Boolean               @default(false) @map("same_orientation_first")
   /// quem eu quero ver no mapa, na lista e no deck (recíproco)
   showMe                ShowMe                @default(everyone) @map("show_me")
+  /// filtro de idade do "quem ver" (só o que EU vejo, não recíproco); 18–99 = sem limite; vão mínimo de 4 anos (CHECK users_age_range_chk)
+  ageMin                Int                   @default(18) @map("age_min") @db.SmallInt
+  ageMax                Int                   @default(99) @map("age_max") @db.SmallInt
   /// @ do Instagram sem o @, minúsculo, público (CHECK users_instagram_handle_chk na migration)
   instagramHandle       String?               @map("instagram_handle") @db.VarChar(30)
   lookingFor            LookingFor            @default(unspecified) @map("looking_for")
@@ -400,6 +403,8 @@ model Report {
   id           String       @id @default(uuid()) @db.Uuid
   reporterId   String?      @map("reporter_id") @db.Uuid
   reportedId   String       @map("reported_id") @db.Uuid
+  /// REPORT_REASONS (escolhidos no app) ou SYSTEM_REPORT_REASONS ('emergency'); automática do filtro de abuso: 'scam'
+  /// com reporterId null e context.source 'auto_filter' (única pendente por pessoa+motivo: reports_auto_filter_pending_uq)
   reason       String       @db.VarChar(50)
   description  String?
   evidenceUrls Json?        @map("evidence_urls")
@@ -524,10 +529,10 @@ model AuditLog {
   @@map("audit_log")
 }
 
+/// só Mulher / Homem / Outro: non_binary saiu na migration 20261004000000 (quem tinha virou other)
 enum Gender {
   female
   male
-  non_binary
   other
 }
 
@@ -544,7 +549,7 @@ enum Orientation {
   curious
 }
 
-/// "Mostrar: Mulheres / Homens / Todos" (recíproco); non_binary/other só aparecem pra quem escolheu everyone
+/// "Mostrar: Mulheres / Homens / Todos" (recíproco); other só aparece pra quem escolheu everyone
 enum ShowMe {
   women
   men
@@ -831,6 +836,10 @@ model SupportThread {
   firstResponseAt DateTime?        @map("first_response_at") @db.Timestamptz(6)
   rating          Int?             @db.SmallInt
   resolvedAt      DateTime?        @map("resolved_at") @db.Timestamptz(6)
+  /// aberto pelo botão de emergência: topo da fila enquanto não resolvido (índice parcial support_threads_urgent_idx)
+  urgent          Boolean          @default(false)
+  /// quando virou urgente (CHECK support_threads_urgent_chk: urgent exige urgent_at)
+  urgentAt        DateTime?        @map("urgent_at") @db.Timestamptz(6)
   messages        SupportMessage[]
 
   @@index([status, lastMessageAt(sort: Desc)], map: "support_threads_queue_idx")
@@ -854,6 +863,54 @@ model SupportMessage {
   @@unique([senderId, clientId], map: "support_messages_sender_client_uq")
   @@index([threadId, createdAt], map: "support_messages_thread_idx")
   @@map("support_messages")
+}
+
+// ---------- leva 04/10/2026 (migration 20261004000000_discovery_safety_metrics) ----------
+// FKs (users ON DELETE CASCADE / SET NULL) só na migration: sem relação aqui, o modelo User não muda.
+
+/// "Passar" salvo: quem user_id passou some do DECK dele por DISCOVERY_PASS_DAYS (padrão 30); o mapa continua mostrando.
+/// Passar de novo renova createdAt; a limpeza apaga o que venceu. CHECK passes_not_self_chk (user_id <> target_id).
+model Pass {
+  userId    String   @map("user_id") @db.Uuid
+  targetId  String   @map("target_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([userId, targetId])
+  @@index([createdAt], map: "passes_created_idx")
+  @@index([userId, createdAt(sort: Desc)], map: "passes_user_recent_idx")
+  @@map("passes")
+}
+
+/// super curtidas gastas por dia de São Paulo (SUPER_LIKE_DAILY: grátis 1, Premium/Premium+ 7). Desfazer a curtida
+/// não devolve o uso. Gasto atômico com INSERT ... ON CONFLICT DO UPDATE ... WHERE used < limite (ver a migration).
+model SuperLikeUse {
+  userId String   @map("user_id") @db.Uuid
+  /// (now() AT TIME ZONE 'America/Sao_Paulo')::date
+  day    DateTime @db.Date
+  used   Int      @default(0) @db.SmallInt
+
+  @@id([userId, day])
+  @@index([day], map: "super_like_uses_day_idx")
+  @@map("super_like_uses")
+}
+
+/// métricas próprias: lista FECHADA de nomes (CHECK analytics_events_name_chk = ANALYTICS_EVENTS em shared-types).
+/// Antes da conta: só installId; no cadastro/login ganha userId. Sem localização. Retenção de 13 meses.
+model AnalyticsEvent {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?  @map("user_id") @db.Uuid
+  installId String?  @map("install_id") @db.VarChar(64)
+  name      String   @db.VarChar(40)
+  /// etapa do cadastro (ONBOARDING_STEPS); obrigatória nos onboarding_step_*
+  step      String?  @db.VarChar(40)
+  /// objeto pequeno (<= 1 KB), nunca posição
+  props     Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([name, createdAt], map: "analytics_events_name_created_idx")
+  @@index([userId, createdAt], map: "analytics_events_user_created_idx")
+  @@index([installId], map: "analytics_events_install_idx")
+  @@map("analytics_events")
 }
 
 // ---------- catálogo geográfico próprio (migration 20260930120000_geo_catalog; dados: scripts/geo) ----------

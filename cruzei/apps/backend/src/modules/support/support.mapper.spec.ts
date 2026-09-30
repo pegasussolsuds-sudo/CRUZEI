@@ -1,10 +1,17 @@
 import {
   STAFF_DISPLAY_NAME,
+  URGENT_ALERT_GAP_MS,
+  URGENT_REPEAT_MS,
+  claimUrgentAlert,
+  urgentAlertKey,
+  isUrgentOpen,
+  isUrgentRepeat,
   messageForStaff,
   messageForUser,
   messagesForUser,
   normClientId,
   supportOrder,
+  threadForUser,
   waitingSinceOf,
   welcomeText,
   type SupportMessageRow,
@@ -109,5 +116,65 @@ describe('fila por espera', () => {
     expect(waitingSinceOf('open', null)).toBeNull();
     expect(waitingSinceOf('pending', since)).toBeNull();
     expect(waitingSinceOf('resolved', since)).toBeNull();
+  });
+});
+
+describe('urgente (botão de emergência)', () => {
+  const row = {
+    id: 't',
+    userId: ME,
+    status: 'open',
+    createdAt: at,
+    lastMessageAt: at,
+    userUnread: 1,
+    rating: null,
+  };
+
+  it('o app vê urgent só quando é urgente (atendimento comum mantém o formato de antes)', () => {
+    expect(threadForUser(row)).not.toHaveProperty('urgent');
+    expect(threadForUser({ ...row, urgent: false })).not.toHaveProperty('urgent');
+    expect(threadForUser({ ...row, urgent: true })).toMatchObject({ urgent: true });
+  });
+
+  it('topo da fila: urgente e não resolvido', () => {
+    expect(isUrgentOpen({ urgent: true, status: 'open' })).toBe(true);
+    expect(isUrgentOpen({ urgent: true, status: 'pending' })).toBe(true);
+    expect(isUrgentOpen({ urgent: true, status: 'resolved' })).toBe(false);
+    expect(isUrgentOpen({ urgent: false, status: 'open' })).toBe(false);
+    expect(isUrgentOpen({ status: 'open' })).toBe(false);
+  });
+
+  it('apertar de novo logo em seguida não repete as mensagens', () => {
+    const now = at.getTime();
+    expect(isUrgentRepeat({ urgent: true, urgent_at: new Date(now - 30_000) }, now)).toBe(true);
+    expect(
+      isUrgentRepeat({ urgent: true, urgent_at: new Date(now - URGENT_REPEAT_MS - 1) }, now),
+    ).toBe(false);
+    expect(isUrgentRepeat({ urgent: false, urgent_at: null }, now)).toBe(false);
+  });
+
+  it('alarme da equipe: 1 por atendimento a cada 10 min (SET NX PX); Redis fora → toca', async () => {
+    const kv = new Set<string>();
+    const set = jest.fn(async (k: string, _v: string, _px: string, _ms: number, nx: string) => {
+      if (nx === 'NX' && kv.has(k)) return null;
+      kv.add(k);
+      return 'OK';
+    });
+    const redis = { set } as unknown as Parameters<typeof claimUrgentAlert>[0];
+    expect(URGENT_ALERT_GAP_MS).toBe(10 * 60_000);
+    expect(await claimUrgentAlert(redis, 't1')).toBe(true);
+    expect(await claimUrgentAlert(redis, 't1')).toBe(false);
+    // outro atendimento toca
+    expect(await claimUrgentAlert(redis, 't2')).toBe(true);
+    expect(set).toHaveBeenCalledWith(urgentAlertKey('t1'), '1', 'PX', URGENT_ALERT_GAP_MS, 'NX');
+    // passou o intervalo (a chave venceu): toca de novo
+    kv.delete(urgentAlertKey('t1'));
+    expect(await claimUrgentAlert(redis, 't1')).toBe(true);
+    const down = {
+      set: jest.fn(async () => {
+        throw new Error('redis fora');
+      }),
+    } as unknown as Parameters<typeof claimUrgentAlert>[0];
+    expect(await claimUrgentAlert(down, 't1')).toBe(true);
   });
 });

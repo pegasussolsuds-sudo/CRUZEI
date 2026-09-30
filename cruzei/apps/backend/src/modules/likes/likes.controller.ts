@@ -53,10 +53,29 @@ export class LikesController {
     await this.svc.unlike(user.id, targetId);
   }
 
+  /** SuperLikeQuota: super curtidas que restam hoje (grátis 1, Premium/Premium+ 7; vira à meia-noite de São Paulo) */
+  @Get('likes/super/quota')
+  superQuota(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.superQuota(user.id);
+  }
+
+  /** "Passar": some do MEU deck por DISCOVERY_PASS_DAYS (o mapa continua mostrando). Idempotente: renova o prazo */
+  @Throttle({ default: { ttl: 60_000, limit: 120 } })
   @HttpCode(204)
   @Post('passes')
   async pass(@CurrentUser() user: AuthenticatedUser, @Body() dto: PassDto) {
     await this.svc.pass(user.id, dto.userId);
+  }
+
+  /** "Voltar": desfaz o passar dessa pessoa se for o meu último e de até 10 min (senão 409 pass_undo_unavailable) */
+  @Throttle({ default: { ttl: 60_000, limit: 60 } })
+  @HttpCode(204)
+  @Delete('passes/:userId')
+  async unpass(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('userId', new ParseUUIDPipe()) targetId: string,
+  ) {
+    await this.svc.unpass(user.id, targetId);
   }
 
   /** MatchCelebration[]: comemorações de match que ainda não apareceram pra mim (quem curtiu primeiro) */

@@ -103,11 +103,19 @@ export class StatsService {
                (SELECT count(*) FROM events WHERE status = 'published' AND starts_at <= now() AND ends_at > now())::int AS live,
                (SELECT count(*) FROM events WHERE status = 'published' AND starts_at > now())::int AS upcoming`,
       this.prisma.$queryRaw<
-        { open: number; unassigned: number; waiting: number; avg_min: number | null }[]
+        {
+          open: number;
+          unassigned: number;
+          waiting: number;
+          urgent: number;
+          avg_min: number | null;
+        }[]
       >`
         SELECT count(*) FILTER (WHERE status <> 'resolved')::int AS open,
                count(*) FILTER (WHERE status <> 'resolved' AND assigned_to IS NULL)::int AS unassigned,
                count(*) FILTER (WHERE status = 'open')::int AS waiting,
+               -- botão de emergência ainda não resolvido
+               count(*) FILTER (WHERE urgent AND status <> 'resolved')::int AS urgent,
                (SELECT round(avg(extract(epoch FROM (first_response_at - created_at)) / 60)::numeric, 1)::float8
                   FROM support_threads WHERE created_at > now() - interval '7 days' AND first_response_at IS NOT NULL) AS avg_min
           FROM support_threads`,
@@ -159,6 +167,7 @@ export class StatsService {
         unassigned: s?.unassigned ?? 0,
         waitingStaff: s?.waiting ?? 0,
         avgFirstResponseMin7d: s?.avg_min ?? null,
+        urgent: s?.urgent ?? 0,
       },
       activity: {
         messages24h: activity[0]?.messages ?? 0,

@@ -12,6 +12,7 @@ import { LoginPage } from '@/pages/LoginPage';
 
 // telas pesadas (mapa, gráficos) em arquivos próprios: o login abre rápido
 const DashboardPage = lazy(() => import('@/pages/DashboardPage'));
+const MetricsPage = lazy(() => import('@/pages/MetricsPage'));
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const UserDetailPage = lazy(() => import('@/pages/users/UserDetailPage'));
 const ModerationPage = lazy(() => import('@/pages/ModerationPage'));
@@ -109,6 +110,7 @@ const router = createBrowserRouter([
     element: <RequireAuth />,
     children: [
       { index: true, element: <Home /> },
+      { path: 'metricas', element: <Guard perm="metrics"><MetricsPage /></Guard> },
       { path: 'usuarios', element: <Guard perm="users.read"><UsersPage /></Guard> },
       { path: 'usuarios/:id', element: <Guard perm="users.read"><UserDetailPage /></Guard> },
       { path: 'moderacao', element: <Guard perm="users.moderate"><ModerationPage /></Guard> },

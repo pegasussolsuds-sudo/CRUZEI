@@ -9,6 +9,8 @@ Estes Termos são o contrato entre você e o Metch. Eles dizem o que você pode 
 - Ninguém vê sua posição exata nem sua distância exata.
 - Respeito é obrigatório. Nudez, assédio, golpes e qualquer conteúdo envolvendo menores levam a banimento.
 - Você pode denunciar e bloquear qualquer pessoa, a qualquer momento.
+- Em perigo, o botão 🆘 Emergência pausa seu perfil, bloqueia a pessoa e chama o suporte na hora. Não envia sua localização.
+- Mensagens, nomes, bios e @ passam por um filtro automático contra ofensas, ameaças e golpes.
 - Nunca mande dinheiro para quem você conheceu no app.
 - GPS falso e entrar na conta de outra pessoa são proibidos.
 - Este resumo ajuda, mas não substitui o texto completo abaixo.
@@ -72,7 +74,8 @@ Fale com a gente pelo e-mail {{EMAIL_SUPORTE}}.
 ### Controles de visibilidade
 
 - **Modo anônimo:** você vê as pessoas, mas ninguém sabe que é você: seu perfil, nome e foto não aparecem no mapa nem na descoberta, e você não recebe curtidas. Assinantes Premium podem ver quantas pessoas estão no modo anônimo em um lugar ou região, agrupadas, sem nunca saber quem são. No plano gratuito, cada vez que você liga o modo anônimo ele dura até 24 horas; depois você volta a ficar visível automaticamente e o app avisa. Dá para ligar de novo quando quiser. Enquanto isso, ficam pausados curtir e as mensagens: você não curte ninguém e não manda nem recebe mensagens até voltar a ficar visível. As mensagens que chegarem nesse tempo ficam guardadas e aparecem quando você volta. No Premium, o modo anônimo não tem prazo e dá para curtir e conversar nele.
-- **Mostrar (Mulheres, Homens ou Todos):** escolhe quem aparece para você. Vale para os dois lados: você só vê quem também quer ver pessoas do seu gênero e só aparece para essas pessoas. Pessoas não binárias ou de outro gênero aparecem só para quem escolheu "Todos". Quem já tinha conta começa em "Todos".
+- **Mostrar (Mulheres, Homens ou Todos):** escolhe quem aparece para você. Vale para os dois lados: você só vê quem também quer ver pessoas do seu gênero e só aparece para essas pessoas. Quem escolheu "Outro" como gênero aparece só para quem escolheu "Todos". Quem já tinha conta começa em "Todos".
+- **Idade:** escolhe a faixa de idade de quem aparece para você no mapa, na lista e nas curtidas, de 18 a "80+" (sem limite em cima), com pelo menos 4 anos entre as duas pontas e até 5 mudanças por dia. Vale só para o que você vê: não esconde você de ninguém. Quem escondeu a idade entra no filtro por um bloco de 5 anos (como 23 a 27), e a idade continua sem aparecer.
 - **Descoberta:** "Todos", "Interesses compatíveis" (só quem tem pelo menos um interesse em comum com você) ou "Ninguém". A regra vale para os dois lados: quem escolhe "Ninguém" não aparece e também não vê ninguém.
 - **Pausar:** tira seu perfil do mapa e da descoberta por um tempo.
 - **Áreas privadas:** você cadastra até 5 lugares (como casa, trabalho ou faculdade) onde ninguém descobre você.
@@ -86,9 +89,12 @@ Fale com a gente pelo e-mail {{EMAIL_SUPORTE}}.
 
 ### Curtidas, match e mensagens
 
-- Você pode curtir, supercurtir ou dispensar perfis. Quando duas pessoas se curtem, dá match.
+- Você pode curtir, supercurtir ou dispensar perfis ("Passar"). Quando duas pessoas se curtem, dá match.
 - Quando alguém que você curtiu curte você de volta, o app comemora o match com você, na hora ou na próxima vez que você abrir o app.
 - A pessoa que você curtiu pode ficar sabendo da curtida.
+- **Super curtida:** no plano gratuito, 1 por dia; no Premium e no Premium+, 7 por dia. O dia vira à meia-noite, no horário de Brasília. Desfazer uma super curtida não devolve o uso.
+- **A super curtida mostra quem mandou:** a pessoa vê seu nome e sua foto, e você aparece em destaque no começo das curtidas dela, mesmo que ela não tenha um plano que mostra quem curtiu e mesmo que vocês estejam longe. Nesse caso, ela não vê faixa de proximidade nem posição sua. Quem está no modo anônimo ou em análise da moderação não é revelado.
+- **Passar:** quem você dispensa não volta nas suas curtidas por 30 dias. A pessoa pode continuar aparecendo no mapa, que mostra quem está por perto agora. O botão "Voltar" desfaz o último "Passar".
 - **Notificações:** o app pode avisar por notificação push quando chegar mensagem, curtida ou match. Você escolhe, na tela de Avisos, quais avisos quer receber e se o texto da mensagem aparece na notificação. Para evitar excesso, os avisos têm limites (por exemplo, curtidas são agrupadas).
 - Existem limites de uso para evitar abuso, como um número máximo de curtidas e de conversas novas por dia e de mensagens por minuto.
 - Você pode mandar mensagem de texto para qualquer pessoa cujo perfil você consegue ver no app. Não precisa de match. Quem está no modo anônimo ou com o perfil pausado não recebe conversas novas.
@@ -132,13 +138,32 @@ Condutas graves fora do app também contam. Se soubermos de ameaça ou violênci
 - O bloqueio vale na hora e para os dois lados: vocês deixam de ver o perfil e as fotos um do outro, e a conversa, se existir, é arquivada e sai da lista de mensagens dos dois. Ninguém consegue começar uma conversa nova enquanto o bloqueio existir. A pessoa bloqueada não recebe aviso de que foi bloqueada.
 - Desbloquear, por si só, não traz a conversa arquivada de volta.
 - Não contamos à pessoa denunciada quem fez a denúncia.
-- Em perigo agora? Ligue 190.
+- Em perigo agora? Ligue 190 ou use o botão 🆘 Emergência (veja abaixo).
+
+### Botão de emergência
+
+O botão **🆘 Emergência** fica no menu do chat, no perfil da pessoa e em Ajuda e segurança. Antes de confirmar, o app mostra o que vai acontecer e um atalho para ligar 190. Ao confirmar, acontece tudo de uma vez:
+
+- Seu perfil fica pausado por 7 dias e some do mapa. Você pode tirar a pausa antes, quando quiser. Se ele já estava pausado por mais tempo, a pausa maior continua.
+- A pessoa envolvida, se houver, é bloqueada.
+- Criamos uma denúncia de segurança contra ela, com prioridade máxima na moderação.
+- Abrimos um atendimento urgente no chat de suporte do app, com uma mensagem automática, e a equipe é alertada na hora.
+
+O botão não envia sua localização a ninguém, nem à nossa equipe. Ele não chama a polícia: em perigo, ligue 190.
+
+### Filtro automático de textos
+
+- O Metch confere automaticamente, no nosso próprio servidor, o texto das mensagens, do nome, da bio e do @ do Instagram. O filtro também reconhece variações de escrita, como números no lugar de letras e letras repetidas ou separadas.
+- **Nome, bio e @:** texto com palavrão, ofensa, ameaça, conteúdo sexual ou golpe não é salvo. O app diz o que ajustar.
+- **Mensagens:** discurso de ódio, ameaça e conteúdo sexual envolvendo menores são bloqueados e não chegam à outra pessoa. Palavrão comum entre adultos é permitido.
+- **Possível golpe numa mensagem** (como pedir Pix ou dinheiro, ou mandar link encurtado): a mensagem é entregue, mas vira uma denúncia automática para a moderação, com o trecho e a conversa. Uma pessoa analisa; não há punição automática por isso.
+- O filtro pode errar. Se um texto seu for barrado sem motivo, fale com o suporte.
 
 ### O que a moderação analisa
 
 - A denúncia é analisada por nossa equipe de moderação, que pode ver o perfil, o @ do Instagram, as fotos (inclusive as recusadas), as denúncias e as decisões anteriores sobre a conta. A orientação sexual não aparece nas ferramentas da moderação.
-- Alertas automáticos, como a suspeita de localização falsa, também vão para a moderação, sem nenhuma coordenada. Uma pessoa analisa e decide; não há punição automática por eles.
-- Quando a denúncia é feita a partir de uma conversa, inclusive em Solicitações, a moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
+- Alertas automáticos, como a suspeita de localização falsa e a suspeita de golpe no chat, também vão para a moderação. O de localização vai sem nenhuma coordenada. Uma pessoa analisa e decide; não há punição automática por eles.
+- Quando a denúncia é feita a partir de uma conversa, inclusive em Solicitações, a moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia. O mesmo vale para a denúncia automática de possível golpe e para a denúncia do botão de emergência usado no chat.
 
 ### O que pode acontecer
 
@@ -207,7 +232,7 @@ O Metch **não verifica antecedentes criminais** e não confirma a identidade da
 - Não passe logo de cara seu endereço, local de trabalho ou rotina.
 - Pense bem antes de enviar fotos ou vídeos íntimos. Eles podem ser usados para chantagem.
 - Fique de olho na sua bebida e não a deixe sozinha.
-- Se algo parecer errado, vá embora e denuncie no app.
+- Se algo parecer errado, vá embora e denuncie no app. Se você estiver em perigo, use o botão 🆘 Emergência (seção 7).
 - Emergência: 190. Violência contra a mulher: 180.
 
 ## 12. Funcionamento do app

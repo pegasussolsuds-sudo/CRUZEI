@@ -1,7 +1,15 @@
-import { ORIENTATIONS, SHOW_ME } from '@cruzei/shared-types';
+import {
+  ANALYTICS_LIMITS,
+  GENDERS,
+  ORIENTATIONS,
+  PROFILE_LIMITS,
+  SHOW_ME,
+} from '@cruzei/shared-types';
 import { Body, Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsDateString,
   IsEnum,
@@ -17,6 +25,7 @@ import type { Request } from 'express';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AccessLogService } from '../account/access-log.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 import { AuthService } from './auth.service';
 import { requestMeta } from './phone-release.service';
@@ -30,9 +39,11 @@ class LoginDto {
 }
 class RegisterDto {
   @IsString() phone!: string;
-  @IsString() name!: string;
+  /** 2 a 50 letras depois de tirar os espaços (400 name_invalid); passa pelo filtro de abuso */
+  @IsString() @MaxLength(PROFILE_LIMITS.nameMax) name!: string;
   @IsDateString() birthDate!: string;
-  @IsEnum(['female', 'male', 'non_binary', 'other']) gender!: string;
+  /** Mulher/Homem/Outro; 'non_binary' ainda vem de app antigo e vira 'other' no service */
+  @IsIn([...GENDERS, 'non_binary']) gender!: string;
   /** opcional (null/ausente = não informar) */
   @IsOptional() @IsEnum([...ORIENTATIONS]) orientation?: string | null;
   @IsOptional()
@@ -47,6 +58,17 @@ class RegisterDto {
   @IsOptional() @IsEnum([...SHOW_ME]) showMe?: string;
   /** o app novo sempre manda; ausente (app antigo) = invisível com a janela grátis de 24 h, como antes */
   @IsOptional() @IsIn(['visible', 'anonymous']) visibilityMode?: 'visible' | 'anonymous';
+  /** etapas opcionais do cadastro: bio (vazia = sem bio), @ do Instagram (aceita @/link) e interesses (NOMES do catálogo) */
+  @IsOptional() @IsString() @MaxLength(PROFILE_LIMITS.bioMax) bio?: string;
+  @IsOptional() @IsString() @MaxLength(100) instagram?: string;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(PROFILE_LIMITS.interestsMax)
+  @IsString({ each: true })
+  @MaxLength(50, { each: true })
+  interests?: string[];
+  /** id anônimo da instalação (métricas do funil do cadastro); ausente = app antigo */
+  @IsOptional() @IsString() @MaxLength(ANALYTICS_LIMITS.installIdMax) installId?: string;
 }
 class RefreshDto {
   @IsString() refreshToken!: string;
@@ -65,6 +87,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly access: AccessLogService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   // Estrito — anti-bruteforce de SMS
@@ -116,8 +139,14 @@ export class AuthController {
       sameOrientationFirst: dto.sameOrientationFirst,
       showMe: dto.showMe,
       visibilityMode: dto.visibilityMode,
+      bio: dto.bio,
+      instagram: dto.instagram,
+      interests: dto.interests,
     });
     this.access.record(r.user.id, 'register', req);
+    // métricas: liga os eventos anônimos desta instalação à conta e grava 'signup_done' (nunca lança; não segura a
+    // resposta do cadastro)
+    void this.analytics.recordSignup(r.user.id, dto.installId);
     return r;
   }
 

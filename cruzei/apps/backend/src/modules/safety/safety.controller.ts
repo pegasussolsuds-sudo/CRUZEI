@@ -1,7 +1,9 @@
 import { Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { IsUrl } from 'class-validator';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+
 import { SafetyService } from './safety.service';
 
 class VerifyDto {

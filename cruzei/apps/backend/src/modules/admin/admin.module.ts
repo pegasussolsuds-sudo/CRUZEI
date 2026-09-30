@@ -9,6 +9,7 @@ import { UsersModule } from '../users/users.module';
 
 import { AdminCampaignsController } from './admin-campaigns.controller';
 import { AdminEventsController } from './admin-events.controller';
+import { AdminMetricsController } from './admin-metrics.controller';
 import { AdminPanelController } from './admin-panel.controller';
 import { AdminPlacesController } from './admin-places.controller';
 import { AdminPlacesService } from './admin-places.service';
@@ -18,6 +19,7 @@ import { AdminTask } from './admin.task';
 import { AuditService } from './audit.service';
 import { CampaignsService } from './campaigns.service';
 import { EventsService } from './events.service';
+import { MetricsService } from './metrics.service';
 import { StaffGuard } from './staff.guard';
 import { StatsService } from './stats.service';
 
@@ -39,6 +41,8 @@ import { StatsService } from './stats.service';
     AdminPlacesController,
     AdminEventsController,
     AdminCampaignsController,
+    // Métricas (funil do cadastro, retenção, ativos): só admin
+    AdminMetricsController,
   ],
   providers: [
     StaffGuard,
@@ -49,6 +53,7 @@ import { StatsService } from './stats.service';
     CampaignsService,
     EventsService,
     AdminTask,
+    MetricsService,
   ],
   exports: [AuditService, StaffGuard],
 })

@@ -20,6 +20,8 @@ import { useAppFonts } from './theme/fonts';
 import { SplashScreen } from './screens/auth/SplashScreen';
 import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
 import { cleanupLegacyMapbox } from './services/legacyMapboxCleanup';
+import { linkInstallToUser, trackAppOpen, trackOnboardingPhase, trackOnboardingRoute } from './services/analytics';
+import { navigationRef } from './navigation/navigationRef';
 import { applyConversationNew, applyMessageNew, applyPromoted, applyRead, applyRemoved, inboxKeys } from './hooks/useInbox';
 import { applyNotificationNew, notificationKeys, toAppNotification } from './hooks/useNotifications';
 import { applySupportMessage, supportKeys } from './hooks/useSupport';
@@ -120,6 +122,37 @@ export function App() {
   useEffect(() => {
     setSentryUser(user?.id ?? null);
   }, [user?.id]);
+
+  // métricas próprias: app_open 1x por dia (depois de hidratar a sessão, pra ir com a conta) e a cada volta pro app
+  // (virou o dia com o app aberto); logou/cadastrou → os eventos anônimos desta instalação passam a ser da conta
+  useEffect(() => {
+    if (isLoading) return;
+    void trackAppOpen();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') void trackAppOpen();
+    });
+    return () => sub.remove();
+  }, [isLoading]);
+  useEffect(() => {
+    if (user?.id) void linkInstallToUser(user.id);
+  }, [user?.id]);
+  // funil do cadastro: boas-vindas/telefone/código pela rota; avatar/fotos/primeiro mapa pela fase do cadastro
+  useEffect(() => {
+    const onRoute = () => {
+      if (navigationRef.isReady()) trackOnboardingRoute(navigationRef.getCurrentRoute()?.name);
+    };
+    const offReady = navigationRef.addListener('ready', onRoute);
+    const offState = navigationRef.addListener('state', onRoute);
+    onRoute();
+    return () => {
+      offReady();
+      offState();
+    };
+  }, []);
+  const onboardingPhase = useAuthStore((s) => s.onboardingStep);
+  useEffect(() => {
+    trackOnboardingPhase(onboardingPhase, mapReady);
+  }, [onboardingPhase, mapReady]);
 
   // Espelha o modo anônimo do servidor no store local
   useEffect(() => {

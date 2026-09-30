@@ -1,6 +1,6 @@
 // Config do avatar: default, validação/normalização (backend e app) e geração determinística (fakes, fallback).
 
-import type { AvatarColorSlot, AvatarConfig, AvatarItemSlot, AvatarTier } from '@cruzei/shared-types';
+import type { AvatarColorSlot, AvatarConfig, AvatarItemSlot, AvatarTier, Gender } from '@cruzei/shared-types';
 import {
   AVATAR_COLOR_SLOTS,
   AVATAR_ITEM_SLOTS,
@@ -106,7 +106,7 @@ function pick<T>(rnd: () => number, list: T[]): T {
 
 export interface RandomAvatarOptions {
   /** dá peso a cabelos/roupas mais comuns pro gênero informado (só preferência; qualquer combinação é válida) */
-  gender?: 'female' | 'male' | 'non_binary' | 'other' | null;
+  gender?: Gender | null;
   /** só itens free (default) ou todos */
   tiers?: ReadonlySet<AvatarTier>;
 }

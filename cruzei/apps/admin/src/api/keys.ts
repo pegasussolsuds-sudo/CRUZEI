@@ -5,6 +5,9 @@ import type { AuditParams, UserListParams } from './admin';
 
 export const qk = {
   stats: ['stats'] as const,
+  metricsFunnel: (days: number) => ['metrics', 'funnel', days] as const,
+  metricsRetention: (weeks: number) => ['metrics', 'retention', weeks] as const,
+  metricsActive: (days: number) => ['metrics', 'active', days] as const,
   users: (p: Omit<UserListParams, 'cursor'>) => ['users', p] as const,
   usersAll: ['users'] as const,
   userSearch: (q: string) => ['user-search', q] as const,
@@ -26,6 +29,8 @@ export const qk = {
   supportThreadsAll: ['support', 'threads'] as const,
   supportThread: (id: string) => ['support', 'thread', id] as const,
   supportLive: ['support', 'live'] as const,
+  /** urgentes valendo (botão de emergência): faixa vermelha e título da aba */
+  supportUrgent: ['support', 'urgent'] as const,
   staff: ['staff'] as const,
   poi: (id: string) => ['places', 'poi', id] as const,
 };
