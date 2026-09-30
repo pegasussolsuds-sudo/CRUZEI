@@ -1,2 +1,4 @@
 # Firebase (push FCM): cada máquina de build põe o seu; nunca no git
 google-services.json
+# cópia que o Gradle faz pro plugin do Google (android/app/build.gradle); a linha de cima já pega, fica explícito
+android/app/google-services.json

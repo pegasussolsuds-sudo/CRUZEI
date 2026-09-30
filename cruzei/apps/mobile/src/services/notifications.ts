@@ -242,18 +242,58 @@ export async function askPushPermissionOnce(): Promise<void> {
 
 // ───────────────────────────── toque na notificação ─────────────────────────────
 
-const handled = new Set<string>();
+// O mesmo toque volta por vários caminhos: listener + "última resposta" do app frio, reload do JS e, o pior, o sistema
+// matando o processo: o Android recria a tela com o intent antigo e o expo-notifications entrega o toque de novo (o
+// clearLastNotificationResponse morre junto com o processo). Por isso os ids já tratados ficam gravados no aparelho.
+const HANDLED_KEY = 'metch.pushHandled.v1';
+/** quantos toques lembrar (o id do FCM é curto: 20 cabem folgado no SecureStore) */
+export const HANDLED_MAX = 20;
 
-function handleResponse(res: Notifications.NotificationResponse | null, onRoute: (route: TargetRoute, notificationId: string | null) => void): void {
-  if (!res || res.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
-  // o mesmo toque pode vir pelos dois caminhos (listener e "última resposta" do app frio)
-  const id = res.notification.request.identifier;
-  if (id) {
-    if (handled.has(id)) return;
-    handled.add(id);
+/** lista gravada → ids (vazio, lixo ou formato estranho = lista vazia) */
+export function parseHandledTaps(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter((x): x is string => typeof x === 'string' && x.length > 0).slice(-HANDLED_MAX);
+  } catch {
+    return [];
   }
+}
+
+/** marca o toque: null se já foi tratado (repetido), senão a lista nova com só os últimos `max` */
+export function rememberTap(list: readonly string[], id: string, max = HANDLED_MAX): string[] | null {
+  if (list.includes(id)) return null;
+  return [...list, id].slice(-Math.max(1, max));
+}
+
+let handledIds: string[] | null = null;
+/** um toque por vez: o listener e a "última resposta" chegam juntos no app frio, com o mesmo id */
+let tapQueue: Promise<void> = Promise.resolve();
+
+/** true = toque novo (já gravado); false = repetido */
+async function claimTap(id: string): Promise<boolean> {
+  if (!handledIds) handledIds = parseHandledTaps(await SecureStore.getItemAsync(HANDLED_KEY).catch(() => null));
+  const next = rememberTap(handledIds, id);
+  if (!next) return false;
+  handledIds = next;
+  // grava antes de navegar: se o processo morrer logo depois, o toque não volta; se falhar, vale só nesta sessão
+  await SecureStore.setItemAsync(HANDLED_KEY, JSON.stringify(next)).catch(() => undefined);
+  return true;
+}
+
+function handleResponse(res: Notifications.NotificationResponse | null, onRoute: (route: TargetRoute, notificationId: string | null) => void): Promise<void> {
+  if (!res || res.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return Promise.resolve();
   const data = pushDataOf(res.notification as PushNotificationLike);
-  onRoute(routeForPush(data), data?.notificationId || null);
+  // o id do FCM (google.message_id) é o mesmo em todas as entregas do mesmo toque; sem ele, o id do aviso
+  const id = res.notification.request.identifier || (data?.notificationId ? `n:${data.notificationId}` : '');
+  tapQueue = tapQueue
+    .then(async () => {
+      if (id && !(await claimTap(id))) return;
+      onRoute(routeForPush(data), data?.notificationId || null);
+    })
+    .catch((e) => log('toque na notificação falhou', e));
+  return tapQueue;
 }
 
 /**
@@ -264,10 +304,10 @@ export function listenNotificationTaps(onRoute: (route: TargetRoute, notificatio
   const sub = Notifications.addNotificationResponseReceivedListener((res) => handleResponse(res, onRoute));
   Notifications.getLastNotificationResponseAsync()
     .then((res) => {
-      handleResponse(res, onRoute);
-      // senão o mesmo toque volta num reload do JS
-      if (res) return Notifications.clearLastNotificationResponseAsync();
-      return undefined;
+      const done = handleResponse(res, onRoute);
+      // senão o mesmo toque volta num reload do JS (depois que o processo morre, quem segura é a lista gravada)
+      if (res) return Promise.all([done, Notifications.clearLastNotificationResponseAsync()]).then(() => undefined);
+      return done;
     })
     .catch((e) => log('última resposta indisponível', e));
   return () => sub.remove();

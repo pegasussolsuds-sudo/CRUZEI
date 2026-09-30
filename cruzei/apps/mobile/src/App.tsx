@@ -101,6 +101,12 @@ export function App() {
     if (user?.settings) setAnonymous(user.settings.visibilityMode === 'anonymous');
   }, [user?.settings, setAnonymous]);
 
+  // logado sem o /me (servidor fora no boot): o padrão local "anônimo" não pode travar Mensagens/curtidas nem dizer
+  // "oculto do mapa" — o erro seguro é mostrar visível até o /me chegar (o efeito acima corrige na hora)
+  useEffect(() => {
+    if (isAuthenticated && !user) setAnonymous(false);
+  }, [isAuthenticated, user, setAnonymous]);
+
   // Socket global: mantém listas sincronizadas mesmo fora da tela de chat
   useEffect(() => {
     if (!isAuthenticated) {
@@ -119,6 +125,14 @@ export function App() {
         queryClient.invalidateQueries({ queryKey: ['messages'] });
         queryClient.invalidateQueries({ queryKey: notificationKeys.all });
         queryClient.invalidateQueries({ queryKey: supportKeys.all });
+        // o que falhou com o servidor fora (pessoas no mapa, bairro, curtidas…) busca de novo agora, sem esperar o
+        // próximo ciclo — só as que estão em erro, com até 2 s de atraso pra não voltar todo mundo no mesmo segundo
+        setTimeout(
+          () => queryClient.invalidateQueries({ predicate: (q) => q.state.status === 'error' }),
+          Math.random() * 2_000,
+        );
+        // boot sem rede deixou a sessão sem perfil: o servidor voltou, busca o /me agora
+        void useAuthStore.getState().ensureMe();
       });
       // central de avisos: aviso novo entra na lista e aparece no topo (o push em primeiro plano cai no mesmo lugar)
       socket.on('notification:new', (p) => {
@@ -130,6 +144,11 @@ export function App() {
           queryClient.invalidateQueries({ queryKey: ['me'] });
           useAuthStore.getState().refreshMe().catch(() => {});
         }
+      });
+      // Premium dado/tirado com o "avisar a pessoa" desligado não gera aviso: o sinal silencioso atualiza o /me igual
+      socket.on('account:changed', () => {
+        queryClient.invalidateQueries({ queryKey: ['me'] });
+        useAuthStore.getState().refreshMe().catch(() => {});
       });
       // lugar entrou/saiu do mapa: busca de novo sem esperar o refetch de 45 s — com atraso aleatório de até 3 s pra
       // os apps abertos não baterem todos no mesmo segundo
@@ -189,6 +208,8 @@ export function App() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => {
       if (s === 'active') ensureSocketAlive();
+      // e se o /me nunca veio (abriu sem rede), tenta de novo — o retry do store pausa em segundo plano
+      if (s === 'active') void useAuthStore.getState().ensureMe();
     });
     return () => sub.remove();
   }, []);

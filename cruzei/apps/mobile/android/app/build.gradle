@@ -182,3 +182,17 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+// Push FCM: o google-services.json do Firebase fica em apps/mobile/ (fora do git; cada máquina de build põe o seu).
+// Com ele, copia pra android/app/ (onde o plugin do Google procura; a cópia também fica fora do git) e liga o plugin,
+// que gera os recursos do Firebase. Sem ele, o build fica igual e o push fica desligado (o registro do token só loga).
+// O classpath do plugin é condicional no android/build.gradle, com a mesma checagem.
+def googleServicesJson = rootProject.file('../google-services.json')
+if (googleServicesJson.exists()) {
+    def googleServicesCopy = file('google-services.json')
+    def json = googleServicesJson.bytes
+    if (!googleServicesCopy.exists() || !java.util.Arrays.equals(googleServicesCopy.bytes, json)) {
+        googleServicesCopy.bytes = json
+    }
+    apply plugin: 'com.google.gms.google-services'
+}

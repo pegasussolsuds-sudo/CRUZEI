@@ -19,6 +19,8 @@ interface PanelServerEvents {
   'support:typing': (data: SupportTypingEvent) => void;
   /** lugar entrou/saiu do mapa (evento publicado/cancelado, lugar aprovado/oculto pelo painel) */
   'pois:changed': (data: { at: number }) => void;
+  /** a própria conta mudou no painel (Premium dado/tirado, com ou sem aviso visível): busca o /me de novo */
+  'account:changed': (data: { reason: 'premium' }) => void;
 }
 interface PanelClientEvents {
   /** "digitando" da pessoa no atendimento aberto (o servidor acha o atendimento pela sessão) */

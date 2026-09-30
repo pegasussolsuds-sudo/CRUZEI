@@ -98,11 +98,12 @@
           "defaultChannel": "default"
         }
       ],
-      "@sentry/react-native/expo"
+      "@sentry/react-native/expo",
+      "./plugins/with-local-cleartext"
     ],
     "extra": {
-      "apiBaseUrl": "http://192.168.1.8:3000/v1",
-      "wsUrl": "ws://192.168.1.8:3000"
+      "apiBaseUrl": "http://127.0.0.1:3000/v1",
+      "wsUrl": "ws://127.0.0.1:3000"
     },
     "backgroundColor": "#0A0A1A"
   }

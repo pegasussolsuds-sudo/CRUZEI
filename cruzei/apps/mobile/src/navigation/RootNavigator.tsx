@@ -35,6 +35,7 @@ import { askPushPermissionOnce } from '../services/notifications';
 import { MainTabs, type MainTabParamList } from './MainTabs';
 import { navigationRef } from './navigationRef';
 import { openTargetRoute } from './openTarget';
+import { navBarScreenLayout } from './NavBarBackdrop';
 import { colors } from '@cruzei/ui-mobile';
 
 export type RootStackParamList = {
@@ -71,6 +72,9 @@ const lightHeader = {
 
 /** tempo no mapa, depois de ele carregar pela 1ª vez, antes da explicação do push (nunca no primeiro segundo do app) */
 const PUSH_ASK_DELAY_MS = 8000;
+
+// telas claras por cima das abas: faixa escura sob os 3 botões do Android (Main já tem a tab bar escura embaixo)
+const screenLayout = navBarScreenLayout(['Main']);
 
 // rotas com fundo/header escuro (inclusive aninhadas: Paywall é aba, Chat está no InboxStack) → ícones claros na status bar
 const DARK_ROUTES = new Set(['UserCard', 'Boost', 'AvatarSetup', 'PhotoUpload', 'Paywall', 'Chat']);
@@ -135,6 +139,7 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
     <NavigationContainer ref={navRef} onReady={onNavReady} onStateChange={syncRoute}>
       <StatusBar style={barStyle} />
       <Stack.Navigator
+        screenLayout={screenLayout}
         // logo após o cadastro entra pela etapa pendente (avatar → fotos); nas demais aberturas, direto no mapa
         initialRouteName={
           !isAuthenticated ? 'Onboarding' : onboardingStep === 'avatar' ? 'AvatarSetup' : onboardingStep === 'photo' ? 'PhotoUpload' : 'Main'

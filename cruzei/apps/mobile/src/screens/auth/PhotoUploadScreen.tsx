@@ -485,6 +485,9 @@ export function PhotoUploadScreen() {
   const qc = useQueryClient();
   const { width: screenW } = useWindowDimensions();
   const setUser = useAuthStore((s) => s.setUser);
+  // aberta pelo Perfil (tem pra onde voltar e não é a etapa do cadastro): rodapé de edição, sem "Continuar"/"Pular"
+  const onboardingPhoto = useAuthStore((s) => s.onboardingStep === 'photo');
+  const [editing] = useState(() => !fromOnboarding && !onboardingPhoto && nav.canGoBack());
 
   const gridW = screenW - H_PAD * 2;
   const cellW = Math.floor((gridW - GAP * (COLS - 1)) / COLS);
@@ -872,25 +875,27 @@ export function PhotoUploadScreen() {
               disabled={!canContinue}
               glowColor={canContinue ? colors.primary : undefined}
               accessibilityRole="button"
-              accessibilityLabel={canContinue ? 'Continuar' : 'Continuar, adicione ao menos uma foto'}
+              accessibilityLabel={editing ? 'Pronto' : canContinue ? 'Continuar' : 'Continuar, adicione ao menos uma foto'}
               accessibilityState={{ disabled: !canContinue }}
               style={canContinue ? styles.cta : [styles.cta, styles.ctaDisabled]}
             >
               <Text style={[styles.ctaText, !canContinue ? styles.ctaTextDisabled : null]}>
-                {count === 0 ? 'Adiciona uma foto pra continuar' : 'Continuar'}
+                {count === 0 ? 'Adiciona uma foto pra continuar' : editing ? 'Pronto' : 'Continuar'}
               </Text>
-              {canContinue ? <Ionicons name="arrow-forward" size={22} color={colors.black} /> : null}
+              {canContinue ? <Ionicons name={editing ? 'checkmark' : 'arrow-forward'} size={22} color={colors.black} /> : null}
             </ScaleOnPress>
           </Glow>
-          <ScaleOnPress
-            onPress={finish}
-            haptic={false}
-            accessibilityRole="button"
-            accessibilityLabel="Pular por agora"
-            style={styles.skip}
-          >
-            <Text style={styles.skipText}>Pular por agora</Text>
-          </ScaleOnPress>
+          {editing ? null : (
+            <ScaleOnPress
+              onPress={finish}
+              haptic={false}
+              accessibilityRole="button"
+              accessibilityLabel="Pular por agora"
+              style={styles.skip}
+            >
+              <Text style={styles.skipText}>Pular por agora</Text>
+            </ScaleOnPress>
+          )}
         </FadeInView>
       </SafeAreaView>
     </View>

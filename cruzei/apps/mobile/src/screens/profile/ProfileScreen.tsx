@@ -635,7 +635,8 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
-    backgroundColor: 'rgba(250,250,250,0.96)',
+    // opaco: com a barra visível, os títulos da lista ("SEGURANÇA"…) não podem vazar por baixo dela
+    backgroundColor: colors.background,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.gray[200],
   },

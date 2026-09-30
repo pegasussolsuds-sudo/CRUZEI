@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 import BottomSheet, { BottomSheetFlatList, BottomSheetFooter, type BottomSheetFooterProps } from '@gorhom/bottom-sheet';
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
@@ -13,6 +13,7 @@ import { LiveDot } from '../animated/LiveDot';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PersonRow } from './PersonRow';
 import { invisibleSummary } from './invisible';
+import { nearbyFailCopy, nearbyNetState, nearbyStaleA11y, nearbyStaleText, type NearbyFailKind } from './nearbyStatus';
 
 export const SHEET_SNAP_POINTS: string[] = ['22%', '68%'];
 export const SHEET_SNAP_FRACTIONS = [0.22, 0.68] as const;
@@ -58,6 +59,15 @@ export interface MapBottomSheetProps {
   radiusM: number;
   isFree: boolean;
   isLoading: boolean;
+  /** a última busca de pessoas falhou (servidor fora / sem rede) */
+  isOffline?: boolean;
+  /** por que falhou: sem resposta (rede) ou erro do servidor (ocupado) — muda o texto do aviso */
+  failKind?: NearbyFailKind;
+  /** quando a lista na tela chegou do servidor (ms); 0 = não tem lista */
+  updatedAt?: number;
+  /** tentando buscar de novo depois da falha */
+  isRetrying?: boolean;
+  onRetry?: () => void;
   /** altura da área do mapa (a mesma base dos percentuais dos snap points) */
   containerHeight: number;
   /** altura real da lista recolhida em px, depois de medir o conteúdo (0 = ainda não mediu) */
@@ -91,7 +101,7 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
 ];
 
 export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
-  { users, bandById, hiddenCount = 0, invisibleTotal = 0, radiusM, isFree, isLoading, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
+  { users, bandById, hiddenCount = 0, invisibleTotal = 0, radiusM, isFree, isLoading, isOffline = false, failKind = 'network', updatedAt = 0, isRetrying = false, onRetry, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
@@ -117,6 +127,17 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     [],
   );
 
+  // /location/nearby fora: sem lista → aviso com "Tentar de novo" no lugar dos filtros; com lista → idade dela no topo
+  const net = nearbyNetState(isOffline, updatedAt);
+  // "atualizado há X min" anda sozinho enquanto a conexão não volta (o MapScreen só re-renderiza a cada tentativa)
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (net !== 'stale') return;
+    const id = setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, [net]);
+  const now = Date.now();
+
   const rankOf = useCallback((u: NearbyUser) => proximityRank(bandById.get(u.id) ?? u.proximityBand), [bandById]);
 
   const filtered = useMemo(() => {
@@ -135,7 +156,10 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
 
   // " · 👻 N invisíveis por perto" só no resumo geral (Premium; grátis = '')
   const invisibleText = groupFilter || poiFilter ? '' : invisibleSummary(invisibleTotal);
-  const title = groupFilter
+  const failCopy = nearbyFailCopy(failKind);
+  const title = net === 'offline'
+    ? failCopy.title
+    : groupFilter
     ? groupFilter.label
     : poiFilter
       ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
@@ -178,13 +202,22 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     <View style={styles.header} onLayout={onHeaderLayout}>
       <View style={styles.titleRow}>
         {/* com os invisíveis o resumo passa de uma linha nos 360 dp: quebra em vez de cortar (a altura recolhida é medida) */}
-        <Text style={styles.title} numberOfLines={invisibleText ? 2 : 1} accessibilityRole="header">
-          👥 {title}
+        <Text style={styles.title} numberOfLines={invisibleText || net === 'offline' ? 2 : 1} accessibilityRole="header">
+          {net === 'offline' ? failCopy.emoji : '👥'} {title}
         </Text>
         {isLoading ? (
           <LiveDot size={8} style={styles.loadingDot} />
         ) : null}
       </View>
+      {/* lista antiga na tela: aviso discreto de uma linha só, sem botão (a busca segue tentando sozinha) */}
+      {net === 'stale' ? (
+        <View style={styles.staleRow} accessible accessibilityLabel={nearbyStaleA11y(updatedAt, now, failKind)}>
+          <Ionicons name="cloud-offline-outline" size={14} color={colors.warning} />
+          <Text style={styles.staleText} numberOfLines={1}>
+            {nearbyStaleText(updatedAt, now, failKind)}
+          </Text>
+        </View>
+      ) : null}
       {groupFilter ? (
         <Pressable onPress={onClearGroupFilter} accessibilityRole="button" accessibilityLabel="Limpar filtro do grupo" style={styles.poiChip}>
           <Ionicons name="close-circle" size={16} color={colors.secondary} />
@@ -197,24 +230,46 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
           <Text style={styles.poiChipText}>ver todo mundo por perto</Text>
         </Pressable>
       ) : null}
-      <View style={styles.chips} accessibilityRole="tablist">
-        {FILTERS.map((f) => {
-          const active = filter === f.key;
-          return (
-            <ScaleOnPress
-              key={f.key}
-              haptic={false}
-              onPress={() => setFilter(f.key)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={`Filtro ${f.label}`}
-              style={active ? [styles.chip, styles.chipActive] : styles.chip}
-            >
-              <Text style={[styles.chipText, active && styles.chipTextActive]}>{f.label}</Text>
-            </ScaleOnPress>
-          );
-        })}
-      </View>
+      {net === 'offline' ? (
+        // sem lista pra filtrar: o aviso entra no lugar dos filtros, na mesma altura (44), e aparece com a sheet recolhida
+        <View style={styles.offlineRow}>
+          <ScaleOnPress
+            onPress={onRetry}
+            disabled={isRetrying || !onRetry}
+            accessibilityRole="button"
+            accessibilityLabel="Tentar de novo"
+            accessibilityState={{ busy: isRetrying, disabled: isRetrying || !onRetry }}
+            style={styles.retryBtn}
+          >
+            <View style={styles.retryIcon}>
+              {isRetrying ? <ActivityIndicator size="small" color={colors.primary} /> : <Ionicons name="refresh" size={18} color={colors.primary} />}
+            </View>
+            <Text style={styles.retryText}>Tentar de novo</Text>
+          </ScaleOnPress>
+          <Text style={styles.offlineHint} numberOfLines={2}>
+            {failCopy.hint}
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.chips} accessibilityRole="tablist">
+          {FILTERS.map((f) => {
+            const active = filter === f.key;
+            return (
+              <ScaleOnPress
+                key={f.key}
+                haptic={false}
+                onPress={() => setFilter(f.key)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`Filtro ${f.label}`}
+                style={active ? [styles.chip, styles.chipActive] : styles.chip}
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{f.label}</Text>
+              </ScaleOnPress>
+            );
+          })}
+        </View>
+      )}
     </View>
   );
 
@@ -229,7 +284,8 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
         ? 'Ninguém bem perto agora'
         : 'Ninguém por perto ainda 👀';
   const emptyText = groupFilter || poiFilter || filter !== 'all' ? 'Tira o filtro pra ver todo mundo' : 'Os hotspots da cidade continuam vivos no mapa';
-  const empty = !isLoading ? (
+  // sem conexão e sem lista: o aviso do cabeçalho já diz tudo (nada de "Ninguém por perto" com servidor fora)
+  const empty = !isLoading && net !== 'offline' ? (
     <FadeInView fromY={12} style={styles.empty}>
       <Text style={styles.emptyTitle}>{emptyTitle}</Text>
       <Text style={styles.emptyText}>{emptyText}</Text>
@@ -277,6 +333,13 @@ const styles = StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   title: { ...typography.h3, color: colors.black, flexShrink: 1 },
   loadingDot: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center' },
+  staleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  staleText: { ...typography.caption, color: colors.gray[600], flexShrink: 1 },
+  offlineRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, minHeight: 44 },
+  retryBtn: { height: 44, paddingHorizontal: spacing.lg, borderRadius: radius.full, backgroundColor: colors.black, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  retryIcon: { width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
+  retryText: { ...typography.label, color: colors.primary },
+  offlineHint: { ...typography.bodySmall, color: colors.gray[600], flex: 1 },
   poiChip: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, alignSelf: 'flex-start', minHeight: 44 },
   poiChipText: { ...typography.caption, color: colors.secondary },
   chips: { flexDirection: 'row', gap: spacing.sm },

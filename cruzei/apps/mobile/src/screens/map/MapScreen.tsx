@@ -347,6 +347,10 @@ export function MapScreen() {
       })
       .catch(() => {});
   }, [noPresence, active, lat, lng, refetchNearby]);
+  // "Tentar de novo" da sheet quando o /nearby falha (o evento do toque não vai pro refetch como opção)
+  const retryNearby = useCallback(() => {
+    refetchNearby();
+  }, [refetchNearby]);
 
   // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no mapa por chave)
   // só quem tem posição VISUAL (o servidor omite o marcador de quem está em região esparsa)
@@ -1163,6 +1167,14 @@ export function MapScreen() {
   const ornamentBottom = listSheetH(0) + 6;
   const peopleCount = users.length;
   const listLoading = Boolean(queryCenter) && (nearbyQuery.isPending || nearbyQuery.isPlaceholderData);
+  // /nearby falhou (servidor fora / sem rede): a sheet avisa em vez de "0 pessoas" ou lista velha com cara de atual.
+  // isFetching e dataUpdatedAt só são lidos depois de uma falha: o react-query re-renderiza pelo que a tela leu, e o
+  // dataUpdatedAt muda a cada /nearby que dá certo (mesmo com a resposta igual)
+  const nearbyError = nearbyQuery.isError;
+  const nearbyUpdatedAt = nearbyError && nearbyQuery.data ? nearbyQuery.dataUpdatedAt : 0;
+  const nearbyRetrying = nearbyError && nearbyQuery.isFetching;
+  // sem resposta = rede; com status (503 "muita gente procurando", 429, 5xx) = servidor no ar, só ocupado
+  const nearbyFailKind = nearbyError && toApiError(nearbyQuery.error).status !== undefined ? 'server' : 'network';
 
   return (
     <View style={styles.container} onLayout={onLayout}>
@@ -1277,6 +1289,11 @@ export function MapScreen() {
         radiusM={radiusM}
         isFree={isFree}
         isLoading={listLoading}
+        isOffline={nearbyError}
+        failKind={nearbyFailKind}
+        updatedAt={nearbyUpdatedAt}
+        isRetrying={nearbyRetrying}
+        onRetry={retryNearby}
         containerHeight={containerH}
         onPeekHeight={setPeekH}
         poiFilter={poiFilter}

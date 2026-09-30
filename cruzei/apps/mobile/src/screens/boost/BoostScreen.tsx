@@ -100,7 +100,7 @@ function friendlyBoostError(err: unknown): string {
   if (e.status === 402 || msg.includes('payment') || msg.includes('receipt')) {
     return 'O pagamento não rolou. Dá uma conferida e tenta de novo.';
   }
-  if (e.error === 'unknown' || msg.includes('network') || msg.includes('timeout')) {
+  if (e.error === 'network_error' || e.error === 'timeout' || e.error === 'unknown') {
     return 'Sem sinal por aqui. Confere a internet e tenta de novo 📡';
   }
   return e.message || 'Não deu pra ativar agora. Tenta de novo em instantes.';

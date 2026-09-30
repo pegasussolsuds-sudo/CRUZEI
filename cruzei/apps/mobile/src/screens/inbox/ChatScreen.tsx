@@ -99,6 +99,15 @@ function rateLimitText(err: unknown): string {
   return `Calma: muita mensagem em pouco tempo. ${s ? `Tenta de novo em ${s} s.` : 'Espera um pouquinho e tenta de novo.'}`;
 }
 
+/** motivo do histórico que não veio: 5xx de proxy (HTML, sem corpo nosso) cairia no inglês do axios */
+function historyErrorText(err: unknown): string {
+  const e = toApiError(err);
+  if ((e.status ?? 0) >= 500 || /^Request failed with status code/.test(e.message)) {
+    return 'O servidor tá com problema agora. Tenta de novo.';
+  }
+  return e.message;
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // Read receipt: ✓ cinza → ✓✓ verde-limão com crossfade + bounce quando readAt chega
 // ───────────────────────────────────────────────────────────────────────────────
@@ -739,6 +748,10 @@ function ChatScreenInner() {
 
   // o 1º envio do rascunho já mostra o balão enquanto o histórico da conversa nova carrega
   const loading = resolving || (Boolean(conversationId) && historyQuery.isLoading && outbox.length === 0);
+  // conversa que já existe e o histórico não veio (rede, timeout): sem isso caía no "Manda a primeira mensagem"
+  const historyFailed = Boolean(conversationId) && historyQuery.isError && !historyQuery.data && outbox.length === 0;
+  // só lido depois da falha: ler isFetching sempre re-renderizaria o chat a cada refetch do histórico
+  const refetchingHistory = historyFailed && historyQuery.isFetching;
 
   return (
     // sem borda de baixo: a barra de abas já fica embaixo e cuida da barra de navegação do Android (edge-to-edge)
@@ -748,6 +761,28 @@ function ChatScreenInner() {
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator color={colors.primary} />
+          </View>
+        ) : historyFailed ? (
+          <View style={styles.emptyChat}>
+            <FadeInView fromScale={0.8} fromY={8}>
+              <Ionicons name="cloud-offline-outline" size={48} color={colors.gray[300]} />
+            </FadeInView>
+            <FadeInView delay={80} fromY={8} style={styles.loadError}>
+              <Text style={styles.emptyChatTitle} accessibilityRole="header">
+                Não deu pra carregar a conversa
+              </Text>
+              <Text style={styles.emptyChatText}>{historyErrorText(historyQuery.error)}</Text>
+              <ScaleOnPress
+                onPress={() => void historyQuery.refetch()}
+                disabled={refetchingHistory}
+                style={styles.retryBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Tentar de novo"
+                accessibilityState={{ disabled: refetchingHistory, busy: refetchingHistory }}
+              >
+                {refetchingHistory ? <ActivityIndicator color={colors.black} /> : <Text style={styles.retryText}>Tentar de novo</Text>}
+              </ScaleOnPress>
+            </FadeInView>
           </View>
         ) : (
           <FlatList
@@ -967,6 +1002,18 @@ const styles = StyleSheet.create({
   emptyChat: { alignItems: 'center', padding: spacing.xl, gap: spacing.sm, flex: 1, justifyContent: 'center' },
   emptyChatTitle: { ...typography.h3, color: colors.black, textAlign: 'center', marginTop: spacing.sm },
   emptyChatText: { ...typography.body, color: colors.gray[500], textAlign: 'center', marginTop: spacing.xs },
+  loadError: { alignItems: 'center' },
+  retryBtn: {
+    marginTop: spacing.lg,
+    minHeight: 44,
+    minWidth: 160,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.full,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  retryText: { ...typography.label, color: colors.black },
 
   error: { ...typography.bodySmall, color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.lg, paddingBottom: spacing.xs },
   limit: { flexDirection: 'row', gap: spacing.sm, padding: spacing.lg, backgroundColor: colors.gray[100], alignItems: 'center', justifyContent: 'center' },

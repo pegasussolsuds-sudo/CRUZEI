@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { api } from './api';
 
@@ -23,8 +24,13 @@ export function explainPhotoPermission(err: PhotoPermissionError, alert: AlertFn
 }
 
 export async function pickPhoto(): Promise<string | null> {
-  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-  if (!perm.granted) throw new PhotoPermissionError(perm.canAskAgain);
+  // Android: o seletor do sistema (Photo Picker, ou "abrir arquivo" nos antigos) não precisa de permissão. Pedir aqui
+  // quebrava o Android 7–12: abaixo da API 33 o pedido vira READ/WRITE_EXTERNAL_STORAGE, que o manifesto remove de
+  // propósito, então voltava sempre "negado". No iOS continua pedindo o acesso às fotos.
+  if (Platform.OS !== 'android') {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) throw new PhotoPermissionError(perm.canAskAgain);
+  }
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ImagePicker.MediaTypeOptions.Images,
     allowsEditing: true,

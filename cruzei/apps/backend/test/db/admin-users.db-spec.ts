@@ -133,6 +133,19 @@ describe('Premium manual', () => {
     });
   });
 
+  it('sem "avisar a pessoa": nada na central nem push, mas o app aberto recebe o sinal pra buscar o /me', async () => {
+    await svc.setPremium(actor(adminId, 'admin'), userId, { tier: 'premium', days: 7, reason: 'teste', notify: false });
+    expect(await prisma.notification.count({ where: { userId } })).toBe(0);
+    expect(push.sent).toHaveLength(0);
+    expect(emittedTo(gateway, userId, 'notification:new')).toHaveLength(0);
+    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([{ event: 'account:changed', payload: { reason: 'premium' } }]);
+
+    // tirar também avisa o app (o convite pra assinar volta sem precisar reabrir)
+    gateway.emitToUser.mockClear();
+    await svc.setPremium(actor(adminId, 'admin'), userId, { tier: 'free', days: null, reason: 'fim', notify: false });
+    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([{ event: 'account:changed', payload: { reason: 'premium' } }]);
+  });
+
   it('sem vencimento: users.premium_expires_at null e a linha vence em 2099; trocar substitui a manual vigente', async () => {
     await svc.setPremium(actor(adminId, 'admin'), userId, {
       tier: 'premium',

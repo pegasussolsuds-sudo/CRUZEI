@@ -347,6 +347,8 @@ export class AdminUsersService {
     });
     if (p.tier === 'free') await this.users.downgradeAvatarToFree(userId);
     await this.redis.invalidateProfile(userId); // /me em cache estava com o plano antigo
+    // app aberto busca o /me de novo na hora, mesmo com "avisar a pessoa" desligado (sem aviso, sem push)
+    this.gateway.emitToUser(userId, 'account:changed', { reason: 'premium' });
     await this.audit.record(
       admin.id,
       p.tier === 'free' ? 'admin.user.premium_remove' : 'admin.user.premium_grant',

@@ -3,6 +3,7 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'r
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing, typography } from '@cruzei/ui-mobile';
 import type { PrivateArea } from '@cruzei/shared-types';
@@ -41,7 +42,8 @@ export function PrivateAreasScreen() {
       qc.invalidateQueries({ queryKey: ['private-areas'] });
       qc.invalidateQueries({ queryKey: ['nearby'] });
     },
-    onError: (err) => Alert.alert('Não deu', err instanceof Error && !('response' in err) ? err.message : toApiError(err).message),
+    // erro do axios (rede em pt-BR, corpo do servidor) ou o Error lançado aqui mesmo (sem localização…)
+    onError: (err) => Alert.alert('Não deu', axios.isAxiosError(err) ? toApiError(err).message : (err as Error).message),
   });
 
   const remove = useMutation({

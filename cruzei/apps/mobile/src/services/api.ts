@@ -144,8 +144,20 @@ export interface ApiError {
   status?: number;
 }
 
+/** requisição sem resposta nenhuma (sem rede, servidor fora do ar, túnel caído) */
+export const NETWORK_ERROR_MESSAGE = 'Sem conexão com o servidor. Tenta de novo.';
+/** o servidor não respondeu dentro do timeout do axios */
+export const TIMEOUT_ERROR_MESSAGE = 'O servidor demorou demais pra responder. Tenta de novo.';
+
 export function toApiError(err: unknown): ApiError {
   if (axios.isAxiosError(err)) {
+    // sem resposta: o texto do axios ("Network Error", "timeout of 15000ms exceeded") é inglês cru e vazava na tela.
+    // status fica undefined de propósito: várias telas usam !status pra reconhecer falta de rede
+    if (!err.response) {
+      if (err.code === AxiosError.ERR_CANCELED) return { error: 'canceled', message: 'Requisição cancelada.' };
+      const timedOut = err.code === AxiosError.ETIMEDOUT || (err.code === AxiosError.ECONNABORTED && /timeout/i.test(err.message));
+      return timedOut ? { error: 'timeout', message: TIMEOUT_ERROR_MESSAGE } : { error: 'network_error', message: NETWORK_ERROR_MESSAGE };
+    }
     const data = err.response?.data as Partial<ApiError & { message: string | string[] }> | undefined;
     const msg = Array.isArray(data?.message) ? data?.message.join(', ') : data?.message;
     return {

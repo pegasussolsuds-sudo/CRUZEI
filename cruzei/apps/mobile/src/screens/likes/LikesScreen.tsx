@@ -135,15 +135,18 @@ export function LikesScreen() {
           qc.invalidateQueries({ queryKey: inboxKeys.all });
         }
       } catch (err) {
-        if (isMessagingLockedError(err)) {
-          // o cartão já tinha saído: volta pro deck
+        const e = toApiError(err);
+        // o cartão já tinha saído: volta pro deck (sem rede, timeout, 5xx, limite, invisível), senão a curtida se perdia.
+        // Só fica fora quando o servidor recusou ESSA pessoa (404 sumiu/anônima, 400 bloqueio): voltar só repetiria o erro
+        if (e.status !== 404 && e.status !== 400) {
           setActed((s) => {
             const next = new Set(s);
             next.delete(card.id);
             return next;
           });
-          askInvisibleLike(true);
-        } else setError(toApiError(err).message);
+        }
+        if (isMessagingLockedError(err)) askInvisibleLike(true);
+        else setError(e.status === 429 ? 'Calma aí: rápido demais. Espera um pouquinho e tenta de novo.' : e.message);
       }
     },
     [likeMutation, progress, qc, queue, likeLocked, askInvisibleLike],

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- gerado por plugins/with-local-cleartext.js: debug fala HTTP com o servidor de dev em qualquer endereço -->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

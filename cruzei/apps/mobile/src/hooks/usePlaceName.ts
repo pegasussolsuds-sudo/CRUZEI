@@ -32,6 +32,8 @@ export function usePlaceName(lat: number | null, lng: number | null): string {
     staleTime: 10 * 60_000,
     gcTime: 60 * 60_000,
     retry: 1,
+    // falhou (abriu sem rede / servidor fora): tenta de novo a cada 30 s, senão fica "Por perto" até a pessoa andar 1 km
+    refetchInterval: (q) => (q.state.status === 'error' ? 30_000 : false),
     queryFn: () => fetchPlaceName(geohash as string),
   });
 

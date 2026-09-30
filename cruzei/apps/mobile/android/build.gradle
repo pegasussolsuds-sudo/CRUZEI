@@ -1,6 +1,9 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 buildscript {
+  // Push FCM: o plugin do Google só entra com o google-services.json em apps/mobile/ (fora do git). Sem o arquivo,
+  // nada novo é baixado e o build fica igual. O app/build.gradle faz a mesma checagem pra aplicar o plugin.
+  def googleServicesJson = file('../google-services.json')
   repositories {
     google()
     mavenCentral()
@@ -9,6 +12,9 @@ buildscript {
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
     classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    if (googleServicesJson.exists()) {
+      classpath('com.google.gms:google-services:4.4.4')
+    }
   }
 }
 
