@@ -148,12 +148,14 @@ export function CodeScreen() {
       try {
         // deferAuth: o RootNavigator só troca pra Main depois do commitAuth (deixa o check animar)
         const result = await verifyCode(phone, value, { deferAuth: true });
-        pendingCommit.current = !result.isNew;
+        // sessão aberta só quando não é conta nova nem conta parada ("Essa conta é sua?")
+        pendingCommit.current = !result.isNew && !result.claim;
         setVerified(true);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         playVerified();
         holdRef.current = setTimeout(() => {
-          if (result.isNew) nav.replace('Register', { phone });
+          if (result.claim) nav.replace('ClaimAccount', { phone, claim: result.claim });
+          else if (result.isNew) nav.replace('Register', { phone, released: result.released });
           else {
             pendingCommit.current = false;
             commitAuth();

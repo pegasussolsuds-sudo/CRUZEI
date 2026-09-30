@@ -100,7 +100,8 @@ export class CampaignsService {
     let target: NotificationTarget | null = null;
     if (p.target != null) {
       target = parseTarget(p.target);
-      if (!target)
+      // match é pessoal (push social): o painel não aponta pra ele
+      if (!target || target.kind === 'match')
         throw new BadRequestException({
           error: 'invalid_target',
           message: 'Destino do toque inválido',

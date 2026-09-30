@@ -1,4 +1,4 @@
-import type { LegalSlug, ProximityBand } from '@cruzei/shared-types';
+import type { AccountClaim, LegalSlug, PhoneReleaseReason, ProximityBand } from '@cruzei/shared-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -10,6 +10,7 @@ import { useAuthStore } from '../stores/auth';
 import { WelcomeScreen } from '../screens/auth/WelcomeScreen';
 import { PhoneScreen } from '../screens/auth/PhoneScreen';
 import { CodeScreen } from '../screens/auth/CodeScreen';
+import { ClaimAccountScreen } from '../screens/auth/ClaimAccountScreen';
 import { ProfileSetupScreen } from '../screens/auth/ProfileSetupScreen';
 import { PhotoUploadScreen } from '../screens/auth/PhotoUploadScreen';
 import { AvatarCustomizerScreen } from '../screens/avatar/AvatarCustomizerScreen';
@@ -24,6 +25,7 @@ import { ModerationUserScreen } from '../screens/moderation/ModerationUserScreen
 import { NotificationsScreen } from '../screens/notifications/NotificationsScreen';
 import { SupportChatScreen } from '../screens/support/SupportChatScreen';
 import { InAppNoticeHost } from '../components/notifications/InAppNoticeHost';
+import { MatchCelebrationHost } from '../components/MatchCelebrationHost';
 import { AccountBlockedScreen } from '../components/safety/AccountBlockedScreen';
 import { TermsGate } from '../components/legal/TermsGate';
 import { useAccountBlockStore } from '../stores/accountBlock';
@@ -42,7 +44,10 @@ export type RootStackParamList = {
   Onboarding: undefined; // WelcomeScreen
   Login: undefined; // PhoneScreen
   Code: { phone: string; devCode?: string | null; expiresIn?: number }; // CodeScreen (OTP)
-  Register: { phone: string }; // ProfileSetupScreen
+  // "Essa conta é sua?": conta do número parada há 90+ dias (número reciclado)
+  ClaimAccount: { phone: string; claim: AccountClaim };
+  // ProfileSetupScreen; `released`: o número acabou de sair da conta antiga (a tela pode avisar)
+  Register: { phone: string; released?: PhoneReleaseReason };
   Main: NavigatorScreenParams<MainTabParamList> | undefined; // aceita { screen: 'Paywall' } etc.
   AvatarSetup: { fromOnboarding?: boolean }; // pós-cadastro ou vindo do perfil
   PhotoUpload: { fromOnboarding?: boolean }; // pós-cadastro ou vindo do perfil
@@ -157,6 +162,7 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
             <Stack.Screen name="Onboarding" component={WelcomeScreen} options={{ ...dark, animation: 'fade' }} />
             <Stack.Screen name="Login" component={PhoneScreen} options={dark} />
             <Stack.Screen name="Code" component={CodeScreen} options={dark} />
+            <Stack.Screen name="ClaimAccount" component={ClaimAccountScreen} options={{ ...dark, gestureEnabled: false }} />
             <Stack.Screen name="Register" component={ProfileSetupScreen} options={dark} />
             <Stack.Screen name="Legal" component={LegalScreen} options={({ route }) => ({ ...lightHeader, title: LEGAL_TITLES[route.params.slug] })} />
           </>
@@ -204,6 +210,10 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
       {isAuthenticated && !onboardingStep ? <TermsGate /> : null}
       {/* notificação nova com o app aberto: aviso rápido no topo (toque abre o destino) */}
       {isAuthenticated && !onboardingStep ? <InAppNoticeHost /> : null}
+      {/* comemoração do match pra quem curtiu primeiro: fora da splash, do cadastro e dos Termos, depois do mapa */}
+      {isAuthenticated && !onboardingStep ? (
+        <MatchCelebrationHost ready={!splashing && !termsPending} mapReady={mapLoaded} />
+      ) : null}
     </NavigationContainer>
   );
 }

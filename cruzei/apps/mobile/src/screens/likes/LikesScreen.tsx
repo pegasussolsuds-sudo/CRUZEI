@@ -26,12 +26,14 @@ import { api, toApiError } from '../../services/api';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
+import { countByBand, nearbyCountTitle } from '../../components/map/proximityText';
 import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { proximityBandLabel } from '@cruzei/shared-utils';
-import type { DiscoveryResponse, LikeResult, NearbyUser } from '@cruzei/shared-types';
+import { SHOW_ME_LABELS, type DiscoveryResponse, type LikeResult, type NearbyUser } from '@cruzei/shared-types';
+import { useAuthStore } from '../../stores/auth';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
 const RADIUS_M = 350; // mesmo teto do servidor (PRIVACY.DISCOVERY_RADIUS_M)
@@ -48,7 +50,7 @@ export interface SwipeCardHandle {
   swipe: (action: DeckAction) => void;
 }
 
-// faixa de proximidade (nunca metros de outra pessoa)
+// faixa de proximidade (nunca metros de outra pessoa): 'bem perto' | 'perto' | 'na região' | 'em destaque na região' (boost até 5 km)
 function formatDistance(band: NearbyUser['proximityBand'] | null | undefined): string {
   return proximityBandLabel(band);
 }
@@ -93,6 +95,10 @@ export function LikesScreen() {
   // 'no_presence' = presença ainda não chegou no servidor (1ª carga) — não é "invisível"
   const hiddenReason = nearbyQuery.data?.me?.hiddenReason ?? null;
   const hidden = hiddenReason != null && hiddenReason !== 'no_presence';
+  // GPS falso detectado pelo servidor: o deck fica vazio até a posição normalizar (texto próprio)
+  const gpsHidden = hiddenReason === 'location_mocked' || hiddenReason === 'location_unverified';
+  // "Mostrar: Mulheres/Homens" (recíproco, no servidor): o deck vazio explica o filtro
+  const showMe = useAuthStore((s) => s.user?.settings?.showMe ?? 'everyone');
 
   // invisível sem Premium não curte: o cartão volta pro lugar e a explicação aparece (o servidor também barra)
   const likeLocked = useMessagingLocked();
@@ -214,17 +220,24 @@ export function LikesScreen() {
 
   const top = queue[0];
   const next = queue[1];
+  const deckCounts = countByBand(queue, (u) => u.proximityBand);
 
   if (!top) {
     return (
       <SafeAreaView style={styles.center}>
         <FadeInView fromScale={0.92} style={styles.centerInner}>
           <Ionicons name="heart-outline" size={64} color={colors.gray[300]} />
-          <Text style={styles.emptyTitle}>{hidden ? 'tu tá invisível' : 'acabou por aqui'}</Text>
+          <Text style={styles.emptyTitle}>{gpsHidden ? 'confirmando tua posição' : hidden ? 'tu tá invisível' : 'acabou por aqui'}</Text>
           <Text style={styles.emptySub}>
-            {hidden
-              ? 'Enquanto tu tá oculto (anônimo, pausado ou em área privada), o deck pode ficar vazio. Dá pra mudar na privacidade.'
-              : `Ninguém novo num raio de ${radiusM} m agora. Sai um pouco, volta mais tarde ou recarrega.`}
+            {hiddenReason === 'location_mocked'
+              ? 'Teu celular tá com localização simulada. Desliga o GPS falso pra voltar a ver e aparecer pra galera.'
+              : hiddenReason === 'location_unverified'
+                ? 'Tua posição mudou rápido demais. Em menos de um minuto a gente confirma e o deck volta.'
+                : hidden
+                  ? 'Enquanto tu tá oculto (anônimo, pausado ou em área privada), o deck pode ficar vazio. Dá pra mudar na privacidade.'
+                  : `Ninguém novo num raio de ${radiusM} m agora.${
+                      showMe !== 'everyone' ? ` Mostrando só ${SHOW_ME_LABELS[showMe].toLowerCase()} (dá pra mudar no Perfil, em "quem você vê").` : ''
+                    } Sai um pouco, volta mais tarde ou recarrega.`}
           </Text>
           <ScaleOnPress onPress={reload} style={styles.reload} accessibilityRole="button" accessibilityLabel="Recarregar">
             <Text style={styles.reloadText}>Recarregar</Text>
@@ -240,7 +253,8 @@ export function LikesScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>quem tá por perto</Text>
         <Text style={styles.subtitle}>
-          {queue.length} {queue.length === 1 ? 'pessoa' : 'pessoas'} num raio de {radiusM} m · arrasta pro lado
+          {/* Boost de longe (até 5 km) conta à parte, fora do "raio de 350 m" */}
+          {nearbyCountTitle(deckCounts.inRadius, deckCounts.boosted, `num raio de ${radiusM} m`)} · arrasta pro lado
         </Text>
       </View>
 
@@ -437,7 +451,7 @@ const SwipeCard = forwardRef<SwipeCardHandle, SwipeCardProps>(function SwipeCard
         style={[styles.card, cardStyle]}
         accessible
         accessibilityRole="button"
-        accessibilityLabel={`${card.name}${card.age ? `, ${card.age} anos` : ''}, a ${formatDistance(card.proximityBand)}`}
+        accessibilityLabel={`${card.name}${card.age ? `, ${card.age} anos` : ''}, ${formatDistance(card.proximityBand)}`}
         accessibilityHint="Toca pra ver o perfil. Arrasta pra direita pra curtir, pra esquerda pra passar"
       >
         <CardBody card={card} />
@@ -542,7 +556,7 @@ function CardBody({ card }: { card: NearbyUser }) {
         <View style={styles.metaRow}>
           <View style={styles.metaChip}>
             <Ionicons name="location" size={13} color={colors.primary} />
-            <Text style={styles.metaText}>a {formatDistance(card.proximityBand)}</Text>
+            <Text style={styles.metaText}>{formatDistance(card.proximityBand)}</Text>
           </View>
           {card.isOnline ? (
             <View style={styles.metaChip}>

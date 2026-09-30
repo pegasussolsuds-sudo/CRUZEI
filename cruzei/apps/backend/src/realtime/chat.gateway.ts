@@ -96,9 +96,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       }
       // refresh token (30 dias, mesmo segredo) não abre socket: só o access
       if (isRefreshPayload(payload)) return next(new Error('unauthorized'));
-      // conta banida/suspensa/excluída não conecta: o erro leva o código (account_banned…) e o motivo pro app
+      // conta banida/suspensa/excluída não conecta: o erro leva o código (account_banned…) e o motivo pro app.
+      // Token emitido antes de sessions_valid_after (número liberado) também não: erro 'session_revoked'
       this.accounts
-        .blockedReason(payload.sub)
+        .blockedReason(payload.sub, payload.iat)
         .then(async (blocked) => {
           if (!blocked) {
             client.data.userId = payload.sub;

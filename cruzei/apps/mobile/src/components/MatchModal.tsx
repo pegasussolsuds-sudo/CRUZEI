@@ -1,24 +1,27 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AccessibilityInfo, Modal, StyleSheet, Text, View } from 'react-native';
 import Animated, {
+  Easing,
   cancelAnimation,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
   withDelay,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
 import type { AvatarConfig, ProximityBand } from '@cruzei/shared-types';
-import { proximityBandLabel } from '@cruzei/shared-utils';
 import { useAuthStore } from '../stores/auth';
+import { useMatchCelebrationStore } from '../stores/matchCelebration';
 import { resolveAvatar } from '../avatar';
 import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
 import { openChat } from '../navigation/openChat';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from './animated';
 import { CruzeiAvatar } from './avatar/CruzeiAvatar';
+import { matchDistanceText } from './map/proximityText';
 import { BRAND } from '../brand';
 
 /** curtida mútua (os dois se curtiram): a celebração e o atalho pro chat */
@@ -47,6 +50,20 @@ const T = {
   buttons: 1050,
 } as const;
 
+// Timeline de quem RECEBE o match (curtiu primeiro e soube depois): os dois avatares vêm de longe e se encontram no
+// meio; no encontro, onda de choque, coração, háptico e confete saindo do ponto de encontro.
+const TR = {
+  flip: 120,
+  title: 560,
+  names: 700,
+  approach: 380,
+  meet: 900,
+  context: 1080,
+  buttons: 1220,
+} as const;
+/** de quanto longe cada avatar vem (px) */
+const APPROACH = 104;
+
 const AVATAR = 110;
 const RING = 124;
 const CARD_BG = '#12122A';
@@ -56,15 +73,26 @@ export interface MatchModalProps {
   onClose: () => void;
   /** "🗺️ Ver no mapa" — só aparece quando a tela dona sabe centralizar a pessoa no mapa */
   onViewOnMap?: (info: MatchInfo) => void;
+  /**
+   * 'sent' (padrão): quem completou o match, na hora da curtida. 'received': quem curtiu primeiro e ficou sabendo
+   * depois (socket, push ou pendente) — avatares se encontrando, "curtiu você de volta" (MatchCelebrationHost).
+   */
+  variant?: 'sent' | 'received';
 }
 
 /**
  * "METCH! 🔥" — tela de celebração premium: confete, card com flip 3D, coração pulsando
  * com glow magenta, os dois avatares com anel neon e o contexto de ONDE vocês se cruzaram.
- * API pública: <MatchModal match={info | null} onClose={...} onViewOnMap={...} />
+ * API pública: <MatchModal match={info | null} onClose={...} onViewOnMap={...} variant="sent|received" />
  */
-export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
+export function MatchModal({ match, onClose, onViewOnMap, variant = 'sent' }: MatchModalProps) {
   const me = useAuthStore((s) => s.user);
+  // modal de quem curtiu aberto: a comemoração recebida espera a vez (nunca dois Modals empilhados)
+  const holdKey = match && variant === 'sent' ? match.userId : null;
+  useEffect(() => {
+    if (!holdKey) return;
+    return useMatchCelebrationStore.getState().holdLocal();
+  }, [holdKey]);
 
   if (!match) return null;
   const myAvatar = resolveAvatar(me?.avatar, me?.id ?? 'me', me?.gender);
@@ -87,13 +115,14 @@ export function MatchModal({ match, onClose, onViewOnMap }: MatchModalProps) {
     <Modal visible transparent statusBarTranslucent navigationBarTranslucent animationType="fade" onRequestClose={onClose}>
       {/* key = pessoa → cada match novo remonta a celebração e roda todas as entradas do zero */}
       <Celebration
-        key={match.userId}
+        key={`${variant}:${match.userId}`}
         match={match}
         myAvatar={myAvatar}
         theirAvatar={theirAvatar}
         onClose={onClose}
         onOpenChat={onOpenChat}
         onViewOnMap={viewOnMap}
+        received={variant === 'received'}
       />
     </Modal>
   );
@@ -106,6 +135,7 @@ function Celebration({
   onClose,
   onOpenChat,
   onViewOnMap,
+  received,
 }: {
   match: MatchInfo;
   myAvatar: AvatarConfig;
@@ -113,9 +143,12 @@ function Celebration({
   onClose: () => void;
   onOpenChat: () => void;
   onViewOnMap?: () => void;
+  received: boolean;
 }) {
   const reduceMotion = useReducedMotion();
-  const [confetti, setConfetti] = useState(!reduceMotion);
+  // recebido: o confete espera o encontro dos avatares
+  const [confetti, setConfetti] = useState(!reduceMotion && !received);
+  const t = received ? TR : T;
 
   // flip 3D do card: 180° (de costas) → 0° com spring
   const rotate = useSharedValue(reduceMotion ? 0 : 180);
@@ -123,18 +156,26 @@ function Celebration({
   const titlePop = useSharedValue(reduceMotion ? 1 : 0);
 
   useEffect(() => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    AccessibilityInfo.announceForAccessibility(`Deu match com ${match.name}`);
+    AccessibilityInfo.announceForAccessibility(
+      received ? `${match.name} curtiu você de volta. Deu match!` : `Deu match com ${match.name}`,
+    );
+    // quem recebe sente o háptico no encontro dos avatares (sem movimento: na hora)
+    const meetDelay = received && !reduceMotion ? TR.meet : 0;
+    const buzz = setTimeout(() => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      if (received && !reduceMotion) setConfetti(true);
+    }, meetDelay);
 
     if (!reduceMotion) {
-      rotate.value = withDelay(T.flip, withSpring(0, { damping: 15, stiffness: 95, mass: 1 }));
-      titlePop.value = withDelay(T.title, withSpring(1, spring.bouncy));
+      rotate.value = withDelay(t.flip, withSpring(0, { damping: 15, stiffness: 95, mass: 1 }));
+      titlePop.value = withDelay(t.title, withSpring(1, spring.bouncy));
     }
     return () => {
+      clearTimeout(buzz);
       cancelAnimation(rotate);
       cancelAnimation(titlePop);
     };
-  }, [match.name, reduceMotion, rotate, titlePop]);
+  }, [match.name, reduceMotion, received, rotate, t, titlePop]);
 
   const frontStyle = useAnimatedStyle(() => ({
     transform: [{ perspective: 1200 }, { rotateY: `${rotate.value}deg` }],
@@ -148,8 +189,14 @@ function Celebration({
   }));
 
   const onConfettiDone = useCallback(() => setConfetti(false), []);
-  const contextText = match.context ?? 'Vocês estiveram perto hoje.';
-  const distanceText = match.band ? `Vocês estão ${proximityBandLabel(match.band)} um do outro.` : null;
+  // quem recebe fica sabendo depois (pode ser horas): nada de "estiveram perto hoje"
+  const contextText = match.context ?? (received ? 'Vocês se curtiram' : 'Vocês estiveram perto hoje.');
+  // faixa 'boost' (até 5 km) tem frase própria: "em destaque na região um do outro" não existe
+  const distanceText = matchDistanceText(match.band);
+  // avatares: de longe até o meio no recebido; sem movimento, parados no lugar
+  const avatarDistance = reduceMotion ? 0 : received ? APPROACH : 48;
+  const avatarDelay = received ? TR.approach : T.avatars;
+  const heartDelay = received ? TR.meet : T.heart;
 
   return (
     <View style={styles.root} accessibilityViewIsModal>
@@ -169,43 +216,63 @@ function Celebration({
             <Animated.Text style={[styles.title, titleStyle]} accessibilityRole="header" allowFontScaling>
               {BRAND.matchShout} 🔥
             </Animated.Text>
-            <FadeInView delay={T.names} fromY={8}>
-              <Text style={styles.names}>
-                Você e <Text style={styles.nameHighlight}>{match.name}</Text> demonstraram interesse.
-              </Text>
+            <FadeInView delay={t.names} fromY={8}>
+              {received ? (
+                <Text style={styles.names}>
+                  <Text style={styles.nameHighlight}>{match.name}</Text> curtiu você de volta!
+                </Text>
+              ) : (
+                <Text style={styles.names}>
+                  Você e <Text style={styles.nameHighlight}>{match.name}</Text> demonstraram interesse.
+                </Text>
+              )}
               {distanceText ? <Text style={styles.distance}>{distanceText}</Text> : null}
             </FadeInView>
 
             <View style={styles.avatars}>
-              <SlideInView from="left" distance={48} delay={T.avatars} springPreset="bouncy">
+              <SlideInView from="left" distance={avatarDistance} delay={avatarDelay} springPreset="bouncy">
                 <Glow color={colors.primary} spread={14} intensity={0.85} cycleMs={1800}>
                   <AvatarRing config={myAvatar} ring={colors.primary} label="Seu avatar" />
                 </Glow>
               </SlideInView>
 
-              <FadeInView delay={T.heart} fromScale={0.3} durationMs={260} style={styles.heartSlot}>
-                <Glow color={colors.secondary} spread={20} intensity={1} cycleMs={1200}>
-                  <Pulse maxScale={1.14} cycleMs={1000}>
-                    <View style={styles.heart} accessible={false}>
-                      <Ionicons name="heart" size={30} color={colors.white} />
-                    </View>
-                  </Pulse>
-                </Glow>
-              </FadeInView>
+              <View style={styles.heartSlot}>
+                {/* recebido: a onda do encontro (anel que abre e some) atrás do coração */}
+                {received && !reduceMotion ? (
+                  <>
+                    <ShockRing delay={TR.meet} color={colors.secondary} />
+                    <ShockRing delay={TR.meet + 140} color={colors.primary} />
+                  </>
+                ) : null}
+                <FadeInView delay={heartDelay} fromScale={received ? 0.1 : 0.3} durationMs={260}>
+                  <Glow color={colors.secondary} spread={20} intensity={1} cycleMs={1200}>
+                    <Pulse maxScale={1.14} cycleMs={1000} active={!reduceMotion}>
+                      <View style={styles.heart} accessible={false}>
+                        <Ionicons name="heart" size={30} color={colors.white} />
+                      </View>
+                    </Pulse>
+                  </Glow>
+                </FadeInView>
+              </View>
 
-              <SlideInView from="right" distance={48} delay={T.avatars} springPreset="bouncy">
+              <SlideInView from="right" distance={avatarDistance} delay={avatarDelay} springPreset="bouncy">
                 <Glow color={colors.secondary} spread={14} intensity={0.85} cycleMs={1800}>
-                  <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} />
+                  {/* recebido: o anel da pessoa pulsa (foi ela que fechou o match) */}
+                  <Pulse maxScale={1.05} cycleMs={1400} active={received && !reduceMotion}>
+                    <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} />
+                  </Pulse>
                 </Glow>
               </SlideInView>
             </View>
 
-            <SlideInView from="up" distance={20} delay={T.context} style={styles.contextBox}>
-              <Ionicons name="location" size={16} color={colors.secondary} />
-              <Text style={styles.contextText}>{contextText} 💚</Text>
+            <SlideInView from="up" distance={reduceMotion ? 0 : 20} delay={t.context} style={styles.contextBox}>
+              <Ionicons name={received ? 'heart' : 'location'} size={16} color={colors.secondary} />
+              <Text style={styles.contextText}>
+                {contextText} 💚{received ? ' Manda um oi antes que esfrie.' : ''}
+              </Text>
             </SlideInView>
 
-            <FadeInView delay={T.buttons} fromY={16} style={styles.actions}>
+            <FadeInView delay={t.buttons} fromY={16} style={styles.actions}>
               <Glow color={colors.primary} spread={14} intensity={0.6} shape="pill" cycleMs={2000} style={styles.stretch}>
                 <ScaleOnPress
                   onPress={onOpenChat}
@@ -244,16 +311,30 @@ function Celebration({
         </View>
       </View>
 
-      {/* confete por cima de tudo (Canvas sem toque) */}
+      {/* confete por cima de tudo (Canvas sem toque); no recebido, sai do ponto de encontro dos avatares */}
       <Confetti
         active={confetti}
-        count={120}
-        origin={{ x: 0.5, y: 0.4 }}
+        count={received ? 140 : 120}
+        origin={received ? { x: 0.5, y: 0.46 } : { x: 0.5, y: 0.4 }}
         palette={[colors.secondary, colors.primary, colors.accent, colors.white]}
         onDone={onConfettiDone}
       />
     </View>
   );
+}
+
+/** onda do encontro: anel que abre do centro e some (UI thread; um shared value só) */
+function ShockRing({ delay, color }: { delay: number; color: string }) {
+  const p = useSharedValue(0);
+  useEffect(() => {
+    p.value = withDelay(delay, withTiming(1, { duration: 720, easing: Easing.out(Easing.cubic) }));
+    return () => cancelAnimation(p);
+  }, [delay, p]);
+  const style = useAnimatedStyle(() => ({
+    opacity: p.value === 0 ? 0 : 0.9 * (1 - p.value),
+    transform: [{ scale: 0.5 + p.value * 2.6 }],
+  }));
+  return <Animated.View pointerEvents="none" style={[styles.shock, { borderColor: color }, style]} />;
 }
 
 /** avatar de corpo inteiro dentro de um anel neon (lima = você, magenta = a pessoa) */
@@ -299,6 +380,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   heartSlot: { alignItems: 'center', justifyContent: 'center' },
+  shock: {
+    position: 'absolute',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 3,
+  },
   heart: {
     width: 60,
     height: 60,

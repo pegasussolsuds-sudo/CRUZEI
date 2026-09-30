@@ -20,11 +20,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  // token válido não basta: conta banida/suspensa/excluída perde o acesso na hora (403 com o motivo)
+  // token válido não basta: conta banida/suspensa/excluída perde o acesso na hora (403 com o motivo) e token emitido
+  // antes de sessions_valid_after (número liberado da conta) cai com 401 session_revoked
   async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
     // refresh (mesmo segredo, 30 dias) não serve de Bearer: só renova no /auth/refresh
     if (isRefreshPayload(payload)) throw new UnauthorizedException('Token inválido');
-    const st = await this.accounts.assertActive(payload.sub);
+    const st = await this.accounts.assertActive(payload.sub, payload.iat);
     return { id: payload.sub, phone: payload.phone, role: st.role };
   }
 }

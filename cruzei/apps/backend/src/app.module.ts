@@ -1,53 +1,54 @@
+import { BullModule } from '@nestjs/bull';
 import { ExecutionContext, Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
-import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
+
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
-import { ScheduleModule } from '@nestjs/schedule';
-import { BullModule } from '@nestjs/bull';
-
 import { configuration, validateEnv } from './config/configuration';
 import { ENV_FILE_PATHS } from './config/env-files';
 import { isCronWorker } from './config/runtime';
 import { DatabaseModule } from './database/database.module';
+import { HealthController } from './health/health.controller';
+import { AccountModule } from './modules/account/account.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { AnonymousModule } from './modules/anonymous/anonymous.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { BlocksModule } from './modules/blocks/blocks.module';
+import { BoostsModule } from './modules/boosts/boosts.module';
+import { GeoModule } from './modules/geo/geo.module';
+import { InboxModule } from './modules/inbox/inbox.module';
+import { LegalModule } from './modules/legal/legal.module';
+import { LikesModule } from './modules/likes/likes.module';
+import { LocationModule } from './modules/location/location.module';
+import { ModerationModule } from './modules/moderation/moderation.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { PlacesModule } from './modules/places/places.module';
+import { PoisModule } from './modules/pois/pois.module';
+import { ReportsModule } from './modules/reports/reports.module';
+import { SafetyModule } from './modules/safety/safety.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
+import { SupportModule } from './modules/support/support.module';
+import { TilesModule } from './modules/tiles/tiles.module';
+import { UploadsModule } from './modules/uploads/uploads.module';
+import { UsersModule } from './modules/users/users.module';
+import { WavesModule } from './modules/waves/waves.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { RedisModule } from './redis/redis.module';
 import { RedisService } from './redis/redis.service';
-import { RealtimeModule } from './realtime/realtime.module';
-
-import { AuthModule } from './modules/auth/auth.module';
-import { UsersModule } from './modules/users/users.module';
-import { LocationModule } from './modules/location/location.module';
-import { PoisModule } from './modules/pois/pois.module';
-import { PlacesModule } from './modules/places/places.module';
-import { GeoModule } from './modules/geo/geo.module';
-import { LikesModule } from './modules/likes/likes.module';
-import { InboxModule } from './modules/inbox/inbox.module';
-import { WavesModule } from './modules/waves/waves.module';
-import { NotificationsModule } from './modules/notifications/notifications.module';
-import { AnonymousModule } from './modules/anonymous/anonymous.module';
-import { SafetyModule } from './modules/safety/safety.module';
-import { BlocksModule } from './modules/blocks/blocks.module';
-import { ReportsModule } from './modules/reports/reports.module';
-import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
-import { BoostsModule } from './modules/boosts/boosts.module';
-import { WebhooksModule } from './modules/webhooks/webhooks.module';
-import { UploadsModule } from './modules/uploads/uploads.module';
-import { AccountModule } from './modules/account/account.module';
-import { ModerationModule } from './modules/moderation/moderation.module';
-import { LegalModule } from './modules/legal/legal.module';
-import { TilesModule } from './modules/tiles/tiles.module';
-import { AdminModule } from './modules/admin/admin.module';
-import { SupportModule } from './modules/support/support.module';
-
-import { HealthController } from './health/health.controller';
 
 // Chave de metadata interna do @nestjs/throttler (THROTTLER_LIMIT + nome do throttler) — não é exportada
 const STRICT_LIMIT_KEY = 'THROTTLER:LIMITstrict';
 // 'strict' só vale nas rotas que o declaram com @Throttle({ strict }); sem isso o guard global
 // aplicaria TODOS os throttlers do forRoot em TODAS as rotas (5/min em tudo).
 const hasStrictOverride = (ctx: ExecutionContext) =>
-  Boolean(Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getHandler()) || Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getClass()));
+  Boolean(
+    Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getHandler()) ||
+      Reflect.getMetadata(STRICT_LIMIT_KEY, ctx.getClass()),
+  );
 
 @Module({
   imports: [
@@ -68,19 +69,26 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
       useFactory: (redis: RedisService) => ({
         throttlers: [
           { name: 'default', ttl: 60_000, limit: 600 },
-          { name: 'strict', ttl: 60_000, limit: 5, skipIf: (ctx: ExecutionContext) => !hasStrictOverride(ctx) },
+          {
+            name: 'strict',
+            ttl: 60_000,
+            limit: 5,
+            skipIf: (ctx: ExecutionContext) => !hasStrictOverride(ctx),
+          },
         ],
         storage: new RedisThrottlerStorage(redis.client),
       }),
     }),
 
-    // Cron jobs (limpezas: anônimo grátis, pausa, retenção de posições) — num processo só quando o backend roda em cluster
+    // Cron jobs (Premium vencido, fim do invisível grátis, pausa, retenção de posições) — num processo só quando o
+    // backend roda em cluster
     ...(isCronWorker() ? [ScheduleModule.forRoot()] : []),
 
-    // Bull (fila de notificações)
+    // Bull (fila do push social: curtidas somadas no fim da espera) — o MESMO Redis do REDIS_URL
     BullModule.forRootAsync({
-      useFactory: () => ({
-        redis: { host: 'localhost', port: 6379 },
+      inject: [ConfigService],
+      useFactory: (cfg: ConfigService) => ({
+        url: cfg.get<string>('redisUrl') ?? 'redis://localhost:6379',
       }),
     }),
 
@@ -116,7 +124,7 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.
-  // rate limit por usuário (hash do token), não por IP: um atacante não zera a cota de quem divide o NAT
+  // rate limit por conta (Bearer com assinatura conferida) e por IP no resto (sem token válido e /auth/*)
   providers: [{ provide: APP_GUARD, useClass: UserThrottlerGuard }],
 })
 export class AppModule {}

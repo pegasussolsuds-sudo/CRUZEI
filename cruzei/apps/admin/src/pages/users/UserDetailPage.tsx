@@ -12,6 +12,7 @@ import {
   Heart,
   MessageCircle,
   PauseCircle,
+  PhoneOff,
   RotateCcw,
   ShieldCheck,
   ShieldOff,
@@ -39,8 +40,10 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
 import { EmptyState, ErrorState, Skeleton } from '@/components/ui/States';
 import { CopyId, PageHeader } from '@/components/ui/misc';
+import { PhoneHistory, ReleasedBadge } from './PhoneHistory';
+import { ReleasePhoneDialog } from './ReleasePhoneDialog';
 
-type Dialogs = { kind: 'action'; action: ModerationDecision } | { kind: 'premium' } | { kind: 'role' } | null;
+type Dialogs = { kind: 'action'; action: ModerationDecision } | { kind: 'premium' } | { kind: 'role' } | { kind: 'release' } | null;
 
 export default function UserDetailPage() {
   const { id = '' } = useParams();
@@ -102,6 +105,7 @@ export default function UserDetailPage() {
               <RoleBadge role={u.role} />
               {u.visibilityMode === 'anonymous' ? <Badge tone="outline">Modo anônimo</Badge> : null}
               {mod.user.reviewHoldAt ? <Badge tone="warning">Em revisão desde {formatDate(mod.user.reviewHoldAt)}</Badge> : null}
+              <ReleasedBadge at={u.phoneReleasedAt} />
               {pendingReports ? (
                 <Badge tone="danger" icon={<Flag />}>
                   {pendingReports} {pendingReports === 1 ? 'denúncia pendente' : 'denúncias pendentes'}
@@ -109,7 +113,7 @@ export default function UserDetailPage() {
               ) : null}
             </div>
             <div className="profile-meta small muted">
-              <span className="num">{u.phone ?? mod.user.phoneMasked ?? 'sem telefone'}</span>
+              <span className="num">{u.phone ?? mod.user.phoneMasked ?? (u.phoneReleasedAt ? 'sem telefone (liberado)' : 'sem telefone')}</span>
               <span>{u.city ?? 'cidade não informada'}</span>
               <span>entrou {formatDate(u.createdAt)}</span>
               <span>visto {formatRelative(u.lastActiveAt)}</span>
@@ -158,6 +162,12 @@ export default function UserDetailPage() {
               Papel
             </Button>
           ) : null}
+          {/* número reciclado (caso de suporte): só admin, nunca a própria conta, só com número */}
+          {me.role === 'admin' && me.id !== u.id && u.phone ? (
+            <Button size="sm" variant="danger-soft" icon={<PhoneOff size={14} />} onClick={() => setDialog({ kind: 'release' })}>
+              Liberar número
+            </Button>
+          ) : null}
           {hasPermission(me, 'support') ? (
             <Button
               size="sm"
@@ -181,6 +191,7 @@ export default function UserDetailPage() {
         </div>
         <div className="stack-lg">
           <Profile u={u} />
+          <PhoneHistory u={u} isAdmin={me.role === 'admin'} />
           <Counts u={u} />
           <Plan u={u} />
           <Devices u={u} />
@@ -191,6 +202,7 @@ export default function UserDetailPage() {
       {dialog?.kind === 'action' ? <ModerationActionDialog open onClose={() => setDialog(null)} action={dialog.action} user={u} /> : null}
       {dialog?.kind === 'premium' ? <PremiumDialog open onClose={() => setDialog(null)} user={u} /> : null}
       {dialog?.kind === 'role' ? <RoleDialog open onClose={() => setDialog(null)} user={u} /> : null}
+      {dialog?.kind === 'release' ? <ReleasePhoneDialog open onClose={() => setDialog(null)} user={u} /> : null}
     </div>
   );
 }
@@ -329,11 +341,31 @@ function Profile({ u }: { u: AdminUserDetail }) {
         {u.bio ? <p className="pre-wrap">{u.bio}</p> : <p className="faint small">Sem bio.</p>}
         <dl className="kv">
           <dt>Telefone</dt>
-          <dd className="num">{u.phone ?? '—'}</dd>
+          <dd className="num">
+            {u.phone ?? '—'}
+            {!u.phone && u.phoneReleasedAt ? <span className="small muted"> · liberado em {formatDate(u.phoneReleasedAt)}</span> : null}
+          </dd>
           <dt>Cidade</dt>
           <dd>{u.city ?? '—'}</dd>
+          {/* @ público do cartão (spam, venda, perfil de outra pessoa). A orientação não entra no painel */}
+          <dt>Instagram</dt>
+          <dd>
+            {u.instagram ? (
+              <a href={`https://instagram.com/${encodeURIComponent(u.instagram)}`} target="_blank" rel="noreferrer noopener">
+                @{u.instagram}
+              </a>
+            ) : (
+              '—'
+            )}
+          </dd>
           <dt>Visibilidade</dt>
-          <dd>{u.visibilityMode === 'anonymous' ? 'Modo anônimo' : 'Visível no mapa'}</dd>
+          <dd>
+            {u.visibilityMode === 'anonymous' ? 'Modo anônimo' : 'Visível no mapa'}
+            {/* invisível grátis: janela de 24 h (volta ao mapa sozinho); Premium vigente não tem prazo */}
+            {u.visibilityMode === 'anonymous' && u.anonymousUntil ? (
+              <span className="small muted"> · até {formatDateTime(u.anonymousUntil)}</span>
+            ) : null}
+          </dd>
           <dt>Situação</dt>
           <dd>
             <AccountStatusBadge status={u.accountStatus} until={u.suspendedUntil} />
@@ -384,6 +416,10 @@ function Plan({ u }: { u: AdminUserDetail }) {
           <TierBadge tier={u.premiumTier} />
           <span className="small muted">{u.premiumTier === 'free' ? 'Plano grátis' : u.premiumExpiresAt ? `vence ${formatDate(u.premiumExpiresAt)}` : 'sem vencimento'}</span>
         </div>
+        {/* teste grátis: uma vez por conta e por número; a 1ª assinatura paga (qualquer plano) consome */}
+        <p className="small muted">
+          {u.trialUsedAt ? `Teste grátis já usado (1ª assinatura em ${formatDate(u.trialUsedAt)})` : 'Teste grátis ainda não usado nesta conta'}
+        </p>
         {!u.subscriptions.length ? (
           <p className="small faint">Nenhuma assinatura registrada.</p>
         ) : (

@@ -24,6 +24,8 @@ const C = '0c000000-0000-4000-8000-00000000000c';
 const D = '0d000000-0000-4000-8000-00000000000d';
 const BANNED = '0e000000-0000-4000-8000-00000000000e';
 const STAFF = '0f000000-0000-4000-8000-00000000000f';
+/** conta cujo número foi liberado: sessões anteriores ao corte caem */
+const RELEASED = '01000000-0000-4000-8000-000000000001';
 const CONV_AB = 'ca000000-0000-4000-8000-0000000000ab';
 const CONV_AC = 'ca000000-0000-4000-8000-0000000000ac';
 
@@ -49,11 +51,15 @@ const prisma = {
     return row ? [{ ...row }] : [];
   }),
 };
+/** número liberado da conta: tokens emitidos antes deste corte (segundos) não abrem socket */
+const REVOKED_BEFORE_S = 2_000_000_000;
 const accounts = {
-  blockedReason: jest.fn(async (userId: string) =>
+  blockedReason: jest.fn(async (userId: string, iat?: number) =>
     userId === BANNED
       ? { error: 'account_banned', message: 'Conta banida', reason: 'teste', until: null }
-      : null,
+      : userId === RELEASED && typeof iat === 'number' && iat < REVOKED_BEFORE_S
+        ? { error: 'session_revoked', message: 'Sua sessão foi encerrada. Entra de novo.' }
+        : null,
   ),
   // papel do estado da conta: STAFF é moderador (entra na sala do suporte)
   get: jest.fn(async (userId: string) => ({
@@ -193,6 +199,28 @@ describe('ChatGateway — autenticação (mantida)', () => {
       access.on('connect_error', reject);
     });
     expect(await inRoom(`user:${B}`)).toEqual([B]);
+  });
+
+  it('token emitido antes do corte de sessão (número liberado) não conecta: session_revoked com o iat do token', async () => {
+    accounts.blockedReason.mockClear();
+    const old = jwt.sign({ sub: RELEASED, typ: 'access' }, { secret: SECRET });
+    const revoked = await connectError({ token: old });
+    expect(revoked.message).toBe('session_revoked');
+    expect(revoked.data).toMatchObject({ error: 'session_revoked' });
+    // o middleware passa o iat do token pro estado da conta
+    expect(accounts.blockedReason).toHaveBeenCalledWith(RELEASED, expect.any(Number));
+    // emitido depois do corte: entra
+    const fresh = client({
+      token: jwt.sign(
+        { sub: RELEASED, typ: 'access', iat: REVOKED_BEFORE_S + 1 },
+        { secret: SECRET },
+      ),
+    });
+    await new Promise<void>((resolve, reject) => {
+      fresh.on('connect', () => resolve());
+      fresh.on('connect_error', reject);
+    });
+    expect(await inRoom(`user:${RELEASED}`)).toEqual([RELEASED]);
   });
 });
 

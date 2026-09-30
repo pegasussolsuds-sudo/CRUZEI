@@ -34,7 +34,8 @@ import { useAuthStore } from '../../stores/auth';
 import { FadeInView, ScaleOnPress, SlideInView } from '../../components/animated';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, duration, radius, shadows, spacing, spring, typography } from '@cruzei/ui-mobile';
-import type { User, UserPhoto } from '@cruzei/shared-types';
+import { ORIENTATIONS, ORIENTATION_LABELS, type Orientation, type User, type UserPhoto } from '@cruzei/shared-types';
+import { INSTAGRAM_HANDLE_MAX, isValidInstagramHandle, normalizeInstagramHandle } from '@cruzei/shared-utils';
 
 const LOOKING_FOR = [
   { value: 'relationship', label: 'Namorar' },
@@ -67,6 +68,10 @@ export function EditProfileScreen() {
   const [bio, setBio] = useState('');
   const [lookingFor, setLookingFor] = useState('unspecified');
   const [interests, setInterests] = useState<string[]>([]);
+  // orientação: null = não informar (apaga no servidor e revoga o consentimento)
+  const [orientation, setOrientation] = useState<Orientation | null>(null);
+  // @ do Instagram como a pessoa digitou (o servidor guarda normalizado: sem @, minúsculo)
+  const [instagram, setInstagram] = useState('');
   const [uploading, setUploading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -78,9 +83,15 @@ export function EditProfileScreen() {
       setBio(meQuery.data.bio ?? '');
       setLookingFor(meQuery.data.lookingFor);
       setInterests(meQuery.data.interests ?? []);
+      setOrientation(meQuery.data.orientation ?? null);
+      setInstagram(meQuery.data.instagram ?? '');
       setLoaded(true);
     }
   }, [meQuery.data, loaded]);
+
+  // validação ao vivo do @ (mesma regra do servidor): vazio = sem Instagram
+  const instaHandle = normalizeInstagramHandle(instagram);
+  const instaInvalid = instaHandle !== null && !isValidInstagramHandle(instaHandle);
 
   useEffect(
     () => () => {
@@ -91,7 +102,12 @@ export function EditProfileScreen() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const res = await api.patch<User>('/me', { name: name.trim(), bio: bio.trim(), lookingFor, interests });
+      const patch: Record<string, unknown> = { name: name.trim(), bio: bio.trim(), lookingFor, interests };
+      // orientação e Instagram só quando mudaram (orientação nova recarimba o consentimento no servidor)
+      const before = meQuery.data;
+      if (orientation !== (before?.orientation ?? null)) patch.orientation = orientation;
+      if (instaHandle !== (before?.instagram ?? null)) patch.instagram = instaHandle;
+      const res = await api.patch<User>('/me', patch);
       return res.data;
     },
     onSuccess: (me) => {
@@ -207,7 +223,7 @@ export function EditProfileScreen() {
   }
 
   const photos = meQuery.data.photos ?? [];
-  const canSave = name.trim().length >= 2 && !saved;
+  const canSave = name.trim().length >= 2 && !saved && !instaInvalid;
 
   return (
     // edge-to-edge (Android 15+): a janela não encolhe com o teclado — padding nas duas plataformas, descontando o header
@@ -293,6 +309,40 @@ export function EditProfileScreen() {
           </View>
         </FadeInView>
 
+        <FadeInView delay={300} fromY={12}>
+          <Text style={styles.label}>orientação (opcional)</Text>
+          <View style={styles.chips} accessibilityRole="radiogroup">
+            {ORIENTATIONS.map((o) => (
+              <Chip key={o} label={ORIENTATION_LABELS[o]} on={orientation === o} onPress={() => setOrientation(o)} radio />
+            ))}
+            <Chip label="Prefiro não dizer" on={orientation === null} onPress={() => setOrientation(null)} radio />
+          </View>
+          <Text style={styles.hint}>
+            Dado sensível: só guardamos com o seu consentimento, e "Prefiro não dizer" apaga. Mostrar no perfil e ver primeiro
+            quem tem a mesma orientação você escolhe no Perfil.
+          </Text>
+        </FadeInView>
+
+        <FadeInView delay={320} fromY={12}>
+          <Text style={styles.label}>instagram</Text>
+          <InstagramInput
+            value={instagram}
+            onChangeText={setInstagram}
+            // colou o link do perfil: vira só o @ ao sair do campo
+            onBlur={() => {
+              if (instaHandle && !instaInvalid) setInstagram(instaHandle);
+            }}
+            invalid={instaInvalid}
+          />
+          {instaInvalid ? (
+            <Text style={[styles.hint, { color: colors.danger }]} accessibilityLiveRegion="polite">
+              Esse @ não rola no Instagram: só letras, números, ponto e _ (até {INSTAGRAM_HANDLE_MAX}), sem ponto no começo ou no fim.
+            </Text>
+          ) : (
+            <Text style={styles.hint}>Aparece no seu perfil pra todo mundo que abrir. Deixa vazio pra não mostrar.</Text>
+          )}
+        </FadeInView>
+
         <FadeInView delay={340} fromY={12}>
           <Text style={styles.label}>
             interesses ({interests.length}/{MAX_INTERESTS})
@@ -328,13 +378,24 @@ export function EditProfileScreen() {
 
 /* ---------- Input com foco animado (borda + fundo, UI thread) ---------- */
 
-type FocusInputProps = Omit<TextInputProps, 'style'> & { style?: StyleProp<ViewStyle> };
+type FocusInputProps = Omit<TextInputProps, 'style'> & {
+  style?: StyleProp<ViewStyle>;
+  /** texto fixo antes do campo (o "@" do Instagram) */
+  prefix?: string;
+  /** borda vermelha (validação ao vivo) */
+  invalid?: boolean;
+};
 
-function FocusInput({ style, onFocus, onBlur, multiline, ...rest }: FocusInputProps) {
+function FocusInput({ style, onFocus, onBlur, multiline, prefix, invalid = false, ...rest }: FocusInputProps) {
   const focus = useSharedValue(0);
+  const bad = useSharedValue(invalid ? 1 : 0);
+
+  useEffect(() => {
+    bad.value = withTiming(invalid ? 1 : 0, { duration: duration.fast });
+  }, [bad, invalid]);
 
   const wrapStyle = useAnimatedStyle(() => ({
-    borderColor: interpolateColor(focus.value, [0, 1], [colors.gray[200], colors.primary]),
+    borderColor: interpolateColor(bad.value, [0, 1], [interpolateColor(focus.value, [0, 1], [colors.gray[200], colors.primary]), colors.danger]),
     backgroundColor: interpolateColor(focus.value, [0, 1], [colors.surface, INPUT_FOCUS_BG]),
     transform: [{ scale: 1 + 0.008 * focus.value }],
     shadowOpacity: 0.18 * focus.value,
@@ -357,7 +418,12 @@ function FocusInput({ style, onFocus, onBlur, multiline, ...rest }: FocusInputPr
   );
 
   return (
-    <Animated.View style={[styles.inputWrap, style, wrapStyle]}>
+    <Animated.View style={[styles.inputWrap, prefix ? styles.inputRow : null, style, wrapStyle]}>
+      {prefix ? (
+        <Text style={styles.inputPrefix} importantForAccessibility="no" accessibilityElementsHidden>
+          {prefix}
+        </Text>
+      ) : null}
       <TextInput
         {...rest}
         multiline={multiline}
@@ -365,9 +431,43 @@ function FocusInput({ style, onFocus, onBlur, multiline, ...rest }: FocusInputPr
         onBlur={handleBlur}
         placeholderTextColor={colors.gray[400]}
         selectionColor={colors.primary}
-        style={[styles.input, multiline && styles.inputMultiline]}
+        style={[styles.input, multiline && styles.inputMultiline, prefix ? styles.inputWithPrefix : null]}
       />
     </Animated.View>
+  );
+}
+
+/* ---------- @ do Instagram: prefixo fixo, sem maiúscula/corretor (o servidor normaliza e valida de novo) ---------- */
+
+function InstagramInput({
+  value,
+  onChangeText,
+  onBlur,
+  invalid,
+}: {
+  value: string;
+  onChangeText: (t: string) => void;
+  onBlur: () => void;
+  invalid: boolean;
+}) {
+  return (
+    <FocusInput
+      value={value}
+      onChangeText={onChangeText}
+      onBlur={onBlur}
+      prefix="@"
+      invalid={invalid}
+      // cabe o link colado (instagram.com/fulano?...); o @ de verdade tem até 30
+      maxLength={100}
+      placeholder="seu.perfil"
+      autoCapitalize="none"
+      autoCorrect={false}
+      autoComplete="off"
+      spellCheck={false}
+      returnKeyType="done"
+      accessibilityLabel="Seu @ do Instagram"
+      accessibilityHint="Aparece no seu perfil pra todo mundo. Deixa vazio pra não mostrar"
+    />
   );
 }
 
@@ -467,6 +567,9 @@ const styles = StyleSheet.create({
   },
   input: { ...typography.body, color: colors.black, padding: spacing.md, minHeight: 48 },
   inputMultiline: { minHeight: 96, textAlignVertical: 'top' },
+  inputRow: { flexDirection: 'row', alignItems: 'center' },
+  inputPrefix: { ...typography.body, color: colors.gray[500], paddingLeft: spacing.md },
+  inputWithPrefix: { flex: 1, paddingLeft: 2 },
   multiline: {},
   counter: { ...typography.bodySmall, color: colors.gray[400], textAlign: 'right', marginTop: 4 },
 

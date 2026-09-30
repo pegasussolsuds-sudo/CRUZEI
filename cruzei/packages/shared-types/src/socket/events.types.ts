@@ -9,6 +9,8 @@ import type {
 } from '../conversation';
 import type { NearbyUser, Hotspot } from '../location';
 import type { AvatarConfig } from '../avatar';
+import type { MatchCelebration } from '../like';
+import type { AccountChangedPayload } from '../user';
 import type { AccountBlockedError, PhotoStatus } from '../moderation';
 import type { NotificationNewPayload } from '../notifications';
 import type { SupportMessageEvent, SupportThreadEvent, SupportTypingEvent } from '../support';
@@ -26,7 +28,13 @@ export interface ServerToClientEvents {
    * mútua; pros demais o evento é só o sinal, sem quem curtiu
    */
   like_received: (data: { fromUserId?: string; isSuper: boolean; isMutual?: boolean }) => void;
+  /** match fechado agora: só pra QUEM RECEBE (curtiu primeiro); também fica pendente em GET /likes/matches/pending */
+  'match:new': (data: MatchCelebration) => void;
   wave_received: (data: { fromUserId: string; name: string; avatar: AvatarConfig | null; at: string }) => void;
+
+  // Conta
+  /** a própria conta mudou (Premium dado/tirado/vencido, invisível voltou ao visível): busca o /me de novo */
+  'account:changed': (data: AccountChangedPayload) => void;
 
   // Conversas (salas user:<id>, só o par; emitidos depois do commit)
   /** conversa criada agora (um emit por lado) */

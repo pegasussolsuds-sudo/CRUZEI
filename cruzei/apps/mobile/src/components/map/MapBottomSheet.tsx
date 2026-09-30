@@ -13,6 +13,7 @@ import { LiveDot } from '../animated/LiveDot';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { PersonRow } from './PersonRow';
 import { invisibleSummary } from './invisible';
+import { countByBand, nearbyCountTitle } from './proximityText';
 import { nearbyFailCopy, nearbyNetState, nearbyStaleA11y, nearbyStaleText, type NearbyFailKind } from './nearbyStatus';
 
 export const SHEET_SNAP_POINTS: string[] = ['22%', '68%'];
@@ -156,6 +157,8 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
 
   // " · 👻 N invisíveis por perto" só no resumo geral (Premium; grátis = '')
   const invisibleText = groupFilter || poiFilter ? '' : invisibleSummary(invisibleTotal);
+  // Boost de longe (até 5 km) não conta no "N pessoas em 350m": vai à parte ("· 2 em destaque")
+  const counts = useMemo(() => countByBand(users, (u) => bandById.get(u.id) ?? u.proximityBand), [users, bandById]);
   const failCopy = nearbyFailCopy(failKind);
   const title = net === 'offline'
     ? failCopy.title
@@ -163,7 +166,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
     ? groupFilter.label
     : poiFilter
       ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
-      : `${users.length} ${users.length === 1 ? 'pessoa' : 'pessoas'} ${radiusLabel(radiusM)}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}${invisibleText}`;
+      : `${nearbyCountTitle(counts.inRadius, counts.boosted, radiusLabel(radiusM))}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}${invisibleText}`;
 
   const renderItem = useCallback(
     // sem animação de entrada por linha: com multidão em volta a lista troca dezenas de linhas a cada atualização

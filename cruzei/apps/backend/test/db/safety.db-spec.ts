@@ -10,6 +10,7 @@ import type { LocationService } from '../../src/modules/location/location.servic
 import { loadPeerSocial } from '../../src/modules/location/peer-social';
 import { ModerationService } from '../../src/modules/moderation/moderation.service';
 import type { PhotoModerationService } from '../../src/modules/moderation/photo-moderation.service';
+import type { NotifyService } from '../../src/modules/notifications/notify.service';
 import { PublicUsersController } from '../../src/modules/users/public-users.controller';
 import type { ChatGateway } from '../../src/realtime/chat.gateway';
 import { canJoinConversation } from '../../src/realtime/conversation-access';
@@ -577,6 +578,9 @@ describe('cartão público e mapa (likeStatus + conversa do par)', () => {
       conversation: null,
     });
     expect(card).not.toHaveProperty('match');
+    // horário exato da última atividade nunca sai no cartão (só a faixa lastSeen, pra quem tem direito)
+    expect(card).not.toHaveProperty('lastActiveAt');
+    expect(card.lastSeen).toBeNull();
     // A vendo B: SENT
     expect(await cards.card({ id: a.id }, b.id)).toMatchObject({
       likeStatus: 'SENT',
@@ -695,7 +699,12 @@ describe('curtida (LikesService): like_received só identifica quem pode saber',
 });
 
 describe('curtida × bloqueio (o Block é conferido de novo depois da trava do par)', () => {
-  const forbiddenForBlocker = ['like_received', 'conversation:promoted', 'message:new'];
+  const forbiddenForBlocker = [
+    'like_received',
+    'match:new',
+    'conversation:promoted',
+    'message:new',
+  ];
   const systemMessages = (conversationId: string) =>
     prisma.message.count({ where: { conversationId, systemKind: { not: null } } });
   const archivedForBoth = async (conversationId: string) =>
@@ -776,4 +785,3 @@ describe('curtida × bloqueio (o Block é conferido de novo depois da trava do p
     }
   });
 });
-import type { NotifyService } from '../../src/modules/notifications/notify.service';

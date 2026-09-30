@@ -106,6 +106,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (phone: string, code: string) => {
     const res = await authApi.login(phone, code);
+    // número reciclado: conta parada não entra só com o SMS — a confirmação ("Essa conta é sua?") é pelo app.
+    // A equipe não fica isenta: conta de staff é a mais valiosa de sequestrar
+    if (res.claim) {
+      throw new HttpError(
+        409,
+        'Sua conta está parada há mais de 90 dias. Abra o app do Metch, entre com esse número e confirme que ela é sua; depois volte aqui.',
+      );
+    }
     if (!res.token || !res.refreshToken || !res.user.id) {
       throw new HttpError(404, 'Esse número não tem conta no Metch. Crie a conta pelo app primeiro.');
     }

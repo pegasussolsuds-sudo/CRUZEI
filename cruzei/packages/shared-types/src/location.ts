@@ -8,6 +8,8 @@ export interface LocationPoint {
   latitude: number;
   longitude: number;
   accuracyMeters?: number;
+  /** posição simulada informada pelo sistema (Android: LocationObject.mocked); ausente = desconhecido (iOS, app antigo) */
+  mocked?: boolean;
 }
 
 export interface LocationUpdatePayload extends LocationPoint {
@@ -16,8 +18,21 @@ export interface LocationUpdatePayload extends LocationPoint {
   state?: string;
 }
 
-/** por que EU não estou aparecendo pros outros agora (o servidor decide; o app só informa) */
-export type HiddenReason = 'anonymous' | 'private_area' | 'home' | 'nobody' | 'no_presence' | 'paused';
+/**
+ * por que EU não estou aparecendo pros outros agora (o servidor decide; o app só informa).
+ * GPS falso (GPS_GUARD): 'location_mocked' = o celular disse que a posição é simulada; 'location_unverified' = salto
+ * impossível desde a última posição aceita (o servidor espera confirmar; o app manda um fix novo em ~50 s).
+ * Nos dois, a posição pública não é atualizada e a pessoa some do mapa (e não vê ninguém) até normalizar.
+ */
+export type HiddenReason =
+  | 'anonymous'
+  | 'private_area'
+  | 'home'
+  | 'nobody'
+  | 'no_presence'
+  | 'paused'
+  | 'location_mocked'
+  | 'location_unverified';
 
 export interface LocationUpdateResponse {
   geohash: string;
@@ -30,6 +45,7 @@ export interface LocationUpdateResponse {
 
 import type { AvatarConfig } from './avatar';
 import type { ConversationRef, LikeStatus } from './conversation';
+import type { Orientation } from './user';
 
 /** relação social com quem consulta, no cartão público (GET /users/:id) e no /nearby */
 export interface PeerSocial {
@@ -38,8 +54,14 @@ export interface PeerSocial {
   conversation: ConversationRef | null;
 }
 
-/** 🟢 muito perto (≤100 m) · 🟢 perto (≤250 m) · 🟡 na região (≤350 m) */
-export type ProximityBand = 'very_near' | 'near' | 'region';
+/**
+ * 🟢 muito perto (≤100 m) · 🟢 perto (≤250 m) · 🟡 na região (≤350 m) · ⭐ em destaque na região ('boost': quem tem
+ * Boost ativo e está além dos 350 m, até BOOST_RADIUS_M; posição sempre anonimizada, nunca a real)
+ */
+export type ProximityBand = 'very_near' | 'near' | 'region' | 'boost';
+
+/** alcance de quem tem Boost ativo (m): aparece pra quem está até aqui, em destaque e primeiro na ordem */
+export const BOOST_RADIUS_M = 5000;
 /** 'place' = está num lugar (pin no lugar); 'nearby' = por perto (pin no centro da célula anonimizada) */
 export type PresenceType = 'place' | 'nearby';
 export type LastSeen = 'online' | 'recent' | 'earlier';
@@ -68,7 +90,10 @@ export interface NearbyUser {
   isAnonymous: boolean;
   premiumTier: 'free' | 'premium' | 'premium_plus';
   isVerified: boolean;
-  isBoosted: boolean; // boost ativo → destaque no mapa
+  /** boost ativo → sempre dentro do corte, primeiro na ordem do servidor (mapa, lista e deck) e destaque no mapa */
+  isBoosted: boolean;
+  /** só quando a pessoa EXIBE a orientação no perfil (showOrientation); senão ausente/null */
+  orientation?: Orientation | null;
   poi?: { id: number; name: string } | null;
   /** avatar Cruzei (null → o app gera um determinístico a partir do id) */
   avatar?: AvatarConfig | null;

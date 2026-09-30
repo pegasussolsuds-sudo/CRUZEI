@@ -46,6 +46,9 @@ export function parseTarget(raw: unknown): NotificationTarget | null {
       return isUuid(t.conversationId)
         ? { kind: 'conversation', conversationId: t.conversationId.toLowerCase() }
         : null;
+    // comemoração do match (só push social; campanha recusa esse destino)
+    case 'match':
+      return isUuid(t.userId) ? { kind: 'match', userId: t.userId.toLowerCase() } : null;
     default:
       return null;
   }

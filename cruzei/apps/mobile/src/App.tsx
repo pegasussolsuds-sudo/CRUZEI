@@ -13,7 +13,7 @@ import { useAuthStore } from './stores/auth';
 import { useBootStore } from './stores/boot';
 import { useMapPerfStore } from './stores/mapPerf';
 import { useLocationStore } from './stores/location';
-import { connectSocket, disconnectSocket, ensureSocketAlive } from './services/socket';
+import { connectSocket, disconnectSocket, ensureSocketAlive, getSocket } from './services/socket';
 import { setAccountBlockedHandler } from './services/api';
 import { asAccountBlocked, useAccountBlockStore } from './stores/accountBlock';
 import { useAppFonts } from './theme/fonts';
@@ -25,7 +25,16 @@ import { applyNotificationNew, notificationKeys, toAppNotification } from './hoo
 import { applySupportMessage, supportKeys } from './hooks/useSupport';
 import { showNotificationNotice } from './stores/inAppNotice';
 import { usePushRouteStore } from './stores/pushRoute';
-import { listenNotificationTaps, listenPushTokenChanges, registerPushDevice, setForegroundPushHandler } from './services/notifications';
+import { useMatchCelebrationStore } from './stores/matchCelebration';
+import {
+  listenNotificationTaps,
+  listenPushTokenChanges,
+  registerPushDevice,
+  setForegroundPushHandler,
+  setSocialForegroundHandler,
+  type SocialForegroundHandler,
+} from './services/notifications';
+import { parseTarget } from './services/notificationTarget';
 import type { AppNotification } from '@cruzei/shared-types';
 
 // Reanimated 3.16 avisa toda leitura de .value durante o render em modo estrito; o react-native-skia lê shared values
@@ -53,6 +62,22 @@ function onNotificationNew(n: AppNotification): void {
   applyNotificationNew(queryClient, n);
   showNotificationNotice(n);
 }
+
+/**
+ * Push social (mensagem, curtida, match) com o app aberto: nada de banner — o socket já atualizou as listas. Match
+ * sempre vira a comemoração (se o socket não trouxe, busca os pendentes). Com o socket caído, mensagem e curtida
+ * aparecem no sistema (senão a pessoa não saberia) e o socket tenta voltar.
+ */
+const onSocialPushForeground: SocialForegroundHandler = (data) => {
+  if (data.type === 'match') {
+    const t = parseTarget(data.target);
+    if (t?.kind === 'match') useMatchCelebrationStore.getState().fromPush(t.userId);
+    return true;
+  }
+  if (getSocket()?.connected) return true;
+  ensureSocketAlive();
+  return false;
+};
 
 // toque em push (app quente e o toque que abriu o app frio): guardado até o login e a navegação ficarem prontos
 listenNotificationTaps((route, notificationId) => usePushRouteStore.getState().set(route, notificationId));
@@ -112,6 +137,7 @@ export function App() {
     if (!isAuthenticated) {
       disconnectSocket();
       queryClient.clear();
+      useMatchCelebrationStore.getState().reset();
       return;
     }
     let active = true;
@@ -146,9 +172,18 @@ export function App() {
         }
       });
       // Premium dado/tirado com o "avisar a pessoa" desligado não gera aviso: o sinal silencioso atualiza o /me igual
-      socket.on('account:changed', () => {
+      socket.on('account:changed', (p) => {
         queryClient.invalidateQueries({ queryKey: ['me'] });
         useAuthStore.getState().refreshMe().catch(() => {});
+        // invisível grátis acabou / Premium venceu: o mapa, as conversas (invisível grátis não conversa) e a Paywall mudam
+        if (p?.reason === 'visibility' || p?.reason === 'premium_expired') {
+          queryClient.invalidateQueries({ queryKey: ['nearby'] });
+          queryClient.invalidateQueries({ queryKey: inboxKeys.all });
+          queryClient.invalidateQueries({ queryKey: ['conversation'] });
+          queryClient.invalidateQueries({ queryKey: ['messages'] });
+          queryClient.invalidateQueries({ queryKey: ['premium-status'] });
+          queryClient.invalidateQueries({ queryKey: ['plans'] });
+        }
       });
       // lugar entrou/saiu do mapa: busca de novo sem esperar o refetch de 45 s — com atraso aleatório de até 3 s pra
       // os apps abertos não baterem todos no mesmo segundo
@@ -171,6 +206,15 @@ export function App() {
       socket.on('like_received', () => {
         queryClient.invalidateQueries({ queryKey: ['me'] });
       });
+      // match fechado por quem eu curti: a comemoração entra na fila (o host mostra com a tela livre)
+      socket.on('match:new', (p) => {
+        useMatchCelebrationStore.getState().enqueue(p);
+        queryClient.invalidateQueries({ queryKey: inboxKeys.all });
+        queryClient.invalidateQueries({ queryKey: ['me'] });
+      });
+      // match que aconteceu com o app fechado (ou sem push): pendentes no servidor, a cada (re)conexão e agora
+      socket.on('connect', () => void useMatchCelebrationStore.getState().syncPending());
+      void useMatchCelebrationStore.getState().syncPending();
       socket.on('account_blocked', (data) => {
         const b = asAccountBlocked(data);
         if (b) useAccountBlockStore.getState().setBlocked(b);
@@ -198,9 +242,11 @@ export function App() {
     void registerPushDevice();
     const offToken = listenPushTokenChanges();
     setForegroundPushHandler(onNotificationNew);
+    setSocialForegroundHandler(onSocialPushForeground);
     return () => {
       offToken();
       setForegroundPushHandler(null);
+      setSocialForegroundHandler(null);
     };
   }, [isAuthenticated]);
 

@@ -3,6 +3,7 @@
 // - admin: tudo
 // - moderator: painel, usuários (ver + moderar contas 'user'), lugares, eventos (sem push), suporte
 // - só admin: Premium manual, papéis, campanhas de push/notificação, push de evento, auditoria
+import type { PhoneReleaseReason } from './api/auth.types';
 import type { AccountStatus, ModerationUserDetail, UserRole } from './moderation';
 import type { NotificationTarget } from './notifications';
 import type { PremiumTier } from './user';
@@ -96,6 +97,38 @@ export interface AdminUserRow {
   reportsPending: number;
   createdAt: string;
   lastActiveAt: string | null;
+  /** quando o número saiu desta conta (número reciclado); null/ausente = nunca. Badge "Número liberado em dd/mm" */
+  phoneReleasedAt?: string | null;
+  /** fim da janela do invisível grátis (só quando invisível sem Premium) */
+  anonymousUntil?: string | null;
+  /** quando usou o teste grátis do Premium */
+  trialUsedAt?: string | null;
+}
+
+/** uma liberação do número desta conta (histórico, mais recente primeiro) */
+export interface AdminPhoneRelease {
+  /** inteiro pra admin; mascarado pra moderador */
+  phone: string | null;
+  reason: PhoneReleaseReason;
+  /** situação da conta antiga na hora da liberação */
+  accountStatus: AccountStatus;
+  releasedAt: string;
+  /** conta criada depois com o número (link só pra admin) */
+  newUserId: string | null;
+  /** admin que liberou pelo painel (reason 'admin') */
+  releasedBy: { id: string; name: string } | null;
+  /** true = ESTA conta é a nova: o número veio de outra conta (ausente/false = o número saiu desta conta) */
+  incoming?: boolean;
+  /** conta que perdeu o número (só nas linhas `incoming`, link só pra admin) */
+  oldUserId?: string | null;
+}
+
+/**
+ * POST /v1/admin/users/:id/release-phone (só admin; caso de suporte) → AdminUserRow. Mesma liberação do app:
+ * telefone sai da conta (histórico em phone_releases, reason 'admin'), conta pausada sem prazo e sessões revogadas.
+ */
+export interface ReleasePhonePayload {
+  reason: string;
 }
 
 export interface AdminUserList {
@@ -124,6 +157,10 @@ export interface AdminSubscriptionRow {
 export interface AdminUserDetail extends AdminUserRow {
   moderation: ModerationUserDetail;
   bio: string | null;
+  /** @ do Instagram (público); a orientação NÃO vem pro painel (minimização de dado sensível) */
+  instagram?: string | null;
+  /** histórico de liberação do número desta conta (vazio = nunca) */
+  phoneReleases?: AdminPhoneRelease[];
   city: string | null;
   subscriptions: AdminSubscriptionRow[];
   devices: { platform: string; appVersion: string | null; lastUsedAt: string }[];

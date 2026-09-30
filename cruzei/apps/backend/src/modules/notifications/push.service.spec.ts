@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 
-import { PushService, type PushMessage, type PushOutcome } from './push.service';
+import { fcmMessageOf, PushService, type PushMessage, type PushOutcome } from './push.service';
 
 // PushService sem FCM: lotes de 500, token morto apagado, erro temporário não apaga nada, sem credencial = desligado.
 
@@ -111,5 +111,65 @@ describe('PushService', () => {
     expect(svc.enabled).toBe(false);
     if (old !== undefined) process.env.FCM_SERVICE_ACCOUNT_FILE = old;
     else delete process.env.FCM_SERVICE_ACCOUNT_FILE;
+  });
+});
+
+describe('fcmMessageOf (mensagem do FCM HTTP v1)', () => {
+  it('push da central: prioridade alta, canal e som; sem tag, collapse, ttl nem visibility', () => {
+    const m = fcmMessageOf({ token: 'tk', payload });
+    expect(m).toEqual({
+      token: 'tk',
+      notification: { title: 't', body: 'b' },
+      data: { notificationId: 'n', type: 'campaign' },
+      android: { priority: 'high', notification: { sound: 'default', channelId: 'default' } },
+      apns: { payload: { aps: { sound: 'default' } } },
+    });
+  });
+
+  it('push social: tag (uma por conversa na bandeja), collapseKey, ttl em ms e fora da tela bloqueada (secret)', () => {
+    const m = fcmMessageOf({
+      token: 'tk',
+      payload: {
+        ...payload,
+        channelId: 'messages',
+        data: { notificationId: '', type: 'message', target: '{"kind":"conversation"}' },
+        tag: 'conv:c1',
+        collapseKey: 'likes',
+        ttlSeconds: 3_600,
+        visibility: 'secret',
+      },
+    });
+    expect(m.android).toEqual({
+      priority: 'high',
+      collapseKey: 'likes',
+      ttl: 3_600_000,
+      notification: {
+        sound: 'default',
+        channelId: 'messages',
+        tag: 'conv:c1',
+        visibility: 'secret',
+      },
+    });
+    expect(m.data).toEqual({
+      notificationId: '',
+      type: 'message',
+      target: '{"kind":"conversation"}',
+    });
+  });
+
+  it('ttl zero ou sem visibility não entram; private passa como private', () => {
+    const m = fcmMessageOf({
+      token: 'tk',
+      payload: { ...payload, ttlSeconds: 0, visibility: undefined },
+    });
+    expect(m.android).toEqual({
+      priority: 'high',
+      notification: { sound: 'default', channelId: 'default' },
+    });
+    const p = fcmMessageOf({
+      token: 'tk',
+      payload: { ...payload, channelId: 'social', visibility: 'private' },
+    });
+    expect(p.android?.notification?.visibility).toBe('private');
   });
 });

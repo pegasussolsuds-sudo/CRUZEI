@@ -16,7 +16,7 @@ export interface ConversationAccess {
  * Pode entrar na sala conv:<id> (só o "digitando"): é membro, a conversa não está arquivada PRA ELE
  * (bloqueio e banimento arquivam os dois lados) e não há Block entre os dois em nenhum sentido
  * (segunda proteção: desbloquear não desarquiva, mas o Block vale mesmo com a conversa ativa). Invisível sem Premium
- * também fica fora (inbox/visibility.messagingLocked — a mesma regra, em SQL).
+ * também fica fora (inbox/visibility.messagingLocked — a mesma regra, em SQL; premium_expires_at é TIMESTAMP em UTC).
  * Devolve o papel e a promoção de quem entra, ou null sem acesso. Uma consulta só, parametrizada.
  */
 export async function conversationAccess(
@@ -37,7 +37,7 @@ export async function conversationAccess(
         u.visibility_mode = 'anonymous'
         AND NOT (
           u.premium_tier IN ('premium', 'premium_plus')
-          AND (u.premium_expires_at IS NULL OR u.premium_expires_at > now())
+          AND (u.premium_expires_at IS NULL OR u.premium_expires_at > (now() AT TIME ZONE 'UTC'))
         )
       )
       AND NOT EXISTS (

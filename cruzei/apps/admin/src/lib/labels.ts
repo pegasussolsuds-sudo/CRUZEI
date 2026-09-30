@@ -176,7 +176,9 @@ const MODERATION_ACTION_LABEL: Record<string, string> = {
   photo_approve: 'Foto aprovada',
   photo_reject: 'Foto recusada',
   auto_hold: 'Segurada pra revisão (automático)',
+  auto_flag_gps: 'GPS suspeito (automático)',
   review_hold: 'Segurada pra revisão',
+  phone_released: 'Número liberado (automático)',
 };
 
 /** ações do painel gravadas na auditoria (admin.*) */
@@ -201,6 +203,7 @@ const ADMIN_ACTION_LABEL: Record<string, string> = {
   'admin.user.premium_grant': 'Premium dado',
   'admin.user.premium_remove': 'Premium tirado',
   'admin.user.role': 'Papel alterado',
+  'admin.user.release_phone': 'Número liberado',
 };
 
 /** ação da auditoria em português: admin.* pela tabela, moderation.* pelo rótulo do histórico; desconhecida fica crua */

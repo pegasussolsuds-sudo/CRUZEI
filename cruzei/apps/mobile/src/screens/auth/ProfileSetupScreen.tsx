@@ -5,6 +5,7 @@ import {
   KeyboardAvoidingView,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -35,10 +36,12 @@ import { calculateAge, isAtLeast18 } from '@cruzei/shared-utils';
 import { BlobBackground, FadeInView, Glow, ScaleOnPress } from '../../components/animated';
 import { useAuthStore } from '../../stores/auth';
 import { useLocationStore } from '../../stores/location';
-import { api, toApiError } from '../../services/api';
+import { toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { TermsCheck } from '../../components/legal/TermsCheck';
-import { LEGAL_VERSION } from '@cruzei/shared-types';
+import { SHOW_ME_RECIPROCAL_NOTE } from '../../components/showMeNote';
+import { formatDate, parseDate, toIsoDate } from './birthDate';
+import { LEGAL_VERSION, ORIENTATIONS, ORIENTATION_LABELS, SHOW_ME_LABELS, type Orientation, type ShowMe } from '@cruzei/shared-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Conteúdo
@@ -62,9 +65,31 @@ const STEPS = [
   { key: 'name', title: 'Qual seu nome?', hint: 'É assim que as pessoas vão te ver no mapa.' },
   { key: 'birth', title: 'Quando você nasceu?', hint: 'Só pra garantir que você tem 18+. A idade aparece no perfil, a data não.' },
   { key: 'gender', title: 'Como você se identifica?', hint: 'Isso ajuda a mostrar seu perfil pra quem faz sentido.' },
+  {
+    key: 'showMe',
+    title: 'Quem você quer ver?',
+    hint: 'Vale pros dois lados: você só aparece pra quem também quer te ver. Dá pra mudar no Perfil.',
+  },
+  {
+    key: 'orientation',
+    title: 'Sua orientação',
+    hint: 'Opcional, e só aparece no perfil se você quiser. Se preferir, pula.',
+  },
   { key: 'looking', title: 'O que você procura?', hint: 'Dá pra mudar depois, sem drama.' },
   { key: 'prefs', title: 'Como você quer aparecer?', hint: 'Quem cruzou seu caminho num raio de até 350 m aparece no mapa. Você decide se te veem.' },
 ] as const;
+
+type StepKey = (typeof STEPS)[number]['key'];
+
+// "Mostrar": quem aparece pra você (recíproco)
+const SHOW_ME_OPTIONS: { value: ShowMe; emoji: string }[] = [
+  { value: 'women', emoji: '👩' },
+  { value: 'men', emoji: '👨' },
+  { value: 'everyone', emoji: '🌈' },
+];
+
+/** orientação: null = ainda não escolheu (CTA vira "Pular"); 'none' = prefere não dizer (não manda nada) */
+type OrientationPick = Orientation | 'none' | null;
 
 const TOTAL_STEPS = STEPS.length;
 const LAST_STEP = TOTAL_STEPS - 1;
@@ -82,7 +107,8 @@ type AgeStatus = 'idle' | 'ok' | 'under' | 'invalid';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * ProfileSetup (rota Register): 5 etapas — nome, nascimento, gênero, intenção, preferências.
+ * ProfileSetup (rota Register): 7 etapas — nome, nascimento, gênero, "quem você quer ver", orientação (opcional),
+ * intenção, preferências.
  * Fundo escuro com blobs vivos, barra de progresso com spring, transição horizontal entre etapas,
  * chips animados, slider de raio (gesture-handler + Reanimated) e toggle Visível/Anônimo.
  * Ao concluir chama register(); o store marca onboardingStep='avatar' e o RootNavigator segue pra AvatarSetup → PhotoUpload.
@@ -98,6 +124,10 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
   const [birthDate, setBirthDate] = useState(''); // DD/MM/AAAA
   const [gender, setGender] = useState<string | null>(null);
   const [lookingFor, setLookingFor] = useState<string | null>(null);
+  const [showMe, setShowMe] = useState<ShowMe | null>(null);
+  const [orientation, setOrientation] = useState<OrientationPick>(null);
+  const [showOrientation, setShowOrientation] = useState(false);
+  const [sameOrientationFirst, setSameOrientationFirst] = useState(false);
   const [anonymous, setAnonymousLocal] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -109,16 +139,29 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
   const ageStatus: AgeStatus =
     birthDate.length < 10 ? 'idle' : !parsedDate ? 'invalid' : dateValid ? 'ok' : 'under';
 
-  const canNext =
-    step === 0
-      ? name.trim().length >= 2
-      : step === 1
-        ? dateValid
-        : step === 2
-          ? Boolean(gender)
-          : step === 3
-            ? Boolean(lookingFor)
-            : termsAccepted;
+  const current = STEPS[step];
+  const stepKey: StepKey = current.key;
+  // orientação escolhida de fato (não "prefiro não dizer"): só ela vai pro cadastro, junto com as duas chaves
+  const pickedOrientation: Orientation | null = orientation && orientation !== 'none' ? orientation : null;
+
+  const canNext = ((): boolean => {
+    switch (stepKey) {
+      case 'name':
+        return name.trim().length >= 2;
+      case 'birth':
+        return dateValid;
+      case 'gender':
+        return Boolean(gender);
+      case 'showMe':
+        return Boolean(showMe);
+      case 'orientation':
+        return true; // opcional
+      case 'looking':
+        return Boolean(lookingFor);
+      default:
+        return termsAccepted;
+    }
+  })();
 
   // ── transição horizontal entre etapas ──────────────────────────────────────
   const slideX = useSharedValue(0);
@@ -193,17 +236,15 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
         gender,
         lookingFor,
         termsVersion: LEGAL_VERSION,
+        showMe: showMe ?? 'everyone',
+        // a conta já nasce no modo escolhido (invisível ganha a janela grátis de 24 h no servidor)
+        visibilityMode: anonymous ? 'anonymous' : 'visible',
+        // orientação só se escolheu (consentimento); as duas chaves só valem junto com ela
+        ...(pickedOrientation ? { orientation: pickedOrientation, showOrientation, sameOrientationFirst } : {}),
       });
       // sucesso → o store marca onboardingStep='avatar' e o RootNavigator vai pra AvatarSetup (depois PhotoUpload).
       setAnonymous(anonymous);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      if (!anonymous) {
-        try {
-          await api.patch('/me/settings', { visibilityMode: 'visible' });
-        } catch {
-          /* não trava o onboarding — dá pra mudar a visibilidade no mapa depois */
-        }
-      }
     } catch (e) {
       const err = toApiError(e);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -216,10 +257,25 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
       );
       setLoading(false);
     }
-  }, [anonymous, gender, loading, lookingFor, name, parsedDate, phone, register, setAnonymous, termsAccepted]);
+  }, [
+    anonymous,
+    gender,
+    loading,
+    lookingFor,
+    name,
+    parsedDate,
+    phone,
+    pickedOrientation,
+    register,
+    sameOrientationFirst,
+    setAnonymous,
+    showMe,
+    showOrientation,
+    termsAccepted,
+  ]);
 
-  const current = STEPS[step];
   const isLast = step === LAST_STEP;
+  const ctaLabel = isLast ? 'Bora te encontrar?' : stepKey === 'orientation' && orientation === null ? 'Pular' : 'Continuar';
 
   return (
     <View style={styles.root}>
@@ -249,7 +305,7 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
               </Text>
               <Text style={styles.stepHint}>{current.hint}</Text>
 
-              {step === 0 ? (
+              {stepKey === 'name' ? (
                 <>
                   <FocusInput
                     placeholder="Como você quer ser chamado(a)?"
@@ -270,7 +326,7 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
                 </>
               ) : null}
 
-              {step === 1 ? (
+              {stepKey === 'birth' ? (
                 <>
                   <FocusInput
                     placeholder="DD/MM/AAAA"
@@ -288,7 +344,7 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
                 </>
               ) : null}
 
-              {step === 2 ? (
+              {stepKey === 'gender' ? (
                 <View style={styles.chips}>
                   {GENDERS.map((g, i) => (
                     <FadeInView key={g.value} delay={60 + i * 50} fromY={10} style={styles.chipWrap}>
@@ -298,7 +354,68 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
                 </View>
               ) : null}
 
-              {step === 3 ? (
+              {stepKey === 'showMe' ? (
+                <>
+                  <View style={styles.chips} accessibilityRole="radiogroup">
+                    {SHOW_ME_OPTIONS.map((o, i) => (
+                      <FadeInView key={o.value} delay={60 + i * 50} fromY={10} style={o.value === 'everyone' ? styles.chipWrapFull : styles.chipWrap}>
+                        <Chip label={SHOW_ME_LABELS[o.value]} emoji={o.emoji} selected={showMe === o.value} onPress={() => setShowMe(o.value)} />
+                      </FadeInView>
+                    ))}
+                  </View>
+                  <Reveal visible={showMe !== null && showMe !== 'everyone'}>
+                    <Text style={styles.stepNote}>Pessoas não binárias e de outros gêneros aparecem em "Todos".</Text>
+                  </Reveal>
+                  {/* transparência: a escolha recíproca pode ser percebida (Política 3.3) */}
+                  <Text style={styles.stepNote}>{SHOW_ME_RECIPROCAL_NOTE}</Text>
+                </>
+              ) : null}
+
+              {stepKey === 'orientation' ? (
+                <>
+                  <View style={styles.chips} accessibilityRole="radiogroup">
+                    {ORIENTATIONS.map((o, i) => (
+                      <FadeInView key={o} delay={40 + i * 30} fromY={8} style={styles.chipWrap}>
+                        <Chip
+                          label={ORIENTATION_LABELS[o]}
+                          selected={orientation === o}
+                          // tocar de novo desmarca
+                          onPress={() => setOrientation((cur) => (cur === o ? null : o))}
+                        />
+                      </FadeInView>
+                    ))}
+                    {/* largura cheia: "Prefiro não dizer" não cabe em meia coluna nos 360 dp */}
+                    <FadeInView delay={40 + ORIENTATIONS.length * 30} fromY={8} style={styles.chipWrapFull}>
+                      <Chip label="Prefiro não dizer" selected={orientation === 'none'} onPress={() => setOrientation((cur) => (cur === 'none' ? null : 'none'))} />
+                    </FadeInView>
+                  </View>
+                  {pickedOrientation ? (
+                    <FadeInView fromY={8} style={styles.orientationBlock}>
+                      <View style={styles.consentBox} accessibilityRole="text">
+                        <Ionicons name="lock-closed" size={18} color={colors.primary} />
+                        <Text style={styles.consentText}>
+                          É um dado sensível: a gente só guarda com o seu consentimento, e você apaga quando quiser em Editar perfil.
+                          Por padrão ninguém vê.
+                        </Text>
+                      </View>
+                      <DarkSwitchRow
+                        label="Mostrar no meu perfil"
+                        hint="Quem abrir seu perfil vê sua orientação."
+                        value={showOrientation}
+                        onChange={setShowOrientation}
+                      />
+                      <DarkSwitchRow
+                        label="Ver primeiro quem tem a mesma orientação"
+                        hint="Só muda a ordem, não esconde ninguém. Conta quem mostra a orientação no perfil."
+                        value={sameOrientationFirst}
+                        onChange={setSameOrientationFirst}
+                      />
+                    </FadeInView>
+                  ) : null}
+                </>
+              ) : null}
+
+              {stepKey === 'looking' ? (
                 <View style={styles.chips}>
                   {LOOKING_FOR.map((o, i) => (
                     <FadeInView key={o.value} delay={60 + i * 50} fromY={10} style={styles.chipWrap}>
@@ -313,7 +430,7 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
                 </View>
               ) : null}
 
-              {step === 4 ? (
+              {stepKey === 'prefs' ? (
                 <FadeInView delay={80} fromY={10} style={styles.visibilityBlock}>
                   <VisibilityToggle anonymous={anonymous} onChange={setAnonymousLocal} />
                   <View style={{ height: spacing.lg }} />
@@ -349,14 +466,14 @@ export function ProfileSetupScreen({ route, navigation }: Props) {
                   glowColor={colors.primary}
                   accessibilityRole="button"
                   accessibilityState={{ disabled: !canNext || loading, busy: loading }}
-                  accessibilityLabel={isLast ? 'Concluir cadastro' : 'Continuar pra próxima etapa'}
+                  accessibilityLabel={isLast ? 'Concluir cadastro' : ctaLabel === 'Pular' ? 'Pular essa etapa' : 'Continuar pra próxima etapa'}
                   style={styles.cta}
                 >
                   {loading ? (
                     <ActivityIndicator color={colors.black} />
                   ) : (
                     <>
-                      <Text style={styles.ctaText}>{isLast ? 'Bora te encontrar?' : 'Continuar'}</Text>
+                      <Text style={styles.ctaText}>{ctaLabel}</Text>
                       <Ionicons name={isLast ? 'sparkles' : 'arrow-forward'} size={20} color={colors.black} />
                     </>
                   )}
@@ -532,7 +649,8 @@ function AgeHint({ status, age }: { status: AgeStatus; age: number | null }) {
 
 interface ChipProps {
   label: string;
-  emoji: string;
+  /** sem emoji: chip só com o texto (orientação) */
+  emoji?: string;
   selected: boolean;
   onPress: () => void;
 }
@@ -565,7 +683,7 @@ function Chip({ label, emoji, selected, onPress }: ChipProps) {
       accessibilityLabel={label}
     >
       <Animated.View style={[styles.chip, box]}>
-        <Text style={styles.chipEmoji}>{emoji}</Text>
+        {emoji ? <Text style={styles.chipEmoji}>{emoji}</Text> : null}
         {/* rótulos longos ("Não-binário") encolhem em vez de quebrar no meio da palavra */}
         <Animated.Text style={[styles.chipText, text]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
           {label}
@@ -579,6 +697,35 @@ function Chip({ label, emoji, selected, onPress }: ChipProps) {
 }
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chave (Switch) no fundo escuro — texto quebra em telas estreitas (360 dp), a chave fica fixa à direita
+// ─────────────────────────────────────────────────────────────────────────────
+
+function DarkSwitchRow({ label, hint, value, onChange }: { label: string; hint: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <View style={styles.switchRow}>
+      <View style={styles.switchText}>
+        <Text style={styles.switchLabel}>{label}</Text>
+        <Text style={styles.switchHint}>{hint}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={(v) => {
+          Haptics.selectionAsync().catch(() => {});
+          onChange(v);
+        }}
+        trackColor={{ false: 'rgba(250,250,250,0.2)', true: colors.primary }}
+        thumbColor={colors.white}
+        ios_backgroundColor="rgba(250,250,250,0.2)"
+        accessibilityRole="switch"
+        accessibilityLabel={label}
+        accessibilityHint={hint}
+        accessibilityState={{ checked: value }}
+      />
+    </View>
+  );
+}
 
 interface VisibilityToggleProps {
   anonymous: boolean;
@@ -638,7 +785,7 @@ function VisibilityToggle({ anonymous, onChange }: VisibilityToggleProps) {
       <FadeInView key={anonymous ? 'anon' : 'vis'} fromY={4} durationMs={duration.base}>
         <Text style={styles.toggleHint}>
           {anonymous
-            ? 'Anônimo: você vê todo mundo, ninguém te vê. Dá pra mudar no mapa.'
+            ? 'Anônimo: você vê todo mundo, ninguém te vê. No grátis vale 24 h e dá pra religar no mapa quando quiser.'
             : 'Visível: quem cruzou seu caminho te vê no mapa e pode dar match. Dá pra mudar no mapa.'}
         </Text>
       </FadeInView>
@@ -671,34 +818,6 @@ function ErrorBanner({ message }: { message: string }) {
       </Animated.View>
     </FadeInView>
   );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Datas
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Auto-insere as barras enquanto digita
-function formatDate(raw: string): string {
-  const d = raw.replace(/\D/g, '').slice(0, 8);
-  if (d.length <= 2) return d;
-  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
-  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
-}
-
-function parseDate(s: string): Date | null {
-  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
-  if (!m) return null;
-  const [, dd, mm, yyyy] = m;
-  const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
-  const valid = d.getFullYear() === Number(yyyy) && d.getMonth() === Number(mm) - 1 && d.getDate() === Number(dd);
-  if (!valid || d.getTime() > Date.now()) return null;
-  return d;
-}
-
-// YYYY-MM-DD no fuso local (evita o "dia anterior" do toISOString em UTC-3)
-function toIsoDate(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -769,6 +888,32 @@ const styles = StyleSheet.create({
   chipEmoji: { fontSize: 18 },
   chipText: { ...typography.h4, flex: 1 },
   chipCheck: { marginLeft: spacing.xs },
+  chipWrapFull: { flexGrow: 1, flexBasis: '100%' },
+  stepNote: { ...typography.bodySmall, color: 'rgba(250,250,250,0.6)', marginTop: spacing.md },
+
+  // orientação: aviso de consentimento + as duas chaves
+  orientationBlock: { marginTop: spacing.lg, gap: spacing.sm },
+  consentBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(127,255,0,0.35)',
+    backgroundColor: 'rgba(127,255,0,0.08)',
+  },
+  consentText: { ...typography.bodySmall, color: colors.white, flex: 1 },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    minHeight: 56,
+  },
+  switchText: { flex: 1, gap: 2 },
+  switchLabel: { ...typography.label, color: colors.white },
+  switchHint: { ...typography.caption, color: 'rgba(250,250,250,0.6)' },
 
   sliderBlock: { paddingTop: spacing.xxl },
   sliderLabelRow: { height: 34, marginBottom: spacing.xs },

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   Param,
   ParseUUIDPipe,
@@ -56,5 +57,21 @@ export class LikesController {
   @Post('passes')
   async pass(@CurrentUser() user: AuthenticatedUser, @Body() dto: PassDto) {
     await this.svc.pass(user.id, dto.userId);
+  }
+
+  /** MatchCelebration[]: comemorações de match que ainda não apareceram pra mim (quem curtiu primeiro) */
+  @Get('likes/matches/pending')
+  pendingMatches(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.pendingMatches(user.id);
+  }
+
+  /** o app mostrou a comemoração com essa pessoa (idempotente) */
+  @HttpCode(204)
+  @Post('likes/matches/:userId/seen')
+  async matchSeen(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('userId', new ParseUUIDPipe()) peerId: string,
+  ) {
+    await this.svc.markMatchSeen(user.id, peerId);
   }
 }

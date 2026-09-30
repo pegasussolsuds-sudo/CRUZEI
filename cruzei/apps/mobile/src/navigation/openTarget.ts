@@ -1,9 +1,10 @@
 import type { QueryClient } from '@tanstack/react-query';
-import type { ConversationDetail } from '@cruzei/shared-types';
+import type { ConversationDetail, ConversationRef } from '@cruzei/shared-types';
 import { api } from '../services/api';
 import type { TargetRoute } from '../services/notificationTarget';
 import { findSummary, inboxKeys } from '../hooks/useInbox';
 import { useMapFocusStore } from '../stores/mapFocus';
+import { useMatchCelebrationStore } from '../stores/matchCelebration';
 import { navigationRef } from './navigationRef';
 import { openChat } from './openChat';
 
@@ -34,9 +35,30 @@ export function openTargetRoute(route: TargetRoute, qc: QueryClient): boolean {
     case 'Chat':
       void openConversation(route.conversationId, qc);
       return true;
+    case 'Match':
+      void openMatch(route.userId, qc);
+      return true;
     default:
       return false;
   }
+}
+
+/**
+ * Toque no push do match: a comemoração dessa pessoa na frente da fila (o host mostra quando a tela estiver livre).
+ * Já comemorada (neste ou em outro aparelho): a conversa com ela; sem conversa, o cartão dela (tem o "mensagem").
+ */
+async function openMatch(userId: string, qc: QueryClient): Promise<void> {
+  if (await useMatchCelebrationStore.getState().open(userId)) return;
+  try {
+    const ref = (await api.get<ConversationRef | null>(`/conversations/with/${userId}`)).data;
+    if (ref?.id) {
+      await openConversation(ref.id, qc);
+      return;
+    }
+  } catch {
+    // sem rede ou pessoa indisponível: cai no cartão (ele mesmo mostra se não der)
+  }
+  if (navigationRef.isReady()) navigationRef.navigate('UserCard', { userId }, { pop: true });
 }
 
 /** o chat precisa de quem está do outro lado (header e id da tela): cache das listas/detalhe, senão o servidor */

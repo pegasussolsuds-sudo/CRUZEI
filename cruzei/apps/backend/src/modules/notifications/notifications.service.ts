@@ -71,7 +71,14 @@ export class NotificationsService {
 
   async settings(userId: string): Promise<NotificationSettings> {
     const p = await this.prisma.notificationPref.findUnique({ where: { userId } });
-    return { campaigns: p?.campaigns ?? true, events: p?.events ?? true };
+    return {
+      campaigns: p?.campaigns ?? true,
+      events: p?.events ?? true,
+      messages: p?.messages ?? true,
+      likes: p?.likes ?? true,
+      matches: p?.matches ?? true,
+      messagePreview: p?.messagePreview ?? true,
+    };
   }
 
   async updateSettings(
@@ -79,8 +86,15 @@ export class NotificationsService {
     patch: Partial<NotificationSettings>,
   ): Promise<NotificationSettings> {
     const data: Partial<NotificationSettings> = {};
-    if (typeof patch.campaigns === 'boolean') data.campaigns = patch.campaigns;
-    if (typeof patch.events === 'boolean') data.events = patch.events;
+    const keys = [
+      'campaigns',
+      'events',
+      'messages',
+      'likes',
+      'matches',
+      'messagePreview',
+    ] as const satisfies readonly (keyof NotificationSettings)[];
+    for (const k of keys) if (typeof patch[k] === 'boolean') data[k] = patch[k];
     if (Object.keys(data).length) {
       await this.prisma.notificationPref.upsert({
         where: { userId },

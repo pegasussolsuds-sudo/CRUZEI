@@ -4,7 +4,6 @@ import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import { proximityBandLabel } from '@cruzei/shared-utils';
 import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import { api } from '../../services/api';
 import type { ConversationFlag, LikeFlags } from '../../hooks/useInbox';
@@ -15,6 +14,7 @@ import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { presenceLabel } from './PersonRow';
+import { previewDistanceText } from './proximityText';
 
 // 56%: a composição foto + avatar (184 px) + chips + ações cabe em telas de ~640 dp sem cortar o "Ver perfil"
 export const USER_SHEET_FRACTION = 0.56;
@@ -86,7 +86,8 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
   );
 
   const nameAge = user ? (user.age ? `${user.name}, ${user.age}` : user.name) : '';
-  const distance = band ? `${proximityBandLabel(band)} de você` : 'por perto';
+  // 'boost' vira só o rótulo ("em destaque na região"), nunca "... de você"
+  const distance = previewDistanceText(band);
   const place = card.data?.placeName ?? user?.poi?.name ?? null;
   const mainPhoto = card.data?.photos?.find((p) => p.isMain)?.url ?? card.data?.photos?.[0]?.url ?? null;
   // bolha: thumbnail do mapa; sem ele, o thumb do cartão público (o perfil é público — a preferência vale pro MAPA).

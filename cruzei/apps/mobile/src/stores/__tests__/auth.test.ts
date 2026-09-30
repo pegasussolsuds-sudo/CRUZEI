@@ -218,3 +218,106 @@ describe('ensureMe (reconexão do socket / volta pro app)', () => {
     expect(useAuthStore.getState().user).toEqual(ME);
   });
 });
+
+describe('número reciclado: "Essa conta é sua?"', () => {
+  const PHONE = '+5511999999999';
+  const CLAIM = { challengeId: 'c1', maskedName: 'A••• P•••', createdMonth: null, attemptsLeft: 3, expiresIn: 600 };
+  const setToken = apiModule.setToken as unknown as jest.Mock;
+  const postCalls = () => apiMock.api.post.mock.calls.map(([url, body]) => [url, body]);
+
+  beforeEach(() => setToken.mockClear());
+
+  it('verifyCode com claim: não grava token (nem null), não busca /me e devolve o desafio', async () => {
+    apiMock.api.post.mockResolvedValueOnce({
+      data: { user: { id: null, name: '', phone: PHONE, isNew: false }, token: null, refreshToken: null, claim: CLAIM },
+    });
+    const r = await useAuthStore.getState().verifyCode(PHONE, '123456', { deferAuth: true });
+    expect(r).toEqual({ isNew: false, claim: CLAIM });
+    expect(setToken).not.toHaveBeenCalled();
+    expect(meCalls()).toBe(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('confirmClaim com a data certa: grava a sessão e busca o /me (deferAuth até o commitAuth)', async () => {
+    apiMock.api.post.mockResolvedValueOnce({
+      data: { user: { id: 'u1', name: 'Ana', phone: PHONE, isNew: false }, token: 't', refreshToken: 'r' },
+    });
+    apiMock.api.get.mockResolvedValueOnce({ data: ME });
+    const r = await useAuthStore.getState().confirmClaim('c1', '1990-07-21', { deferAuth: true });
+    expect(r).toEqual({ isNew: false });
+    expect(postCalls()).toContainEqual(['/auth/claim/confirm', { challengeId: 'c1', birthDate: '1990-07-21' }]);
+    expect(setToken).toHaveBeenCalledWith('t');
+    expect(useAuthStore.getState()).toMatchObject({ user: ME, isAuthenticated: false });
+    useAuthStore.getState().commitAuth();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('confirmClaim com a data errada (401 claim_mismatch): lança pra tela e não mexe na sessão', async () => {
+    const mismatch = Object.assign(new Error('HTTP 401'), {
+      response: { status: 401, data: { error: 'claim_mismatch', message: 'Não bateu', attemptsLeft: 2 } },
+    });
+    apiMock.api.post.mockRejectedValueOnce(mismatch);
+    await expect(useAuthStore.getState().confirmClaim('c1', '1990-01-01')).rejects.toBe(mismatch);
+    expect(setToken).not.toHaveBeenCalled();
+    expect(apiMock.clearSession).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('esgotou as tentativas ou "Não é minha": isNew + released, sem sessão', async () => {
+    apiMock.api.post.mockResolvedValueOnce({
+      data: { user: { id: null, name: '', phone: PHONE, isNew: true }, token: null, refreshToken: null, released: 'birthdate_mismatch' },
+    });
+    expect(await useAuthStore.getState().confirmClaim('c1', '2000-01-01')).toEqual({
+      isNew: true,
+      released: 'birthdate_mismatch',
+    });
+    apiMock.api.post.mockResolvedValueOnce({
+      data: { user: { id: null, name: '', phone: PHONE, isNew: true }, token: null, refreshToken: null, released: 'not_mine' },
+    });
+    expect(await useAuthStore.getState().releaseClaim('c2')).toEqual({ isNew: true, released: 'not_mine' });
+    expect(postCalls()).toContainEqual(['/auth/claim/release', { challengeId: 'c2' }]);
+    expect(setToken).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+});
+
+describe('cadastro: campos do perfil (orientação opcional, "Mostrar")', () => {
+  it('manda "Mostrar", a orientação e as duas chaves como vieram da tela e abre a sessão', async () => {
+    apiMock.api.post.mockResolvedValueOnce({ data: { token: 't', refreshToken: 'r', user: { id: 'u1' } } });
+    apiMock.api.get.mockResolvedValueOnce({ data: ME });
+    await useAuthStore.getState().register({
+      phone: '+5534999990000',
+      name: 'Ana',
+      birthDate: '1995-01-01',
+      gender: 'female',
+      lookingFor: 'relationship',
+      termsVersion: '1.2',
+      showMe: 'women',
+      orientation: 'lesbian',
+      showOrientation: true,
+      sameOrientationFirst: false,
+    });
+    const [url, body] = apiMock.api.post.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect(url).toBe('/auth/register');
+    expect(body).toMatchObject({ showMe: 'women', orientation: 'lesbian', showOrientation: true, sameOrientationFirst: false });
+    expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: true, onboardingStep: 'avatar' });
+  });
+
+  it('sem orientação (pulou ou "Prefiro não dizer"): nada de orientação nem chaves no corpo', async () => {
+    apiMock.api.post.mockResolvedValueOnce({ data: { token: 't', refreshToken: 'r', user: { id: 'u1' } } });
+    apiMock.api.get.mockResolvedValueOnce({ data: ME });
+    await useAuthStore.getState().register({
+      phone: '+5534999990000',
+      name: 'Ana',
+      birthDate: '1995-01-01',
+      gender: 'non_binary',
+      termsVersion: '1.2',
+      showMe: 'everyone',
+    });
+    const [, body] = apiMock.api.post.mock.calls.at(-1) as [string, Record<string, unknown>];
+    expect(body).not.toHaveProperty('orientation');
+    expect(body).not.toHaveProperty('showOrientation');
+    expect(body).not.toHaveProperty('sameOrientationFirst');
+    expect(body).toMatchObject({ showMe: 'everyone' });
+  });
+});

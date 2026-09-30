@@ -179,6 +179,8 @@ export class ModerationService {
       select: {
         ...SUMMARY_SELECT,
         bio: true,
+        // @ do Instagram é conteúdo público (spam, perfil falso): a moderação vê. A orientação não (dado sensível)
+        instagramHandle: true,
         phone: true,
         role: true,
         photos: {
@@ -243,7 +245,12 @@ export class ModerationService {
         .slice(0, 1),
     } as SummaryRow;
     return {
-      user: { ...this.summary(summaryRow), bio: u.bio, phoneMasked: maskPhone(u.phone) },
+      user: {
+        ...this.summary(summaryRow),
+        bio: u.bio,
+        instagram: u.instagramHandle ?? null,
+        phoneMasked: maskPhone(u.phone),
+      },
       photos: u.photos.map((p) => ({
         id: p.id,
         url: p.url,

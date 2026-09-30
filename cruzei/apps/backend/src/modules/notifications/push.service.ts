@@ -11,9 +11,25 @@ export interface PushPayload {
   title: string;
   body: string;
   data: PushData;
-  /** canal Android (PUSH_CHANNELS): 'support' pra resposta do suporte, 'default' pro resto */
+  /** canal Android (PUSH_CHANNELS): 'support', 'messages', 'social' ou 'default' */
   channelId: string;
+  /** mesma tag substitui a notificação na bandeja (ex.: conv:<id> = uma por conversa) */
+  tag?: string;
+  /** aparelho offline recebe só a última do mesmo grupo (o FCM guarda no máx. 4 grupos por aparelho) */
+  collapseKey?: string;
+  /** validade no FCM: passou disso com o aparelho fora, não entrega mais */
+  ttlSeconds?: number;
+  /**
+   * tela bloqueada (Android, só com bloqueio de tela):
+   * - 'secret': o aviso nem aparece na tela bloqueada; aparece ao desbloquear (mensagem)
+   * - 'private': aparece; o conteúdo só some se a pessoa escolheu esconder conteúdo sensível nos ajustes (NÃO é o
+   *   padrão do Android — não serve pra garantir nada)
+   * - sem valor: padrão do sistema
+   */
+  visibility?: PushVisibility;
 }
+
+export type PushVisibility = 'private' | 'secret';
 
 /** um push por aparelho; o resultado sai na MESMA ordem */
 export interface PushMessage {
@@ -153,23 +169,36 @@ function loadFirebase() {
   return { ...app, ...messaging };
 }
 
-/** FCM HTTP v1: Android com prioridade alta (entrega com o app fechado/Doze), notification + data */
+/**
+ * Mensagem do FCM HTTP v1 (pura, testada em push.service.spec.ts): Android com prioridade alta (entrega com o app
+ * fechado/Doze), notification + data; tag, collapseKey, ttl e visibility só quando o payload pede.
+ */
+export function fcmMessageOf(m: PushMessage): import('firebase-admin/messaging').TokenMessage {
+  const p = m.payload;
+  return {
+    token: m.token,
+    notification: { title: p.title, body: p.body },
+    data: pushDataRecord(p.data),
+    android: {
+      priority: 'high',
+      ...(p.collapseKey ? { collapseKey: p.collapseKey } : {}),
+      ...(p.ttlSeconds != null && p.ttlSeconds > 0 ? { ttl: p.ttlSeconds * 1000 } : {}),
+      notification: {
+        sound: 'default',
+        channelId: p.channelId,
+        ...(p.tag ? { tag: p.tag } : {}),
+        ...(p.visibility ? { visibility: p.visibility } : {}),
+      },
+    },
+    apns: { payload: { aps: { sound: 'default' } } },
+  };
+}
+
 class FcmTransport implements PushTransport {
   constructor(private readonly messaging: import('firebase-admin/messaging').Messaging) {}
 
   async sendEach(messages: PushMessage[]): Promise<PushOutcome[]> {
-    const res = await this.messaging.sendEach(
-      messages.map((m) => ({
-        token: m.token,
-        notification: { title: m.payload.title, body: m.payload.body },
-        data: pushDataRecord(m.payload.data),
-        android: {
-          priority: 'high' as const,
-          notification: { sound: 'default', channelId: m.payload.channelId },
-        },
-        apns: { payload: { aps: { sound: 'default' } } },
-      })),
-    );
+    const res = await this.messaging.sendEach(messages.map(fcmMessageOf));
     return res.responses.map((r) =>
       r.success ? 'ok' : DEAD_TOKEN_CODES.has(r.error?.code ?? '') ? 'invalid' : 'error',
     );

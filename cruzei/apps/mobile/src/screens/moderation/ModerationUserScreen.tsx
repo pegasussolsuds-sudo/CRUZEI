@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { instagramUrl } from '@cruzei/shared-utils';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -104,6 +105,17 @@ export function ModerationUserScreen({ route, navigation }: Props) {
           {u.phoneMasked ?? 'sem telefone'} · conta desde {new Date(u.createdAt).toLocaleDateString('pt-BR')} · {statusText(u)}
         </Text>
         {u.bio ? <Text style={styles.bio}>{u.bio}</Text> : null}
+        {/* @ do Instagram é público no cartão: spam, venda ou perfil de outra pessoa também se denuncia aqui */}
+        {u.instagram ? (
+          <Pressable
+            onPress={() => Linking.openURL(instagramUrl(u.instagram as string)).catch(() => undefined)}
+            accessibilityRole="link"
+            accessibilityLabel={`Instagram: arroba ${u.instagram}`}
+            style={styles.insta}
+          >
+            <Text style={styles.instaText}>Instagram: @{u.instagram}</Text>
+          </Pressable>
+        ) : null}
 
         <Text style={styles.section}>fotos</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
@@ -197,6 +209,8 @@ const styles = StyleSheet.create({
   title: { ...typography.h2, color: colors.black },
   muted: { ...typography.caption, color: colors.gray[500] },
   bio: { ...typography.body, color: colors.gray[800], marginTop: spacing.sm },
+  insta: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center' },
+  instaText: { ...typography.body, color: colors.info, textDecorationLine: 'underline' },
   section: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', letterSpacing: 1, marginTop: spacing.xl, marginBottom: spacing.sm },
   photo: { width: 120, height: 150, borderRadius: radius.md, backgroundColor: colors.gray[200] },
   badge: { ...typography.caption, color: colors.gray[600], marginTop: 2 },

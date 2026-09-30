@@ -7,14 +7,17 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { requestMeta } from '../auth/phone-release.service';
 
 import { AdminUsersService } from './admin-users.service';
-import { GrantPremiumDto, SetRoleDto } from './dto';
+import { GrantPremiumDto, ReleasePhoneDto, SetRoleDto } from './dto';
 import { RequirePermission, StaffGuard } from './staff.guard';
 
 // Usuários no painel. Moderar (advertir/suspender/banir) continua em POST /admin/users/:id/action (ModerationModule).
@@ -66,5 +69,18 @@ export class AdminUsersController {
     @Body() dto: SetRoleDto,
   ) {
     return this.svc.setRole(me, id, dto.role);
+  }
+
+  /** número reciclado, caso de suporte: tira o telefone da conta (só admin — mesma permissão dos papéis) */
+  @Post(':id/release-phone')
+  @HttpCode(200)
+  @RequirePermission('users.role')
+  releasePhone(
+    @CurrentUser() me: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReleasePhoneDto,
+    @Req() req: Request,
+  ) {
+    return this.svc.releasePhone(me, id, dto, requestMeta(req));
   }
 }

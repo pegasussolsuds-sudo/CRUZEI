@@ -32,6 +32,7 @@ import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
 import { colors, fontFamily, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
 import { formatBRL } from '@cruzei/shared-utils';
+import type { PremiumPlan, PremiumPlansResponse, PremiumStatus, SubscribeResult } from '@cruzei/shared-types';
 import {
   AnimatedGradient,
   Confetti,
@@ -48,24 +49,9 @@ import { BRAND } from '../../brand';
 // Tipos / constantes (lógica preservada)
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface Plan {
-  id: string;
-  tier: string;
-  interval: string;
-  priceCents: number;
-  currency: string;
-  trialDays?: number;
-  savingsPercent?: number;
-}
-
-interface PremiumStatus {
-  tier: 'free' | 'premium' | 'premium_plus';
-  expiresAt?: string;
-  daysRemaining: number;
-  /** false depois de cancelar: o acesso segue até expiresAt, mas não renova */
-  autoRenew?: boolean;
-  cancelledAt?: string | null;
-}
+// contrato do servidor (shared-types/premium.ts): quem já usou o teste grátis (conta ou número) recebe os planos sem
+// trialDays, então a tela só promete o teste quando ele vale de verdade
+type Plan = PremiumPlan;
 
 const TIER_LABEL: Record<string, string> = { premium: 'Premium', premium_plus: 'Premium+' };
 const INTERVAL_LABEL: Record<string, string> = { month: 'mês', quarter: 'trimestre', year: 'ano' };
@@ -74,7 +60,7 @@ type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const PERKS: { icon: IoniconName; label: string; hint: string }[] = [
   // só o que existe de verdade no Premium (nada de raio maior: descoberta é 350 m pra todo mundo)
-  { icon: 'eye-off-outline', label: 'Invisível sem limite', hint: 'Curte e conversa sem aparecer no mapa (no grátis: 24 h, sem curtir nem conversar)' },
+  { icon: 'eye-off-outline', label: 'Invisível sem limite', hint: 'Curte e conversa sem aparecer no mapa (no grátis: 24 h por vez, sem curtir nem conversar)' },
   { icon: 'people-outline', label: 'Veja os invisíveis por perto', hint: 'Quantos estão invisíveis em cada lugar — sem nunca saber quem são' },
   { icon: 'color-palette-outline', label: 'Itens exclusivos de avatar', hint: 'Auras, cores neon e roupas só pra Premium' },
   { icon: 'locate-outline', label: 'Destaque no mapa', hint: 'Anel e aura dourados no seu avatar' },
@@ -305,9 +291,12 @@ function ActiveBadge({ status, onCancel, cancelling }: ActiveBadgeProps) {
   // cancelada: continua Premium até o fim do período, só não renova
   const cancelled = status.autoRenew === false;
   const until = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString('pt-BR') : null;
+  const trialUntil = status.trialActive && status.trialEndsAt ? new Date(status.trialEndsAt).toLocaleDateString('pt-BR') : null;
   const sub = cancelled
     ? `Não renova · ${tier} até ${until ?? `daqui ${status.daysRemaining} dias`}`
-    : `${status.daysRemaining} ${status.daysRemaining === 1 ? 'dia restante' : 'dias restantes'} · aproveita`;
+    : trialUntil
+      ? `Teste grátis até ${trialUntil} · depois renova`
+      : `${status.daysRemaining} ${status.daysRemaining === 1 ? 'dia restante' : 'dias restantes'} · aproveita`;
 
   return (
     <SlideInView from="up" distance={18} delay={120} springPreset="bouncy">
@@ -352,26 +341,35 @@ export function PaywallScreen() {
   const [celebrate, setCelebrate] = useState(false);
   const { width, height } = useWindowDimensions();
 
+  // sempre frescos ao abrir: o teste grátis some depois de usado e o Premium pode ter vencido desde a última vez
   const plansQuery = useQuery({
     queryKey: ['plans'],
-    queryFn: async () => (await api.get<{ plans: Plan[] }>('/premium/plans')).data.plans,
+    queryFn: async () => (await api.get<PremiumPlansResponse>('/premium/plans')).data.plans,
+    refetchOnMount: 'always',
   });
   const statusQuery = useQuery({
     queryKey: ['premium-status'],
     queryFn: async () => (await api.get<PremiumStatus>('/premium/status')).data,
+    refetchOnMount: 'always',
   });
 
   const subscribe = useMutation({
     // Em produção o pagamento passa pela loja (Google Play Billing / StoreKit) e o
     // backend valida o recibo. Aqui o backend aceita direto em modo dev.
     mutationFn: async (planId: string) =>
-      (await api.post('/premium/subscribe', { planId, platform: 'android', receipt: 'dev' })).data,
-    onSuccess: async () => {
+      (await api.post<SubscribeResult>('/premium/subscribe', { planId, platform: 'android', receipt: 'dev' })).data,
+    onSuccess: async (res, planId) => {
       setCelebrate(true);
       await qc.invalidateQueries({ queryKey: ['premium-status'] });
+      await qc.invalidateQueries({ queryKey: ['plans'] });
       await qc.invalidateQueries({ queryKey: ['me'] });
       refreshMe().catch(() => {});
-      Alert.alert('Bem-vindo(a) ao Premium 💚', 'Modo anônimo ilimitado e itens exclusivos de avatar liberados.');
+      // o servidor diz se o teste grátis valeu (uma vez por conta e por número): a mensagem não promete o que não veio
+      const trialDays = res.trialActive ? plans.find((p) => p.id === planId)?.trialDays : undefined;
+      Alert.alert(
+        'Bem-vindo(a) ao Premium 💚',
+        `${trialDays ? `Seu teste grátis de ${trialDays} dias começou. ` : ''}Invisível sem limite (curtindo e conversando) e itens exclusivos de avatar liberados.`,
+      );
     },
     onError: (err) => Alert.alert('Não rolou', toApiError(err).message),
   });

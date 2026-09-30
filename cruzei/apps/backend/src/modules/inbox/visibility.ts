@@ -4,6 +4,8 @@
 // Conversa que JÁ existe não passa por aqui: o chat nunca é bloqueado (só Block, conta apagada ou fora de 'active').
 // Quem ENVIA também é conferido (senderDenied), com a linha fresca do banco: o guard do JWT lê um cache de estado.
 // Invisível sem Premium (messagingLocked) não manda nem recebe mensagens e não curte — regra de plano.
+import { isPremiumActive } from '../../common/premium';
+
 import type { SendIntent } from './routing';
 
 /** campos do alvo que decidem se o cartão aparece */
@@ -92,13 +94,12 @@ export const MESSAGING_GATE_SELECT = {
   premiumExpiresAt: true,
 } as const;
 
-/** Premium vigente (premium ou premium_plus, sem premiumExpiresAt ou no futuro): a mesma conta do allowedTiersFor */
+/** Premium vigente (premium ou premium_plus, sem premiumExpiresAt ou no futuro): a regra única de common/premium */
 export function premiumActive(
   u: Pick<MessagingGate, 'premiumTier' | 'premiumExpiresAt'>,
   now: Date = new Date(),
 ): boolean {
-  if (u.premiumTier !== 'premium' && u.premiumTier !== 'premium_plus') return false;
-  return u.premiumExpiresAt == null || u.premiumExpiresAt > now;
+  return isPremiumActive(u, now);
 }
 
 /**

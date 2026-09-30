@@ -10,6 +10,7 @@ Estes Termos são o contrato entre você e o Metch. Eles dizem o que você pode 
 - Respeito é obrigatório. Nudez, assédio, golpes e qualquer conteúdo envolvendo menores levam a banimento.
 - Você pode denunciar e bloquear qualquer pessoa, a qualquer momento.
 - Nunca mande dinheiro para quem você conheceu no app.
+- GPS falso e entrar na conta de outra pessoa são proibidos.
 - Este resumo ajuda, mas não substitui o texto completo abaixo.
 
 ## 1. Quem somos
@@ -43,32 +44,52 @@ Fale com a gente pelo e-mail {{EMAIL_SUPORTE}}.
 - Perdeu o número ou acha que alguém entrou na sua conta? Avise pelo {{EMAIL_SUPORTE}}.
 - Quem teve a conta banida não pode voltar ao Metch com outra conta. O número de uma conta banida não pode ser usado para criar outra.
 
+### Número de celular reaproveitado
+
+- As operadoras reaproveitam números que ficam sem uso. Por isso, se sua conta ficar **90 dias ou mais sem uso**, entrar nela pelo código do SMS passa a exigir também a confirmação da sua data de nascimento.
+- Se outra pessoa entrar com o número que era seu, o app pergunta se a conta é dela, mostrando só a primeira letra de cada nome. Se ela disser que não é, ou errar a data de nascimento 3 vezes no total (os erros se somam sem prazo até alguém acertar), o número é desvinculado da sua conta. Sua conta fica pausada, sem prazo e sem aparecer para ninguém, e todas as sessões abertas nela são encerradas.
+- Sua conta **não é apagada**. Para recuperá-la, fale com o suporte pelo {{EMAIL_SUPORTE}}. Podemos pedir que você comprove que ela é sua.
+- Recebeu um número que já tinha conta no Metch? Toque em "Não é minha" e crie a sua. Tentar entrar na conta de outra pessoa viola estes Termos.
+- Se a conta antiga do número estava suspensa ou banida, a conta nova criada com esse número passa por uma revisão da moderação antes de aparecer.
+- A Política de Privacidade explica o que registramos quando um número é liberado.
+
 ## 5. Como o Metch funciona
 
 ### Mapa e descoberta por proximidade
 
 - O Metch mostra quem está disponível para interagir perto de você. Ele não mostra onde as pessoas estão.
 - O app usa a localização do seu aparelho **só enquanto está aberto**. Não usamos localização em segundo plano.
-- Você só descobre pessoas que estão a até 350 metros de você, e só quando as regras de privacidade das duas pessoas permitem.
-- Em vez de distância exata, o app mostra faixas: "bem perto", "perto" ou "na região".
+- Você só descobre pessoas que estão a até 350 metros de você, e só quando as regras de privacidade das duas pessoas permitem. A exceção é quem está com **Boost** ativo: essa pessoa aparece também para quem está a até 5 km (veja a seção 10).
+- Em vez de distância exata, o app mostra faixas: "bem perto", "perto" ou "na região". Para quem está com Boost e a mais de 350 metros, aparece "em destaque na região".
+- A ordem em que as pessoas aparecem no mapa, na lista e nas curtidas leva em conta o Boost, a opção "Mesma orientação primeiro" (seção abaixo) e a proximidade. Num lugar muito cheio, o app mostra uma parte das pessoas de cada vez, num sorteio que muda a cada 10 minutos, para que todos tenham sua vez.
 - No mapa, a pessoa aparece numa posição aproximada, dentro de uma área de cerca de 150 metros, ou no lugar público onde está, quando há gente suficiente ali. Nunca na posição exata.
 - Em áreas com pouca gente, ninguém aparece individualmente. O app mostra só quantas pessoas há por perto.
 - Dentro das suas áreas privadas (como casa e trabalho) e da residência que o app identifica sozinho, você vê os outros, mas ninguém vê você.
 - Quem está fisicamente a até 350 metros de você consegue saber em que área de cerca de 150 metros você está. É assim que a descoberta funciona. Se não quiser isso, use o modo anônimo, a pausa ou as áreas privadas.
+- **Localização falsa:** o app confere se a posição foi simulada (GPS falso) ou se deu um salto impossível. Nesses casos sua posição não é atualizada e você sai do mapa até ela ser confirmada. Ocorrências repetidas viram um alerta para a moderação, que analisa o caso. Não há banimento automático por isso.
 - A Política de Privacidade explica tudo isso em detalhe.
 
 ### Controles de visibilidade
 
-- **Modo anônimo:** você vê as pessoas, mas ninguém sabe que é você: seu perfil, nome e foto não aparecem no mapa nem na descoberta, e você não recebe curtidas. Assinantes Premium podem ver quantas pessoas estão no modo anônimo em um lugar ou região, agrupadas, sem nunca saber quem são. No plano gratuito, o modo anônimo pode ter duração limitada e ficam pausados curtir e as mensagens: você não curte ninguém e não manda nem recebe mensagens até voltar a ficar visível. As mensagens que chegarem nesse tempo ficam guardadas e aparecem quando você volta. No Premium, dá para curtir e conversar no modo anônimo.
+- **Modo anônimo:** você vê as pessoas, mas ninguém sabe que é você: seu perfil, nome e foto não aparecem no mapa nem na descoberta, e você não recebe curtidas. Assinantes Premium podem ver quantas pessoas estão no modo anônimo em um lugar ou região, agrupadas, sem nunca saber quem são. No plano gratuito, cada vez que você liga o modo anônimo ele dura até 24 horas; depois você volta a ficar visível automaticamente e o app avisa. Dá para ligar de novo quando quiser. Enquanto isso, ficam pausados curtir e as mensagens: você não curte ninguém e não manda nem recebe mensagens até voltar a ficar visível. As mensagens que chegarem nesse tempo ficam guardadas e aparecem quando você volta. No Premium, o modo anônimo não tem prazo e dá para curtir e conversar nele.
+- **Mostrar (Mulheres, Homens ou Todos):** escolhe quem aparece para você. Vale para os dois lados: você só vê quem também quer ver pessoas do seu gênero e só aparece para essas pessoas. Pessoas não binárias ou de outro gênero aparecem só para quem escolheu "Todos". Quem já tinha conta começa em "Todos".
 - **Descoberta:** "Todos", "Interesses compatíveis" (só quem tem pelo menos um interesse em comum com você) ou "Ninguém". A regra vale para os dois lados: quem escolhe "Ninguém" não aparece e também não vê ninguém.
 - **Pausar:** tira seu perfil do mapa e da descoberta por um tempo.
 - **Áreas privadas:** você cadastra até 5 lugares (como casa, trabalho ou faculdade) onde ninguém descobre você.
 - Você também escolhe se mostra sua idade e sua foto no mapa, e se o seu perfil mostra a faixa de proximidade e o lugar onde você está.
 
+### Seu perfil
+
+- **Orientação sexual:** informar é opcional. Ela só aparece no seu perfil se você ligar "Mostrar no meu perfil". Com "Mesma orientação primeiro" ligado, quem mostra no perfil a mesma orientação que a sua aparece antes para você; é só a ordem, ninguém some. A orientação de quem não a mostra no perfil nunca é usada para ordenar ninguém. Você apaga a orientação quando quiser em Editar perfil.
+- **Instagram:** se você informar seu @, ele fica visível para todo mundo que abrir seu perfil. Use só o seu próprio perfil pessoal (veja a seção 6).
+- **Última atividade:** o app nunca mostra o horário em que você esteve ativo. Quem está descobrindo você naquele momento, ou deu match com você, vê no máximo "online agora" ou "ativo há pouco".
+
 ### Curtidas, match e mensagens
 
 - Você pode curtir, supercurtir ou dispensar perfis. Quando duas pessoas se curtem, dá match.
+- Quando alguém que você curtiu curte você de volta, o app comemora o match com você, na hora ou na próxima vez que você abrir o app.
 - A pessoa que você curtiu pode ficar sabendo da curtida.
+- **Notificações:** o app pode avisar por notificação push quando chegar mensagem, curtida ou match. Você escolhe, na tela de Avisos, quais avisos quer receber e se o texto da mensagem aparece na notificação. Para evitar excesso, os avisos têm limites (por exemplo, curtidas são agrupadas).
 - Existem limites de uso para evitar abuso, como um número máximo de curtidas e de conversas novas por dia e de mensagens por minuto.
 - Você pode mandar mensagem de texto para qualquer pessoa cujo perfil você consegue ver no app. Não precisa de match. Quem está no modo anônimo ou com o perfil pausado não recebe conversas novas.
 - Para quem recebe, a conversa chega em **Solicitações**. Ela passa para a caixa **Principal** quando essa pessoa responde, quando ela move a conversa para a Principal ou quando vocês se curtem. Depois disso, a conversa fica na Principal.
@@ -89,8 +110,10 @@ O Metch é para gente real se conhecer com respeito. Não toleramos conteúdo of
 - Ameaçar alguém, incitar ou exaltar violência, automutilação ou suicídio.
 - Aplicar golpes: pedir dinheiro, Pix, presentes, empréstimos, dados bancários ou "investimentos"; chantagear ou extorquir, inclusive com fotos íntimas.
 - Oferecer ou procurar serviços sexuais pagos.
-- Fazer spam ou propaganda: vender produtos ou serviços, divulgar outros apps, perfis de redes sociais ou links para ganhar seguidores ou dinheiro.
+- Fazer spam ou propaganda: vender produtos ou serviços, divulgar outros apps, perfis de redes sociais ou links para ganhar seguidores ou dinheiro. O campo de Instagram do perfil é a exceção, só para mostrar o **seu** perfil pessoal: é proibido usá-lo para vender, divulgar conteúdo pago, captar clientes ou seguidores, ou colocar o @ de outra pessoa.
 - Criar perfil falso, usar fotos de outra pessoa ou se passar por outra pessoa, celebridade ou empresa.
+- Entrar ou tentar entrar na conta de outra pessoa, inclusive a conta que era do seu número antes de você recebê-lo.
+- Usar GPS falso, simuladores de localização ou qualquer truque para fingir estar em outro lugar.
 - Compartilhar dados de outras pessoas sem autorização, como telefone, endereço, fotos, prints de conversa e, principalmente, conteúdo íntimo.
 - Perseguir alguém: usar o app para descobrir onde uma pessoa está, esperar por ela, segui-la, tentar calcular a posição dela a partir do app ou continuar procurando quem bloqueou você.
 - Usar o Metch com fins comerciais, para recrutar pessoas, fazer pesquisas sem nossa autorização ou coletar dados.
@@ -113,7 +136,8 @@ Condutas graves fora do app também contam. Se soubermos de ameaça ou violênci
 
 ### O que a moderação analisa
 
-- A denúncia é analisada por nossa equipe de moderação, que pode ver o perfil, as fotos (inclusive as recusadas), as denúncias e as decisões anteriores sobre a conta.
+- A denúncia é analisada por nossa equipe de moderação, que pode ver o perfil, o @ do Instagram, as fotos (inclusive as recusadas), as denúncias e as decisões anteriores sobre a conta. A orientação sexual não aparece nas ferramentas da moderação.
+- Alertas automáticos, como a suspeita de localização falsa, também vão para a moderação, sem nenhuma coordenada. Uma pessoa analisa e decide; não há punição automática por eles.
 - Quando a denúncia é feita a partir de uma conversa, inclusive em Solicitações, a moderação pode ler as mensagens daquela conversa. Só daquela conversa, e só para analisar a denúncia.
 
 ### O que pode acontecer
@@ -161,12 +185,15 @@ Se alguém divulgar no Metch imagens íntimas suas sem autorização, avise pelo
 
 ## 10. Planos pagos
 
-- Hoje o Metch é gratuito. Quando houver planos pagos (assinaturas ou recursos avulsos), a compra será feita pela App Store, da Apple, ou pelo Google Play, do Google.
+- O Metch tem uso gratuito e pode oferecer planos pagos (assinaturas, como o Premium) e recursos avulsos (como o Boost). A compra é feita pela App Store, da Apple, ou pelo Google Play, do Google.
 - O preço, a duração e o que cada plano oferece aparecem antes da compra.
+- **Teste grátis:** quando um plano tiver teste grátis, ele vale **uma única vez por conta e por número de celular**, para sempre. Excluir a conta, criar outra ou trocar de conta com o mesmo número não dá direito a um novo teste. Premium concedido pela nossa equipe não conta como teste.
+- **Fim da assinatura:** quando a assinatura vence (por cancelamento, falta de pagamento ou fim do período), sua conta volta sozinha ao plano gratuito em poucos minutos e o app avisa você. Os recursos pagos deixam de valer, como itens do avatar. Se você estava no modo anônimo, ele continua por mais 24 horas, como no plano gratuito, e depois você volta a ficar visível.
+- **Boost:** enquanto o Boost está ativo, você aparece primeiro no mapa, na lista e nas curtidas de quem está perto e também para quem está a até 5 km de você, sempre numa posição aproximada (nunca a exata) e respeitando todas as regras de privacidade das duas pessoas: bloqueio, "Mostrar", modo de descoberta, áreas privadas e residência. O Boost não funciona com o modo anônimo, com o perfil pausado ou com a descoberta em "Ninguém", porque ninguém veria você; nesses casos o app não deixa ativar.
 - A cobrança, a renovação automática e o cancelamento são feitos pela loja, na sua conta da loja. Para não ser cobrado de novo, cancele nas configurações da loja antes da data de renovação, respeitando o prazo que a loja informa.
 - Cancelar a assinatura não exclui sua conta. Excluir a conta não cancela a assinatura na loja.
 - Direito de arrependimento: quando aplicável, você pode desistir da compra em até 7 dias, como prevê o Código de Defesa do Consumidor (art. 49). Como o pagamento é feito pela loja, o reembolso é pedido à loja. Se tiver dificuldade, fale com a gente pelo {{EMAIL_SUPORTE}}.
-- Nenhum plano permite descobrir pessoas mais longe. A descoberta de pessoas vai até 350 metros para todos.
+- Nenhum plano ou recurso permite ver pessoas mais longe: você descobre quem está a até 350 metros, em qualquer plano. O Boost só aumenta até onde você é visto.
 - Se sua conta for suspensa ou banida por violar estes Termos, o período pago restante não é reembolsado, salvo quando a lei garantir o reembolso.
 
 ## 11. Segurança nos encontros

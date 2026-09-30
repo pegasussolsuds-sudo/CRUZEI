@@ -1,9 +1,10 @@
-import type { LikeResult } from '@cruzei/shared-types';
+import { MATCH_EVENTS, type LikeResult, type MatchCelebration } from '@cruzei/shared-types';
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../database/prisma.service';
@@ -14,6 +15,14 @@ import { InboxService } from '../inbox/inbox.service';
 import { likeStatus } from '../inbox/routing';
 import { MESSAGING_GATE_SELECT, messagingLocked } from '../inbox/visibility';
 import { seesLikesReceived } from '../location/peer-social';
+import { SocialPushService } from '../notifications/social-push.service';
+
+import {
+  markCelebrationSeen,
+  pendingCelebrations,
+  toMatchCelebration,
+  upsertCelebration,
+} from './match-celebrations';
 
 const DAILY_LIKE_LIMIT = 200;
 const TX_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
@@ -45,6 +54,12 @@ type LikeTxOut =
       mutual: boolean;
       promotedConversationIds: string[];
       events: InboxEvent[];
+      /** quem curtiu está invisível ou em análise: o aviso da curtida não diz quem foi */
+      likerHidden?: boolean;
+      /** quem curtiu está em análise: curtida guardada, mas sem like_received nem push */
+      likerOnHold?: boolean;
+      /** match fechado agora: comemoração pra quem curtiu primeiro (null = já comemorado há pouco ou em análise) */
+      celebration?: MatchCelebration | null;
     };
 
 // Curtidas: uma linha por direção (tabela likes). Não existe estado "match": mútuo = as duas linhas existem, e o
@@ -57,6 +72,8 @@ export class LikesService {
     private readonly redis: RedisService,
     private readonly gateway: ChatGateway,
     private readonly inbox: InboxService,
+    // push de curtida e match (opcional: os db-specs montam sem)
+    @Optional() private readonly social?: SocialPushService,
   ) {}
 
   async like(likerId: string, likedId: string, isSuper = false): Promise<LikeResult> {
@@ -120,9 +137,12 @@ export class LikesService {
       // ficou invisível (ou o Premium venceu) enquanto esperava a trava
       const liker = await tx.user.findUnique({
         where: { id: likerId },
-        select: MESSAGING_GATE_SELECT,
+        select: { ...MESSAGING_GATE_SELECT, reviewHoldAt: true },
       });
       if (messagingLocked(liker)) return { blocked: false, locked: true };
+      // invisível (Premium): a curtida chega sem nome (socket e push). Em análise: nem chega (fica guardada)
+      const likerOnHold = Boolean(liker?.reviewHoldAt);
+      const likerHidden = liker?.visibilityMode === 'anonymous' || likerOnHold;
       const again = await tx.like.findUnique({
         where: { likerId_likedId: { likerId, likedId } },
         select: { id: true },
@@ -153,10 +173,26 @@ export class LikesService {
           mutual: false,
           promotedConversationIds: [] as string[],
           events: [] as InboxEvent[],
+          likerHidden,
+          likerOnHold,
         };
       // virou mútua agora: promove a conversa do par (se existir) + "Vocês se curtiram…", tudo nesta transação
       const promoted = await this.inbox.onMutualLike(tx, likerId, likedId);
-      return { blocked: false, likeId: like.id, fresh: true, mutual: true, ...promoted };
+      // comemoração pra quem curtiu primeiro (pendente até o app mostrar). Montada aqui dentro: sai logo depois do
+      // commit, sem consulta no meio (um bloqueio logo em seguida não pega o aviso atrasado). Em análise não comemora
+      // agora (a pendente só aparece se a análise terminar sem punição).
+      const row = await upsertCelebration(tx, likedId, likerId);
+      const celebration = row && !liker?.reviewHoldAt ? toMatchCelebration(row) : null;
+      return {
+        blocked: false,
+        likeId: like.id,
+        fresh: true,
+        mutual: true,
+        ...promoted,
+        likerHidden,
+        likerOnHold,
+        celebration,
+      };
     }, TX_OPTIONS);
 
     if (out.blocked) {
@@ -176,16 +212,30 @@ export class LikesService {
 
     // depois do commit: eventos da conversa promovida, depois o aviso da curtida.
     // Quem curtiu só vai no evento se o destinatário pode saber: Premium+ vigente ("já te curtiu", a mesma regra do
-    // cartão e do mapa) ou curtida mútua (MUTUAL aparece pra todos). Pros demais é só o sinal, sem identidade.
+    // cartão e do mapa) e quem curtiu visível e fora de análise, ou curtida mútua (MUTUAL aparece pra todos). Pros
+    // demais é só o sinal, sem identidade.
     this.inbox.flush(out.events);
-    const reveal = out.mutual || seesLikesReceived(target);
-    this.gateway.emitToUser(
-      likedId,
-      'like_received',
-      reveal
-        ? { fromUserId: likerId, isSuper, ...(out.mutual ? { isMutual: true } : {}) }
-        : { isSuper },
-    );
+    const revealLiker = seesLikesReceived(target) && !out.likerHidden;
+    const reveal = out.mutual || revealLiker;
+    // quem curtiu está em análise: a curtida fica guardada, sem aviso nenhum (nem ao vivo nem push). Se a análise
+    // terminar sem punição, segue a vida — igual à comemoração do match (que já vem null em análise)
+    if (!out.likerOnHold) {
+      this.gateway.emitToUser(
+        likedId,
+        'like_received',
+        reveal
+          ? { fromUserId: likerId, isSuper, ...(out.mutual ? { isMutual: true } : {}) }
+          : { isSuper },
+      );
+    }
+    // match: a comemoração ao vivo pra quem curtiu primeiro (quem completou já vê o modal pela resposta)
+    if (out.celebration) this.gateway.emitToUser(likedId, MATCH_EVENTS.new, out.celebration);
+    // push (só push, fora da central): match sempre avisa; curtida com as esperas anti-spam
+    if (out.mutual) {
+      if (out.celebration) void this.social?.match({ to: likedId, peerId: likerId });
+    } else if (!out.likerOnHold) {
+      void this.social?.like({ to: likedId, likerId, isSuper, reveal: revealLiker });
+    }
     // stats do perfil (likesReceived; na mútua, os pares mútuos dos dois)
     await Promise.all([
       this.redis.invalidateProfile(likedId),
@@ -199,6 +249,25 @@ export class LikesService {
       promotedConversationIds: out.promotedConversationIds,
       remainingToday: Math.max(0, DAILY_LIKE_LIMIT - used),
     };
+  }
+
+  /**
+   * GET /likes/matches/pending: comemorações que ainda não apareceram pra mim (quem curtiu primeiro), até 5, dos
+   * últimos 14 dias, sem bloqueados, descurtidos, contas fora do ar ou em análise. Invisível sem Premium: nada
+   * (não conversa nem curte; volta a aparecer quando ficar visível).
+   */
+  async pendingMatches(me: string): Promise<MatchCelebration[]> {
+    const u = await this.prisma.user.findUnique({
+      where: { id: me },
+      select: MESSAGING_GATE_SELECT,
+    });
+    if (!u || messagingLocked(u)) return [];
+    return (await pendingCelebrations(this.prisma, me)).map(toMatchCelebration);
+  }
+
+  /** POST /likes/matches/:userId/seen: o app mostrou a comemoração (idempotente) */
+  async markMatchSeen(me: string, peerId: string): Promise<void> {
+    await markCelebrationSeen(this.prisma, me, peerId);
   }
 
   /** DELETE /likes/:userId: apaga a MINHA curtida. Não despromove a conversa (a principal é permanente) */

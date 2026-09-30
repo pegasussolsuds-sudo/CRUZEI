@@ -19,6 +19,8 @@ import type {
   AdminUserRow,
   AnnouncePayload,
   AuthResponse,
+  LoginResponse,
+  ReleasePhonePayload,
   CampaignPreview,
   CampaignPreviewPayload,
   CandidateStatus,
@@ -52,8 +54,11 @@ import { request } from './http';
 /** em dev o /auth/request-code devolve o código junto (sms.service.ts); RequestCodeResponse não tem o campo */
 export type RequestCodeResult = RequestCodeResponse & { devCode?: string };
 
-/** login de número sem conta: user.id null e tokens null (auth.service.ts) */
-export type LoginResult = Omit<AuthResponse, 'token' | 'refreshToken'> & { token: string | null; refreshToken: string | null };
+/**
+ * /auth/login: conta ativa → tokens; número sem conta → user.id null e tokens null; conta parada há 90+ dias
+ * (número reciclado) → `claim`, sem tokens (a confirmação é só pelo app)
+ */
+export type LoginResult = Omit<LoginResponse, 'user'> & { user: Omit<AuthResponse['user'], 'id'> & { id: string | null } };
 
 /** corpo do POST /v1/admin/photos/:id (PhotoDecisionDto em moderation/admin.controller.ts) */
 export interface PhotoDecisionPayload {
@@ -122,6 +127,9 @@ export const adminApi = {
   userAction: (id: string, body: ModerationActionPayload) => request<unknown>(`/admin/users/${enc(id)}/action`, { method: 'POST', body }),
   grantPremium: (id: string, body: GrantPremiumPayload) => request<AdminUserRow>(`/admin/users/${enc(id)}/premium`, { method: 'POST', body }),
   setRole: (id: string, body: SetRolePayload) => request<AdminUserRow>(`/admin/users/${enc(id)}/role`, { method: 'POST', body }),
+  /** número reciclado, caso de suporte (só admin): tira o telefone da conta, pausa e derruba as sessões */
+  releasePhone: (id: string, body: ReleasePhonePayload) =>
+    request<AdminUserRow>(`/admin/users/${enc(id)}/release-phone`, { method: 'POST', body }),
 
   // moderação (rotas que já existiam)
   queue: () => request<ModerationQueue>('/admin/queue'),

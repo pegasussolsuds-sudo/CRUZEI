@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Image,
+  Linking,
   StyleSheet,
   Text,
   View,
@@ -42,8 +43,19 @@ import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { openChat } from '../../navigation/openChat';
 import { inboxKeys, likeStatusOf, useConversationWith, type ConversationFlag, type LikeFlags } from '../../hooks/useInbox';
-import type { AvatarConfig, LikeResult, LookingFor, PremiumTier, SealType, UserSeal, ProximityBand } from '@cruzei/shared-types';
-import { timeAgo, proximityBandLabel } from '@cruzei/shared-utils';
+import {
+  ORIENTATION_LABELS,
+  type AvatarConfig,
+  type LikeResult,
+  type LookingFor,
+  type Orientation,
+  type PremiumTier,
+  type PublicUserCard,
+  type SealType,
+  type UserSeal,
+  type ProximityBand,
+} from '@cruzei/shared-types';
+import { instagramUrl, proximityBandLabel } from '@cruzei/shared-utils';
 import { colors, fontFamily, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 
 // ───────────────────────────── tipos ─────────────────────────────
@@ -54,7 +66,8 @@ interface UserCardPhoto {
   isMain: boolean;
 }
 
-// likeStatus + conversation (novo) e likedByMe/likedMe (antigos) vêm de LikeFlags/ConversationFlag
+// GET /users/:id (PublicUserCard). likeStatus + conversation (novo) e likedByMe/likedMe (antigos) vêm de
+// LikeFlags/ConversationFlag; orientation/instagram/lastSeen opcionais porque servidor antigo não manda
 interface UserCardData extends LikeFlags, ConversationFlag {
   id: string;
   name: string;
@@ -66,7 +79,12 @@ interface UserCardData extends LikeFlags, ConversationFlag {
   lookingFor: LookingFor;
   isVerified: boolean;
   premiumTier: PremiumTier;
-  lastActiveAt: string | null;
+  /** última atividade só em faixa ('online' / 'recent'); null = mais antiga ou sem direito de saber. Nunca horário */
+  lastSeen?: PublicUserCard['lastSeen'];
+  /** só quando a pessoa exibe a orientação no perfil */
+  orientation?: Orientation | null;
+  /** @ do Instagram sem o @ (público) */
+  instagram?: string | null;
   /** faixa de proximidade (só enquanto a pessoa é descoberta por mim) — nunca metros */
   proximityBand: ProximityBand | null;
   /** avatar Cruzei (null/ausente → determinístico pelo id) */
@@ -293,7 +311,15 @@ export function UserCardScreen() {
   );
   const completedSeals = seals.filter((s) => s.isCompleted);
   const showSeals = completedSeals.length > 0 ? completedSeals : seals.slice(0, 4);
-  const active = user.lastActiveAt ? timeAgo(user.lastActiveAt) : null;
+  // última atividade só em faixa (o servidor não manda horário): online agora / ativo há pouco / nada
+  const lastSeen = user.lastSeen ?? null;
+  const orientationLabel = user.orientation ? (ORIENTATION_LABELS[user.orientation] ?? null) : null;
+  const instagram = user.instagram ?? null;
+  const openInstagram = () => {
+    if (!instagram) return;
+    Haptics.selectionAsync().catch(() => {});
+    Linking.openURL(instagramUrl(instagram)).catch(() => setActionError('Não deu pra abrir o Instagram agora.'));
+  };
 
   return (
     <View style={styles.root}>
@@ -352,10 +378,10 @@ export function UserCardScreen() {
                       <Text style={styles.metaText}>{distance}</Text>
                     </View>
                   ) : null}
-                  {active ? (
+                  {lastSeen ? (
                     <View style={styles.metaChip}>
-                      <View style={[styles.dot, active === 'agora' && { backgroundColor: colors.online }]} />
-                      <Text style={styles.metaText}>{active === 'agora' ? 'online agora' : `ativo ${active}`}</Text>
+                      <View style={[styles.dot, lastSeen === 'online' && { backgroundColor: colors.online }]} />
+                      <Text style={styles.metaText}>{lastSeen === 'online' ? 'online agora' : 'ativo há pouco'}</Text>
                     </View>
                   ) : null}
                   {user.premiumTier !== 'free' ? (
@@ -392,11 +418,22 @@ export function UserCardScreen() {
             </SlideInView>
           ) : null}
 
-          {lookingLabel ? (
+          {lookingLabel || orientationLabel ? (
             <FadeInView delay={180} fromY={8}>
-              <View style={styles.lookingRow}>
-                <Ionicons name="compass-outline" size={16} color={colors.info} />
-                <Text style={styles.lookingText}>{lookingLabel}</Text>
+              <View style={styles.tagsRow}>
+                {lookingLabel ? (
+                  <View style={styles.lookingRow}>
+                    <Ionicons name="compass-outline" size={16} color={colors.info} />
+                    <Text style={styles.lookingText}>{lookingLabel}</Text>
+                  </View>
+                ) : null}
+                {/* orientação: só aparece quando a pessoa escolheu mostrar */}
+                {orientationLabel ? (
+                  <View style={styles.orientationTag} accessibilityLabel={`Orientação: ${orientationLabel}`}>
+                    <Ionicons name="heart-half-outline" size={14} color={colors.secondary} />
+                    <Text style={styles.orientationText}>{orientationLabel}</Text>
+                  </View>
+                ) : null}
               </View>
             </FadeInView>
           ) : null}
@@ -405,6 +442,26 @@ export function UserCardScreen() {
             <FadeInView delay={220} fromY={10}>
               <Text style={styles.sectionTitle}>sobre</Text>
               <Text style={styles.bio}>{user.bio}</Text>
+            </FadeInView>
+          ) : null}
+
+          {instagram ? (
+            <FadeInView delay={240} fromY={10}>
+              <ScaleOnPress
+                onPress={openInstagram}
+                pressedScale={0.97}
+                haptic={false}
+                style={styles.instaRow}
+                accessibilityRole="link"
+                accessibilityLabel={`Instagram de ${user.name}: arroba ${instagram}`}
+                accessibilityHint="Abre o perfil no Instagram"
+              >
+                <Ionicons name="logo-instagram" size={20} color={colors.secondary} />
+                <Text style={styles.instaText} numberOfLines={1}>
+                  @{instagram}
+                </Text>
+                <Ionicons name="open-outline" size={16} color={colors.gray[500]} />
+              </ScaleOnPress>
             </FadeInView>
           ) : null}
 
@@ -449,7 +506,7 @@ export function UserCardScreen() {
             </View>
           ) : null}
 
-          {!user.bio && user.interests.length === 0 && showSeals.length === 0 ? (
+          {!user.bio && !instagram && user.interests.length === 0 && showSeals.length === 0 ? (
             <FadeInView delay={220}>
               <Text style={styles.emptyBio}>Perfil ainda tímido. Quem sabe vocês se cruzam de novo? 😉</Text>
             </FadeInView>
@@ -931,8 +988,34 @@ const styles = StyleSheet.create({
   contextEmoji: { fontSize: 24 },
   contextEyebrow: { ...typography.caption, color: colors.secondary, letterSpacing: 1.5, textTransform: 'uppercase' },
   contextText: { ...typography.body, fontFamily: fontFamily.bodyMedium, color: colors.black },
+  tagsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: spacing.lg, rowGap: spacing.sm },
   lookingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   lookingText: { ...typography.label, color: colors.info },
+  orientationTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFE0F0',
+    borderRadius: radius.full,
+    paddingHorizontal: spacing.md,
+    minHeight: 28,
+  },
+  orientationText: { ...typography.label, color: colors.secondary },
+  // @ do Instagram: pílula tocável (largura do conteúdo, nunca passa da tela)
+  instaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.full,
+    backgroundColor: colors.white,
+    borderWidth: 1.5,
+    borderColor: colors.gray[200],
+  },
+  instaText: { ...typography.label, color: colors.black, flexShrink: 1 },
   sectionTitle: { ...typography.h3, color: colors.black, marginBottom: spacing.sm },
   bio: { ...typography.bodyLarge, color: colors.gray[700] },
   emptyBio: { ...typography.body, color: colors.gray[500], fontStyle: 'italic' },

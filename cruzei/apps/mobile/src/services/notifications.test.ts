@@ -7,6 +7,10 @@ const mockNative = {
   last: null as unknown,
   listener: null as ((res: unknown) => unknown) | null,
   storeBroken: false,
+  /** o handler de primeiro plano que o módulo registrou (setNotificationHandler) */
+  handler: null as { handleNotification: (n: unknown) => Promise<Record<string, boolean>> } | null,
+  /** ids tirados da bandeja (dismissNotificationAsync) */
+  dismissed: [] as string[],
 };
 
 jest.mock('expo-secure-store', () => ({
@@ -25,7 +29,10 @@ jest.mock('expo-secure-store', () => ({
 jest.mock('expo-notifications', () => ({
   DEFAULT_ACTION_IDENTIFIER: 'expo.modules.notifications.actions.DEFAULT',
   AndroidImportance: { HIGH: 4 },
-  setNotificationHandler: jest.fn(),
+  AndroidNotificationVisibility: { PRIVATE: 2, SECRET: 3 },
+  setNotificationHandler: jest.fn((h: typeof mockNative.handler) => {
+    mockNative.handler = h;
+  }),
   addNotificationResponseReceivedListener: jest.fn((fn: (res: unknown) => unknown) => {
     mockNative.listener = fn;
     return { remove: jest.fn() };
@@ -33,6 +40,9 @@ jest.mock('expo-notifications', () => ({
   getLastNotificationResponseAsync: jest.fn(async () => mockNative.last),
   // limpa só a memória do processo, como no nativo
   clearLastNotificationResponseAsync: jest.fn(async () => undefined),
+  dismissNotificationAsync: jest.fn(async (id: string) => {
+    mockNative.dismissed.push(id);
+  }),
 }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: null } }));
 jest.mock('./api', () => ({ api: { post: jest.fn(), delete: jest.fn() }, getToken: jest.fn(async () => null) }));
@@ -80,6 +90,7 @@ beforeEach(() => {
   mockNative.last = null;
   mockNative.listener = null;
   mockNative.storeBroken = false;
+  mockNative.dismissed = [];
   jest.spyOn(console, 'info').mockImplementation(() => undefined);
 });
 
@@ -171,5 +182,108 @@ describe('listenNotificationTaps: o mesmo toque não abre duas vezes', () => {
     await settle();
     expect(routes).toEqual([]);
     expect(mockStore.get('metch.pushHandled.v1')).toBeUndefined();
+  });
+});
+
+describe('push com o app aberto (setNotificationHandler)', () => {
+  const SILENT = { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false };
+  const SHOW = { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
+
+  /** entrega do FCM com o app na frente (os dados em content.data) */
+  function arrived(data: Record<string, string>, title = 'Ana') {
+    return { date: 0, request: { identifier: '0:9%x', content: { title, body: 'oi', data }, trigger: null } };
+  }
+  const handle = (n: unknown) => {
+    if (!mockNative.handler) throw new Error('handler não registrado');
+    return mockNative.handler.handleNotification(n);
+  };
+
+  it('mensagem, curtida e match tratados pelo app: sem banner nem som (o socket já atualizou)', async () => {
+    const mod = boot();
+    const got: string[] = [];
+    mod.setSocialForegroundHandler((d) => {
+      got.push(d.type);
+      return true;
+    });
+    const conv = JSON.stringify({ kind: 'conversation', conversationId: 'c1' });
+    expect(await handle(arrived({ notificationId: '', type: 'message', target: conv }))).toEqual(SILENT);
+    expect(await handle(arrived({ notificationId: '', type: 'like', target: '{"kind":"likes"}' }))).toEqual(SILENT);
+    expect(await handle(arrived({ notificationId: '', type: 'match', target: '{"kind":"match","userId":"u1"}' }))).toEqual(
+      SILENT,
+    );
+    // o match passa pelo handler: é ele que chama a comemoração (plano B com o socket caído)
+    expect(got).toEqual(['message', 'like', 'match']);
+  });
+
+  it('o app não tratou (socket caído) ou não há handler (deslogado): o sistema mostra', async () => {
+    const mod = boot();
+    const msg = arrived({ notificationId: '', type: 'message', target: '{"kind":"conversation","conversationId":"c1"}' });
+    expect(await handle(msg)).toEqual(SHOW);
+    mod.setSocialForegroundHandler(() => false);
+    expect(await handle(msg)).toEqual(SHOW);
+    mod.setSocialForegroundHandler(() => {
+      throw new Error('bug');
+    });
+    expect(await handle(msg)).toEqual(SHOW);
+  });
+
+  it('mensagem mostrada pelo sistema com o app na frente sai da bandeja quando o app vai pro fundo', async () => {
+    // processo novo com o AppState do MESMO registro de módulos (pra pegar o listener que o módulo liga)
+    let mod: Mod | null = null;
+    const appState: ((s: string) => void)[] = [];
+    jest.isolateModules(() => {
+      const rn = jest.requireActual<typeof import('react-native')>('react-native');
+      jest.spyOn(rn.AppState, 'addEventListener').mockImplementation(((_: string, fn: (s: string) => void) => {
+        appState.push(fn);
+        return { remove: jest.fn() };
+      }) as never);
+      mod = jest.requireActual<Mod>('./notifications');
+    });
+    if (!mod) throw new Error('módulo não carregou');
+    const emit = (s: string) => appState.forEach((fn) => fn(s));
+    (mod as Mod).setSocialForegroundHandler(() => false);
+
+    const conv = '{"kind":"conversation","conversationId":"c1"}';
+    expect(await handle(arrived({ notificationId: '', type: 'message', target: conv }))).toEqual(SHOW);
+    // curtida mostrada não entra (não tem conteúdo de conversa)
+    const likeShown = { ...arrived({ notificationId: '', type: 'like', target: '{"kind":"likes"}' }) };
+    likeShown.request = { ...likeShown.request, identifier: 'like-1' };
+    expect(await handle(likeShown)).toEqual(SHOW);
+
+    emit('active');
+    expect(mockNative.dismissed).toEqual([]);
+    emit('background');
+    expect(mockNative.dismissed).toEqual(['0:9%x']);
+    emit('background');
+    expect(mockNative.dismissed).toEqual(['0:9%x']);
+
+    // tratada pelo app (socket de pé): nem aparece, nada pra tirar
+    (mod as Mod).setSocialForegroundHandler(() => true);
+    await handle(arrived({ notificationId: '', type: 'message', target: conv }));
+    emit('background');
+    expect(mockNative.dismissed).toEqual(['0:9%x']);
+  });
+
+  it('push social nunca vira aviso da central (nem com o handler da central ligado)', async () => {
+    const mod = boot();
+    const central = jest.fn();
+    mod.setForegroundPushHandler(central);
+    mod.setSocialForegroundHandler(() => true);
+    await handle(arrived({ notificationId: '', type: 'like', target: '{"kind":"likes"}' }));
+    expect(central).not.toHaveBeenCalled();
+  });
+
+  it('aviso da central continua virando o aviso do app', async () => {
+    const mod = boot();
+    const central = jest.fn();
+    const social = jest.fn(() => true);
+    mod.setForegroundPushHandler(central);
+    mod.setSocialForegroundHandler(social);
+    const r = await handle(arrived({ notificationId: 'n1', type: 'event', target: '{"kind":"map"}' }, 'Show perto'));
+    expect(r).toEqual(SILENT);
+    expect(social).not.toHaveBeenCalled();
+    expect(central).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'n1', type: 'event', title: 'Show perto', target: { kind: 'map' } }),
+    );
   });
 });

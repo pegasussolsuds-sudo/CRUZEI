@@ -43,19 +43,27 @@ type Fake = {
   daysOld?: number;
   /** onde a pessoa está: 'bar' (hotspot), 'event' (evento), 'crowd' (aglomeração pra cluster) ou 'spread' */
   where?: 'bar' | 'event' | 'crowd' | 'spread';
+  /** orientação (um dos 9 valores) e se aparece no cartão / ordena "mesma orientação primeiro" */
+  orientation?: string;
+  showOrientation?: boolean;
+  sameOrientationFirst?: boolean;
+  /** "Mostrar: Mulheres / Homens / Todos" (padrão everyone) */
+  showMe?: 'women' | 'men' | 'everyone';
+  /** @ do Instagram (sem @, minúsculo) */
+  instagram?: string;
 };
 
 function fakePhoto(n: number): string { return `${PHOTO_BASE}/uploads/fakes/fake-${n}.jpg`; }
 
 const FAKES: Fake[] = [
-  { name: 'Aline', gender: 'female', birth: '2001-04-12', bio: 'Designer. Bar de sexta e trilha de domingo.', photo: fakePhoto(1), tier: 'premium_plus', verified: true, daysOld: 40, where: 'bar' },
+  { name: 'Aline', gender: 'female', birth: '2001-04-12', bio: 'Designer. Bar de sexta e trilha de domingo.', photo: fakePhoto(1), tier: 'premium_plus', verified: true, daysOld: 40, where: 'bar', orientation: 'bisexual', showOrientation: true, instagram: 'aline.designer' },
   { name: 'Rafael', gender: 'male', birth: '1997-09-03', bio: 'Engenheiro recém-chegado. Me mostra a cidade?', photo: fakePhoto(2), boosted: true, daysOld: 3, where: 'bar' },
-  { name: 'Bia', gender: 'female', birth: '1999-01-25', bio: 'Café forte, playlist melhor ainda.', photo: fakePhoto(3), daysOld: 60, where: 'bar' },
+  { name: 'Bia', gender: 'female', birth: '1999-01-25', bio: 'Café forte, playlist melhor ainda.', photo: fakePhoto(3), daysOld: 60, where: 'bar', orientation: 'lesbian', showOrientation: true, sameOrientationFirst: true, instagram: 'bia_cafe' },
   { name: 'Caio', gender: 'male', birth: '1995-11-17', bio: 'Corrida no parque 6h. Cerveja às 18h.', photo: fakePhoto(4), daysOld: 25, where: 'bar' },
   { name: 'Marina', gender: 'female', birth: '2000-07-08', bio: 'Fotógrafa. Sempre no show de alguém.', photo: fakePhoto(5), tier: 'premium', verified: true, daysOld: 90, where: 'bar' },
-  { name: 'Theo', gender: 'non_binary', birth: '1998-03-30', bio: 'Boêmio de carteirinha.', photo: fakePhoto(6), showPhotoOnMap: false, daysOld: 12, where: 'spread' },
-  { name: 'Lívia', gender: 'female', birth: '1996-12-02', bio: 'Yoga, praia e um bom vinho.', photo: fakePhoto(7), daysOld: 45, where: 'spread' },
-  { name: 'Pedro', gender: 'male', birth: '1994-05-21', bio: 'Games e churrasco. Nessa ordem.', photo: fakePhoto(8), daysOld: 200, where: 'spread' },
+  { name: 'Theo', gender: 'non_binary', birth: '1998-03-30', bio: 'Boêmio de carteirinha.', photo: fakePhoto(6), showPhotoOnMap: false, daysOld: 12, where: 'spread', orientation: 'queer', showOrientation: true },
+  { name: 'Lívia', gender: 'female', birth: '1996-12-02', bio: 'Yoga, praia e um bom vinho.', photo: fakePhoto(7), daysOld: 45, where: 'spread', orientation: 'straight', instagram: 'livia.yoga' },
+  { name: 'Pedro', gender: 'male', birth: '1994-05-21', bio: 'Games e churrasco. Nessa ordem.', photo: fakePhoto(8), daysOld: 200, where: 'spread', orientation: 'gay', showMe: 'men' },
 ];
 
 // gente sintética (teste de carga + matriz de casos)
@@ -146,11 +154,21 @@ async function main() {
     const poiId = where === 'bar' ? hotPoi.id : where === 'event' ? evPoi.id : undefined;
     const poiName = where === 'bar' ? hotPoi.name : where === 'event' ? evPoi.name : '';
 
+    // orientação (com carimbo de consentimento), exibir/ordem só com ela (CHECK do banco), "Mostrar" e @ do Instagram
+    const profileFields = {
+      orientation: (f.orientation ?? null) as never,
+      orientationConsentedAt: f.orientation ? createdAt : null,
+      showOrientation: Boolean(f.orientation && f.showOrientation),
+      sameOrientationFirst: Boolean(f.orientation && f.sameOrientationFirst),
+      showMe: (f.showMe ?? 'everyone') as never,
+      instagramHandle: f.instagram ?? null,
+    };
+
     const user = await prisma.user.upsert({
       where: { phone },
       update: {
         name: f.name, bio: f.bio, visibilityMode: 'visible', lastActiveAt: new Date(), premiumTier: (f.tier ?? 'free') as never, isVerified: Boolean(f.verified), avatarConfig: avatar,
-        showPhotoOnMap: f.showPhotoOnMap ?? true, createdAt,
+        showPhotoOnMap: f.showPhotoOnMap ?? true, createdAt, ...profileFields,
       },
       create: {
         id: crypto.randomUUID(),
@@ -167,6 +185,7 @@ async function main() {
         avatarConfig: avatar,
         showPhotoOnMap: f.showPhotoOnMap ?? true,
         createdAt,
+        ...profileFields,
       },
     });
 

@@ -1,5 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
-import type { Request } from 'express';
+import { ORIENTATIONS, SHOW_ME, type Orientation, type ShowMe } from '@cruzei/shared-types';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ArrayMaxSize,
   IsArray,
@@ -14,17 +25,24 @@ import {
   IsUrl,
   MaxLength,
 } from 'class-validator';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
-import { UsersService } from './users.service';
+import type { Request } from 'express';
 
+import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { assertPhotoHost } from '../../common/photo-host';
+
+import { UsersService } from './users.service';
 
 class UpdateMeDto {
   @IsOptional() @IsString() @MaxLength(50) name?: string;
   @IsOptional() @IsString() @MaxLength(500) bio?: string;
-  @IsOptional() @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified']) lookingFor?: string;
-  @IsOptional() @IsEnum(['heterosexual', 'homosexual', 'bisexual', 'pansexual', 'other']) orientation?: string;
+  @IsOptional()
+  @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified'])
+  lookingFor?: string;
+  /** null apaga (revoga o consentimento e desliga exibir/ordem) */
+  @IsOptional() @IsEnum([...ORIENTATIONS]) orientation?: Orientation | null;
+  /** @ do Instagram (público): aceita @, link colado e maiúsculas — o service normaliza e valida; '' ou null apaga */
+  @IsOptional() @IsString() @MaxLength(100) instagram?: string | null;
   @IsOptional() @IsArray() @ArrayMaxSize(10) interests?: string[];
   // AvatarConfig (validada no service contra o catálogo + tier do usuário)
   @IsOptional() @IsObject() avatar?: Record<string, unknown>;
@@ -37,7 +55,16 @@ class SettingsDto {
   /** foto real na bolha de identidade do mapa (OFF = só o avatar aparece no mapa) */
   @IsOptional() @IsBoolean() showPhotoOnMap?: boolean;
   /** descoberta por proximidade (recíproca): everyone | compatible | nobody */
-  @IsOptional() @IsEnum(['everyone', 'compatible', 'nobody']) discoveryMode?: 'everyone' | 'compatible' | 'nobody';
+  @IsOptional() @IsEnum(['everyone', 'compatible', 'nobody']) discoveryMode?:
+    | 'everyone'
+    | 'compatible'
+    | 'nobody';
+  /** exibir a orientação no cartão público (exige orientação: senão 400 orientation_required) */
+  @IsOptional() @IsBoolean() showOrientation?: boolean;
+  /** ver primeiro quem EXIBE a mesma orientação (só ordena; exige orientação) */
+  @IsOptional() @IsBoolean() sameOrientationFirst?: boolean;
+  /** "Mostrar: Mulheres / Homens / Todos" (recíproco) */
+  @IsOptional() @IsEnum([...SHOW_ME]) showMe?: ShowMe;
 }
 
 class PrivateAreaDto {

@@ -29,6 +29,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { api, toApiError } from '../../services/api';
+import { dismissPushesTagged } from '../../services/notifications';
 import { getSocket } from '../../services/socket';
 import { useAuthStore } from '../../stores/auth';
 import {
@@ -496,6 +497,11 @@ function ChatScreenInner() {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
     return () => sub.remove();
   }, []);
+
+  // conversa aberta na frente: os pushes dela saem da bandeja (com o app aberto nem chegam a aparecer)
+  useEffect(() => {
+    if (conversationId && isFocused && appActive) void dismissPushesTagged(`conv:${conversationId}`);
+  }, [conversationId, isFocused, appActive]);
 
   // Marca como lida até a última do outro QUE ESTÁ NA TELA (a de sistema não conta), só com o chat em foco e o app na
   // frente. Quem recebeu a solicitação também chama: o servidor zera o badge dele mas só manda o recibo

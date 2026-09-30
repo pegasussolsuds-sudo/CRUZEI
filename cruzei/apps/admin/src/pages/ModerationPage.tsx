@@ -137,8 +137,14 @@ function ReportGroupCard({ group, onAct }: { group: ModerationReportGroup; onAct
             {urgent ? <Badge tone="danger">Urgente</Badge> : null}
           </div>
           <div className="small muted">
-            {group.reports.length} {group.reports.length === 1 ? 'denúncia' : 'denúncias'} de {group.distinctReporters}{' '}
-            {group.distinctReporters === 1 ? 'pessoa' : 'pessoas'} · primeira {formatRelative(group.firstAt)} · prioridade{' '}
+            {group.reports.length} {group.reports.length === 1 ? 'denúncia' : 'denúncias'}{' '}
+            {/* denúncia sem denunciante = automática (ex.: GPS suspeito); não conta como pessoa */}
+            {group.distinctReporters === 0 && group.reports.every((r) => !r.reporterId)
+              ? group.reports.length === 1
+                ? 'automática'
+                : 'automáticas'
+              : `de ${group.distinctReporters} ${group.distinctReporters === 1 ? 'pessoa' : 'pessoas'}`}{' '}
+            · primeira {formatRelative(group.firstAt)} · prioridade{' '}
             <span className="num strong">{group.priority}</span>
           </div>
         </div>
@@ -152,6 +158,7 @@ function ReportGroupCard({ group, onAct }: { group: ModerationReportGroup; onAct
             <div className="row row-wrap">
               <Badge tone={URGENT_REASONS.has(r.reason) ? 'danger' : 'warning'}>{REPORT_REASON_LABEL[r.reason]}</Badge>
               {r.context?.source ? <span className="xsmall faint">pelo {REPORT_SOURCE_LABEL[r.context.source]}</span> : null}
+              {!r.reporterId ? <span className="xsmall faint">· automática</span> : null}
               <span className="spacer" />
               <span className="xsmall faint">{formatShortDateTime(r.createdAt)}</span>
             </div>

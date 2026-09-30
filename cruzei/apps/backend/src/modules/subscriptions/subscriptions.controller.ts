@@ -1,7 +1,9 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { IsEnum, IsOptional, IsString } from 'class-validator';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+
 import { SubscriptionsService } from './subscriptions.service';
 
 class SubscribeDto {
@@ -15,9 +17,10 @@ class SubscribeDto {
 export class SubscriptionsController {
   constructor(private readonly svc: SubscriptionsService) {}
 
+  /** autenticado: quem já usou o teste grátis (conta ou número) recebe os planos sem trialDays */
   @Get('plans')
-  plans() {
-    return this.svc.listPlans();
+  plans(@CurrentUser() user: AuthenticatedUser) {
+    return this.svc.listPlans(user.id);
   }
 
   @Get('status')

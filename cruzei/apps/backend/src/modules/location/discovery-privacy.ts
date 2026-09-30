@@ -6,9 +6,11 @@
 // seguro, uma posição VISUAL anonimizada (centro da célula + deslocamento diário) ou o ponto do lugar (POI).
 //
 // Todos os limites são configuráveis por variável de ambiente (valores padrão abaixo).
-import * as ngeohash from 'ngeohash';
 import { createHmac } from 'node:crypto';
+
+import type { ProximityBand } from '@cruzei/shared-types';
 import { distanceMeters, offsetLatLng, positionJitter } from '@cruzei/shared-utils';
+import * as ngeohash from 'ngeohash';
 
 function envInt(name: string, def: number): number {
   const v = Number(process.env[name]);
@@ -21,6 +23,11 @@ export const PRIVACY = {
   /** carga: descobertas simultâneas por instância (o resto espera) e teto de pessoas por resposta */
   DISCOVERY_MAX_CONCURRENCY: envInt('DISCOVERY_MAX_CONCURRENCY', 16),
   DISCOVERY_MAX_USERS: envInt('DISCOVERY_MAX_USERS', 300),
+  /**
+   * lugar lotado (mais gente que DISCOVERY_MAX_USERS): rotação justa em vez de corte fixo — cada pessoa vê um recorte
+   * pseudoaleatório estável por X min (com fase própria), boost e "mesma orientação" na frente (discovery-order.ts)
+   */
+  DISCOVERY_ROTATION_MIN: envInt('DISCOVERY_ROTATION_MIN', 10),
   /** carga: quantas descobertas podem esperar vaga e por quanto tempo (ms) — além disso responde 503 na hora (o app tenta de novo) */
   DISCOVERY_MAX_QUEUE: envInt('DISCOVERY_MAX_QUEUE', 2_000),
   DISCOVERY_MAX_WAIT_MS: envInt('DISCOVERY_MAX_WAIT_MS', 15_000),
@@ -70,10 +77,11 @@ export const PRIVACY = {
   HISTORY_RETENTION_DAYS: envInt('LOCATION_HISTORY_RETENTION_DAYS', 3),
 } as const;
 
-export type ProximityBand = 'very_near' | 'near' | 'region';
+// faixa e motivo de "oculto" vêm do shared-types (fonte única): 'boost' = Boost além do raio (até BOOST_RADIUS_M);
+// 'location_mocked'/'location_unverified' = GPS falso (anti-spoof.ts)
+export type { HiddenReason, ProximityBand } from '@cruzei/shared-types';
 export type PresenceType = 'place' | 'nearby';
 export type LastSeen = 'online' | 'recent' | 'earlier';
-export type HiddenReason = 'anonymous' | 'private_area' | 'home' | 'nobody' | 'no_presence' | 'paused';
 
 export function proximityBand(distM: number): ProximityBand {
   if (distM <= PRIVACY.BAND_VERY_NEAR_M) return 'very_near';
@@ -115,7 +123,10 @@ export function anonymizedCellPosition(seed: string, cell: string): { lat: numbe
 }
 
 /** Posição VISUAL de quem está num lugar: o ponto do lugar + deslocamento pequeno (só espalha os pins no bar). */
-export function anonymizedPlacePosition(seed: string, poi: { lat: number; lng: number }): { lat: number; lng: number } {
+export function anonymizedPlacePosition(
+  seed: string,
+  poi: { lat: number; lng: number },
+): { lat: number; lng: number } {
   const j = positionJitter(seed, 8, 25);
   return offsetLatLng(poi.lat, poi.lng, j.dNorthM, j.dEastM);
 }
@@ -136,13 +147,22 @@ let dateFmt: Intl.DateTimeFormat | null = null;
 
 /** hora local (Brasília) — usada só pra aprender a célula de residência (madrugada) */
 export function localHourBrazil(d = new Date()): number {
-  hourFmt ??= new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false });
+  hourFmt ??= new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    hour: 'numeric',
+    hour12: false,
+  });
   const n = Number(hourFmt.format(d));
   return Number.isFinite(n) ? n % 24 : d.getUTCHours();
 }
 
 export function localDateBrazil(d = new Date()): string {
-  dateFmt ??= new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
+  dateFmt ??= new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
   return dateFmt.format(d);
 }
 
@@ -171,7 +191,7 @@ export const CROWD = {
   /** grava o sinal de multidão no caminho quente da localização */
   RECORD_ENABLED: envFlag('CROWD_RECORD_ENABLED', true),
   /** off = não roda; shadow = só registra "promoveria N"; on = publica */
-  MODE: ((process.env.CROWD_MODE ?? 'on').trim().toLowerCase() as 'off' | 'shadow' | 'on'),
+  MODE: (process.env.CROWD_MODE ?? 'on').trim().toLowerCase() as 'off' | 'shadow' | 'on',
   /** janela de detecção (dias de Brasília) — igual à retenção do histórico, sem nova exceção de retenção */
   WINDOW_DAYS: envInt('CROWD_WINDOW_DAYS', 3),
   /** pessoas distintas num dia pra ele contar como "ativo" (acima do piso de anonimato 2) */
@@ -202,7 +222,10 @@ export const CROWD_CELL_PRECISION = 7;
 
 /** hash com chave do id: o HyperLogLog nunca guarda o id cru (sem o LOCATION_SALT não dá pra testar "fulano esteve aqui") */
 export function crowdMember(salt: string, userId: string): string {
-  return createHmac('sha256', salt).update('crowd:' + userId).digest('base64url').slice(0, 16);
+  return createHmac('sha256', salt)
+    .update('crowd:' + userId)
+    .digest('base64url')
+    .slice(0, 16);
 }
 
 /** faixa do dia (Brasília): 0 = 04–08 h (madrugada/casa), 1 = 08–18 h, 2 = 18–04 h (noite) */
@@ -213,21 +236,58 @@ export function dwellBand(hour: number): 0 | 1 | 2 {
 }
 
 /** nunca podem aparecer numa resposta dos fluxos de contribuição (quem sugeriu, votou, quando, quantos) */
-export const CONTRIBUTOR_KEYS = new Set(['userId', 'suggestedBy', 'voters', 'confirmations', 'createdAt', 'firstSeenOn', 'cell', 'reason', 'votes', 'count']);
+export const CONTRIBUTOR_KEYS = new Set([
+  'userId',
+  'suggestedBy',
+  'voters',
+  'confirmations',
+  'createdAt',
+  'firstSeenOn',
+  'cell',
+  'reason',
+  'votes',
+  'count',
+]);
 
 /** varre um objeto e devolve as chaves proibidas encontradas (usado pelos testes de segurança e pelo guard de resposta) */
 export const FORBIDDEN_CLIENT_KEYS = new Set([
-  'latitude', 'longitude', 'lat', 'lng', 'preciseLatitude', 'preciseLongitude', 'exactDistance', 'distanceM', 'distance',
-  'locationHistory', 'previousCoordinates', 'heading', 'speed', 'movementHistory', 'routeHistory', 'recordedAt', 'coordinates', 'geohash',
+  'latitude',
+  'longitude',
+  'lat',
+  'lng',
+  'preciseLatitude',
+  'preciseLongitude',
+  'exactDistance',
+  'distanceM',
+  'distance',
+  'locationHistory',
+  'previousCoordinates',
+  'heading',
+  'speed',
+  'movementHistory',
+  'routeHistory',
+  'recordedAt',
+  'coordinates',
+  'geohash',
 ]);
-export function findForbiddenKeys(value: unknown, path = '', out: string[] = [], allowUnder: RegExp = /^(mapPosition|poi|pois|place)(\.|$)/): string[] {
+export function findForbiddenKeys(
+  value: unknown,
+  path = '',
+  out: string[] = [],
+  allowUnder: RegExp = /^(mapPosition|poi|pois|place)(\.|$)/,
+): string[] {
   if (Array.isArray(value)) {
     value.forEach((v, i) => findForbiddenKeys(v, `${path}[${i}]`, out, allowUnder));
   } else if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       const p = path ? `${path}.${k}` : k;
       const leaf = p.replace(/\[\d+\]/g, '');
-      if (FORBIDDEN_CLIENT_KEYS.has(k) && !allowUnder.test(leaf.split('.').slice(-2).join('.')) && !allowUnder.test(leaf)) out.push(p);
+      if (
+        FORBIDDEN_CLIENT_KEYS.has(k) &&
+        !allowUnder.test(leaf.split('.').slice(-2).join('.')) &&
+        !allowUnder.test(leaf)
+      )
+        out.push(p);
       findForbiddenKeys(v, p, out, allowUnder);
     }
   }

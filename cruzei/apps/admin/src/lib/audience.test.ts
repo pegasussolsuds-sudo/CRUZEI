@@ -54,6 +54,8 @@ describe('canais e destino', () => {
   it('destino do toque', () => {
     expect(describeTarget(null)).toBe('Abre o app');
     expect(describeTarget({ kind: 'event', eventId: 'e1' })).toBe('Abre o evento');
+    // push social do match (o painel não manda, mas o switch cobre todos os destinos)
+    expect(describeTarget({ kind: 'match', userId: 'u1' })).toBe('Abre um match');
     expect(targetError({ kind: 'event', eventId: '' })).not.toBeNull();
     expect(targetError({ kind: 'place', poiId: 'p1' })).toBeNull();
     expect(targetError(null)).toBeNull();

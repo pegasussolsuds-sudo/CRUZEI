@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { EmptyState, ErrorState, LoadMore, SkeletonRows } from '@/components/ui/States';
 import { PageHeader } from '@/components/ui/misc';
+import { ReleasedBadge } from './PhoneHistory';
 
 const PAGE = 30;
 
@@ -170,7 +171,9 @@ export default function UsersPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="num small nowrap">{u.phone ?? '—'}</td>
+                      <td className="num small nowrap">
+                        {u.phone ?? (u.phoneReleasedAt ? <ReleasedBadge at={u.phoneReleasedAt} short /> : '—')}
+                      </td>
                       <td>
                         <AccountStatusBadge status={u.accountStatus} until={u.suspendedUntil} />
                       </td>

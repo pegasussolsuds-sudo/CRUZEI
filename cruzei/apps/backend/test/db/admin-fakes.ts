@@ -61,6 +61,8 @@ export function fakeGateway() {
     setStaffMembership: jest.fn(),
     removeFromConversation: jest.fn(),
     disconnectUser: jest.fn(),
+    // invisível sem Premium sai das salas de conversa (UsersService.setVisibility, rebaixamento do Premium)
+    leaveAllConversations: jest.fn(async (_id: string) => undefined),
   };
 }
 

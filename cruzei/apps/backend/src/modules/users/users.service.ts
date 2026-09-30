@@ -1,19 +1,37 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import type { AvatarTier } from '@cruzei/shared-types';
-import { AVATAR_CONFIG_MAX_BYTES, FREE_TIERS, isValidAvatarConfig, normalizeAvatarConfig } from '@cruzei/shared-utils';
-import { PrismaService } from '../../database/prisma.service';
-import { RedisService } from '../../redis/redis.service';
-import { avatarOrFallback } from '../../common/avatar';
-import { PRIVACY } from '../location/discovery-privacy';
+import type { AvatarTier, Orientation, ShowMe } from '@cruzei/shared-types';
 import { LEGAL_VERSION } from '@cruzei/shared-types';
-import { PhotoModerationService } from '../moderation/photo-moderation.service';
+import {
+  AVATAR_CONFIG_MAX_BYTES,
+  FREE_TIERS,
+  isValidAvatarConfig,
+  normalizeAvatarConfig,
+} from '@cruzei/shared-utils';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+
+import { avatarOrFallback } from '../../common/avatar';
+import {
+  ANON_FREE_MS,
+  anonymousWindowAction,
+  decideAnonymous,
+  isPremiumActive,
+  visibleAnonymousUntil,
+} from '../../common/premium';
+import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
+import { RedisService } from '../../redis/redis.service';
+import { PRIVACY } from '../location/discovery-privacy';
+import { PhotoModerationService } from '../moderation/photo-moderation.service';
+
+import {
+  INSTAGRAM_INVALID,
+  ORIENTATION_REQUIRED,
+  orientationFlagsBlocked,
+  orientationPatch,
+  parseInstagramInput,
+} from './profile-prefs';
 
 const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
 
-/** modo anônimo no plano grátis: 24 h por vez (sorted set userId → vencimento em ms; o cron devolve ao visível) */
-export const ANON_FREE_KEY = 'anon:free:until';
-export const ANON_FREE_HOURS = 24;
 /** mesmo teto do app (PhotoUploadScreen): o servidor é quem garante */
 export const MAX_PHOTOS = 6;
 
@@ -21,7 +39,9 @@ export const MAX_PHOTOS = 6;
  * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
  * → free + premium; senão só free. 'event' fica bloqueado pra todos por enquanto.
  */
-export function allowedTiersFor(user: { premiumTier: string; premiumExpiresAt: Date | null } | null | undefined): ReadonlySet<AvatarTier> {
+export function allowedTiersFor(
+  user: { premiumTier: string; premiumExpiresAt: Date | null } | null | undefined,
+): ReadonlySet<AvatarTier> {
   if (!user || user.premiumTier === 'free') return FREE_TIERS;
   const active = user.premiumExpiresAt == null || user.premiumExpiresAt > new Date();
   return active ? PREMIUM_TIERS : FREE_TIERS;
@@ -60,7 +80,11 @@ export class UsersService {
 
     // assinatura vencida → itens premium do avatar caem pro default (salva só se mudou)
     let avatarConfig: unknown = user.avatarConfig;
-    if (user.premiumTier !== 'free' && user.premiumExpiresAt && user.premiumExpiresAt <= new Date()) {
+    if (
+      user.premiumTier !== 'free' &&
+      user.premiumExpiresAt &&
+      user.premiumExpiresAt <= new Date()
+    ) {
       avatarConfig = await this.downgradeAvatarToFree(userId, avatarConfig);
     }
 
@@ -69,9 +93,46 @@ export class UsersService {
     let pausedUntil = user.pausedUntil;
     if (isPaused && pausedUntil && pausedUntil <= new Date()) {
       // só se ainda vencida: não desfaz uma pausa nova feita no meio do caminho
-      await this.prisma.user.updateMany({ where: { id: userId, isPaused: true, pausedUntil: { lte: new Date() } }, data: { isPaused: false, pausedUntil: null } as never });
+      await this.prisma.user.updateMany({
+        where: { id: userId, isPaused: true, pausedUntil: { lte: new Date() } },
+        data: { isPaused: false, pausedUntil: null } as never,
+      });
       isPaused = false;
       pausedUntil = null;
+    }
+
+    // invisível grátis: janela vencida → visível na hora; sem janela gravada → ganha as 24 h agora (a tarefa do
+    // PremiumLifecycleService faz o mesmo e avisa quem não abre o app). Premium vencido espera o rebaixamento
+    let visibilityMode = user.visibilityMode;
+    let anonymousUntil = user.anonymousUntil;
+    const anonAction = anonymousWindowAction(user);
+    if (anonAction === 'expire') {
+      const r = await this.prisma.user.updateMany({
+        where: {
+          id: userId,
+          visibilityMode: 'anonymous',
+          premiumTier: 'free',
+          anonymousUntil: { lte: new Date() },
+        },
+        data: { visibilityMode: 'visible', anonymousUntil: null },
+      });
+      if (r.count) {
+        visibilityMode = 'visible';
+        anonymousUntil = null;
+        await this.redis.invalidateProfile(userId); // volta pro mapa dos outros
+      }
+    } else if (anonAction === 'open') {
+      const until = new Date(Date.now() + ANON_FREE_MS);
+      const r = await this.prisma.user.updateMany({
+        where: {
+          id: userId,
+          visibilityMode: 'anonymous',
+          premiumTier: 'free',
+          anonymousUntil: null,
+        },
+        data: { anonymousUntil: until },
+      });
+      if (r.count) anonymousUntil = until;
     }
 
     // tier efetivo: assinatura vencida conta como free (mesma regra que o update() usa pra validar o avatar)
@@ -88,6 +149,8 @@ export class UsersService {
       orientation: user.orientation,
       lookingFor: user.lookingFor,
       bio: user.bio,
+      // @ do Instagram sem o @ (público no cartão)
+      instagram: user.instagramHandle ?? null,
       photos: user.photos.map((p) => ({
         id: p.id,
         url: p.url,
@@ -110,11 +173,23 @@ export class UsersService {
       profileCompleteness: user.profileCompleteness,
       avatar: avatarOrFallback({ id: user.id, gender: user.gender, avatarConfig }),
       settings: {
-        visibilityMode: user.visibilityMode,
+        visibilityMode,
+        // fim da janela do invisível grátis (null: visível ou Premium vigente, sem prazo)
+        anonymousUntil:
+          visibleAnonymousUntil({
+            premiumTier: user.premiumTier,
+            premiumExpiresAt: user.premiumExpiresAt,
+            visibilityMode,
+            anonymousUntil,
+          })?.toISOString() ?? null,
         showDistance: user.showDistance,
         showAge: user.showAge,
         showPhotoOnMap: user.showPhotoOnMap,
         discoveryMode: user.discoveryMode,
+        // orientação: exibir no cartão / mesma orientação primeiro (padrão false); "Mostrar" recíproco (padrão everyone)
+        showOrientation: user.showOrientation,
+        sameOrientationFirst: user.sameOrientationFirst,
+        showMe: user.showMe,
         isPaused,
         pausedUntil: pausedUntil?.toISOString() ?? null,
       },
@@ -129,9 +204,13 @@ export class UsersService {
       legal: { acceptedVersion: user.termsVersion, currentVersion: LEGAL_VERSION },
     };
 
-    // cache não passa do fim da pausa/assinatura, senão o app vê estado vencido por até 1h
+    // cache não passa do fim da pausa/assinatura/janela do invisível, senão o app vê estado vencido por até 1h
     const now = Date.now();
-    const edges = [pausedUntil, user.premiumExpiresAt]
+    const edges = [
+      pausedUntil,
+      user.premiumExpiresAt,
+      visibilityMode === 'anonymous' ? anonymousUntil : null,
+    ]
       .filter((d): d is Date => !!d && d.getTime() > now)
       .map((d) => Math.ceil((d.getTime() - now) / 1000));
     await this.redis.cacheProfile(userId, profile, Math.max(1, Math.min(3600, ...edges)));
@@ -140,13 +219,34 @@ export class UsersService {
 
   async update(
     userId: string,
-    dto: { name?: string; bio?: string; lookingFor?: string; orientation?: string; interests?: string[]; avatar?: unknown },
+    dto: {
+      name?: string;
+      bio?: string;
+      lookingFor?: string;
+      orientation?: Orientation | null;
+      instagram?: string | null;
+      interests?: string[];
+      avatar?: unknown;
+    },
   ) {
     const data: Record<string, unknown> = {};
     if (dto.name) data.name = dto.name.trim();
     if (dto.bio !== undefined) data.bio = dto.bio.trim() || null;
     if (dto.lookingFor) data.lookingFor = dto.lookingFor;
-    if (dto.orientation) data.orientation = dto.orientation;
+
+    // @ do Instagram: normaliza (@, link, maiúsculas) e valida pela regra do Instagram; '' ou null apaga
+    const insta = parseInstagramInput(dto.instagram);
+    if (insta && !insta.ok) throw new BadRequestException(INSTAGRAM_INVALID);
+    if (insta?.ok) data.instagramHandle = insta.handle;
+
+    // orientação (dado sensível): null apaga e revoga (flags e carimbo zeram); valor novo carimba o consentimento
+    if (dto.orientation !== undefined) {
+      const cur = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { orientation: true },
+      });
+      Object.assign(data, orientationPatch(cur?.orientation ?? null, dto.orientation));
+    }
 
     if (dto.avatar !== undefined) {
       if (Buffer.byteLength(JSON.stringify(dto.avatar) ?? '') > AVATAR_CONFIG_MAX_BYTES) {
@@ -193,45 +293,123 @@ export class UsersService {
       showAge?: boolean;
       showPhotoOnMap?: boolean;
       discoveryMode?: 'everyone' | 'compatible' | 'nobody';
+      showOrientation?: boolean;
+      sameOrientationFirst?: boolean;
+      showMe?: ShowMe;
     },
   ) {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: dto as never,
-    });
-    // anônimo no plano grátis tem prazo (24 h); o cron devolve a pessoa ao modo visível quando vence
-    let anonymousUntil: string | null = null;
-    if (dto.visibilityMode === 'anonymous') {
-      const u = await this.prisma.user.findUnique({ where: { id: userId }, select: { premiumTier: true, premiumExpiresAt: true } });
-      if (allowedTiersFor(u).has('premium')) await this.redis.client.zrem(ANON_FREE_KEY, userId);
-      else {
-        const until = Date.now() + ANON_FREE_HOURS * 3_600_000;
-        await this.redis.client.zadd(ANON_FREE_KEY, until, userId);
-        anonymousUntil = new Date(until).toISOString();
-        // invisível sem Premium não manda nem recebe mensagens (inbox/visibility.messagingLocked): sai dos chats abertos
-        await this.chat.leaveAllConversations(userId).catch(() => undefined);
-      }
-    } else if (dto.visibilityMode === 'visible') {
-      await this.redis.client.zrem(ANON_FREE_KEY, userId);
+    // exibir/ordenar pela orientação sem ter orientação: 400 claro (o CHECK users_orientation_flags_chk viraria 500)
+    if (dto.showOrientation === true || dto.sameOrientationFirst === true) {
+      const cur = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { orientation: true },
+      });
+      if (orientationFlagsBlocked(dto, cur?.orientation ?? null))
+        throw new BadRequestException(ORIENTATION_REQUIRED);
     }
+    // visibilidade tem regra própria (prazo do invisível grátis no banco): vai pelo setVisibility, depois dos outros
+    const { visibilityMode, ...rest } = dto;
+    if (Object.keys(rest).length > 0) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: rest as never,
+      });
+    }
+    let anonymousUntil: string | null = null;
+    if (visibilityMode)
+      anonymousUntil = (await this.setVisibility(userId, visibilityMode)).anonymousUntil;
     await this.redis.invalidateProfile(userId);
-    return { ok: true, ...dto, ...(dto.visibilityMode === 'anonymous' ? { anonymousUntil } : {}) };
+    return { ok: true, ...dto, ...(visibilityMode ? { anonymousUntil } : {}) };
+  }
+
+  /**
+   * Liga/desliga o invisível (PATCH /me/settings e POST /anonymous/enable|disable): uma regra só (common/premium).
+   * Grátis: janela de 24 h gravada em anonymous_until; PATCH repetido com a janela valendo NÃO estende; desligar e
+   * religar abre janela nova (pode religar quando quiser). Premium vigente: sem prazo. A linha fica travada (FOR
+   * UPDATE) contra a tarefa que expira a janela no mesmo instante.
+   */
+  async setVisibility(
+    userId: string,
+    mode: 'visible' | 'anonymous',
+  ): Promise<{ visibilityMode: 'visible' | 'anonymous'; anonymousUntil: string | null }> {
+    const r = await this.prisma.$transaction(async (tx) => {
+      const [u] = await tx.$queryRaw<
+        {
+          premium_tier: string;
+          premium_expires_at: Date | null;
+          visibility_mode: string;
+          anonymous_until: Date | null;
+        }[]
+      >`
+        SELECT premium_tier::text AS premium_tier, premium_expires_at, visibility_mode::text AS visibility_mode, anonymous_until
+          FROM users WHERE id = ${userId}::uuid AND deleted_at IS NULL FOR UPDATE`;
+      if (!u) throw new NotFoundException('Usuário não encontrado');
+      if (mode === 'visible') {
+        await tx.user.update({
+          where: { id: userId },
+          data: { visibilityMode: 'visible', anonymousUntil: null },
+        });
+        return { until: null, locked: false };
+      }
+      const premium = isPremiumActive({
+        premiumTier: u.premium_tier,
+        premiumExpiresAt: u.premium_expires_at,
+      });
+      const d = decideAnonymous({
+        premium,
+        visibilityMode: u.visibility_mode,
+        anonymousUntil: u.anonymous_until,
+      });
+      await tx.user.update({
+        where: { id: userId },
+        data: { visibilityMode: 'anonymous', anonymousUntil: d.until },
+      });
+      return { until: d.until, locked: !premium };
+    });
+    // invisível sem Premium não manda nem recebe mensagens (inbox/visibility.messagingLocked): sai dos chats abertos
+    if (r.locked) await this.chat.leaveAllConversations(userId).catch(() => undefined);
+    await this.redis.invalidateProfile(userId);
+    return { visibilityMode: mode, anonymousUntil: r.until?.toISOString() ?? null };
   }
 
   // ---- áreas privadas: coordenada precisa do PRÓPRIO usuário; a resposta só devolve rótulo/raio ----
   async listPrivateAreas(userId: string) {
-    const rows = await this.prisma.privateArea.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } });
-    return rows.map((a) => ({ id: a.id, label: a.label, radiusM: a.radiusM, createdAt: a.createdAt.toISOString() }));
+    const rows = await this.prisma.privateArea.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((a) => ({
+      id: a.id,
+      label: a.label,
+      radiusM: a.radiusM,
+      createdAt: a.createdAt.toISOString(),
+    }));
   }
 
-  async addPrivateArea(userId: string, dto: { label: string; latitude: number; longitude: number; radiusM?: number }) {
+  async addPrivateArea(
+    userId: string,
+    dto: { label: string; latitude: number; longitude: number; radiusM?: number },
+  ) {
     const count = await this.prisma.privateArea.count({ where: { userId } });
-    if (count >= PRIVACY.PRIVATE_AREAS_MAX) throw new BadRequestException(`No máximo ${PRIVACY.PRIVATE_AREAS_MAX} áreas privadas`);
+    if (count >= PRIVACY.PRIVATE_AREAS_MAX)
+      throw new BadRequestException(`No máximo ${PRIVACY.PRIVATE_AREAS_MAX} áreas privadas`);
     const radiusM = Math.round(
-      Math.min(PRIVACY.PRIVATE_AREA_MAX_RADIUS_M, Math.max(PRIVACY.PRIVATE_AREA_MIN_RADIUS_M, dto.radiusM ?? PRIVACY.PRIVATE_AREA_DEFAULT_RADIUS_M)),
+      Math.min(
+        PRIVACY.PRIVATE_AREA_MAX_RADIUS_M,
+        Math.max(
+          PRIVACY.PRIVATE_AREA_MIN_RADIUS_M,
+          dto.radiusM ?? PRIVACY.PRIVATE_AREA_DEFAULT_RADIUS_M,
+        ),
+      ),
     );
     const a = await this.prisma.privateArea.create({
-      data: { userId, label: dto.label.trim() || 'Área privada', latitude: dto.latitude, longitude: dto.longitude, radiusM },
+      data: {
+        userId,
+        label: dto.label.trim() || 'Área privada',
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+        radiusM,
+      },
     });
     // a presença atual pode já estar dentro da área nova: some do mapa na hora
     await this.redis.markPresenceHidden(userId).catch(() => {});
@@ -299,8 +477,15 @@ export class UsersService {
 
   /** aceite dos Termos/Política (cadastro antigo ou versão nova): grava a versão e a data */
   async acceptTerms(userId: string, version: string) {
-    if (version !== LEGAL_VERSION) throw new BadRequestException({ error: 'terms_outdated', message: 'Os termos mudaram: abra de novo pra ver a versão atual' });
-    await this.prisma.user.update({ where: { id: userId }, data: { termsVersion: version, termsAcceptedAt: new Date() } });
+    if (version !== LEGAL_VERSION)
+      throw new BadRequestException({
+        error: 'terms_outdated',
+        message: 'Os termos mudaram: abra de novo pra ver a versão atual',
+      });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { termsVersion: version, termsAcceptedAt: new Date() },
+    });
     await this.redis.invalidateProfile(userId);
     return { acceptedVersion: version, currentVersion: LEGAL_VERSION };
   }
@@ -311,7 +496,10 @@ export class UsersService {
     await this.prisma.photo.delete({ where: { id: photoId } });
 
     // reindexa e garante uma principal
-    const rest = await this.prisma.photo.findMany({ where: { userId }, orderBy: { orderIndex: 'asc' } });
+    const rest = await this.prisma.photo.findMany({
+      where: { userId },
+      orderBy: { orderIndex: 'asc' },
+    });
     for (let i = 0; i < rest.length; i++) {
       await this.prisma.photo.update({
         where: { id: rest[i].id },
@@ -356,10 +544,18 @@ export class UsersService {
     const cfg =
       current !== undefined
         ? current
-        : (await this.prisma.user.findUnique({ where: { id: userId }, select: { avatarConfig: true } }))?.avatarConfig;
+        : (
+            await this.prisma.user.findUnique({
+              where: { id: userId },
+              select: { avatarConfig: true },
+            })
+          )?.avatarConfig;
     if (cfg == null || isValidAvatarConfig(cfg, FREE_TIERS)) return cfg ?? null;
     const normalized = normalizeAvatarConfig(cfg, FREE_TIERS);
-    await this.prisma.user.update({ where: { id: userId }, data: { avatarConfig: normalized as never } });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { avatarConfig: normalized as never },
+    });
     await this.redis.invalidateProfile(userId);
     return normalized;
   }

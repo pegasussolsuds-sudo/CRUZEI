@@ -14,7 +14,7 @@ import { isMessagingLockedError, useInvisibleLikePrompt, useMessagingLocked } fr
 import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
 import { useMyLocation } from '../../hooks/useMyLocation';
-import { pushLocation } from '../../services/location';
+import { pushLastFix } from '../../services/location';
 import { useLocationStore } from '../../stores/location';
 import { useVisibility } from '../../hooks/useVisibility';
 import { useMapTheme } from '../../hooks/useMapTheme';
@@ -323,7 +323,8 @@ export function MapScreen() {
       .filter((u) => !passed.has(u.id))
       // curtida mútua feita nesta sessão vale na hora (bolha, lista e sheet), sem esperar o próximo /nearby
       .map((u): NearbyUser => (localMutual.has(u.id) && u.likeStatus !== 'MUTUAL' ? { ...u, likeStatus: 'MUTUAL' } : u))
-      .sort((a, b) => proximityRank(bands.get(a.id)) - proximityRank(bands.get(b.id)))
+      // a ORDEM é a do servidor (boost → mesma orientação → faixa → rotação justa): reordenar por faixa aqui jogava
+      // o boost de longe (faixa 'boost') pro fim
       .slice(0, MAX_USERS);
     return { users: sorted, pois: poisQuery.data ?? [], bandById: bands, hiddenCount: nearbyQuery.data?.hiddenCount ?? 0, meDiscovery: nearbyQuery.data?.me ?? null };
   }, [nearbyQuery.data, poisQuery.data, passed, localMutual]);
@@ -341,7 +342,8 @@ export function MapScreen() {
     const cur = useLocationStore.getState();
     if (cur.lat == null || cur.lng == null) return;
     repushedRef.current = true;
-    pushLocation({ latitude: cur.lat, longitude: cur.lng })
+    // último fix completo (precisão e "simulada" juntos: o servidor confere GPS falso)
+    pushLastFix()
       .then((r) => {
         if (r.ok) refetchNearby();
       })

@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Linking, Pressable, RefreshControl, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, FlatList, Linking, Platform, Pressable, RefreshControl, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -25,6 +25,9 @@ const ICON: Record<string, { name: string; color: string; bg: string }> = {
   event: { name: 'flash', color: '#7A2FD0', bg: 'rgba(155,92,255,0.14)' },
   support_reply: { name: 'chatbubbles', color: colors.info, bg: 'rgba(0,139,139,0.12)' },
   premium_granted: { name: 'diamond', color: colors.secondary, bg: 'rgba(255,20,147,0.10)' },
+  // o Premium venceu (volta pro grátis) · as 24 h do invisível grátis acabaram (voltou pro mapa)
+  premium_expired: { name: 'diamond-outline', color: colors.gray[600], bg: colors.gray[100] },
+  anonymous_expired: { name: 'eye', color: '#3A7A00', bg: '#E9FFC7' },
   place_approved: { name: 'location', color: '#3A7A00', bg: '#E9FFC7' },
   campaign: { name: 'megaphone', color: colors.black, bg: colors.gray[100] },
   moderation_warning: { name: 'warning', color: '#B26B00', bg: 'rgba(255,184,0,0.16)' },
@@ -98,7 +101,10 @@ function PushBanner() {
   return (
     <View style={styles.banner}>
       <Ionicons name="notifications-off-outline" size={20} color={colors.gray[700]} />
-      <Text style={styles.bannerText}>Avisos no celular desligados. Liga pra saber de eventos perto e das respostas do suporte.</Text>
+      <Text style={styles.bannerText}>
+        Avisos no celular desligados. Liga pra saber na hora de mensagem, curtida e match, de eventos perto e das respostas do
+        suporte.
+      </Text>
       <Pressable
         onPress={onPress}
         disabled={busy}
@@ -113,11 +119,23 @@ function PushBanner() {
 }
 
 const PREFS: { key: keyof NotificationSettings; label: string; hint: string }[] = [
+  // push social (só no celular, fora desta lista): com o app aberto, nada de aviso — as telas já atualizam
+  { key: 'messages', label: 'Mensagens novas', hint: 'mensagens e solicitações de conversa' },
+  {
+    key: 'messagePreview',
+    label: 'Mostrar o texto da mensagem no aviso',
+    hint:
+      Platform.OS === 'android'
+        ? 'com o celular bloqueado, o aviso de mensagem nem aparece: você vê quando desbloquear'
+        : 'na tela bloqueada, o que aparece segue o ajuste de pré-visualização do iPhone',
+  },
+  { key: 'likes', label: 'Curtidas', hint: 'quando alguém curte você (no máximo um aviso a cada 15 min)' },
+  { key: 'matches', label: 'Matches', hint: 'quando alguém que você curtiu curte de volta' },
   { key: 'events', label: 'Eventos perto de você', hint: 'shows, festas e o que tá rolando na sua região' },
   { key: 'campaigns', label: 'Novidades do Metch', hint: 'avisos gerais e novidades do app' },
 ];
 
-/** o que chegar de campanha (suporte, Premium e lugar aprovado são da conta e sempre chegam) */
+/** push social (mensagem, curtida, match) e campanhas (suporte, Premium e lugar aprovado são da conta e sempre chegam) */
 function Preferences() {
   const settings = useNotificationSettings();
   const update = useUpdateNotificationSettings();
@@ -133,7 +151,10 @@ function Preferences() {
             <Text style={styles.prefHint}>{p.hint}</Text>
           </View>
           <Switch
-            value={s[p.key]}
+            // servidor antigo sem as chaves novas: ligado (o padrão)
+            value={s[p.key] ?? true}
+            // o texto no aviso só vale com as mensagens ligadas
+            disabled={p.key === 'messagePreview' && (s.messages ?? true) === false}
             onValueChange={(v) =>
               update.mutate({ [p.key]: v }, { onError: () => Alert.alert('Não deu pra salvar', 'Tenta de novo daqui a pouco.') })
             }
@@ -144,7 +165,10 @@ function Preferences() {
           />
         </View>
       ))}
-      <Text style={styles.prefsNote}>Respostas do suporte e avisos sobre a sua conta sempre chegam.</Text>
+      <Text style={styles.prefsNote}>
+        Mensagens, curtidas e matches chegam só no celular (não ficam nesta lista). Respostas do suporte e avisos sobre a
+        sua conta sempre chegam.
+      </Text>
     </View>
   );
 }

@@ -3,10 +3,10 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../database/prisma.service';
 import { PRIVACY } from '../modules/location/discovery-privacy';
-import { ANON_FREE_KEY } from '../modules/users/users.service';
 import { RedisService } from '../redis/redis.service';
 
-// Limpezas periódicas: anônimo grátis vencido, pausa vencida e retenção de posições.
+// Limpezas periódicas: pausa vencida e retenção de posições. O fim do invisível grátis e o rebaixamento do Premium
+// vencido ficam no PremiumTask (modules/subscriptions), com o prazo no banco (users.anonymous_until).
 // A expiração de 48 h do chat ACABOU (inbox): nada expira, conversa é só principal ou solicitação.
 @Injectable()
 export class CleanupTask {
@@ -16,20 +16,6 @@ export class CleanupTask {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
   ) {}
-
-  // modo anônimo do plano grátis venceu (24 h): volta a visível e o perfil em cache cai
-  @Cron(CronExpression.EVERY_5_MINUTES)
-  async expireFreeAnonymous() {
-    const ids = await this.redis.client.zrangebyscore(ANON_FREE_KEY, '-inf', Date.now());
-    if (!ids.length) return;
-    await this.prisma.user.updateMany({
-      where: { id: { in: ids }, visibilityMode: 'anonymous', premiumTier: 'free' },
-      data: { visibilityMode: 'visible' } as never,
-    });
-    await this.redis.client.zrem(ANON_FREE_KEY, ...ids);
-    await Promise.all(ids.map((id) => this.redis.invalidateProfile(id)));
-    this.logger.log(`Anônimo grátis vencido: ${ids.length} de volta ao visível`);
-  }
 
   // A cada 5 min — pausa de perfil vencida (pausedUntil no passado) volta a ficar visível
   @Cron(CronExpression.EVERY_5_MINUTES)

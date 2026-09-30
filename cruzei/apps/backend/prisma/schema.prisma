@@ -16,13 +16,28 @@ model User {
   name                  String                @db.VarChar(50)
   birthDate             DateTime              @map("birth_date") @db.Date
   gender                Gender
+  /// opcional; exibir e "mesma orientação primeiro" exigem orientação (CHECK users_orientation_flags_chk na migration)
   orientation           Orientation?
+  /// consentimento específico (LGPD): carimbado quando a pessoa escolhe a orientação no app
+  orientationConsentedAt DateTime?            @map("orientation_consented_at") @db.Timestamp(6)
+  /// exibir a orientação no cartão público (padrão: não)
+  showOrientation       Boolean               @default(false) @map("show_orientation")
+  /// ver primeiro quem tem a MESMA orientação (só conta quem exibe a sua); só ordenação, não filtro
+  sameOrientationFirst  Boolean               @default(false) @map("same_orientation_first")
+  /// quem eu quero ver no mapa, na lista e no deck (recíproco)
+  showMe                ShowMe                @default(everyone) @map("show_me")
+  /// @ do Instagram sem o @, minúsculo, público (CHECK users_instagram_handle_chk na migration)
+  instagramHandle       String?               @map("instagram_handle") @db.VarChar(30)
   lookingFor            LookingFor            @default(unspecified) @map("looking_for")
   bio                   String?
   avatarConfig          Json?                 @map("avatar_config")
   premiumTier           PremiumTier           @default(free) @map("premium_tier")
   premiumExpiresAt      DateTime?             @map("premium_expires_at")
-  visibilityMode        VisibilityMode        @default(anonymous) @map("visibility_mode")
+  visibilityMode        VisibilityMode        @default(visible) @map("visibility_mode")
+  /// fim da janela do invisível grátis (24 h; atual ou a última); null = sem janela (visível ou Premium vigente). UTC
+  anonymousUntil        DateTime?             @map("anonymous_until") @db.Timestamp(6)
+  /// quando usou o teste grátis (uma vez por conta; por telefone em trial_claims)
+  trialUsedAt           DateTime?             @map("trial_used_at") @db.Timestamp(6)
   isPaused              Boolean               @default(false) @map("is_paused")
   pausedUntil           DateTime?             @map("paused_until") @db.Timestamp(6)
   showDistance          Boolean               @default(true) @map("show_distance")
@@ -46,6 +61,10 @@ model User {
   reviewHoldAt          DateTime?             @map("review_hold_at") @db.Timestamp(6)
   termsVersion          String?               @map("terms_version") @db.VarChar(20)
   termsAcceptedAt       DateTime?             @map("terms_accepted_at") @db.Timestamp(6)
+  /// quando o número saiu desta conta (número reciclado; histórico em phone_releases)
+  phoneReleasedAt       DateTime?             @map("phone_released_at") @db.Timestamp(6)
+  /// token com iat anterior a isto é recusado (401 session_revoked) no refresh, no Bearer e no socket
+  sessionsValidAfter    DateTime?             @map("sessions_valid_after") @db.Timestamp(6)
   moderationActionsMade ModerationAction[]    @relation("Moderator")
   auditLogs             AuditLog[]
   blocksReceived        Block[]               @relation("Blocked")
@@ -416,6 +435,8 @@ model Subscription {
   note                  String?
   /// admin que deu o Premium manual (FK users ON DELETE SET NULL na migration)
   grantedBy             String?     @map("granted_by") @db.Uuid
+  /// fim do teste grátis desta assinatura; null = sem teste
+  trialEndsAt           DateTime?   @map("trial_ends_at") @db.Timestamp(6)
   user                  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt(sort: Desc)])
@@ -510,12 +531,24 @@ enum Gender {
   other
 }
 
+/// 9 opções (migration 20261003020000_profile_fields); rótulos em shared-types ORIENTATION_LABELS
 enum Orientation {
-  heterosexual
-  homosexual
+  straight
+  gay
+  lesbian
+  asexual
   bisexual
+  demisexual
   pansexual
-  other
+  queer
+  curious
+}
+
+/// "Mostrar: Mulheres / Homens / Todos" (recíproco); non_binary/other só aparecem pra quem escolheu everyone
+enum ShowMe {
+  women
+  men
+  everyone
 }
 
 enum LookingFor {
@@ -720,12 +753,67 @@ model PushCampaign {
 
 /// preferências de aviso (PATCH /notifications/settings); sem linha = recebe tudo
 model NotificationPref {
-  userId    String   @id @map("user_id") @db.Uuid
-  campaigns Boolean  @default(true)
-  events    Boolean  @default(true)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  userId         String   @id @map("user_id") @db.Uuid
+  campaigns      Boolean  @default(true)
+  events         Boolean  @default(true)
+  /// push social (só push, fora da central): mensagem nova, curtida e match
+  messages       Boolean  @default(true)
+  likes          Boolean  @default(true)
+  matches        Boolean  @default(true)
+  /// texto da mensagem no push (escondido na tela bloqueada)
+  messagePreview Boolean  @default(true) @map("message_preview")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("notification_prefs")
+}
+
+/// comemoração do match pra quem RECEBE (curtiu primeiro): userId recebe, peerId completou. Pendente = seenAt null.
+/// FKs (ON DELETE CASCADE) e o índice parcial match_celebrations_pending_idx ficam só na migration 20261003030000_social_push.
+model MatchCelebration {
+  userId    String    @map("user_id") @db.Uuid
+  peerId    String    @map("peer_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  seenAt    DateTime? @map("seen_at") @db.Timestamptz(6)
+
+  @@id([userId, peerId])
+  @@map("match_celebrations")
+}
+
+// ---------- número reciclado e teste grátis (migrations 20261003000000_phone_recycling e 20261003010000_premium_rules) ----------
+
+/// histórico de liberação de número (conta parada que perdeu o telefone). Sem FK: sobrevive à exclusão da conta.
+/// reason: 'not_mine' | 'birthdate_mismatch' | 'account_deleted' | 'admin' (CHECK phone_releases_reason_chk na migration)
+model PhoneRelease {
+  id            BigInt        @id @default(autoincrement())
+  /// conta antiga, que perdeu o número
+  userId        String        @map("user_id") @db.Uuid
+  /// número inteiro (só admin vê inteiro)
+  phone         String        @db.VarChar(20)
+  reason        String        @db.VarChar(20)
+  /// situação da conta antiga na hora (banida/suspensa → conta nova nasce em revisão)
+  accountStatus AccountStatus @map("account_status")
+  lastUsedAt    DateTime?     @map("last_used_at") @db.Timestamptz(6)
+  ip            String?       @db.VarChar(45)
+  port          Int?
+  userAgent     String?       @map("user_agent") @db.VarChar(255)
+  /// admin que liberou pelo painel (reason 'admin')
+  releasedBy    String?       @map("released_by") @db.Uuid
+  /// conta criada depois com este número
+  newUserId     String?       @map("new_user_id") @db.Uuid
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt(sort: Desc)], map: "phone_releases_user_idx")
+  @@index([phone, createdAt(sort: Desc)], map: "phone_releases_phone_idx")
+  @@map("phone_releases")
+}
+
+/// teste grátis por telefone: HMAC-SHA256 do número normalizado (PHONE_HASH_SECRET), nunca o número. Sem FK (permanente).
+model TrialClaim {
+  phoneHash String   @id @map("phone_hash") @db.VarChar(64)
+  userId    String?  @map("user_id") @db.Uuid
+  claimedAt DateTime @default(now()) @map("claimed_at") @db.Timestamptz(6)
+
+  @@map("trial_claims")
 }
 
 /// atendimento do suporte; no máximo UM não resolvido por pessoa (índice único parcial support_threads_one_open_uq)

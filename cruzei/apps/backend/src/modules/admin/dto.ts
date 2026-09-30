@@ -7,6 +7,7 @@ import type {
   GrantPremiumPayload,
   NotificationTarget,
   PremiumTier,
+  ReleasePhonePayload,
   ResolvePoiReportsPayload,
   UpsertEventPayload,
   UpsertPoiPayload,
@@ -49,6 +50,11 @@ export class GrantPremiumDto implements GrantPremiumPayload {
 
 export class SetRoleDto {
   @IsIn(['user', 'moderator', 'admin']) role!: UserRole;
+}
+
+/** "Liberar número" (só admin): o motivo vai pra auditoria */
+export class ReleasePhoneDto implements ReleasePhonePayload {
+  @IsString() @MinLength(3) @MaxLength(500) reason!: string;
 }
 
 export class RejectCandidateDto {

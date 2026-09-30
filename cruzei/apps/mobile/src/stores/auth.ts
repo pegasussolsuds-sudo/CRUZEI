@@ -1,6 +1,6 @@
 import { AppState } from 'react-native';
 import { create } from 'zustand';
-import type { User } from '@cruzei/shared-types';
+import type { AccountClaim, LoginResponse, Orientation, PhoneReleaseReason, ShowMe, User } from '@cruzei/shared-types';
 import { api, clearSession, getToken, setRefreshToken, setToken, setUnauthorizedHandler } from '../services/api';
 import { unregisterPushDevice } from '../services/notifications';
 
@@ -63,14 +63,32 @@ interface RegisterInput {
   name: string;
   birthDate: string; // YYYY-MM-DD
   gender: string;
-  orientation?: string;
+  /** opcional (dado sensível: só com consentimento) */
+  orientation?: Orientation;
+  /** exibir no perfil / mesma orientação primeiro: só mandar junto com a orientação */
+  showOrientation?: boolean;
+  sameOrientationFirst?: boolean;
+  /** "Mostrar: Mulheres / Homens / Todos" (recíproco) */
+  showMe?: ShowMe;
   lookingFor?: string;
   /** versão dos Termos/Política aceita na última etapa do cadastro */
   termsVersion: string;
+  /** padrão visível; invisível nasce com a janela grátis de 24 h (o servidor grava o prazo) */
+  visibilityMode?: 'visible' | 'anonymous';
 }
 
 /** etapa pendente do pós-cadastro: avatar → foto → null (mapa) */
 export type OnboardingStep = 'avatar' | 'photo' | null;
+
+/** resultado do código do SMS e do "Essa conta é sua?" */
+export interface LoginOutcome {
+  /** número sem conta (ou liberado agora): segue pro cadastro */
+  isNew: boolean;
+  /** conta parada há 90+ dias: a tela ClaimAccount pergunta se é da pessoa (sem sessão ainda) */
+  claim?: AccountClaim;
+  /** o número acabou de sair da conta antiga (não é minha / errou a data / conta excluída) */
+  released?: PhoneReleaseReason;
+}
 
 interface AuthState {
   user: User | null;
@@ -82,7 +100,14 @@ interface AuthState {
   hydrate: () => Promise<void>;
   requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; devCode?: string }>;
   /** `deferAuth`: guarda token+user mas NÃO vira `isAuthenticated` — a tela chama `commitAuth()` quando terminar a animação */
-  verifyCode: (phone: string, code: string, opts?: { deferAuth?: boolean }) => Promise<{ isNew: boolean }>;
+  verifyCode: (phone: string, code: string, opts?: { deferAuth?: boolean }) => Promise<LoginOutcome>;
+  /**
+   * "Sim, é minha": data de nascimento (AAAA-MM-DD). Acertou → sessão (mesmo deferAuth do verifyCode); errou → lança o
+   * 401 claim_mismatch (com attemptsLeft); esgotou → { isNew, released } e a tela segue pro cadastro
+   */
+  confirmClaim: (challengeId: string, birthDate: string, opts?: { deferAuth?: boolean }) => Promise<LoginOutcome>;
+  /** "Não é minha": o número sai da conta antiga → { isNew: true, released: 'not_mine' } */
+  releaseClaim: (challengeId: string) => Promise<LoginOutcome>;
   commitAuth: () => void;
   register: (input: RegisterInput) => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -99,6 +124,31 @@ export const useAuthStore = create<AuthState>((set, get) => {
     sessionGen += 1;
     set({ user: null, isAuthenticated: false });
   });
+
+  /**
+   * resposta do login / claim: número livre (isNew) ou conta parada (claim) NÃO abrem sessão — nada de gravar token
+   * null. Com token: salva a sessão e busca o /me (deferAuth: a tela chama commitAuth depois da animação).
+   */
+  async function openSession(data: LoginResponse, opts?: { deferAuth?: boolean }): Promise<LoginOutcome> {
+    if (data.user?.isNew) return { isNew: true, ...(data.released ? { released: data.released } : {}) };
+    if (data.claim) return { isNew: false, claim: data.claim };
+    if (!data.token || !data.refreshToken) throw new Error('O servidor não abriu a sessão');
+    await setToken(data.token);
+    await setRefreshToken(data.refreshToken);
+    // o código já foi consumido e a sessão já está salva: só sessão inválida no /me (401/conta sumiu) desfaz o login
+    let me: User | null = null;
+    try {
+      me = (await api.get('/me')).data;
+    } catch (err) {
+      if (isSessionGone(err)) {
+        await clearSession();
+        throw err;
+      }
+      // sem rede / backend fora: segue logado como no hydrate(), as telas tentam /me de novo
+    }
+    set({ user: me, isAuthenticated: !opts?.deferAuth });
+    return { isNew: false };
+  }
 
   return {
     user: null,
@@ -137,23 +187,18 @@ export const useAuthStore = create<AuthState>((set, get) => {
     },
 
     async verifyCode(phone, code, opts) {
-      const res = await api.post('/auth/login', { phone, code });
-      if (res.data.user?.isNew) return { isNew: true };
-      await setToken(res.data.token);
-      await setRefreshToken(res.data.refreshToken);
-      // o código já foi consumido e a sessão já está salva: só sessão inválida no /me (401/conta sumiu) desfaz o login
-      let me: User | null = null;
-      try {
-        me = (await api.get('/me')).data;
-      } catch (err) {
-        if (isSessionGone(err)) {
-          await clearSession();
-          throw err;
-        }
-        // sem rede / backend fora: segue logado como no hydrate(), as telas tentam /me de novo
-      }
-      set({ user: me, isAuthenticated: !opts?.deferAuth });
-      return { isNew: false };
+      const res = await api.post<LoginResponse>('/auth/login', { phone, code });
+      return openSession(res.data, opts);
+    },
+
+    async confirmClaim(challengeId, birthDate, opts) {
+      const res = await api.post<LoginResponse>('/auth/claim/confirm', { challengeId, birthDate });
+      return openSession(res.data, opts);
+    },
+
+    async releaseClaim(challengeId) {
+      const res = await api.post<LoginResponse>('/auth/claim/release', { challengeId });
+      return openSession(res.data);
     },
 
     commitAuth() {

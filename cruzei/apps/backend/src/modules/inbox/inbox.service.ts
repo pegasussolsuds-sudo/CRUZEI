@@ -18,6 +18,7 @@ import {
   HttpStatus,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
@@ -26,11 +27,13 @@ import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
 import { blockedBody } from '../account/account-state.service';
+import { SocialPushService } from '../notifications/social-push.service';
 
 import {
   emitEvent,
   flushInboxEvents,
   leaveEvent,
+  messagePushTargets,
   withoutHeld,
   type InboxEvent,
   type InboxGatewayPort,
@@ -191,6 +194,8 @@ export class InboxService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     gateway: ChatGateway,
+    // push de mensagem nova (opcional: os db-specs montam sem)
+    @Optional() private readonly social?: SocialPushService,
   ) {
     this.gw = gateway;
   }
@@ -313,6 +318,8 @@ export class InboxService {
       if (countedNew && !out.created) await this.refund(me, 'conv:new'); // a outra requisição criou primeiro
       if (out.replayed) await this.refundSendRate(me, toUserId);
       this.flush(out.events);
+      // push da 1ª mensagem pra quem recebeu (reenvio não avisa de novo)
+      if (!out.replayed) void this.social?.messages(messagePushTargets(out.events));
       return out.result;
     } catch (e) {
       if (countedNew) await this.refund(me, 'conv:new');
@@ -402,6 +409,8 @@ export class InboxService {
       return out.replay;
     }
     this.flush(out.events);
+    // push pra outra ponta (depois do commit; quem está retido já saiu no dropHeld)
+    void this.social?.messages(messagePushTargets(out.events));
     return out.message;
   }
 

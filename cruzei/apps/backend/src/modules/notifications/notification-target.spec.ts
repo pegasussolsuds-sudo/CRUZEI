@@ -32,6 +32,21 @@ describe('parseTarget', () => {
       kind: 'conversation',
       conversationId: EV,
     });
+    // push social do match: só o id da pessoa, em minúsculas
+    expect(parseTarget({ kind: 'match', userId: EV.toUpperCase() })).toEqual({
+      kind: 'match',
+      userId: EV,
+    });
+  });
+
+  it('match: campos extras saem; id que não é uuid é recusado', () => {
+    expect(parseTarget({ kind: 'match', userId: EV, name: 'Ana', url: 'https://x' })).toEqual({
+      kind: 'match',
+      userId: EV,
+    });
+    expect(parseTarget({ kind: 'match' })).toBeNull();
+    expect(parseTarget({ kind: 'match', userId: 'ana' })).toBeNull();
+    expect(parseTarget({ kind: 'match', userId: 42 })).toBeNull();
   });
 
   it('descarta campos extras (URL livre nunca chega no app)', () => {

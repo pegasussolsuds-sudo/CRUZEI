@@ -134,7 +134,8 @@ export interface ModerationMessage {
 }
 
 export interface ModerationUserDetail {
-  user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null };
+  /** instagram: @ público da pessoa (sem o @), pra moderação checar spam/perfil falso; a orientação NÃO vem (minimização) */
+  user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null; instagram?: string | null };
   photos: { id: string; url: string; status: PhotoStatus; isMain: boolean; rejectReason: string | null }[];
   reports: ModerationReport[];
   actions: {
@@ -165,9 +166,14 @@ export interface ModerationActionPayload {
 
 export type LegalSlug = 'termos' | 'privacidade' | 'seguranca-infantil';
 
-/** versão vigente dos Termos + Política (o aceite grava esta string; mudou → o app pede novo aceite). 1.1: mensagem sem match (Principal/Solicitações), fim das 48 h */
-export const LEGAL_VERSION = '1.1';
-export const LEGAL_EFFECTIVE_DATE = '2026-09-29';
+/**
+ * versão vigente dos Termos + Política (o aceite grava esta string; mudou → o app pede novo aceite).
+ * 1.1: mensagem sem match (Principal/Solicitações), fim das 48 h.
+ * 1.2: orientação (opcional; exibir e ordenar por escolha), "Mostrar" recíproco, Instagram público, última atividade
+ * só em faixa, Boost até 5 km, push de mensagem/curtida/match, número reciclado e GPS falso.
+ */
+export const LEGAL_VERSION = '1.2';
+export const LEGAL_EFFECTIVE_DATE = '2026-10-03';
 
 export interface LegalDocMeta {
   slug: LegalSlug;

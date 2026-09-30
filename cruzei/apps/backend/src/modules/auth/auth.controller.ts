@@ -1,11 +1,25 @@
+import { ORIENTATIONS, SHOW_ME } from '@cruzei/shared-types';
 import { Body, Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
-import type { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
-import { IsDateString, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
-import { AuthService } from './auth.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import {
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+} from 'class-validator';
+import type { Request } from 'express';
+
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AccessLogService } from '../account/access-log.service';
+
+import { AuthService } from './auth.service';
+import { requestMeta } from './phone-release.service';
 
 class RequestCodeDto {
   @IsString() phone!: string;
@@ -19,13 +33,31 @@ class RegisterDto {
   @IsString() name!: string;
   @IsDateString() birthDate!: string;
   @IsEnum(['female', 'male', 'non_binary', 'other']) gender!: string;
-  @IsOptional() @IsEnum(['heterosexual', 'homosexual', 'bisexual', 'pansexual', 'other']) orientation?: string;
-  @IsOptional() @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified']) lookingFor?: string;
+  /** opcional (null/ausente = não informar) */
+  @IsOptional() @IsEnum([...ORIENTATIONS]) orientation?: string | null;
+  @IsOptional()
+  @IsEnum(['relationship', 'casual', 'friendship', 'network', 'unspecified'])
+  lookingFor?: string;
   /** aceite dos Termos de Uso e da Política de privacidade: a versão que o app mostrou */
   @IsString() @MaxLength(20) termsVersion!: string;
+  /** exibir a orientação no perfil (exige orientação) */
+  @IsOptional() @IsBoolean() showOrientation?: boolean;
+  /** ver primeiro quem tem a mesma orientação (exige orientação) */
+  @IsOptional() @IsBoolean() sameOrientationFirst?: boolean;
+  @IsOptional() @IsEnum([...SHOW_ME]) showMe?: string;
+  /** o app novo sempre manda; ausente (app antigo) = invisível com a janela grátis de 24 h, como antes */
+  @IsOptional() @IsIn(['visible', 'anonymous']) visibilityMode?: 'visible' | 'anonymous';
 }
 class RefreshDto {
   @IsString() refreshToken!: string;
+}
+class ClaimConfirmDto {
+  @IsUUID() challengeId!: string;
+  /** 'AAAA-MM-DD' */
+  @Matches(/^\d{4}-\d{2}-\d{2}$/) birthDate!: string;
+}
+class ClaimReleaseDto {
+  @IsUUID() challengeId!: string;
 }
 
 @Controller('auth')
@@ -45,9 +77,28 @@ export class AuthController {
   @Throttle({ strict: { ttl: 60_000, limit: 5 } })
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request) {
-    const r = await this.auth.login(dto.phone, dto.code);
-    if (r.user.id) this.access.record(r.user.id, 'login', req);
+    const r = await this.auth.login(dto.phone, dto.code, requestMeta(req));
+    // só sessão aberta conta como acesso: conta parada (claim) NÃO grava, senão "acorda" sem confirmar
+    if (r.user.id && r.token) this.access.record(r.user.id, 'login', req);
     return r;
+  }
+
+  /** "Essa conta é sua?" → data de nascimento. Acertou: sessão (e access_log 'login'); errou: 401 claim_mismatch */
+  @Throttle({ strict: { ttl: 60_000, limit: 5 } })
+  @Post('claim/confirm')
+  @HttpCode(200)
+  async claimConfirm(@Body() dto: ClaimConfirmDto, @Req() req: Request) {
+    const r = await this.auth.confirmClaim(dto.challengeId, dto.birthDate, requestMeta(req));
+    if (r.user.id && r.token) this.access.record(r.user.id, 'login', req);
+    return r;
+  }
+
+  /** "Não é minha": o número sai da conta antiga e a pessoa segue pro cadastro */
+  @Throttle({ strict: { ttl: 60_000, limit: 5 } })
+  @Post('claim/release')
+  @HttpCode(200)
+  claimRelease(@Body() dto: ClaimReleaseDto, @Req() req: Request) {
+    return this.auth.releaseClaim(dto.challengeId, requestMeta(req));
   }
 
   @Throttle({ strict: { ttl: 60_000, limit: 5 } })
@@ -61,6 +112,10 @@ export class AuthController {
       orientation: dto.orientation,
       lookingFor: dto.lookingFor,
       termsVersion: dto.termsVersion,
+      showOrientation: dto.showOrientation,
+      sameOrientationFirst: dto.sameOrientationFirst,
+      showMe: dto.showMe,
+      visibilityMode: dto.visibilityMode,
     });
     this.access.record(r.user.id, 'register', req);
     return r;

@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { JwtStrategy } from './strategies/jwt.strategy';
+import { PhoneReleaseService } from './phone-release.service';
 import { SmsService } from './sms.service';
+import { JwtStrategy } from './strategies/jwt.strategy';
 
 @Module({
   imports: [
@@ -21,7 +22,8 @@ import { SmsService } from './sms.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, SmsService],
-  exports: [AuthService, JwtModule],
+  providers: [AuthService, JwtStrategy, SmsService, PhoneReleaseService],
+  // PhoneReleaseService: o painel admin usa a mesma liberação ("Liberar número", só admin)
+  exports: [AuthService, JwtModule, PhoneReleaseService],
 })
 export class AuthModule {}

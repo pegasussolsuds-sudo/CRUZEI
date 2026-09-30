@@ -4,14 +4,18 @@ import type {
   AdminUserDetail,
   AdminUserList,
   AdminUserRow,
+  AdminPhoneRelease,
   GrantPremiumPayload,
   ModerationUserDetail,
+  PhoneReleaseReason,
   PremiumTier,
+  ReleasePhonePayload,
   UserRole,
 } from '@cruzei/shared-types';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -19,13 +23,15 @@ import { Prisma } from '@prisma/client';
 
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { maskPhone } from '../../common/phone-mask';
-import { effectiveTier } from '../../common/premium';
+import { effectiveTier, visibleAnonymousUntil } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
-import { AccountStateService } from '../account/account-state.service';
+import { AccountStateService, SESSION_REVOKED } from '../account/account-state.service';
+import { PhoneReleaseService, type RequestMeta } from '../auth/phone-release.service';
 import { ModerationService } from '../moderation/moderation.service';
 import { NotifyService } from '../notifications/notify.service';
+import { openAnonWindowOnDowngrade } from '../subscriptions/premium-lifecycle.service';
 import { UsersService } from '../users/users.service';
 
 import { AuditService } from './audit.service';
@@ -52,11 +58,16 @@ interface UserRowDb {
   reports_pending: number;
   created_at: Date;
   last_active_at: Date | null;
+  /** número reciclado: quando o número saiu desta conta */
+  phone_released_at: Date | null;
+  /** fim da janela do invisível grátis; quando consumiu o teste grátis do Premium */
+  anonymous_until: Date | null;
+  trial_used_at: Date | null;
 }
 
 const ROW_SELECT = Prisma.sql`
   u.id, u.name, u.phone, u.birth_date, u.role, u.account_status, u.suspended_until, u.premium_tier, u.premium_expires_at,
-  u.visibility_mode, u.created_at, u.last_active_at,
+  u.visibility_mode, u.created_at, u.last_active_at, u.phone_released_at, u.anonymous_until, u.trial_used_at,
   (SELECT COALESCE(p.thumbnail_url, p.url) FROM photos p WHERE p.user_id = u.id
     ORDER BY p.is_main DESC, p.order_index ASC LIMIT 1) AS avatar_url,
   (SELECT count(*) FROM reports r WHERE r.reported_id = u.id AND r.status = 'pending')::int AS reports_pending`;
@@ -82,6 +93,7 @@ export class AdminUsersService {
     private readonly users: UsersService,
     private readonly notify: NotifyService,
     private readonly audit: AuditService,
+    private readonly phones: PhoneReleaseService,
   ) {}
 
   toRow(u: UserRowDb, viewerRole: UserRole | undefined): AdminUserRow {
@@ -101,6 +113,15 @@ export class AdminUsersService {
       reportsPending: u.reports_pending,
       createdAt: u.created_at.toISOString(),
       lastActiveAt: u.last_active_at?.toISOString() ?? null,
+      phoneReleasedAt: u.phone_released_at?.toISOString() ?? null,
+      anonymousUntil:
+        visibleAnonymousUntil({
+          premiumTier: u.premium_tier,
+          premiumExpiresAt: u.premium_expires_at,
+          visibilityMode: u.visibility_mode,
+          anonymousUntil: u.anonymous_until,
+        })?.toISOString() ?? null,
+      trialUsedAt: u.trial_used_at?.toISOString() ?? null,
     };
   }
 
@@ -118,8 +139,12 @@ export class AdminUsersService {
       const digits = text.replace(/\D/g, '');
       if (UUID.test(text)) where.push(Prisma.sql`u.id = ${text.toLowerCase()}::uuid`);
       else if (/^[+\d\s().-]+$/.test(text) && digits.length >= 4) {
+        // número atual ou um número que já saiu da conta ("meu número antigo tinha conta")
+        const like = '%' + digits + '%';
         where.push(
-          Prisma.sql`regexp_replace(COALESCE(u.phone, ''), '\\D', '', 'g') LIKE ${'%' + digits + '%'}`,
+          Prisma.sql`(regexp_replace(COALESCE(u.phone, ''), '\\D', '', 'g') LIKE ${like}
+            OR EXISTS (SELECT 1 FROM phone_releases pr WHERE pr.user_id = u.id
+                        AND regexp_replace(pr.phone, '\\D', '', 'g') LIKE ${like}))`,
         );
       } else {
         where.push(Prisma.sql`u.name ILIKE ${'%' + text.replace(/[%_\\]/g, '\\$&') + '%'}`);
@@ -204,7 +229,7 @@ export class AdminUsersService {
     const row = await this.row(viewer, id);
     const [moderation, extra, subs, devices, counts, threads, city] = await Promise.all([
       this.moderation.userDetail(id),
-      this.prisma.user.findUnique({ where: { id }, select: { bio: true } }),
+      this.prisma.user.findUnique({ where: { id }, select: { bio: true, instagramHandle: true } }),
       this.prisma.subscription.findMany({
         where: { userId: id },
         orderBy: { createdAt: 'desc' },
@@ -254,6 +279,9 @@ export class AdminUsersService {
       ...row,
       moderation,
       bio: extra?.bio ?? null,
+      phoneReleases: await this.phoneReleasesOf(viewer, id),
+      // @ do Instagram (público no cartão); a orientação fica fora do painel (dado sensível)
+      instagram: extra?.instagramHandle ?? null,
       city,
       subscriptions,
       devices: devices.map((d) => ({
@@ -276,6 +304,101 @@ export class AdminUsersService {
       })),
     };
     return { ...moderation, ...admin };
+  }
+
+  /**
+   * Número reciclado: as liberações em que o número SAIU desta conta e a que DEU o número a ela (incoming), mais
+   * recente primeiro. Telefone inteiro e links pras outras contas só pra admin.
+   */
+  private async phoneReleasesOf(
+    viewer: AuthenticatedUser,
+    userId: string,
+  ): Promise<AdminPhoneRelease[]> {
+    const rows = await this.prisma.phoneRelease.findMany({
+      where: { OR: [{ userId }, { newUserId: userId }] },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    const isAdmin = viewer.role === 'admin';
+    const adminIds = [...new Set(rows.map((r) => r.releasedBy).filter((v): v is string => !!v))];
+    const names = new Map(
+      adminIds.length
+        ? (
+            await this.prisma.user.findMany({
+              where: { id: { in: adminIds } },
+              select: { id: true, name: true },
+            })
+          ).map((u) => [u.id, u.name])
+        : [],
+    );
+    return rows.map((r) => {
+      const incoming = r.userId !== userId;
+      return {
+        phone: isAdmin ? r.phone : maskPhone(r.phone),
+        reason: r.reason as PhoneReleaseReason,
+        accountStatus: r.accountStatus,
+        releasedAt: r.createdAt.toISOString(),
+        newUserId: isAdmin ? r.newUserId : null,
+        releasedBy: r.releasedBy
+          ? { id: r.releasedBy, name: names.get(r.releasedBy) ?? '—' }
+          : null,
+        incoming,
+        oldUserId: incoming && isAdmin ? r.userId : null,
+      };
+    });
+  }
+
+  /**
+   * "Liberar número" (só admin, caso de suporte): a mesma liberação do app com motivo 'admin' — o telefone sai da
+   * conta (histórico em phone_releases), ela fica pausada sem prazo e todas as sessões caem. O socket aberto cai junto.
+   */
+  async releasePhone(
+    admin: AuthenticatedUser,
+    userId: string,
+    p: ReleasePhonePayload,
+    meta?: RequestMeta,
+  ): Promise<AdminUserRow> {
+    if (admin.role !== 'admin') {
+      throw new ForbiddenException({ error: 'forbidden', message: 'Só admin libera número' });
+    }
+    const reason = p.reason?.trim().slice(0, 500);
+    if (!reason)
+      throw new BadRequestException({ error: 'reason_required', message: 'Diga o motivo' });
+    if (userId === admin.id) {
+      throw new BadRequestException({
+        error: 'own_phone',
+        message: 'Você não pode liberar o número da sua própria conta',
+      });
+    }
+    const target = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { phone: true, deletedAt: true },
+    });
+    if (!target || target.deletedAt)
+      throw new NotFoundException({ error: 'not_found', message: 'Usuário não encontrado' });
+    const noPhone = new ConflictException({
+      error: 'no_phone',
+      message: 'Essa conta já está sem número',
+    });
+    if (!target.phone) throw noPhone;
+    const ok = await this.phones.release({
+      userId,
+      phone: target.phone,
+      reason: 'admin',
+      releasedBy: admin.id,
+      meta,
+    });
+    if (!ok) throw noPhone;
+    // conta ativa pode estar com o app aberto: o HTTP já recusa (401 session_revoked); derruba o socket também
+    this.gateway.disconnectUser(userId, { ...SESSION_REVOKED });
+    await this.audit.record(
+      admin.id,
+      'admin.user.release_phone',
+      { kind: 'user', id: userId },
+      reason,
+      { phone: maskPhone(target.phone) },
+    );
+    return this.row(admin, userId);
   }
 
   /** cidade (município) da última posição conhecida — só o nome, nunca o ponto */
@@ -316,6 +439,7 @@ export class AdminUsersService {
       });
     }
     const expiresAt = days === null ? null : new Date(now.getTime() + days * 86_400_000);
+    let anonWindow = null as Date | null; // gravado dentro da transação
     await this.prisma.$transaction(async (tx) => {
       await tx.subscription.updateMany({
         where: { userId, platform: 'manual', cancelledAt: null, expiresAt: { gt: now } },
@@ -326,6 +450,8 @@ export class AdminUsersService {
           where: { id: userId },
           data: { premiumTier: 'free', premiumExpiresAt: null },
         });
+        // estava invisível: ganha a janela grátis de 24 h (não aparece no mapa de surpresa) — regra do Premium vencido
+        anonWindow = await openAnonWindowOnDowngrade(tx, userId);
         return;
       }
       await tx.subscription.create({
@@ -346,6 +472,8 @@ export class AdminUsersService {
       });
     });
     if (p.tier === 'free') await this.users.downgradeAvatarToFree(userId);
+    // invisível grátis não conversa: sai das salas abertas (as mensagens ficam guardadas até voltar ao visível)
+    if (anonWindow) await this.gateway.leaveAllConversations(userId).catch(() => undefined);
     await this.redis.invalidateProfile(userId); // /me em cache estava com o plano antigo
     // app aberto busca o /me de novo na hora, mesmo com "avisar a pessoa" desligado (sem aviso, sem push)
     this.gateway.emitToUser(userId, 'account:changed', { reason: 'premium' });

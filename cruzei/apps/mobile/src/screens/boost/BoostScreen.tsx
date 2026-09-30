@@ -42,6 +42,7 @@ import Animated, {
 
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
 import { formatBRL } from '@cruzei/shared-utils';
+import { BOOST_RADIUS_M, type HiddenReason } from '@cruzei/shared-types';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from '../../components/animated';
 import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
@@ -63,12 +64,26 @@ const BOOST_HOURS = 1;
 const BOOST_SECONDS = BOOST_HOURS * 3600;
 const ACTIVE_POLL_MS = 30_000;
 
+// o que o servidor faz de verdade (LocationService + BoostsService): aparece pra quem tá até BOOST_RADIUS_M, primeiro
+// no mapa, na lista e no deck; no mapa a figura é maior (96x150 contra 72x112) com anel dourado; posição sempre aproximada
+const BOOST_KM = BOOST_RADIUS_M / 1000;
 const PERKS = [
-  { icon: 'expand-outline', label: '2x maior' },
-  { icon: 'trending-up-outline', label: 'Topo do mapa' },
+  { icon: 'navigate-outline', label: `Até ${BOOST_KM} km` },
+  { icon: 'trending-up-outline', label: 'Primeiro da fila' },
+  { icon: 'expand-outline', label: 'Avatar maior' },
   { icon: 'time-outline', label: '1 hora' },
-  { icon: 'navigate-outline', label: 'Até 5 km' },
 ] as const;
+
+// por que ninguém veria o boost agora (o servidor recusa invisível/pausado/"Ninguém" com 409 boost_hidden)
+const HIDDEN_BOOST_TEXT: Partial<Record<HiddenReason, string>> = {
+  private_area: 'Tu tá numa área privada: aqui o boost não te mostra pra ninguém.',
+  home: 'Tu tá perto de casa: aqui o boost não te mostra pra ninguém.',
+  anonymous: 'Tu tá invisível: ninguém te vê, nem com boost.',
+  paused: 'Teu perfil tá pausado: ninguém te vê, nem com boost.',
+  nobody: 'Tua descoberta tá desligada: ninguém te vê, nem com boost.',
+  location_mocked: 'Localização simulada: desliga o GPS falso pra aparecer.',
+  location_unverified: 'Confirmando tua posição… em menos de um minuto tu volta pro mapa.',
+};
 
 const FLAME_COLORS = [colors.accent, '#FF6A00', colors.secondary, colors.white] as const;
 
@@ -94,8 +109,15 @@ function formatCountdown(totalSec: number): string {
 function friendlyBoostError(err: unknown): string {
   const e = toApiError(err);
   const msg = e.message.toLowerCase();
-  if (e.status === 409 || msg.includes('active') || msg.includes('ativo') || msg.includes('already')) {
+  if (e.error === 'boost_hidden') {
+    return 'Invisível, pausado ou com a descoberta desligada, ninguém te vê — nem com boost. Muda na privacidade e tenta de novo.';
+  }
+  if (msg.includes('active') || msg.includes('ativo') || msg.includes('already')) {
     return 'Você já tá com boost ativo. Deixa ele brilhar 🔥';
+  }
+  // servidor sem validação de loja (produção): não é erro de quem tá comprando
+  if (e.error === 'payment_unavailable') {
+    return 'A compra do Boost ainda não tá liberada por aqui. Relaxa: nada foi cobrado.';
   }
   if (e.status === 402 || msg.includes('payment') || msg.includes('receipt')) {
     return 'O pagamento não rolou. Dá uma conferida e tenta de novo.';
@@ -457,6 +479,9 @@ export function BoostScreen() {
   const user = useAuthStore((s) => s.user);
   const storeLat = useLocationStore((s) => s.lat);
   const storeLng = useLocationStore((s) => s.lng);
+  // o servidor diz por que não estou aparecendo agora (área privada, casa, GPS falso…): o boost também não mostra
+  const storeHidden = useLocationStore((s) => (s.discoverable ? null : s.hiddenReason));
+  const hiddenBoostText = storeHidden ? HIDDEN_BOOST_TEXT[storeHidden] ?? null : null;
 
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -525,12 +550,12 @@ export function BoostScreen() {
 
   const activate = useMutation({
     mutationFn: async (): Promise<ActiveBoost> => {
+      // sem localização ninguém te acharia: confere antes de cobrar (a posição NÃO vai junto — o boost usa a presença
+      // de sempre, anonimizada)
       const loc = await resolveLocation();
       if (!loc) throw new Error('no_location');
       const res = await api.post<{ id: string; expiresAt: string }>('/boosts', {
         durationHours: BOOST_HOURS,
-        latitude: loc.latitude,
-        longitude: loc.longitude,
         platform: 'android',
         receipt: 'dev',
       });
@@ -641,10 +666,12 @@ export function BoostScreen() {
               <Text style={styles.countdownHint}>pra esse boost acabar</Text>
 
               <SlideInView from="up" distance={16} delay={200} style={{ alignItems: 'center' }}>
-                <Text style={styles.activeHeadline}>Você tá no topo do mapa 🔥</Text>
+                <Text style={styles.activeHeadline}>Você tá em destaque 🔥</Text>
                 <Text style={styles.subtitle}>
-                  Seu avatar tá 2x maior pra quem tá num raio de 5 km. Aproveita e dá uma olhada em quem cruzou com você.
+                  Você aparece primeiro no mapa, na lista e nas curtidas de quem tá até {BOOST_KM} km, com avatar maior e
+                  dourado. Aproveita e dá uma olhada em quem cruzou com você.
                 </Text>
+                {hiddenBoostText ? <Text style={styles.subtitle}>{hiddenBoostText}</Text> : null}
               </SlideInView>
 
               <ScaleOnPress
@@ -671,7 +698,12 @@ export function BoostScreen() {
               <SlideInView from="up" distance={16} delay={120} style={{ alignItems: 'center' }}>
                 <Text style={styles.headline}>Bora aparecer?</Text>
                 <Text style={styles.subtitle}>
-                  Seu avatar fica 2x maior e no topo do mapa por 1 hora. Visível pra até 5 km.
+                  Por 1 hora você aparece primeiro no mapa, na lista e nas curtidas de quem tá até {BOOST_KM} km, com avatar
+                  maior e dourado. Tua posição continua aproximada, como sempre.
+                </Text>
+                <Text style={styles.subtitle}>
+                  Invisível, pausado, em casa, em área privada ou onde tem pouca gente em volta, o mapa não te mostra — nem
+                  com boost.
                 </Text>
               </SlideInView>
 
@@ -691,6 +723,12 @@ export function BoostScreen() {
                 <Text style={styles.priceHint}>por 1 hora · cobrança única</Text>
               </FadeInView>
 
+              {hiddenBoostText ? (
+                <FadeInView fromY={4} style={styles.banner}>
+                  <Ionicons name="eye-off-outline" size={16} color={colors.accent} />
+                  <Text style={styles.bannerText}>{hiddenBoostText}</Text>
+                </FadeInView>
+              ) : null}
               {info ? (
                 <FadeInView fromY={4} style={styles.banner}>
                   <Ionicons name="sparkles-outline" size={16} color={colors.accent} />

@@ -1,13 +1,16 @@
 import type { NotificationTarget } from '@cruzei/shared-types';
 import {
+  isSocialPush,
   noticeTextOf,
   parseTarget,
   poiIdOf,
+  presentedPushTag,
   pushDataOf,
   routeForNotification,
   routeForPush,
   routeForTarget,
   shouldShowNotice,
+  socialTagOf,
   type TargetRoute,
 } from './notificationTarget';
 
@@ -22,6 +25,7 @@ describe('routeForTarget: a tabela do toque', () => {
     ['suporte → chat do suporte', { kind: 'support' }, { screen: 'SupportChat' }],
     ['conversa → Chat', { kind: 'conversation', conversationId: 'c1' }, { screen: 'Chat', conversationId: 'c1' }],
     ['curtidas → aba Curtidas', { kind: 'likes' }, { screen: 'Likes' }],
+    ['match → comemoração com a pessoa', { kind: 'match', userId: 'u1' }, { screen: 'Match', userId: 'u1' }],
   ];
   it.each(cases)('%s', (_label, target, route) => {
     expect(routeForTarget(target)).toEqual(route);
@@ -136,6 +140,9 @@ describe('aviso rápido no app', () => {
   it('texto com o emoji do tipo', () => {
     expect(noticeTextOf({ type: 'event', title: 'Show no Parque' })).toBe('⚡ Show no Parque');
     expect(noticeTextOf({ type: 'desconhecido', title: 'Oi' })).toBe('🔔 Oi');
+    // regras do Premium: vencimento e fim do invisível grátis
+    expect(noticeTextOf({ type: 'premium_expired', title: 'Seu Premium acabou' })).toBe('💎 Seu Premium acabou');
+    expect(noticeTextOf({ type: 'anonymous_expired', title: 'Você está visível de novo' })).toBe('👀 Você está visível de novo');
     // título que já vem com emoji não ganha outro ("⚡ ⚡ Festa" era o bug)
     expect(noticeTextOf({ type: 'event', title: '⚡ Festa perto de você' })).toBe('⚡ Festa perto de você');
     expect(noticeTextOf({ type: 'campaign', title: '🎉 Novidade' })).toBe('🎉 Novidade');
@@ -151,5 +158,57 @@ describe('aviso rápido no app', () => {
     ['navegação ainda sem rota aparece', { type: 'campaign', target: null }, undefined, true],
   ])('%s', (_label, n, route, expected) => {
     expect(shouldShowNotice(n as { type: string; target: NotificationTarget | null }, route)).toBe(expected);
+  });
+});
+
+describe('push social (mensagem, curtida, match)', () => {
+  const conv = JSON.stringify({ kind: 'conversation', conversationId: 'c1' });
+  const match = JSON.stringify({ kind: 'match', userId: 'u1' });
+
+  it('parseTarget do match: só com o id da pessoa', () => {
+    expect(parseTarget(match)).toEqual({ kind: 'match', userId: 'u1' });
+    expect(parseTarget({ kind: 'match', userId: 'u1', url: 'https://x' })).toEqual({ kind: 'match', userId: 'u1' });
+    expect(parseTarget({ kind: 'match' })).toBeNull();
+    expect(parseTarget({ kind: 'match', userId: '  ' })).toBeNull();
+  });
+
+  it('routeForPush: mensagem → chat, curtida → aba Curtidas, match → comemoração', () => {
+    expect(routeForPush({ notificationId: '', type: 'message', target: conv })).toEqual({ screen: 'Chat', conversationId: 'c1' });
+    expect(routeForPush({ notificationId: '', type: 'like', target: '{"kind":"likes"}' })).toEqual({ screen: 'Likes' });
+    expect(routeForPush({ notificationId: '', type: 'match', target: match })).toEqual({ screen: 'Match', userId: 'u1' });
+    // match com alvo quebrado: sem item na central → mapa
+    expect(routeForPush({ notificationId: '', type: 'match', target: '{"kind":"match"}' })).toEqual({ screen: 'Map' });
+  });
+
+  it('isSocialPush: só os três tipos', () => {
+    expect(isSocialPush({ type: 'message' })).toBe(true);
+    expect(isSocialPush({ type: 'like' })).toBe(true);
+    expect(isSocialPush({ type: 'match' })).toBe(true);
+    expect(isSocialPush({ type: 'event' })).toBe(false);
+    expect(isSocialPush({ type: '' })).toBe(false);
+    expect(isSocialPush(null)).toBe(false);
+  });
+
+  it('socialTagOf: a mesma tag que o servidor manda (uma notificação por conversa/pessoa na bandeja)', () => {
+    expect(socialTagOf({ notificationId: '', type: 'message', target: conv })).toBe('conv:c1');
+    expect(socialTagOf({ notificationId: '', type: 'like', target: '{"kind":"likes"}' })).toBe('likes');
+    expect(socialTagOf({ notificationId: '', type: 'match', target: match })).toBe('match:u1');
+    expect(socialTagOf({ notificationId: 'n1', type: 'event' })).toBeNull();
+    expect(socialTagOf({ notificationId: '', type: 'message' })).toBeNull();
+  });
+
+  it('presentedPushTag: a do FCM pelo identificador; a mostrada pelo app pelos dados', () => {
+    const fcm = (id: string) => ({ request: { identifier: id, content: { data: null } } });
+    expect(presentedPushTag(fcm('expo-notifications://foreign_notifications?tag=conv%3Ac1&id=0'))).toBe('conv:c1');
+    expect(presentedPushTag(fcm('expo-notifications://foreign_notifications?id=0&tag=likes'))).toBe('likes');
+    expect(presentedPushTag(fcm('expo-notifications://foreign_notifications?id=0'))).toBeNull();
+    expect(presentedPushTag(fcm('expo-notifications://foreign_notifications?tag=%E0%A4%A&id=0'))).toBeNull();
+    expect(
+      presentedPushTag({
+        request: { identifier: 'abc', content: { data: { notificationId: '', type: 'match', target: match } } },
+      }),
+    ).toBe('match:u1');
+    expect(presentedPushTag({ request: { identifier: 'abc', content: { data: { notificationId: 'n1', type: 'event' } } } })).toBeNull();
+    expect(presentedPushTag(null)).toBeNull();
   });
 });

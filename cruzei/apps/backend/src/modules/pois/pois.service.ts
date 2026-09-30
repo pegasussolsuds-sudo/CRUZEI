@@ -1,11 +1,12 @@
+import { bboxAround, distanceMeters } from '@cruzei/shared-utils';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+
+import { avatarOrFallback } from '../../common/avatar';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
-import { bboxAround, distanceMeters } from '@cruzei/shared-utils';
-import { avatarOrFallback } from '../../common/avatar';
-import { LocationService } from '../location/location.service';
 import { PRIVACY, lastSeenBand, type LastSeen } from '../location/discovery-privacy';
+import { LocationService } from '../location/location.service';
 
 export const VIBE_FILTERS = ['all', 'hot', 'events', 'people', 'near'] as const;
 export type VibeFilter = (typeof VIBE_FILTERS)[number];
@@ -50,7 +51,11 @@ const CATEGORY_WORDS: Record<string, string> = {
 
 /** sem acento e sem caixa — busca tolerante ("cafe" acha "Café") */
 function fold(text: string): string {
-  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 }
 
 function vibeLevel(peopleNow: number): VibeLevel {
@@ -61,7 +66,13 @@ function vibeLevel(peopleNow: number): VibeLevel {
 }
 
 /** 0–100: gente agora (log), tendência, evento, atividade recente, parceiro */
-function vibeScore(peopleNow: number, trend: number, isEvent: boolean, lastActive: LastSeen | null, isPartner: boolean): number {
+function vibeScore(
+  peopleNow: number,
+  trend: number,
+  isEvent: boolean,
+  lastActive: LastSeen | null,
+  isPartner: boolean,
+): number {
   let s = 0;
   if (peopleNow > 0) s += 35 + Math.min(25, (Math.log2(peopleNow) / Math.log2(24)) * 25);
   if (trend > 0) s += Math.min(20, trend * 4);
@@ -96,6 +107,10 @@ const PLACE_SNAPSHOT_MS = 15_000;
  *  rodava a mesma varredura de ~700 ms no histórico a cada 15 s) */
 const SNAP_KEY = 'poi:snap:v1';
 const SNAP_LOCK = 'poi:snap:lock';
+/** "Quem está aqui?": até quantos do lugar entram na rotação (o resto do lugar lotado espera a próxima janela) */
+const PEOPLE_CANDIDATES_MAX = 2_000;
+/** contagem exibida no "Quem está aqui?" (como antes: até 100) */
+const PEOPLE_COUNT_MAX = 100;
 
 function encodeSnapshot(s: PlaceSnapshot): string {
   return JSON.stringify({
@@ -107,7 +122,11 @@ function encodeSnapshot(s: PlaceSnapshot): string {
 
 function decodeSnapshot(raw: string): PlaceSnapshot | null {
   try {
-    const o = JSON.parse(raw) as { at: number; now: [string, [string, number][]][]; prev: [string, string[]][] };
+    const o = JSON.parse(raw) as {
+      at: number;
+      now: [string, [string, number][]][];
+      prev: [string, string[]][];
+    };
     return {
       at: o.at,
       now: new Map(o.now.map(([k, list]) => [k, list.map(([userId, at]) => ({ userId, at }))])),
@@ -118,9 +137,23 @@ function decodeSnapshot(raw: string): PlaceSnapshot | null {
   }
 }
 
-const SP_TIME = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
-const SP_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' });
-const SP_WEEKDAY = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'short', day: '2-digit', month: '2-digit' });
+const SP_TIME = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: 'America/Sao_Paulo',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const SP_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const SP_WEEKDAY = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: 'America/Sao_Paulo',
+  weekday: 'short',
+  day: '2-digit',
+  month: '2-digit',
+});
 
 /**
  * Rótulo de evento do painel (hours.startsAt/endsAt em ISO, gravados ao publicar): calculado NA LEITURA, relativo a
@@ -149,7 +182,8 @@ function eventLabel(hours: unknown): string {
   if (fromAdmin) return fromAdmin;
   if (hours && typeof hours === 'object') {
     const h = hours as Record<string, unknown>;
-    const start = typeof h.start === 'string' ? h.start : typeof h.open === 'string' ? h.open : null;
+    const start =
+      typeof h.start === 'string' ? h.start : typeof h.open === 'string' ? h.open : null;
     const end = typeof h.end === 'string' ? h.end : typeof h.close === 'string' ? h.close : null;
     if (start && end) return `${start}–${end}`;
     if (start) return `a partir das ${start}`;
@@ -323,27 +357,52 @@ export class PoisService {
    */
   async getPeople(requesterId: string, id: number) {
     await this.assertVisible(id);
-    const here = ((await this.placeSnapshot()).now.get(String(id)) ?? []).slice(0, 100);
-    const rows = await this.prisma.user.findMany({
-      where: { id: { in: here.map((r) => r.userId) } },
-      select: {
-        id: true, name: true, birthDate: true, showAge: true, gender: true, avatarConfig: true,
-        // só foto aprovada pela moderação
-        photos: { where: { status: 'approved' }, orderBy: [{ isMain: 'desc' }, { orderIndex: 'asc' }], take: 1, select: { url: true, thumbnailUrl: true } },
-      },
-      take: 100,
-    });
-    const count = rows.length >= PRIVACY.MIN_PLACE_K ? rows.length : 0;
-    const allowed = new Set(await this.location.discoverableAtPlace(requesterId, id, rows.map((r) => r.id)));
-    const users = rows
-      .filter((u) => allowed.has(u.id))
-      .slice(0, 50)
+    // lugar lotado: a ordem (boost → mesma orientação → rotação justa por quem pergunta) vem do LocationService,
+    // sobre todo mundo do lugar — antes eram sempre os mesmos 100 primeiros, na ordem do banco
+    const here = ((await this.placeSnapshot()).now.get(String(id)) ?? []).slice(
+      0,
+      PEOPLE_CANDIDATES_MAX,
+    );
+    const count = here.length >= PRIVACY.MIN_PLACE_K ? Math.min(here.length, PEOPLE_COUNT_MAX) : 0;
+    const ordered = (
+      await this.location.discoverableAtPlace(
+        requesterId,
+        id,
+        here.map((r) => r.userId),
+      )
+    ).slice(0, 50);
+    const rows = ordered.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ordered } },
+          select: {
+            id: true,
+            name: true,
+            birthDate: true,
+            showAge: true,
+            gender: true,
+            avatarConfig: true,
+            // só foto aprovada pela moderação
+            photos: {
+              where: { status: 'approved' },
+              orderBy: [{ isMain: 'desc' }, { orderIndex: 'asc' }],
+              take: 1,
+              select: { url: true, thumbnailUrl: true },
+            },
+          },
+        })
+      : [];
+    const byId = new Map(rows.map((u) => [u.id, u]));
+    const users = ordered
+      .flatMap((uid) => (byId.has(uid) ? [byId.get(uid)!] : []))
       .map((u) => ({
         id: u.id,
         name: u.name,
         age: u.showAge ? this.age(u.birthDate) : null,
         mainPhotoUrl: u.photos[0]?.url ?? null,
-        mapPhotoUrl: u.photos[0]?.thumbnailUrl && u.photos[0].thumbnailUrl !== u.photos[0].url ? u.photos[0].thumbnailUrl : null,
+        mapPhotoUrl:
+          u.photos[0]?.thumbnailUrl && u.photos[0].thumbnailUrl !== u.photos[0].url
+            ? u.photos[0].thumbnailUrl
+            : null,
         avatar: avatarOrFallback(u),
         isVisible: true,
         isAnonymous: false,
@@ -356,7 +415,10 @@ export class PoisService {
     const c = await this.prisma.poisCheckin.create({
       data: { userId, poiId: BigInt(poiId) },
     });
-    return { checkinId: Number(c.id), expiresAt: new Date(Date.now() + 4 * 3_600_000).toISOString() };
+    return {
+      checkinId: Number(c.id),
+      expiresAt: new Date(Date.now() + 4 * 3_600_000).toISOString(),
+    };
   }
 
   /**
@@ -373,7 +435,9 @@ export class PoisService {
         latitude: { gte: bbox.south, lte: bbox.north },
         longitude: { gte: bbox.west, lte: bbox.east },
         hiddenAt: null,
-        ...(q.categories && q.categories.length > 0 ? { category: { in: q.categories as never } } : {}),
+        ...(q.categories && q.categories.length > 0
+          ? { category: { in: q.categories as never } }
+          : {}),
       },
       take: 300,
     });
@@ -381,11 +445,16 @@ export class PoisService {
     // o resumo ("N pessoas em lugares · M em alta") é do raio inteiro; o texto digitado só filtra a lista
     const needle = q.q ? fold(q.q) : '';
     const inRange = rows
-      .map((poi) => ({ poi, dist: distanceMeters(q.lat, q.lng, Number(poi.latitude), Number(poi.longitude)) }))
+      .map((poi) => ({
+        poi,
+        dist: distanceMeters(q.lat, q.lng, Number(poi.latitude), Number(poi.longitude)),
+      }))
       .filter((c) => c.dist <= radiusM);
     const matches = (poi: (typeof rows)[number]) => {
       if (!needle) return true;
-      const hay = fold(`${poi.name} ${poi.neighborhood ?? ''} ${poi.subcategory ?? ''} ${CATEGORY_WORDS[poi.category] ?? ''}`);
+      const hay = fold(
+        `${poi.name} ${poi.neighborhood ?? ''} ${poi.subcategory ?? ''} ${CATEGORY_WORDS[poi.category] ?? ''}`,
+      );
       return hay.includes(needle);
     };
 
@@ -419,7 +488,8 @@ export class PoisService {
       const trend = peopleNow > 0 ? peopleNow - prev : 0;
       const lastAt = lastMap.get(key);
       // faixa (online / há pouco / mais cedo), nunca minutos: minuto a minuto num lugar pequeno vira o relógio de alguém
-      const lastActive: LastSeen | null = peopleNow > 0 && lastAt ? lastSeenBand(lastAt.getTime()) : null;
+      const lastActive: LastSeen | null =
+        peopleNow > 0 && lastAt ? lastSeenBand(lastAt.getTime()) : null;
       const isEvent = poi.category === 'event' || poi.category === 'show';
       const level = vibeLevel(peopleNow);
       peopleAtPlaces += peopleNow;
@@ -452,7 +522,8 @@ export class PoisService {
       };
     });
 
-    const byScore = (a: (typeof all)[number], b: (typeof all)[number]) => b.vibeScore - a.vibeScore || a.distanceM - b.distanceM;
+    const byScore = (a: (typeof all)[number], b: (typeof all)[number]) =>
+      b.vibeScore - a.vibeScore || a.distanceM - b.distanceM;
     const listed = all.filter((p) => p._match);
     let places = listed;
     switch (q.filter) {
@@ -463,7 +534,9 @@ export class PoisService {
         places = listed.filter((p) => p.isEvent).sort(byScore);
         break;
       case 'people':
-        places = listed.filter((p) => p.peopleNow > 0).sort((a, b) => b.peopleNow - a.peopleNow || byScore(a, b));
+        places = listed
+          .filter((p) => p.peopleNow > 0)
+          .sort((a, b) => b.peopleNow - a.peopleNow || byScore(a, b));
         break;
       case 'near':
         places = [...listed].sort((a, b) => a.distanceM - b.distanceM);
@@ -509,7 +582,10 @@ export class PoisService {
   /** POI existe e não está oculto (senão 404, igual a "não existe") */
   private async assertVisible(id: number): Promise<void> {
     if (!Number.isSafeInteger(id) || id <= 0) throw new NotFoundException('POI não encontrado');
-    const ok = await this.prisma.pOI.findFirst({ where: { id: BigInt(id), hiddenAt: null }, select: { id: true } });
+    const ok = await this.prisma.pOI.findFirst({
+      where: { id: BigInt(id), hiddenAt: null },
+      select: { id: true },
+    });
     if (!ok) throw new NotFoundException('POI não encontrado');
   }
 

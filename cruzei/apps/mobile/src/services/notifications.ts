@@ -2,10 +2,18 @@ import { Alert, AppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
-import type { AppNotification, RegisterDevicePayload } from '@cruzei/shared-types';
+import type { AppNotification, PushData, RegisterDevicePayload, SocialPushType } from '@cruzei/shared-types';
 import { api, getToken } from './api';
 import { BRAND } from '../brand';
-import { parseTarget, pushDataOf, routeForPush, type PushNotificationLike, type TargetRoute } from './notificationTarget';
+import {
+  isSocialPush,
+  parseTarget,
+  presentedPushTag,
+  pushDataOf,
+  routeForPush,
+  type PushNotificationLike,
+  type TargetRoute,
+} from './notificationTarget';
 
 // Push pelo FCM direto (decisão do dono): o app manda o token NATIVO do aparelho (getDevicePushTokenAsync) pro
 // POST /me/devices e o backend fala com o FCM HTTP v1. Sem o serviço da Expo. Só Android por enquanto: o token do iOS
@@ -22,6 +30,10 @@ export const CHANNELS = {
   default: 'default',
   /** respostas do suporte */
   support: 'support',
+  /** mensagem nova (push social) */
+  messages: 'messages',
+  /** curtida e match (push social) */
+  social: 'social',
 } as const;
 
 const pushSupported = Platform.OS === 'android';
@@ -39,9 +51,45 @@ export function setForegroundPushHandler(fn: ((n: AppNotification) => void) | nu
   foregroundHandler = fn;
 }
 
+/**
+ * Push social (mensagem, curtida, match) com o app na frente: não vira banner nem aviso rápido (o socket já atualizou
+ * as listas). O App decide: true = tratado (silêncio); false = deixa o sistema mostrar (ex.: socket caído).
+ */
+export type SocialForegroundHandler = (data: PushData & { type: SocialPushType }) => boolean;
+let socialForegroundHandler: SocialForegroundHandler | null = null;
+export function setSocialForegroundHandler(fn: SocialForegroundHandler | null): void {
+  socialForegroundHandler = fn;
+}
+
+const SILENT = { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false } as const;
+
+/**
+ * Mensagem que o SISTEMA mostrou com o app na frente (socket caído): quem monta é o expo, sem o visibility 'secret' do
+ * push, então ela apareceria na tela bloqueada depois. Sai da bandeja quando o app vai pro fundo (bloquear a tela
+ * também manda pro fundo); a conversa segue como não lida no app.
+ */
+const foregroundShownMessages = new Set<string>();
+AppState.addEventListener('change', (s) => {
+  if (s !== 'background' || foregroundShownMessages.size === 0) return;
+  const ids = [...foregroundShownMessages];
+  foregroundShownMessages.clear();
+  for (const id of ids) void Notifications.dismissNotificationAsync(id).catch(() => undefined);
+});
+
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
     const data = pushDataOf(notification as PushNotificationLike);
+    if (isSocialPush(data)) {
+      let handled = false;
+      try {
+        handled = socialForegroundHandler?.(data) ?? false;
+      } catch (e) {
+        log('push social em primeiro plano falhou', e);
+      }
+      if (handled) return SILENT;
+      if (data.type === 'message') foregroundShownMessages.add(notification.request.identifier);
+      return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
+    }
     const handler = foregroundHandler;
     if (handler && data?.notificationId) {
       // app aberto e logado: o aviso é o do app (o mesmo do socket, sem repetir) e nada na barra do sistema
@@ -55,7 +103,7 @@ Notifications.setNotificationHandler({
         readAt: null,
         sentAt: new Date(notification.date || Date.now()).toISOString(),
       });
-      return { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false };
+      return SILENT;
     }
     return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
   },
@@ -64,11 +112,32 @@ Notifications.setNotificationHandler({
 // ───────────────────────────── canais e token ─────────────────────────────
 
 let channelsReady: Promise<void> | null = null;
-/** canais do Android 8+: o backend manda channel_id 'default' ou 'support' (sem canal o sistema joga em "Outros") */
+/**
+ * Canais do Android 8+: o backend manda channel_id 'default', 'support', 'messages' ou 'social' (sem canal o sistema
+ * joga em "Outros"). Cada um aparece nos ajustes do sistema e dá pra silenciar separado (ex.: só as curtidas).
+ */
 export function ensureChannels(): Promise<void> {
   if (!pushSupported) return Promise.resolve();
   if (!channelsReady) {
     channelsReady = Promise.all([
+      Notifications.setNotificationChannelAsync(CHANNELS.messages, {
+        name: 'Mensagens',
+        description: 'Mensagens novas e solicitações de conversa',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 180, 100, 180],
+        lightColor: '#7FFF00',
+        // aviso de mensagem nem aparece na tela bloqueada (só ao desbloquear). Quem garante é o visibility 'secret' que o
+        // backend manda em cada push: o Android costuma ignorar o valor do canal pedido pelo app (e canal já criado não muda)
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.SECRET,
+      }),
+      Notifications.setNotificationChannelAsync(CHANNELS.social, {
+        name: 'Curtidas e matches',
+        description: 'Quando alguém curte você e quando dá Metch',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 120, 80, 120, 80, 240],
+        lightColor: '#FF1493',
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+      }),
       Notifications.setNotificationChannelAsync(CHANNELS.default, {
         name: 'Avisos',
         description: 'Eventos perto de você e novidades do Metch',
@@ -224,7 +293,7 @@ export async function askPushPermissionOnce(): Promise<void> {
     const yes = await new Promise<boolean>((resolve) =>
       Alert.alert(
         'Quer receber avisos?',
-        'O Metch te avisa quando rolar um evento perto de você e quando o suporte responder. Sem spam.',
+        'O Metch te avisa quando chegar mensagem, curtida ou match, quando rolar um evento perto de você e quando o suporte responder. Sem spam.',
         [
           { text: 'Agora não', style: 'cancel', onPress: () => resolve(false) },
           { text: 'Quero', onPress: () => resolve(true) },
@@ -237,6 +306,25 @@ export async function askPushPermissionOnce(): Promise<void> {
     log('pedido de permissão falhou', e);
   } finally {
     asking = false;
+  }
+}
+
+// ───────────────────────────── bandeja ─────────────────────────────
+
+/**
+ * Tira da bandeja os pushes sociais com essa tag (conv:<id> ao abrir a conversa, match:<pessoa> ao comemorar): o que
+ * a pessoa já está vendo no app não fica lá esperando. Sem permissão/sem suporte não faz nada.
+ */
+export async function dismissPushesTagged(tag: string): Promise<void> {
+  if (!pushSupported || !tag) return;
+  try {
+    const presented = await Notifications.getPresentedNotificationsAsync();
+    const ids = presented
+      .filter((n) => presentedPushTag(n as PushNotificationLike) === tag)
+      .map((n) => n.request.identifier);
+    await Promise.all(ids.map((id) => Notifications.dismissNotificationAsync(id).catch(() => undefined)));
+  } catch (e) {
+    log('não deu pra limpar a bandeja', e);
   }
 }
 

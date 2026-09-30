@@ -11,3 +11,4 @@ export * from './socket/events.types';
 export * from './notifications';
 export * from './support';
 export * from './admin';
+export * from './premium';

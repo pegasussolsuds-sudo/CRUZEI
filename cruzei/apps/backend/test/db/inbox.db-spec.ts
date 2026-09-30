@@ -7,6 +7,12 @@ import { MUTUAL_LIKE_TEXT } from '../../src/modules/inbox/inbox.mapper';
 import { lockPair } from '../../src/modules/inbox/inbox.queries';
 import { InboxService } from '../../src/modules/inbox/inbox.service';
 import { LikesService } from '../../src/modules/likes/likes.service';
+import {
+  PushService,
+  type PushMessage,
+  type PushOutcome,
+} from '../../src/modules/notifications/push.service';
+import { SocialPushService } from '../../src/modules/notifications/social-push.service';
 import type { ChatGateway } from '../../src/realtime/chat.gateway';
 import type { RedisService } from '../../src/redis/redis.service';
 
@@ -485,12 +491,24 @@ describe('idempotência e concorrência', () => {
         payload: { fromUserId: bia, isSuper: false, isMutual: true },
       },
     ]);
-    // eventos da conversa saem antes do aviso da curtida
+    // eventos da conversa saem antes do aviso da curtida; por último a comemoração pra quem curtiu primeiro
     expect(gw.emitted.map((e) => e.event)).toEqual([
       'conversation:promoted',
       'message:new',
       'message:new',
       'like_received',
+      'match:new',
+    ]);
+    expect(of('match:new')).toEqual([
+      {
+        to: [ana],
+        event: 'match:new',
+        payload: {
+          peer: { id: bia, name: 'Bia', avatar: expect.any(Object), mainPhotoUrl: null },
+          conversationId: conv,
+          matchedAt: expect.any(String),
+        },
+      },
     ]);
 
     gw.reset();
@@ -1364,5 +1382,185 @@ describe('curtida, arquivo e paginação', () => {
     const older = await inbox.listMessages(me, conv, 2, last2[0].id);
     expect(older.map((m) => m.body)).toEqual(['m2', 'm3']);
     expect(await inbox.listMessages(me, conv, 1000)).toHaveLength(5);
+  });
+});
+
+// =================================================================================================
+describe('push de mensagem nova (SocialPushService: só push, depois do commit, fora da central)', () => {
+  let sent: PushMessage[];
+  let social: SocialPushService;
+  let pinbox: InboxService;
+
+  beforeEach(() => {
+    sent = [];
+    // transporte falso no lugar do FCM: grava cada push por aparelho
+    const push = new PushService(db, {
+      sendEach: async (m: PushMessage[]): Promise<PushOutcome[]> => {
+        sent.push(...m);
+        return m.map(() => 'ok');
+      },
+    });
+    social = new SocialPushService(db, redis as unknown as RedisService, push);
+    pinbox = new InboxService(
+      db,
+      redis as unknown as RedisService,
+      gw as unknown as ChatGateway,
+      social,
+    );
+  });
+
+  const device = (userId: string, token: string) =>
+    prisma.deviceToken.create({ data: { userId, token, platform: 'android' } });
+  const pushesTo = (token: string) => sent.filter((m) => m.token === token).map((m) => m.payload);
+  /** passa a espera de 60 s da conversa */
+  const skipGap = (userId: string, conv: string) => redis.client.del(`push:msg:${userId}:${conv}`);
+
+  it('a outra ponta recebe (solicitação com cara de solicitação), quem enviou não; rajada = 1 push por conversa', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    await device(ana, 'tok-ana');
+    await device(bia, 'tok-bia');
+
+    const conv = (await pinbox.createConversation(ana, bia, 'oi, tudo bem?')).conversation.id;
+    await social.drain();
+    expect(pushesTo('tok-ana')).toEqual([]);
+    expect(pushesTo('tok-bia')).toEqual([
+      {
+        title: 'Nova solicitação de mensagem',
+        body: 'Ana: oi, tudo bem?',
+        channelId: 'messages',
+        tag: `conv:${conv}`,
+        ttlSeconds: 86_400,
+        // mensagem nunca aparece na tela bloqueada (aparece ao desbloquear)
+        visibility: 'secret',
+        data: {
+          notificationId: '',
+          type: 'message',
+          target: JSON.stringify({ kind: 'conversation', conversationId: conv }),
+        },
+      },
+    ]);
+
+    // 2ª mensagem dentro dos 60 s: nada de push novo
+    await pinbox.sendMessage(ana, conv, 'tá aí?');
+    await social.drain();
+    expect(pushesTo('tok-bia')).toHaveLength(1);
+
+    // a resposta chega pra quem abriu (na principal dela: título = nome, corpo = prévia)
+    await pinbox.sendMessage(bia, conv, 'oi!');
+    await social.drain();
+    expect(pushesTo('tok-ana')).toEqual([
+      expect.objectContaining({ title: 'Bia', body: 'oi!', channelId: 'messages' }),
+    ]);
+    // só push: nada na central de avisos, nenhum notification:new
+    expect(await prisma.notification.count()).toBe(0);
+    expect(of('notification:new')).toEqual([]);
+  });
+
+  it('prévia desligada esconde o texto; conversa muda e "Mensagens novas" desligado não avisam', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    await device(bia, 'tok-bia');
+    await prisma.notificationPref.create({ data: { userId: bia, messagePreview: false } });
+
+    const conv = (await pinbox.createConversation(ana, bia, 'segredo')).conversation.id;
+    await social.drain();
+    expect(pushesTo('tok-bia')).toEqual([
+      expect.objectContaining({
+        title: 'Nova solicitação de mensagem',
+        body: 'Ana quer conversar com você',
+      }),
+    ]);
+    expect(JSON.stringify(sent)).not.toContain('segredo');
+
+    await pinbox.updateConversation(bia, conv, { isMuted: true });
+    await skipGap(bia, conv);
+    await pinbox.sendMessage(ana, conv, 'e aí?');
+    await social.drain();
+    expect(pushesTo('tok-bia')).toHaveLength(1);
+
+    await pinbox.updateConversation(bia, conv, { isMuted: false });
+    await prisma.notificationPref.update({ where: { userId: bia }, data: { messages: false } });
+    await skipGap(bia, conv);
+    await pinbox.sendMessage(ana, conv, 'oi??');
+    await social.drain();
+    expect(pushesTo('tok-bia')).toHaveLength(1);
+  });
+
+  it('invisível sem Premium (retido), bloqueio, conta fora e solicitação de quem está em análise: sem push', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    await device(bia, 'tok-bia');
+    const conv = (await pinbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await social.drain();
+    expect(pushesTo('tok-bia')).toHaveLength(1);
+    sent.length = 0;
+
+    // retida: a mensagem é gravada, mas nem evento nem push
+    await prisma.user.update({
+      where: { id: bia },
+      data: { visibilityMode: 'anonymous', premiumTier: 'free' },
+    });
+    await skipGap(bia, conv);
+    await pinbox.sendMessage(ana, conv, 'tá aí?');
+    await social.drain();
+    expect(sent).toEqual([]);
+    await prisma.user.update({ where: { id: bia }, data: { visibilityMode: 'visible' } });
+
+    // as mesmas regras da leitura da inbox valem mesmo chamando direto (corrida com bloqueio/análise)
+    const target = { to: bia, conversationId: conv, senderId: ana, messageType: 'text', body: 'x' };
+    await prisma.user.update({ where: { id: ana }, data: { reviewHoldAt: new Date() } });
+    await skipGap(bia, conv);
+    await social.messages([target]);
+    expect(sent).toEqual([]); // solicitação de quem está em análise some pra quem recebeu
+    await prisma.user.update({ where: { id: ana }, data: { reviewHoldAt: null } });
+
+    await prisma.block.create({ data: { blockerId: bia, blockedId: ana } });
+    await skipGap(bia, conv);
+    await social.messages([target]);
+    expect(sent).toEqual([]);
+    await prisma.block.deleteMany({});
+
+    await prisma.user.update({ where: { id: bia }, data: { accountStatus: 'suspended' } });
+    await skipGap(bia, conv);
+    await social.messages([target]);
+    expect(sent).toEqual([]);
+
+    // tudo em ordem de novo: avisa
+    await prisma.user.update({ where: { id: bia }, data: { accountStatus: 'active' } });
+    await skipGap(bia, conv);
+    await social.messages([target]);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('teto de 30 pushes sociais por hora por pessoa', async () => {
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    await device(bia, 'tok-bia');
+    const conv = (await pinbox.createConversation(ana, bia, 'oi')).conversation.id;
+    await social.drain();
+    expect(sent).toHaveLength(1);
+    await redis.preset(`rate:${bia}:push:social`, 30, 3_600);
+    await skipGap(bia, conv);
+    await pinbox.sendMessage(ana, conv, 'de novo');
+    await social.drain();
+    expect(sent).toHaveLength(1);
+  });
+
+  it('sem FCM (push desligado): não consulta nada e a mensagem segue igual', async () => {
+    const off = new PushService(db, null);
+    const quiet = new SocialPushService(db, redis as unknown as RedisService, off);
+    const i = new InboxService(
+      db,
+      redis as unknown as RedisService,
+      gw as unknown as ChatGateway,
+      quiet,
+    );
+    const ana = await newUser('Ana');
+    const bia = await newUser('Bia');
+    const r = await i.createConversation(ana, bia, 'oi');
+    await quiet.drain();
+    expect(r.message.body).toBe('oi');
+    expect(await redis.client.get(`push:msg:${bia}:${r.conversation.id}`)).toBeNull();
   });
 });

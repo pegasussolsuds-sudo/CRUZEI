@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { IsEnum, IsIn, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
+
 import { missingLegalEnv } from '../modules/legal/legal.service';
 import { photoModerationMode } from '../modules/moderation/photo-rules';
 
@@ -56,9 +57,12 @@ export function validateEnv(config: Record<string, unknown>) {
   if (validatedConfig.NODE_ENV === NodeEnv.Production) {
     // produção falha fechada: sem moderação de fotos ou sem os dados da empresa nos Termos/Política, não sobe
     const problems: string[] = [];
-    if (photoModerationMode(config as NodeJS.ProcessEnv) === 'off') problems.push('PHOTO_MODERATION=off (use manual ou rekognition)');
+    if (photoModerationMode(config as NodeJS.ProcessEnv) === 'off')
+      problems.push('PHOTO_MODERATION=off (use manual ou rekognition)');
     const legal = missingLegalEnv(config as NodeJS.ProcessEnv);
     if (legal.length) problems.push(`dados legais ausentes: ${legal.join(', ')}`);
+    // teste grátis uma vez por número (trial_claims): HMAC do telefone com segredo próprio (common/phone-hash)
+    if (!String(config.PHONE_HASH_SECRET ?? '').trim()) problems.push('PHONE_HASH_SECRET ausente');
     if (problems.length) throw new Error(`Config de produção insegura: ${problems.join('; ')}`);
   }
   if (!validatedConfig.LOCATION_SALT) {
@@ -79,6 +83,11 @@ export const configuration = () => ({
     secret: process.env.JWT_SECRET,
     accessTtl: parseInt(process.env.JWT_ACCESS_TTL ?? '900', 10),
     refreshTtl: parseInt(process.env.JWT_REFRESH_TTL ?? '2592000', 10),
+  },
+  // número reciclado: conta parada há >= dormantDays pede "Essa conta é sua?" no login (0 desliga)
+  auth: {
+    dormantDays: parseInt(process.env.AUTH_DORMANT_DAYS ?? '90', 10),
+    claimMaxAttempts: parseInt(process.env.AUTH_CLAIM_MAX_ATTEMPTS ?? '3', 10),
   },
   corsOrigins: process.env.CORS_ORIGINS ?? 'http://localhost:8081,http://localhost:19006',
   locationSalt: process.env.LOCATION_SALT,

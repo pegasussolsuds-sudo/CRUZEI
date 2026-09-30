@@ -43,6 +43,7 @@ const CHUNK = 1_000;
  * O ÚNICO caminho de aviso pra pessoa (campanha, suporte, Premium, lugar aprovado): grava na central
  * (notifications, destino em data.target), avisa ao vivo pelo socket ('notification:new') e manda o push.
  * Conta apagada não recebe nada; quem chama decide o público (preferências, status da conta).
+ * Push social (mensagem nova, curtida, match) NÃO passa por aqui: não entra na central (SocialPushService).
  */
 @Injectable()
 export class NotifyService {

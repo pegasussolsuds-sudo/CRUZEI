@@ -3,6 +3,7 @@ export * from './geo/distance';
 export * from './validation/phone';
 export * from './validation/email';
 export * from './validation/age';
+export * from './validation/instagram';
 export * from './format/text';
 export * from './date/time-ago';
 export * from './geo/approx';

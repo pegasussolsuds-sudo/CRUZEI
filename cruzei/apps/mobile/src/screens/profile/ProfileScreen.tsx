@@ -37,13 +37,15 @@ import { Canvas, Circle, Path, Skia, SweepGradient, rect, vec } from '@shopify/r
 import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
 import { useVisibility } from '../../hooks/useVisibility';
+import { anonymousUntilLabel } from '../../services/anonymousWindow';
 import { unreadNotifications, useNotificationList } from '../../hooks/useNotifications';
 import { FadeInView, Glow, Pulse, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { SHOW_ME_RECIPROCAL_NOTE } from '../../components/showMeNote';
 import { resolveAvatar } from '../../avatar';
 import { Button } from '@cruzei/ui-mobile';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
-import type { User } from '@cruzei/shared-types';
+import { ORIENTATION_LABELS, SHOW_ME, SHOW_ME_LABELS, type ShowMe, type User } from '@cruzei/shared-types';
 import type { ProfileStackParamList } from '../../navigation/ProfileStack';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { BRAND } from '../../brand';
@@ -72,14 +74,24 @@ const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 
 const lightTap = () => Haptics.selectionAsync().catch(() => {});
 
-type SettingsPatch = { showDistance?: boolean; showAge?: boolean; showPhotoOnMap?: boolean; discoveryMode?: 'everyone' | 'compatible' | 'nobody' };
+type SettingsPatch = {
+  showDistance?: boolean;
+  showAge?: boolean;
+  showPhotoOnMap?: boolean;
+  discoveryMode?: 'everyone' | 'compatible' | 'nobody';
+  showOrientation?: boolean;
+  sameOrientationFirst?: boolean;
+  showMe?: ShowMe;
+};
 
 export function ProfileScreen() {
   const nav = useNavigation<ProfileNav>();
   const qc = useQueryClient();
   const insets = useSafeAreaInsets();
   const { logout, setUser } = useAuthStore();
-  const { isAnonymous, askToggle: toggleAnonymous } = useVisibility();
+  const { isAnonymous, anonymousUntil, askToggle: toggleAnonymous } = useVisibility();
+  // invisível grátis: "Invisível até 14h32" (janela de 24 h; dá pra religar quando quiser)
+  const anonUntil = anonymousUntilLabel(anonymousUntil);
   const [busy, setBusy] = useState(false);
   // avisos não lidos: ponto no sininho (a mesma lista do ponto da aba)
   const notifications = useNotificationList();
@@ -109,6 +121,10 @@ export function ProfileScreen() {
     onError: (err, _patch, ctx) => {
       if (ctx?.prev) qc.setQueryData(['me'], ctx.prev);
       Alert.alert('Ops', toApiError(err).message);
+    },
+    // "Mostrar" e "mesma orientação primeiro" mudam quem aparece e a ordem: mapa, lista e deck buscam de novo
+    onSuccess: (_data, patch) => {
+      if (patch.showMe !== undefined || patch.sameOrientationFirst !== undefined) qc.invalidateQueries({ queryKey: ['nearby'] });
     },
     // só refaz o /me quando o último toque terminar (senão um refetch no meio desfaz o seguinte)
     onSettled: () => {
@@ -358,7 +374,7 @@ export function ProfileScreen() {
           <Row
             icon={isAnonymous ? 'eye-off-outline' : 'eye-outline'}
             label="Modo anônimo"
-            hint="Você vê todo mundo, ninguém sabe que é você"
+            hint={anonUntil ? `Invisível até ${anonUntil}` : 'Você vê todo mundo, ninguém sabe que é você'}
             value={isAnonymous}
             onToggle={() => toggleAnonymous()}
           />
@@ -373,6 +389,32 @@ export function ProfileScreen() {
           <Row icon="calendar-outline" label="Mostrar idade" value={me.settings.showAge} onToggle={(v) => settings.mutate({ showAge: v })} />
           <DiscoveryModeRow value={me.settings.discoveryMode ?? 'everyone'} onChange={(discoveryMode) => settings.mutate({ discoveryMode })} />
           <Link icon="home-outline" label="Áreas privadas" hint="casa, trabalho… ninguém te descobre lá" onPress={() => nav.navigate('PrivateAreas' as never)} last />
+        </Section>
+
+        {/* quem aparece pra você (recíproco) e a orientação: exibir no perfil / mesma orientação primeiro */}
+        <Section title="quem você vê" delay={560}>
+          <ShowMeRow value={me.settings.showMe ?? 'everyone'} onChange={(showMe) => settings.mutate({ showMe })} />
+          {me.orientation ? (
+            <>
+              <Row
+                icon="eye-outline"
+                label={ORIENTATION_LABELS[me.orientation] ? `Mostrar "${ORIENTATION_LABELS[me.orientation]}" no perfil` : 'Mostrar orientação no perfil'}
+                hint="Quem abrir seu perfil vê sua orientação"
+                value={me.settings.showOrientation ?? false}
+                onToggle={(v) => settings.mutate({ showOrientation: v })}
+              />
+              <Row
+                icon="swap-vertical-outline"
+                label="Mesma orientação primeiro"
+                hint="Quem mostra a mesma orientação aparece antes. Só muda a ordem"
+                value={me.settings.sameOrientationFirst ?? false}
+                onToggle={(v) => settings.mutate({ sameOrientationFirst: v })}
+                last
+              />
+            </>
+          ) : (
+            <Link icon="heart-half-outline" label="Orientação" hint="informe em Editar perfil (opcional)" onPress={goEdit} last />
+          )}
         </Section>
 
         <Section title="segurança" delay={580}>
@@ -537,6 +579,47 @@ function DiscoveryModeRow({ value, onChange }: { value: 'everyone' | 'compatible
             </Pressable>
           ))}
         </View>
+      </View>
+    </View>
+  );
+}
+
+const SHOW_ME_HINT: Record<ShowMe, string> = {
+  women: 'só mulheres, e só quem também quer te ver',
+  men: 'só homens, e só quem também quer te ver',
+  everyone: 'todo mundo que também quer te ver',
+};
+
+/** "Mostrar: Mulheres / Homens / Todos" — recíproco: vale no mapa, na lista e nas curtidas */
+function ShowMeRow({ value, onChange }: { value: ShowMe; onChange: (v: ShowMe) => void }) {
+  return (
+    <View style={styles.row}>
+      <View style={[styles.rowIcon, styles.rowIconOn]}>
+        <Ionicons name="people-outline" size={20} color={colors.black} />
+      </View>
+      <View style={{ flex: 1, gap: 6 }}>
+        <Text style={styles.rowLabel}>Mostrar</Text>
+        <Text style={styles.rowHint}>{SHOW_ME_HINT[value]}</Text>
+        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }} accessibilityRole="radiogroup">
+          {SHOW_ME.map((o) => (
+            <Pressable
+              key={o}
+              onPress={() => {
+                if (o === value) return;
+                lightTap();
+                onChange(o);
+              }}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: o === value, checked: o === value }}
+              accessibilityLabel={`Mostrar ${SHOW_ME_LABELS[o]}: ${SHOW_ME_HINT[o]}`}
+              style={{ paddingHorizontal: 12, minHeight: 32, borderRadius: 16, justifyContent: 'center', backgroundColor: o === value ? colors.black : colors.surfaceAlt }}
+            >
+              <Text style={{ ...typography.caption, color: o === value ? colors.primary : colors.black }}>{SHOW_ME_LABELS[o]}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {/* transparência: a escolha recíproca pode ser percebida (Política 3.3) */}
+        <Text style={styles.rowHint}>{SHOW_ME_RECIPROCAL_NOTE}</Text>
       </View>
     </View>
   );

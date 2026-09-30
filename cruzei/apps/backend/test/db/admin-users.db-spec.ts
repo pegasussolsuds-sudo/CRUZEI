@@ -4,6 +4,7 @@ import type { PrismaService } from '../../src/database/prisma.service';
 import { AdminPanelController } from '../../src/modules/admin/admin-panel.controller';
 import { AdminUsersService, NO_EXPIRY } from '../../src/modules/admin/admin-users.service';
 import type { StatsService } from '../../src/modules/admin/stats.service';
+import { PhoneReleaseService } from '../../src/modules/auth/phone-release.service';
 import { ModerationService } from '../../src/modules/moderation/moderation.service';
 import type { PhotoModerationService } from '../../src/modules/moderation/photo-moderation.service';
 import { UsersService } from '../../src/modules/users/users.service';
@@ -58,6 +59,7 @@ const svc = new AdminUsersService(
   users,
   notify,
   audit,
+  new PhoneReleaseService(db, asRedis(redis), asAccounts(accounts)),
 );
 
 let adminId = '';
@@ -134,16 +136,30 @@ describe('Premium manual', () => {
   });
 
   it('sem "avisar a pessoa": nada na central nem push, mas o app aberto recebe o sinal pra buscar o /me', async () => {
-    await svc.setPremium(actor(adminId, 'admin'), userId, { tier: 'premium', days: 7, reason: 'teste', notify: false });
+    await svc.setPremium(actor(adminId, 'admin'), userId, {
+      tier: 'premium',
+      days: 7,
+      reason: 'teste',
+      notify: false,
+    });
     expect(await prisma.notification.count({ where: { userId } })).toBe(0);
     expect(push.sent).toHaveLength(0);
     expect(emittedTo(gateway, userId, 'notification:new')).toHaveLength(0);
-    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([{ event: 'account:changed', payload: { reason: 'premium' } }]);
+    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([
+      { event: 'account:changed', payload: { reason: 'premium' } },
+    ]);
 
     // tirar também avisa o app (o convite pra assinar volta sem precisar reabrir)
     gateway.emitToUser.mockClear();
-    await svc.setPremium(actor(adminId, 'admin'), userId, { tier: 'free', days: null, reason: 'fim', notify: false });
-    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([{ event: 'account:changed', payload: { reason: 'premium' } }]);
+    await svc.setPremium(actor(adminId, 'admin'), userId, {
+      tier: 'free',
+      days: null,
+      reason: 'fim',
+      notify: false,
+    });
+    expect(emittedTo(gateway, userId, 'account:changed')).toEqual([
+      { event: 'account:changed', payload: { reason: 'premium' } },
+    ]);
   });
 
   it('sem vencimento: users.premium_expires_at null e a linha vence em 2099; trocar substitui a manual vigente', async () => {
@@ -191,6 +207,32 @@ describe('Premium manual', () => {
     expect(((await users.me(userId)) as { premiumTier: string }).premiumTier).toBe('free');
     expect(await auditOf('admin.user.premium_remove')).toHaveLength(1);
     expect(push.sent.map((m) => m.payload.title)).toEqual(['Seu Premium foi encerrado']);
+  });
+
+  it('tirar de quem está invisível: ganha a janela grátis de 24 h (não aparece de surpresa) e sai das salas', async () => {
+    await svc.setPremium(actor(adminId, 'admin'), userId, {
+      tier: 'premium',
+      days: null,
+      reason: 'x',
+    });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { visibilityMode: 'anonymous', anonymousUntil: null },
+    });
+    const row = await svc.setPremium(actor(adminId, 'admin'), userId, {
+      tier: 'free',
+      days: null,
+      reason: 'fim',
+    });
+    const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(u.visibilityMode).toBe('anonymous');
+    expect(Math.abs(u.anonymousUntil!.getTime() - (Date.now() + 24 * 3_600_000))).toBeLessThan(
+      60_000,
+    );
+    expect(row.anonymousUntil).toBe(u.anonymousUntil!.toISOString());
+    expect(gateway.leaveAllConversations).toHaveBeenCalledWith(userId);
+    const me = (await users.me(userId)) as { settings: { anonymousUntil: string | null } };
+    expect(me.settings.anonymousUntil).toBe(u.anonymousUntil!.toISOString());
   });
 
   it('conta apagada → 404; motivo vazio → 400', async () => {

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AuthModule } from '../auth/auth.module';
 import { LocationModule } from '../location/location.module';
 import { ModerationModule } from '../moderation/moderation.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -23,7 +24,15 @@ import { StatsService } from './stats.service';
 // Painel admin web (/v1/admin/*): usuários, Premium manual, papéis, lugares, eventos, campanhas, painel e auditoria.
 // A fila/decisões de moderação continuam no ModerationModule (mesmo prefixo /admin); o suporte fica no SupportModule.
 @Module({
-  imports: [ModerationModule, PoisModule, LocationModule, UsersModule, NotificationsModule],
+  // AuthModule: PhoneReleaseService ("Liberar número"); o AuthModule não importa nada do painel (sem ciclo)
+  imports: [
+    ModerationModule,
+    PoisModule,
+    LocationModule,
+    UsersModule,
+    NotificationsModule,
+    AuthModule,
+  ],
   controllers: [
     AdminPanelController,
     AdminUsersController,

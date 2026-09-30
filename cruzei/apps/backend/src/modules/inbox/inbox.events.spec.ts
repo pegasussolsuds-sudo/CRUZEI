@@ -2,6 +2,7 @@ import {
   emitEvent,
   flushInboxEvents,
   leaveEvent,
+  messagePushTargets,
   withoutHeld,
   type InboxGatewayPort,
 } from './inbox.events';
@@ -88,5 +89,90 @@ describe('withoutHeld (invisível sem Premium não recebe)', () => {
     ];
     expect(withoutHeld(events, new Set(['bia']))).toEqual(events);
     expect(withoutHeld(events, new Set())).toEqual(events);
+  });
+});
+
+describe('messagePushTargets (quem recebe push de mensagem nova)', () => {
+  const message = (senderId: string, extra: Record<string, unknown> = {}) =>
+    ({
+      id: 'm1',
+      conversationId: 'c',
+      senderId,
+      body: 'oi',
+      mediaUrl: null,
+      createdAt: 't',
+      readAt: null,
+      systemKind: null,
+      messageType: 'text',
+      ...extra,
+    }) as never;
+
+  it('só a outra ponta: quem enviou não recebe push da própria mensagem', () => {
+    const events = [
+      emitEvent('ana', 'message:new', {
+        conversationId: 'c',
+        message: message('ana'),
+        unreadCount: 0,
+      }),
+      emitEvent('bia', 'message:new', {
+        conversationId: 'c',
+        message: message('ana'),
+        unreadCount: 3,
+      }),
+    ];
+    expect(messagePushTargets(events)).toEqual([
+      { to: 'bia', conversationId: 'c', senderId: 'ana', messageType: 'text', body: 'oi' },
+    ]);
+  });
+
+  it('mensagem de sistema (curtida mútua) não vira push de mensagem: o match tem o dele', () => {
+    const sys = message('ana', { systemKind: 'mutual_like', messageType: 'system' });
+    const events = [
+      emitEvent('ana', 'message:new', { conversationId: 'c', message: sys, unreadCount: 0 }),
+      emitEvent('bia', 'message:new', { conversationId: 'c', message: sys, unreadCount: 0 }),
+    ];
+    expect(messagePushTargets(events)).toEqual([]);
+  });
+
+  it('quem foi retido (invisível sem Premium) já saiu no withoutHeld: sem push', () => {
+    const events = withoutHeld(
+      [
+        emitEvent('ana', 'message:new', {
+          conversationId: 'c',
+          message: message('ana'),
+          unreadCount: 0,
+        }),
+        emitEvent('bia', 'message:new', {
+          conversationId: 'c',
+          message: message('ana'),
+          unreadCount: 1,
+        }),
+      ],
+      new Set(['bia']),
+    );
+    expect(messagePushTargets(events)).toEqual([]);
+  });
+
+  it('outros eventos não contam; a mesma conversa pra mesma pessoa sai uma vez só', () => {
+    const events = [
+      emitEvent(['ana', 'bia'], 'conversation:promoted', {
+        conversationId: 'c',
+        reason: 'bounce',
+        promotedAt: 'x',
+      }),
+      emitEvent('bia', 'like_received', { isSuper: false }),
+      emitEvent('bia', 'message:new', {
+        conversationId: 'c',
+        message: message('ana'),
+        unreadCount: 1,
+      }),
+      emitEvent('bia', 'message:new', {
+        conversationId: 'c',
+        message: message('ana'),
+        unreadCount: 2,
+      }),
+      leaveEvent('c', ['bia']),
+    ];
+    expect(messagePushTargets(events).map((t) => t.to)).toEqual(['bia']);
   });
 });

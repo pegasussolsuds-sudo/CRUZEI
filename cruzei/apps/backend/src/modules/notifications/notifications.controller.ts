@@ -31,6 +31,11 @@ import { NotificationsService } from './notifications.service';
 class SettingsValuesDto {
   @IsOptional() @IsBoolean() campaigns?: boolean;
   @IsOptional() @IsBoolean() events?: boolean;
+  // push social (só push): mensagem nova, curtida, match e o texto da mensagem no aviso
+  @IsOptional() @IsBoolean() messages?: boolean;
+  @IsOptional() @IsBoolean() likes?: boolean;
+  @IsOptional() @IsBoolean() matches?: boolean;
+  @IsOptional() @IsBoolean() messagePreview?: boolean;
 }
 
 class SettingsDto {
@@ -79,7 +84,10 @@ export class NotificationsController {
     return this.svc.settings(user.id);
   }
 
-  /** { settings: { campaigns?, events? } } → NotificationSettings (desligado = fora do público das campanhas) */
+  /**
+   * { settings: Partial<NotificationSettings> } → NotificationSettings. campaigns/events desligado = fora do público
+   * das campanhas; messages/likes/matches desligado = sem aquele push social; messagePreview = texto no aviso.
+   */
   @Patch('notifications/settings')
   settings(@CurrentUser() user: AuthenticatedUser, @Body() dto: SettingsDto) {
     return this.svc.updateSettings(user.id, dto.settings ?? {});

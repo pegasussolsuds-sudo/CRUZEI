@@ -95,6 +95,8 @@ export function describeTarget(t: NotificationTarget | null | undefined): string
       return 'Abre uma conversa';
     case 'likes':
       return 'Abre as curtidas';
+    case 'match':
+      return 'Abre um match';
   }
 }
 

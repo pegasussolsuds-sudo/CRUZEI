@@ -1,4 +1,4 @@
-import type { AppNotification, NotificationTarget, PushData } from '@cruzei/shared-types';
+import { SOCIAL_PUSH_TYPES, type AppNotification, type NotificationTarget, type PushData, type SocialPushType } from '@cruzei/shared-types';
 
 // Destino do toque (push, central de avisos ou aviso rápido no app). Funções puras: nada de navegação nem módulo
 // nativo aqui (a execução fica em navigation/openTarget.ts), pra dar pra testar a tabela inteira.
@@ -10,7 +10,9 @@ export type TargetRoute =
   | { screen: 'Paywall' }
   | { screen: 'SupportChat' }
   | { screen: 'Chat'; conversationId: string }
-  | { screen: 'Notifications' };
+  | { screen: 'Notifications' }
+  /** comemoração do match com essa pessoa (push social 'match') */
+  | { screen: 'Match'; userId: string };
 
 type Obj = Record<string, unknown>;
 
@@ -76,6 +78,10 @@ export function parseTarget(raw: unknown): NotificationTarget | null {
       const conversationId = str(o.conversationId);
       return conversationId ? { kind: 'conversation', conversationId } : null;
     }
+    case 'match': {
+      const userId = str(o.userId);
+      return userId ? { kind: 'match', userId } : null;
+    }
     default:
       return null;
   }
@@ -100,6 +106,8 @@ export function routeForTarget(target: NotificationTarget | null | undefined): T
       return { screen: 'Chat', conversationId: target.conversationId };
     case 'likes':
       return { screen: 'Likes' };
+    case 'match':
+      return { screen: 'Match', userId: target.userId };
     default:
       return null;
   }
@@ -151,9 +159,51 @@ const TYPE_EMOJI: Record<string, string> = {
   event: '⚡',
   support_reply: '💬',
   premium_granted: '💎',
+  premium_expired: '💎', // o Premium venceu (a tarefa rebaixou pro grátis)
+  anonymous_expired: '👀', // as 24 h do invisível grátis acabaram: voltou pro mapa
   place_approved: '📍',
   campaign: '📣',
+  message: '💬',
+  like: '💚',
+  match: '🔥',
 };
+
+/** push social (mensagem, curtida, match): só push, fora da central; em primeiro plano o socket já atualiza */
+export function isSocialPush(data: Pick<PushData, 'type'> | null | undefined): data is PushData & { type: SocialPushType } {
+  return Boolean(data && (SOCIAL_PUSH_TYPES as readonly string[]).includes(data.type));
+}
+
+/** tag do push social na bandeja (a mesma que o servidor manda): conv:<id>, likes, match:<pessoa> */
+export function socialTagOf(data: PushData | null | undefined): string | null {
+  if (!isSocialPush(data)) return null;
+  const t = parseTarget(data.target);
+  if (data.type === 'message') return t?.kind === 'conversation' ? `conv:${t.conversationId}` : null;
+  if (data.type === 'match') return t?.kind === 'match' ? `match:${t.userId}` : null;
+  return 'likes';
+}
+
+// o FCM que mostrou a notificação (app em segundo plano) não passa os dados pro expo-notifications: o identificador
+// dela é expo-notifications://foreign_notifications?tag=<tag>&id=<n>, e a tag é a mesma que o servidor mandou
+const FOREIGN_PREFIX = 'expo-notifications://foreign_notifications';
+
+/** tag de uma notificação que está na bandeja (a do FCM pelo identificador; a mostrada pelo app pelos dados) */
+export function presentedPushTag(n: PushNotificationLike | null | undefined): string | null {
+  const id = n?.request?.identifier ?? '';
+  if (id.startsWith(FOREIGN_PREFIX)) {
+    const q = id.slice(id.indexOf('?') + 1);
+    for (const part of id.includes('?') ? q.split('&') : []) {
+      const [k, v] = part.split('=');
+      if (k !== 'tag' || !v) continue;
+      try {
+        return decodeURIComponent(v.replace(/\+/g, ' '));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  return socialTagOf(pushDataOf(n));
+}
 
 /** texto do aviso rápido (uma linha): emoji do tipo + título */
 export function noticeTextOf(n: Pick<AppNotification, 'type' | 'title'>): string {

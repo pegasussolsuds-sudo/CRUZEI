@@ -1,6 +1,16 @@
-import { ForbiddenException, Injectable, Logger, OnModuleDestroy, OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+
+import type { AccountBlockedError, SessionRevokedError, UserRole } from '@cruzei/shared-types';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type Redis from 'ioredis';
-import type { AccountBlockedError, UserRole } from '@cruzei/shared-types';
+
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ExpiringCache } from '../location/hot-path';
@@ -9,6 +19,23 @@ export const ACCOUNT_CHANNEL = 'metch:acct';
 const REDIS_TTL_S = 600;
 /** cada processo lembra o estado por pouco tempo; banir publica no canal e todos esquecem na hora */
 const LOCAL_TTL_MS = 15_000;
+/** versão do estado: só precisa durar mais que uma leitura do banco (segundos); 1 dia sobra */
+const GEN_TTL_S = 86_400;
+const stateKey = (id: string) => `acct:v1:${id}`;
+export const accountGenKey = (id: string) => `acct:gen:${id}`;
+
+/**
+ * Grava o estado lido do banco SÓ se a versão não mudou desde antes da leitura. Leitura que começou antes de um
+ * invalidate (banir, liberar número) não regrava o estado velho por 10 min — sessions_valid_after vence a corrida.
+ */
+const SET_IF_GEN = `
+local g = redis.call('GET', KEYS[2]) or ''
+if g == ARGV[2] then
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+  return 1
+end
+return 0
+`;
 
 export interface AccountState {
   status: 'active' | 'suspended' | 'banned' | 'gone';
@@ -16,6 +43,22 @@ export interface AccountState {
   until: number | null;
   reason: string | null;
   role: UserRole;
+  /** users.sessions_valid_after (ms): token com iat anterior é recusado. Cache antigo sem o campo = null */
+  validAfter?: number | null;
+}
+
+/** corpo do 401 de sessão revogada (número liberado da conta; depois, "sair de todos os aparelhos") */
+export const SESSION_REVOKED = {
+  error: 'session_revoked',
+  message: 'Sua sessão foi encerrada. Entra de novo.',
+} as const satisfies SessionRevokedError;
+
+/** token emitido antes do corte (iat em segundos, corte em ms)? Sem iat ou sem corte: vale */
+export function isRevoked(
+  tokenIat: number | undefined,
+  validAfter: number | null | undefined,
+): boolean {
+  return typeof tokenIat === 'number' && validAfter != null && tokenIat * 1000 < validAfter;
 }
 
 /**
@@ -26,6 +69,8 @@ export interface AccountState {
 export class AccountStateService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(AccountStateService.name);
   private readonly local = new ExpiringCache<string, AccountState>(LOCAL_TTL_MS, 100_000);
+  /** sobe a cada invalidação (daqui ou do canal): leitura que atravessou uma não entra no cache local */
+  private epoch = 0;
   private sub: Redis | null = null;
 
   constructor(
@@ -36,11 +81,17 @@ export class AccountStateService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     try {
       this.sub = this.redis.client.duplicate();
-      this.sub.on('message', (_ch: string, id: string) => (id === '*' ? this.local.clear() : this.local.delete(id)));
+      this.sub.on('message', (_ch: string, id: string) => {
+        this.epoch++;
+        if (id === '*') this.local.clear();
+        else this.local.delete(id);
+      });
       this.sub.on('error', () => undefined);
       await this.sub.subscribe(ACCOUNT_CHANNEL);
     } catch (e) {
-      this.log.warn(`sem assinatura do canal de contas (${(e as Error).message}); o cache local vence em ${LOCAL_TTL_MS / 1000} s`);
+      this.log.warn(
+        `sem assinatura do canal de contas (${(e as Error).message}); o cache local vence em ${LOCAL_TTL_MS / 1000} s`,
+      );
     }
   }
 
@@ -53,9 +104,13 @@ export class AccountStateService implements OnModuleInit, OnModuleDestroy {
     this.local.prune(now, 200);
     const hit = this.local.get(userId, now);
     if (hit) return hit;
+    const epoch = this.epoch;
     let st: AccountState | null = null;
+    /** versão lida junto com o estado; undefined = Redis fora (aí não grava cache nenhum) */
+    let gen: string | undefined;
     try {
-      const raw = await this.redis.client.get(`acct:v1:${userId}`);
+      const [raw, g] = await this.redis.client.mget(stateKey(userId), accountGenKey(userId));
+      gen = g ?? '';
       if (raw) st = JSON.parse(raw) as AccountState;
     } catch {
       /* Redis fora: cai no banco */
@@ -63,22 +118,61 @@ export class AccountStateService implements OnModuleInit, OnModuleDestroy {
     if (!st) {
       const u = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { accountStatus: true, suspendedUntil: true, moderationReason: true, role: true, deletedAt: true },
+        select: {
+          accountStatus: true,
+          suspendedUntil: true,
+          moderationReason: true,
+          role: true,
+          deletedAt: true,
+          sessionsValidAfter: true,
+        },
       });
-      st = !u || u.deletedAt
-        ? { status: 'gone', until: null, reason: null, role: 'user' }
-        : { status: u.accountStatus, until: u.suspendedUntil?.getTime() ?? null, reason: u.moderationReason, role: u.role };
-      this.redis.client.set(`acct:v1:${userId}`, JSON.stringify(st), 'EX', REDIS_TTL_S).catch(() => undefined);
+      st =
+        !u || u.deletedAt
+          ? { status: 'gone', until: null, reason: null, role: 'user' }
+          : {
+              status: u.accountStatus,
+              until: u.suspendedUntil?.getTime() ?? null,
+              reason: u.moderationReason,
+              role: u.role,
+              validAfter: u.sessionsValidAfter?.getTime() ?? null,
+            };
+      if (gen !== undefined) this.cacheIfCurrent(userId, st, gen);
     }
-    this.local.set(userId, st, now);
+    // invalidação no meio desta leitura: devolve o que leu, mas não guarda
+    if (this.epoch === epoch) this.local.set(userId, st, now);
     return st;
   }
 
-  /** conta pode usar o app? Senão lança 401 (sumiu) ou 403 com o corpo AccountBlockedError. */
-  async assertActive(userId: string): Promise<AccountState> {
+  /** grava no Redis só se ninguém invalidou a conta desde a leitura da versão (SET_IF_GEN) */
+  private cacheIfCurrent(userId: string, st: AccountState, gen: string): void {
+    try {
+      this.redis.client
+        .eval(
+          SET_IF_GEN,
+          2,
+          stateKey(userId),
+          accountGenKey(userId),
+          JSON.stringify(st),
+          gen,
+          REDIS_TTL_S,
+        )
+        .catch(() => undefined);
+    } catch {
+      /* sem Redis: fica sem cache */
+    }
+  }
+
+  /**
+   * conta pode usar o app? Senão lança 401 (sumiu ou sessão revogada) ou 403 com o corpo AccountBlockedError.
+   * `tokenIat` (segundos, do JWT): token emitido antes de users.sessions_valid_after → 401 session_revoked.
+   */
+  async assertActive(userId: string, tokenIat?: number): Promise<AccountState> {
     const st = await this.get(userId);
+    if (st.status === 'gone')
+      throw new UnauthorizedException({ error: 'account_gone', message: 'Conta não encontrada' });
+    if (isRevoked(tokenIat, st.validAfter)) throw new UnauthorizedException({ ...SESSION_REVOKED });
     if (st.status === 'active') return st;
-    if (st.status === 'gone') throw new UnauthorizedException({ error: 'account_gone', message: 'Conta não encontrada' });
     if (st.status === 'suspended' && st.until !== null && st.until <= Date.now()) {
       // suspensão venceu: volta sozinha (só se ninguém mudou o estado no meio do caminho)
       await this.prisma.user.updateMany({
@@ -91,21 +185,35 @@ export class AccountStateService implements OnModuleInit, OnModuleDestroy {
     throw new ForbiddenException(blockedBody(st));
   }
 
-  /** mesmo que assertActive, sem exceção (socket): devolve o corpo do bloqueio ou null */
-  async blockedReason(userId: string): Promise<AccountBlockedError | { error: 'account_gone'; message: string } | null> {
+  /** mesmo que assertActive, sem exceção (socket): devolve o corpo do bloqueio (ou da sessão revogada) ou null */
+  async blockedReason(
+    userId: string,
+    tokenIat?: number,
+  ): Promise<
+    AccountBlockedError | SessionRevokedError | { error: 'account_gone'; message: string } | null
+  > {
     try {
-      await this.assertActive(userId);
+      await this.assertActive(userId, tokenIat);
       return null;
     } catch (e) {
       const body = (e as ForbiddenException).getResponse?.();
-      return (body as AccountBlockedError) ?? { error: 'account_gone', message: 'Conta não encontrada' };
+      return (
+        (body as AccountBlockedError) ?? { error: 'account_gone', message: 'Conta não encontrada' }
+      );
     }
   }
 
   async invalidate(userId: string): Promise<void> {
     this.local.delete(userId);
+    this.epoch++;
     try {
-      await this.redis.client.del(`acct:v1:${userId}`);
+      // versão nova (valor único, nunca repete) ANTES de apagar: leitura do banco em andamento não regrava o velho
+      await this.redis.client.set(accountGenKey(userId), randomUUID(), 'EX', GEN_TTL_S);
+    } catch {
+      /* sem Redis: segue apagando o que der */
+    }
+    try {
+      await this.redis.client.del(stateKey(userId));
       await this.redis.client.publish(ACCOUNT_CHANNEL, userId);
     } catch {
       /* sem Redis: o cache local dos outros processos vence em 15 s */
@@ -113,7 +221,9 @@ export class AccountStateService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-export function blockedBody(st: Pick<AccountState, 'status' | 'until' | 'reason'>): AccountBlockedError {
+export function blockedBody(
+  st: Pick<AccountState, 'status' | 'until' | 'reason'>,
+): AccountBlockedError {
   if (st.status === 'banned') {
     return {
       error: 'account_banned',
@@ -124,11 +234,19 @@ export function blockedBody(st: Pick<AccountState, 'status' | 'until' | 'reason'
   }
   const until = st.until ? new Date(st.until) : null;
   const when = until
-    ? until.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    ? until.toLocaleString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
     : null;
   return {
     error: 'account_suspended',
-    message: when ? `Sua conta está suspensa até ${when}.` : 'Sua conta está suspensa enquanto a moderação analisa uma denúncia.',
+    message: when
+      ? `Sua conta está suspensa até ${when}.`
+      : 'Sua conta está suspensa enquanto a moderação analisa uma denúncia.',
     reason: st.reason,
     until: until ? until.toISOString() : null,
   };

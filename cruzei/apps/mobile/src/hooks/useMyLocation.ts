@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import * as Location from 'expo-location';
-import { getCurrentLocation, pushLocation, requestPermissions, startForegroundTracking } from '../services/location';
+import { getCurrentLocation, pushLastFix, pushLocation, requestPermissions, startForegroundTracking } from '../services/location';
+import { UNVERIFIED_MAX_RETRIES, UNVERIFIED_RETRY_MS } from '../services/locationFix';
 import { useLocationStore } from '../stores/location';
 
 type Status = 'idle' | 'loading' | 'ready' | 'denied' | 'unavailable';
@@ -15,6 +16,7 @@ export function useMyLocation(auto = true, tracking = false) {
   const lat = useLocationStore((s) => s.lat);
   const lng = useLocationStore((s) => s.lng);
   const setLocation = useLocationStore((s) => s.setLocation);
+  const unverified = useLocationStore((s) => s.hiddenReason === 'location_unverified');
   const [status, setStatus] = useState<Status>(lat != null ? 'ready' : 'idle');
 
   const locate = useCallback(async () => {
@@ -31,7 +33,7 @@ export function useMyLocation(auto = true, tracking = false) {
     }
     setLocation(loc.latitude, loc.longitude);
     setStatus('ready');
-    pushLocation(loc).catch(() => {});
+    pushLocation(loc).catch(() => {}); // posição velha do cache do sistema não vai (pushLocation confere)
     return loc;
   }, [setLocation]);
 
@@ -82,9 +84,9 @@ export function useMyLocation(auto = true, tracking = false) {
         else sub = s;
       })
       .catch(() => {});
+    // keep-alive com o último fix completo (precisão e "simulada" juntos — o servidor confere o GPS falso)
     const timer = setInterval(() => {
-      const cur = useLocationStore.getState();
-      if (cur.lat != null && cur.lng != null) pushLocation({ latitude: cur.lat, longitude: cur.lng }).catch(() => {});
+      pushLastFix().catch(() => {});
     }, KEEPALIVE_MS);
     return () => {
       cancelled = true;
@@ -92,6 +94,32 @@ export function useMyLocation(auto = true, tracking = false) {
       clearInterval(timer);
     };
   }, [canTrack, setLocation]);
+
+  // salto de posição ainda não confirmado pelo servidor ('location_unverified'): parado, o watch (50 m) não dispara —
+  // manda um fix NOVO a cada ~50 s, até 3 vezes, pra confirmar a posição e voltar pro mapa
+  useEffect(() => {
+    if (!canTrack || !unverified) return;
+    let tries = 0;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      if (tries >= UNVERIFIED_MAX_RETRIES) {
+        clearInterval(timer);
+        return;
+      }
+      tries += 1;
+      getCurrentLocation()
+        .then((loc) => {
+          if (!loc || cancelled) return;
+          setLocation(loc.latitude, loc.longitude);
+          return pushLocation(loc);
+        })
+        .catch(() => {});
+    }, UNVERIFIED_RETRY_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [canTrack, unverified, setLocation]);
 
   return { lat, lng, status, locate, refresh };
 }

@@ -4,18 +4,20 @@ import './config/load-env';
 import './instrument';
 import 'reflect-metadata';
 import cluster from 'node:cluster';
-import { NestFactory } from '@nestjs/core';
+import * as fs from 'node:fs';
+
 import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import * as Sentry from '@sentry/nestjs';
 import * as express from 'express';
-import * as fs from 'node:fs';
+
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
-import { UPLOAD_DIR } from './modules/uploads/uploads.constants';
 import { clusterWorkerCount, clusterWorkerIndex, resolveLogLevels } from './config/runtime';
+import { UPLOAD_DIR } from './modules/uploads/uploads.constants';
 
 async function bootstrap() {
   const levels = resolveLogLevels();
@@ -28,8 +30,16 @@ async function bootstrap() {
   const worker = clusterWorkerIndex();
   const logger = new Logger(worker ? `Bootstrap#${worker}` : 'Bootstrap');
 
+  // atrás de balanceador/proxy (TLS em produção): TRUST_PROXY_HOPS = nº EXATO de proxies na frente. Sem isso req.ip é o
+  // do proxy (o limite de login/claim vira um balde só pra cidade toda) e as URLs de foto saem http://. Nunca "true":
+  // o X-Forwarded-For mais à esquerda é forjável
+  const proxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+  if (Number.isInteger(proxyHops) && proxyHops > 0) app.set('trust proxy', proxyHops);
+
   // /legal/:slug fica fora do prefixo: é a URL pública da política/termos (ficha das lojas, links fora do app)
-  app.setGlobalPrefix(config.get<string>('apiPrefix') ?? 'v1', { exclude: [{ path: 'legal/:slug', method: RequestMethod.GET }] });
+  app.setGlobalPrefix(config.get<string>('apiPrefix') ?? 'v1', {
+    exclude: [{ path: 'legal/:slug', method: RequestMethod.GET }],
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -92,7 +102,9 @@ function runPrimary(workers: number) {
       const n = (restarts.get(index) ?? 0) + 1;
       restarts.set(index, n);
       const wait = Math.min(30_000, 500 * 2 ** Math.min(n, 6));
-      log.warn(`worker ${index} saiu (code=${code} signal=${signal ?? '-'}); recriando em ${wait} ms`);
+      log.warn(
+        `worker ${index} saiu (code=${code} signal=${signal ?? '-'}); recriando em ${wait} ms`,
+      );
       setTimeout(() => fork(index), wait);
     });
     w.on('listening', () => restarts.set(index, 0));

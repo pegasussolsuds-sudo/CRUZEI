@@ -77,6 +77,44 @@ export function withoutHeld(
   return out;
 }
 
+/** destino do push de mensagem nova (InboxService → SocialPushService.messages) */
+export interface MessagePushTarget {
+  to: string;
+  conversationId: string;
+  senderId: string;
+  messageType: string;
+  body: string | null;
+}
+
+/**
+ * Quem recebe push de mensagem nova: os 'message:new' pra quem NÃO enviou, sem mensagem de sistema (a da curtida
+ * mútua tem o push do match). Chamar com os eventos que já passaram pelo dropHeld: invisível sem Premium fica fora.
+ */
+export function messagePushTargets(events: readonly InboxEvent[]): MessagePushTarget[] {
+  const out: MessagePushTarget[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    if (e.kind !== 'emit' || e.event !== 'message:new') continue;
+    const p = e.payload as MessageNewPayload;
+    const m = p?.message;
+    if (!m || m.systemKind || m.messageType === 'system') continue;
+    for (const to of e.to) {
+      if (to === m.senderId) continue;
+      const key = `${to}:${p.conversationId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        to,
+        conversationId: p.conversationId,
+        senderId: m.senderId,
+        messageType: m.messageType,
+        body: m.body,
+      });
+    }
+  }
+  return out;
+}
+
 /** envia na ordem em que a transação juntou; mesmo payload pra duas pessoas = um emit só (um publish no Redis) */
 export function flushInboxEvents(gateway: InboxGatewayPort, events: readonly InboxEvent[]): void {
   for (const e of events) {

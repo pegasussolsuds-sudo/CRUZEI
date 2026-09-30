@@ -7,6 +7,8 @@ import { useQuery } from '@tanstack/react-query';
 import { colors, radius, shadows, spacing, typography, fontFamily, duration } from '@cruzei/ui-mobile';
 import type { HiddenReason } from '@cruzei/shared-types';
 import { api } from '../../services/api';
+import { anonymousBannerText } from '../../services/anonymousWindow';
+import { useAuthStore } from '../../stores/auth';
 import { usePlaceName } from '../../hooks/usePlaceName';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
@@ -70,10 +72,15 @@ const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
   nobody: 'Descoberta desligada: ninguém te vê',
   paused: '⏸️ Perfil pausado: ninguém te vê no mapa',
   no_presence: '📍 Atualizando sua posição…',
+  // GPS falso (servidor): salto de posição esperando confirmação / posição simulada pelo celular
+  location_unverified: '📍 Confirmando sua posição…',
+  location_mocked: '📍 Localização simulada: desliga o GPS falso pra aparecer',
 };
 
 export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason, onOpenVibe, paused = false, onHeaderHeight }: MapHeaderProps) {
   const placeName = usePlaceName(lat, lng);
+  // prazo do invisível grátis (settings.anonymousUntil do /me; null no Premium)
+  const anonymousUntil = useAuthStore((s) => s.user?.settings?.anonymousUntil ?? null);
 
   // crossfade 200ms entre os dois estados do chip (design system: toggle = crossfade + slide curto)
   const anon = useSharedValue(isAnonymous ? 1 : 0);
@@ -179,8 +186,9 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
       {isAnonymous ? (
         <FadeInView fromY={-8} style={styles.banner}>
           <View style={styles.bannerDot} />
+          {/* grátis: "Invisível até 14h32" (a janela de 24 h do servidor); Premium: sem prazo */}
           <Text style={styles.bannerText} numberOfLines={1}>
-            Você está oculto do mapa
+            {anonymousBannerText(anonymousUntil)}
           </Text>
           <ScaleOnPress
             onPress={onToggleVisibility}

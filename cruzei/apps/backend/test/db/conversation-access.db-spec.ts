@@ -18,7 +18,7 @@ const prisma = new PrismaClient();
 const resetDb = () =>
   prisma.$executeRawUnsafe('TRUNCATE conversations, users RESTART IDENTITY CASCADE');
 
-// visível por padrão: o default do banco é 'anonymous' (e invisível sem Premium não entra na sala)
+// visível explícito (o default do banco virou 'visible'; invisível sem Premium não entra na sala)
 const newUser = async (name: string) =>
   (
     await prisma.user.create({
