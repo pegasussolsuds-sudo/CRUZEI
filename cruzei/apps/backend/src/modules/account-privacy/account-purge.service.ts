@@ -30,8 +30,10 @@ import {
   OPEN_REPORT_STATUSES,
   phoneReleaseHashExpirySql,
   phoneReleaseMetaExpirySql,
+  phoneReleaseUnlinkSql,
   RETENTION_PAGE,
   reviewHoldDeadline,
+  splitOpenReports,
   supportThreadExpired,
   tombstoneData,
   urgentSupportPageSql,
@@ -176,12 +178,15 @@ export class AccountPurgeService {
       return { outcome: 'cancelled', phone: null, media: [] };
     }
 
-    // b) bloqueio legal: denúncia contra a pessoa em análise → espera a decisão; revisão sem denúncia → espera até o teto
-    const openAgainst = await tx.report.count({
+    // b) bloqueio legal: denúncia de alguém (ou de menor/abuso infantil) em análise → espera a decisão; revisão ou
+    // denúncia automática (ex.: a do número reciclado, sem quem denunciou) → espera só até o teto
+    const open = await tx.report.findMany({
       where: { reportedId: userId, status: { in: [...OPEN_REPORT_STATUSES] } },
+      select: { reporterId: true, reason: true },
     });
+    const { blocking, automatic } = splitOpenReports(open);
     const deadline = reviewHoldDeadline(requestedAt, privacyConfig().graceDays);
-    const hold = holdReasonFor(openAgainst, u.review_hold_at, now, deadline);
+    const hold = holdReasonFor(blocking, u.review_hold_at, now, deadline, automatic);
     if (hold) {
       await tx.dataDeletionRequest.update({
         where: { id: requestId },
@@ -378,6 +383,7 @@ export class AccountPurgeService {
     phoneHashes: number;
     releaseHashes: number;
     releaseMeta: number;
+    releaseLinks: number;
     subscriptions: number;
     boosts: number;
   }> {
@@ -395,6 +401,8 @@ export class AccountPurgeService {
     const logCut = new Date(now);
     logCut.setMonth(logCut.getMonth() - ACCESS_LOG_RETENTION_MONTHS);
     const releaseMeta = await this.prisma.$executeRaw(phoneReleaseMetaExpirySql(logCut));
+    // número que veio PRA conta limpa não banida: o vínculo com ela sai 6 meses depois da limpeza
+    const releaseLinks = await this.prisma.$executeRaw(phoneReleaseUnlinkSql(hashCut));
 
     const payCut = new Date(now);
     payCut.setFullYear(payCut.getFullYear() - cfg.paymentYears);
@@ -411,6 +419,7 @@ export class AccountPurgeService {
       phoneHashes,
       releaseHashes,
       releaseMeta,
+      releaseLinks,
       subscriptions,
       boosts,
     };

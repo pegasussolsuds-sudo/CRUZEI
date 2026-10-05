@@ -10,9 +10,11 @@ import {
   keepPhoneOnPurge,
   phoneReleaseHashExpirySql,
   phoneReleaseMetaExpirySql,
+  phoneReleaseUnlinkSql,
   RETENTION_PAGE,
   REVIEW_HOLD_MAX_DAYS,
   reviewHoldDeadline,
+  splitOpenReports,
   supportThreadExpired,
   tombstoneData,
   urgentSupportPageSql,
@@ -95,6 +97,29 @@ describe('keepPhoneOnPurge / holdReasonFor / reviewHoldDeadline', () => {
     expect(holdReasonFor(0, null, NOW, later)).toBeNull();
   });
 
+  it('denúncia AUTOMÁTICA em análise (sem quem denunciou) segura como revisão: só até o teto', () => {
+    expect(holdReasonFor(0, null, NOW, later, 1)).toBe('review_hold');
+    expect(holdReasonFor(0, null, NOW, before, 1)).toBeNull();
+    expect(holdReasonFor(0, NOW, NOW, before, 3)).toBeNull();
+    // denúncia de alguém continua segurando sem prazo
+    expect(holdReasonFor(1, null, NOW, before, 1)).toBe('open_reports');
+  });
+
+  it('splitOpenReports: segura sem prazo só a de alguém ou a de menor/abuso infantil', () => {
+    const someone = '0b000000-0000-4000-8000-00000000000b';
+    expect(
+      splitOpenReports([
+        { reporterId: null, reason: 'other' }, // número reciclado de conta banida
+        { reporterId: null, reason: 'fake' }, // GPS falso
+        { reporterId: null, reason: 'scam' }, // filtro de golpe
+        { reporterId: null, reason: 'underage' },
+        { reporterId: null, reason: 'child_safety' },
+        { reporterId: someone, reason: 'spam' },
+      ]),
+    ).toEqual({ blocking: 3, automatic: 3 });
+    expect(splitOpenReports([])).toEqual({ blocking: 0, automatic: 0 });
+  });
+
   it('teto = fim do prazo de arrependimento + 30 dias', () => {
     expect(REVIEW_HOLD_MAX_DAYS).toBe(30);
     const requested = new Date('2026-09-01T00:00:00Z');
@@ -120,6 +145,16 @@ describe('phone_releases de conta limpa (SQL)', () => {
     expect(s.text).toMatch(/u\.id = pr\.new_user_id AND u\.purged_at IS NOT NULL/);
     expect(s.text).toMatch(/u\.account_status = 'active' AND u\.review_hold_at IS NULL/);
     expect(s.text).toMatch(/released_by IS NULL/);
+    expect(s.values).toEqual([NOW.toISOString()]);
+  });
+
+  it('vínculo com a conta nova (limpa, não banida) sai pelo purged_at dela, com a marca e o IP do pedido dela', () => {
+    const s = phoneReleaseUnlinkSql(NOW);
+    expect(s.text).toMatch(/SET new_user_id = NULL,\s+new_user_unlinked_at = now\(\)/);
+    expect(s.text).toMatch(/ip = CASE WHEN pr\.released_by IS NULL THEN NULL ELSE pr\.ip END/);
+    expect(s.text).toMatch(/u\.id = pr\.new_user_id AND u\.purged_at </);
+    expect(s.text).toMatch(/u\.account_status = 'active' AND u\.review_hold_at IS NULL/);
+    expect(s.text).toContain("AT TIME ZONE 'UTC'");
     expect(s.values).toEqual([NOW.toISOString()]);
   });
 

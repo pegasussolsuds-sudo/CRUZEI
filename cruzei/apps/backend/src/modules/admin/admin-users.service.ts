@@ -334,7 +334,7 @@ export class AdminUsersService {
       moderation,
       bio: extra?.bio ?? null,
       ...(extra?.gender ? { gender: extra.gender } : {}),
-      phoneReleases: await this.phoneReleasesOf(viewer, id),
+      phoneReleases: await this.phoneReleasesOf(viewer, id, !!extra?.purgedAt),
       // @ do Instagram (público no cartão); a orientação fica fora do painel (dado sensível)
       instagram: extra?.instagramHandle ?? null,
       city,
@@ -366,11 +366,13 @@ export class AdminUsersService {
 
   /**
    * Número reciclado: as liberações em que o número SAIU desta conta e a que DEU o número a ela (incoming), mais
-   * recente primeiro. Telefone inteiro e links pras outras contas só pra admin.
+   * recente primeiro. Telefone inteiro e links pras outras contas só pra admin. Conta limpa (`purged`): o número que
+   * veio pra ela era o dela — não aparece nas linhas incoming (a linha é da conta antiga; o vínculo sai em 6 meses).
    */
   private async phoneReleasesOf(
     viewer: AuthenticatedUser,
     userId: string,
+    purged = false,
   ): Promise<AdminPhoneRelease[]> {
     const rows = await this.prisma.phoneRelease.findMany({
       where: { OR: [{ userId }, { newUserId: userId }] },
@@ -391,8 +393,9 @@ export class AdminUsersService {
     );
     return rows.map((r) => {
       const incoming = r.userId !== userId;
+      const phone = incoming && purged ? null : r.phone;
       return {
-        phone: isAdmin ? r.phone : maskPhone(r.phone),
+        phone: isAdmin ? phone : maskPhone(phone),
         reason: r.reason as PhoneReleaseReason,
         accountStatus: r.accountStatus,
         releasedAt: r.createdAt.toISOString(),

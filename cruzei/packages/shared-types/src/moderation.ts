@@ -206,7 +206,9 @@ export interface ModerationUserDetail {
   user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null; instagram?: string | null };
   /**
    * retained: a pessoa apagou com denúncia de menor/abuso infantil aberta — a foto fica só aqui ("retida por
-   * denúncia"), fora do perfil dela e do público, até a denúncia fechar; não aceita aprovar/recusar
+   * denúncia"), fora do perfil dela e do público, até a denúncia fechar; não aceita aprovar/recusar. Na retida, `url`
+   * é a rota AUTENTICADA relativa à origem da API (/v1/admin/photos/:id/file): carregar com o Bearer de staff
+   * (fetch → blob), nunca como <img src> público
    */
   photos: {
     id: string;

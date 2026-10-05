@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 import { phoneHash } from '../../src/common/phone-hash';
 import type { PrismaService } from '../../src/database/prisma.service';
 import { AccountStateService } from '../../src/modules/account/account-state.service';
+import { tombstoneData } from '../../src/modules/account-privacy/purge-plan';
 import { AdminUsersService } from '../../src/modules/admin/admin-users.service';
 import { AuthService, type JwtPayload } from '../../src/modules/auth/auth.service';
 import { PhoneReleaseService } from '../../src/modules/auth/phone-release.service';
@@ -500,6 +501,20 @@ describe('painel', () => {
       expect.objectContaining({ incoming: true, oldUserId: oldId }),
     ]);
     expect(fresh.phoneReleasedAt).toBeNull();
+  });
+
+  it('conta nova excluída e limpa (não banida): a ficha dela não mostra mais o número que veio pra ela', async () => {
+    const newId = await releaseOld();
+    // conta limpa (mesmas colunas da limpeza de verdade: users_purged_clean_chk)
+    await prisma.user.update({ where: { id: newId }, data: tombstoneData(new Date(), new Date()) });
+    for (const viewer of [actor(adminId, 'admin'), actor(modId, 'moderator')]) {
+      const d = await admin.detail(viewer, newId);
+      expect(d.phoneReleases).toEqual([expect.objectContaining({ incoming: true, phone: null })]);
+      expect(JSON.stringify(d.phoneReleases)).not.toContain(oldPhone.slice(-4));
+    }
+    // na ficha da conta antiga o histórico (número dela) continua
+    const asAdmin = await admin.detail(actor(adminId, 'admin'), oldId);
+    expect(asAdmin.phoneReleases![0]).toMatchObject({ phone: oldPhone, incoming: false });
   });
 
   it('"Liberar número" (só admin): libera, audita, derruba o socket; moderador, a própria conta e conta sem número não', async () => {

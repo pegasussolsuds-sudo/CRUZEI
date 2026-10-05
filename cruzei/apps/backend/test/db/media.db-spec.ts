@@ -12,6 +12,7 @@ import { MediaGcService } from '../../src/modules/uploads/media-gc.service';
 import { reprocessLegacyPhotos } from '../../src/modules/uploads/photo-reprocess';
 import { isRetainedPhoto } from '../../src/modules/uploads/photo-retention';
 import { LocalObjectStorage } from '../../src/modules/uploads/storage/local-storage';
+import type { ObjectStorage } from '../../src/modules/uploads/storage/object-storage';
 import { UploadsService } from '../../src/modules/uploads/uploads.service';
 import { MAX_PHOTOS, UsersService } from '../../src/modules/users/users.service';
 
@@ -126,14 +127,24 @@ beforeEach(async () => {
   storage = new LocalObjectStorage(root);
   gc = new MediaGcService(db, storage, 'on');
   uploads = new UploadsService(db, storage, gc);
-  users = new UsersService(
+  users = usersWith(storage);
+});
+
+/**
+ * UsersService com um GC de verdade (cópia pra held/, fila) mas com o kick gravado: o drain roda na mão nos testes.
+ * `st` permite trocar o storage do apagar (ex.: PUT da held/ quebrado).
+ */
+function usersWith(st: LocalObjectStorage | ObjectStorage): UsersService {
+  const usersGc = new MediaGcService(db, st, 'on');
+  usersGc.kick = kick;
+  return new UsersService(
     db,
     asRedis(fakeRedis()),
     photoModeration as unknown as PhotoModerationService,
     asGateway(fakeGateway()),
-    { kick } as unknown as MediaGcService,
+    usersGc,
   );
-});
+}
 
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
@@ -357,47 +368,199 @@ describe('apagar foto (DELETE /me/photos/:id) + GC', () => {
     expect(await onDisk(up.key)).toBe(false);
   });
 
-  it('dono com denúncia underage/child_safety aberta: apagar RETÉM a foto (some pro dono, fica na ficha); encerrada, sai', async () => {
-    for (const reason of ['underage', 'child_safety']) {
+  it('dono com denúncia underage/child_safety aberta: apagar RETÉM a foto numa cópia privada (held/); a pública sai já', async () => {
+    // underage fecha COM ação (resolvida: 180 dias); child_safety é dispensada (sai na hora)
+    for (const [reason, closeAs] of [
+      ['underage', 'resolved'],
+      ['child_safety', 'dismissed'],
+    ] as const) {
+      kick.mockClear();
       const u = await newUser(prisma, `Alvo ${reason}`);
       const reporter = await newUser(prisma, `Quem denunciou ${reason}`);
       const up1 = await upload(u.id);
       const up2 = await upload(u.id);
       const p1 = await users.addPhoto(u.id, { key: up1.key });
       await users.addPhoto(u.id, { key: up2.key });
+      const original = (await storage.get(up1.key))!;
       const report = await prisma.report.create({
         data: { reporterId: reporter.id, reportedId: u.id, reason, status: 'pending' },
       });
       await expect(users.deletePhoto(u.id, p1.id)).resolves.toEqual({ ok: true });
 
-      // a linha fica: fora do público (rejected), fora do perfil do dono (marca), abaixo de tudo; nada na fila
+      // a linha fica: fora do público (rejected), fora do perfil do dono (marca), abaixo de tudo — e aponta pra held/
       const kept = await prisma.photo.findUnique({ where: { id: p1.id } });
       expect(kept).toMatchObject({ status: 'rejected', isMain: false, orderIndex: -1 });
       expect(isRetainedPhoto(kept!.moderationLabels)).toBe(true);
-      expect(kick).not.toHaveBeenCalled();
-      expect((await mediaRow(up1.key))!.delete_after).toBeNull();
-      expect(await onDisk(up1.key)).toBe(true);
+      const held = kept!.url;
+      expect(held).toMatch(/^held\/[0-9a-f-]{36}\.jpg$/);
+      // uuid novo: a URL pública antiga não leva até ela
+      expect(held).not.toContain(up1.key.slice(2, 38));
+      expect(kept!.thumbnailUrl).toBe(held);
+      // cópia privada com os mesmos bytes, anexada (kind 'held')
+      expect((await storage.get(held))!.equals(original)).toBe(true);
+      const heldRow = (await mediaRow(held))!;
+      expect(heldRow).toMatchObject({ owner_id: u.id, delete_after: null });
+      expect(heldRow.attached_at).not.toBeNull();
+      const [{ kind }] = await prisma.$queryRaw<{ kind: string }[]>`
+        SELECT kind FROM media_objects WHERE key = ${held}`;
+      expect(kind).toBe('held');
+      // a pública (original + miniatura) vai pra fila marcada com moved_to e pro GC na hora
+      expect(kick).toHaveBeenCalledWith([up1.key, up1.thumbnailKey]);
+      const [pub] = await prisma.$queryRaw<{ moved_to: string; delete_after: Date }[]>`
+        SELECT moved_to, delete_after FROM media_objects WHERE key = ${up1.key}`;
+      expect(pub.moved_to).toBe(held);
+      expect(pub.delete_after.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+
+      // o GC apaga a pública MESMO com a denúncia ainda aberta (a prova está em held/)
+      expect((await gc.drain({ keys: [up1.key] })).deleted).toBe(1);
+      expect(await onDisk(up1.key)).toBe(false);
+      expect(await onDisk(up1.thumbnailKey)).toBe(false);
+      expect(await onDisk(held)).toBe(true);
+      // pro dono: a foto sumiu, e held/ nunca aparece
       const me = (await users.me(u.id)) as {
         photos: { id: string; isMain: boolean; orderIndex: number }[];
       };
       expect(me.photos.map((p) => [p.orderIndex, p.isMain])).toEqual([[0, true]]);
+      expect(JSON.stringify(me)).not.toContain('held/');
       // apagar de novo: pro dono ela não existe
       expect((await errorOf(users.deletePhoto(u.id, p1.id))).status).toBe(404);
 
       // denúncia aberta: a soltura não mexe
       const release = jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
       expect(await gc.releaseRetainedPhotos()).toBe(0);
-      // encerrada: a linha sai, o gatilho enfileira e o GC apaga
-      await prisma.report.update({ where: { id: report.id }, data: { status: 'resolved' } });
+      // encerrada: a linha sai e o gatilho enfileira a cópia privada
+      await prisma.report.update({ where: { id: report.id }, data: { status: closeAs } });
       expect(await gc.releaseRetainedPhotos()).toBe(1);
-      expect(release).toHaveBeenCalledWith([up1.key, up1.thumbnailKey]);
+      expect(release).toHaveBeenCalledWith([held, held]);
       release.mockRestore();
       expect(await prisma.photo.findUnique({ where: { id: p1.id } })).toBeNull();
-      expect((await gc.drain({ keys: [up1.key] })).deleted).toBe(1);
-      expect(await onDisk(up1.key)).toBe(false);
+      if (closeAs === 'resolved') {
+        // fechou com ação: 'urgent' antes de sair → o gatilho guarda o arquivo 180 dias
+        expect(offsetFromNow((await mediaRow(held))!.delete_after, 180)).toBeLessThan(60);
+        expect((await gc.drain({ keys: [held] })).leased).toBe(0);
+        expect(await onDisk(held)).toBe(true);
+        await dueNow(held);
+      }
+      expect((await gc.drain({ keys: [held] })).deleted).toBe(1);
+      expect(await onDisk(held)).toBe(false);
       // a outra continua no ar
       expect(await onDisk(up2.key)).toBe(true);
     }
+  });
+
+  it('conta banida com a denúncia dispensada: a retida também ganha os 180 dias', async () => {
+    const u = await newUser(prisma, 'Banida');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const p = await users.addPhoto(u.id, { key: (await upload(u.id)).key });
+    await users.addPhoto(u.id, { key: (await upload(u.id)).key });
+    const report = await prisma.report.create({
+      data: { reporterId: reporter.id, reportedId: u.id, reason: 'underage', status: 'pending' },
+    });
+    await users.deletePhoto(u.id, p.id);
+    const held = (await prisma.photo.findUniqueOrThrow({ where: { id: p.id } })).url;
+    expect(held).toMatch(/^held\//);
+    await prisma.report.update({ where: { id: report.id }, data: { status: 'dismissed' } });
+    await prisma.user.update({ where: { id: u.id }, data: { accountStatus: 'banned' } });
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.releaseRetainedPhotos()).toBe(1);
+    expect(offsetFromNow((await mediaRow(held))!.delete_after, 180)).toBeLessThan(60);
+  });
+
+  it('cópia privada não deu na hora (storage fora): retém no lugar; o cron move pra held/ e a pública sai', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const up = await upload(u.id);
+    const p = await users.addPhoto(u.id, { key: up.key });
+    await prisma.report.create({
+      data: {
+        reporterId: reporter.id,
+        reportedId: u.id,
+        reason: 'child_safety',
+        status: 'pending',
+      },
+    });
+    // PUT em held/ quebrado só no apagar
+    const broken: ObjectStorage = {
+      driver: 'local',
+      get: (k) => storage.get(k),
+      exists: (k) => storage.exists(k),
+      delete: (k) => storage.delete(k),
+      put: async (k, b, t) => {
+        if (k.startsWith('held/')) throw new Error('storage fora');
+        return storage.put(k, b, t);
+      },
+    };
+    await usersWith(broken).deletePhoto(u.id, p.id);
+    const kept = await prisma.photo.findUniqueOrThrow({ where: { id: p.id } });
+    expect(isRetainedPhoto(kept.moderationLabels)).toBe(true);
+    expect(kept.url).toBe(up.key);
+    expect(await onDisk(up.key)).toBe(true);
+
+    // cron: copia, troca a linha e manda a pública pro GC (com a denúncia ainda aberta)
+    const moveKick = jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.moveRetainedToHeld()).toBe(1);
+    const moved = await prisma.photo.findUniqueOrThrow({ where: { id: p.id } });
+    expect(moved.url).toMatch(/^held\//);
+    expect(moveKick).toHaveBeenCalledWith([up.key, up.thumbnailKey]);
+    moveKick.mockRestore();
+    expect((await gc.drain({ keys: [up.key] })).deleted).toBe(1);
+    expect(await onDisk(up.key)).toBe(false);
+    expect(await onDisk(moved.url)).toBe(true);
+    // rodar de novo não faz nada (já está em held/)
+    expect(await gc.moveRetainedToHeld()).toBe(0);
+  });
+
+  it('retida legada (URL /uploads/ absoluta, de antes da held/): o cron move; fakes/ fica onde está', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const legacy = uuidKey(30, 'png');
+    await storage.put(legacy, await jpeg(), 'image/png');
+    const mark = {
+      retainedByReport: { at: new Date().toISOString(), prevStatus: 'approved', wasMain: false },
+    };
+    const a = await insertPhoto(u.id, `http://192.168.0.9:3000/uploads/${legacy}`, null, {
+      status: 'rejected',
+      orderIndex: -1,
+      moderationLabels: mark,
+    });
+    const f = await insertPhoto(u.id, 'fakes/fake-1.jpg', null, {
+      status: 'rejected',
+      orderIndex: -2,
+      moderationLabels: mark,
+    });
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.moveRetainedToHeld()).toBe(1);
+    const row = await prisma.photo.findUniqueOrThrow({ where: { id: a.id } });
+    expect(row.url).toMatch(/^held\/[0-9a-f-]{36}\.png$/);
+    expect(await onDisk(row.url)).toBe(true);
+    const [pub] = await prisma.$queryRaw<{ moved_to: string }[]>`
+      SELECT moved_to FROM media_objects WHERE key = ${legacy}`;
+    expect(pub.moved_to).toBe(row.url);
+    expect((await prisma.photo.findUniqueOrThrow({ where: { id: f.id } })).url).toBe(
+      'fakes/fake-1.jpg',
+    );
+  });
+
+  it('gatilho: apagar a linha da retida (limpeza da conta, script) põe a cópia held/ na fila (kind held)', async () => {
+    const u = await newUser(prisma, 'Ana');
+    const held = `held/${uuidKey(31)}`;
+    await prisma.$executeRaw`
+      INSERT INTO media_objects (key, owner_id, kind, attached_at) VALUES (${held}, ${u.id}::uuid, 'held', now())`;
+    const p = await insertPhoto(u.id, held, held, {
+      status: 'rejected',
+      orderIndex: -1,
+      moderationLabels: { urgent: true, retainedByReport: { at: '', prevStatus: 'approved' } },
+    });
+    await prisma.photo.delete({ where: { id: p.id } });
+    const m = await mediaRow(held);
+    expect(m).toMatchObject({ attached_at: null, thumb_key: null });
+    expect(offsetFromNow(m!.delete_after, 180)).toBeLessThan(60);
+    // sem linha prévia (linha órfã do passado): entra como 'held'
+    const held2 = `held/${uuidKey(32)}`;
+    const p2 = await insertPhoto(u.id, held2, null, { orderIndex: -2 });
+    await prisma.photo.delete({ where: { id: p2.id } });
+    const [{ kind }] = await prisma.$queryRaw<{ kind: string }[]>`
+      SELECT kind FROM media_objects WHERE key = ${held2}`;
+    expect(kind).toBe('held');
   });
 
   it('foto apagada por outro caminho (script, cascade) com denúncia underage/child_safety aberta: o GC segura 30 dias; encerrada, sai', async () => {
@@ -481,6 +644,97 @@ describe('apagar foto (DELETE /me/photos/:id) + GC', () => {
     const m = await mediaRow(legacy);
     expect(m!.attached_at).not.toBeNull();
     expect(m!.delete_after).toBeNull();
+  });
+});
+
+describe('referências fora de photos (selfie, capa, evidence_urls) por igualdade', () => {
+  it('acha a chave crua, a URL da base atual e o legado /uploads/ de qualquer host', async () => {
+    const u = await newUser(prisma, 'Ana');
+    const outro = await newUser(prisma, 'Bia');
+    const k = (n: number) => `p/${uuidKey(n)}`;
+    await prisma.report.create({
+      data: {
+        reporterId: u.id,
+        reportedId: outro.id,
+        reason: 'spam',
+        evidenceUrls: [k(40), `${BASE}/${k(41)}`, `http://10.0.0.2:3000/uploads/${k(42)}`, 7, null],
+      },
+    });
+    // evidence_urls que não é lista não quebra a consulta
+    await prisma.report.create({
+      data: { reporterId: u.id, reportedId: outro.id, reason: 'spam', evidenceUrls: { x: k(49) } },
+    });
+    await prisma.$executeRaw`UPDATE users SET verification_selfie_url = ${`http://192.168.0.9:3000/uploads/${k(43)}`} WHERE id = ${outro.id}::uuid`;
+    await prisma.event.create({
+      data: {
+        title: 'Show',
+        category: 'show',
+        startsAt: new Date(),
+        endsAt: new Date(Date.now() + 3_600_000),
+        latitude: -18.9,
+        longitude: -48.2,
+        coverUrl: `${BASE}/${k(44)}`,
+      },
+    });
+
+    const refs = await gc.references([k(40), k(41), k(42), k(43), k(44), k(45), k(49)]);
+    expect([...refs.elsewhere].sort()).toEqual([k(40), k(41), k(42), k(43), k(44)].sort());
+    expect(refs.inPhotos.size).toBe(0);
+  });
+
+  it('o índice entra (EXPLAIN): selfie e capa pela chave normalizada, evidence_urls pelo GIN', async () => {
+    // tabela vazia: o planejador prefere qualquer índice parcial pequeno. Sem seqscan e sem o concorrente (DROP numa
+    // transação desfeita no fim), só sobra o índice de expressão — se a expressão não batesse, viria Seq Scan
+    class Rollback extends Error {}
+    const plan = async (sql: string, without: string) => {
+      let out = '';
+      await prisma
+        .$transaction(async (tx) => {
+          await tx.$executeRawUnsafe('SET LOCAL enable_seqscan = off');
+          await tx.$executeRawUnsafe(`DROP INDEX ${without}`);
+          const rows = await tx.$queryRawUnsafe<{ 'QUERY PLAN': string }[]>(`EXPLAIN ${sql}`);
+          out = rows.map((r) => r['QUERY PLAN']).join('\n');
+          throw new Rollback();
+        })
+        .catch((e) => {
+          if (!(e instanceof Rollback)) throw e;
+        });
+      return out;
+    };
+    const re = `'^https?://[^/]+/uploads/'`;
+    const selfie = await plan(
+      `SELECT 1 FROM users u WHERE u.verification_selfie_url IS NOT NULL AND regexp_replace(u.verification_selfie_url, ${re}, '') = ANY(ARRAY['p/x.jpg'])`,
+      'users_verification_selfie_url_idx',
+    );
+    expect(selfie).toContain('users_selfie_key_norm_idx');
+    expect(selfie).not.toContain('Seq Scan');
+    const cover = await plan(
+      `SELECT 1 FROM events e WHERE e.cover_url IS NOT NULL AND regexp_replace(e.cover_url, ${re}, '') = ANY(ARRAY['p/x.jpg'])`,
+      'events_cover_url_idx',
+    );
+    expect(cover).toContain('events_cover_key_norm_idx');
+    expect(cover).not.toContain('Seq Scan');
+    const evidence = await plan(
+      `SELECT 1 FROM reports rp WHERE rp.evidence_urls IS NOT NULL AND media_ref_keys(rp.evidence_urls) && ARRAY['p/x.jpg']`,
+      'reports_evidence_urls_idx',
+    );
+    expect(evidence).toContain('reports_evidence_keys_idx');
+    expect(evidence).not.toContain('Seq Scan');
+    // os índices continuam lá (a transação foi desfeita)
+    const [{ n }] = await prisma.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM pg_indexes
+       WHERE indexname IN ('users_verification_selfie_url_idx', 'events_cover_url_idx', 'reports_evidence_urls_idx')`;
+    expect(n).toBe(3);
+  });
+
+  it('media_ref_keys: cada item cru e normalizado; o que não é lista vira vazio', async () => {
+    const [r] = await prisma.$queryRaw<{ a: string[]; b: string[]; c: string[] }[]>`
+      SELECT media_ref_keys('["p/a.jpg", "http://h:3000/uploads/p/b.jpg"]'::jsonb) AS a,
+             media_ref_keys('{"x": 1}'::jsonb) AS b,
+             media_ref_keys(NULL) AS c`;
+    expect(r.a.sort()).toEqual(['http://h:3000/uploads/p/b.jpg', 'p/a.jpg', 'p/b.jpg']);
+    expect(r.b).toEqual([]);
+    expect(r.c).toEqual([]);
   });
 });
 

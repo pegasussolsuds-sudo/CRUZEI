@@ -45,7 +45,8 @@ let user: {
   verification_selfie_url: string | null;
 };
 let request: { id: string; user_id: string; requested_at: Date } | null;
-let openReports: number;
+/** denúncias em análise contra a pessoa (reporterId nulo = automática do sistema) */
+let openReports: { reporterId: string | null; reason: string }[];
 let releases: { id: bigint; phone: string }[];
 const queries: Call[] = [];
 const exec: Call[] = [];
@@ -74,7 +75,10 @@ const txBase: Record<string, unknown> = {
     exec.push(sqlOf(a0, rest));
     return 1;
   }),
-  report: model({ count: async () => openReports, findMany: async () => [] }),
+  report: model({
+    // em análise contra a pessoa (regra do bloqueio) × denúncias citadas como prova
+    findMany: async (a: { where: { status?: unknown } }) => (a.where.status ? openReports : []),
+  }),
   conversation: model({ findMany: async () => [] }),
   dataDeletionRequest: model({
     update: async ({ data }: { data: Record<string, unknown> }) => (ddrUpdates.push(data), {}),
@@ -159,7 +163,7 @@ beforeEach(() => {
     verification_selfie_url: null,
   };
   request = { id: REQ, user_id: U, requested_at: new Date(NOW.getTime() - 31 * DAY) };
-  openReports = 0;
+  openReports = [];
   releases = [];
   convPages = [];
   supportPages = [];
@@ -234,9 +238,49 @@ describe('limpeza × revisão (review_hold_at)', () => {
   });
 
   it('denúncia em análise segura mesmo depois do teto', async () => {
-    openReports = 1;
+    openReports = [{ reporterId: '0b000000-0000-4000-8000-00000000000b', reason: 'spam' }];
     user.review_hold_at = new Date(NOW.getTime() - 200 * DAY);
     request!.requested_at = new Date(NOW.getTime() - 150 * DAY);
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'held' });
+    expect(ddrUpdates[0]).toMatchObject({ holdReason: 'open_reports' });
+  });
+});
+
+describe('limpeza × denúncia automática (número reciclado de conta banida)', () => {
+  // o cadastro com o número cria a denúncia 'other' pending sem quem denunciou (auth.service) e liga a revisão
+  const recycled = { reporterId: null, reason: 'other' };
+
+  it('dentro do teto: segura como revisão (review_hold), não como denúncia aberta', async () => {
+    openReports = [recycled];
+    user.review_hold_at = new Date(NOW.getTime() - 40 * DAY);
+    request!.requested_at = new Date(NOW.getTime() - 40 * DAY);
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'held' });
+    expect(ddrUpdates[0]).toMatchObject({ holdReason: 'review_hold' });
+  });
+
+  it('passou do teto: limpa mesmo com a automática ainda pending (antes segurava pra sempre)', async () => {
+    openReports = [recycled];
+    user.review_hold_at = new Date(NOW.getTime() - 90 * DAY);
+    request!.requested_at = new Date(NOW.getTime() - 61 * DAY);
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'completed' });
+    // revisão que passou do teto guarda o número (como sempre)
+    expect(releaseCreates).toEqual([expect.objectContaining({ phone: PHONE })]);
+  });
+
+  it('automática sem revisão (GPS falso, filtro de golpe) também segura só até o teto', async () => {
+    openReports = [{ reporterId: null, reason: 'fake' }];
+    request!.requested_at = new Date(NOW.getTime() - 40 * DAY);
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'held' });
+    expect(ddrUpdates[0]).toMatchObject({ holdReason: 'review_hold' });
+
+    ddrUpdates.length = 0;
+    request!.requested_at = new Date(NOW.getTime() - 61 * DAY);
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'completed' });
+  });
+
+  it('automática de menor/abuso infantil segura sem prazo (LEGAL_KEEP_REASONS)', async () => {
+    openReports = [recycled, { reporterId: null, reason: 'underage' }];
+    request!.requested_at = new Date(NOW.getTime() - 400 * DAY);
     await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'held' });
     expect(ddrUpdates[0]).toMatchObject({ holdReason: 'open_reports' });
   });
@@ -286,5 +330,18 @@ describe('retenção diária', () => {
       exec.some((c) => /SET phone_hash = NULL/.test(c.text) && /phone_releases/.test(c.text)),
     ).toBe(true);
     expect(metaUpdates().some((c) => /u\.purged_at IS NOT NULL/.test(c.text))).toBe(true);
+  });
+
+  it('número que veio PRA conta limpa não banida: o vínculo (new_user_id) sai 6 meses depois da limpeza', async () => {
+    const out = await service.retention(NOW);
+    expect(out).toHaveProperty('releaseLinks');
+    const unlink = exec.find((c) => /SET new_user_id = NULL/.test(c.text))!;
+    expect(unlink.text).toContain('new_user_unlinked_at = now()');
+    expect(unlink.text).toMatch(/u\.id = pr\.new_user_id AND u\.purged_at </);
+    // só conta limpa NÃO banida (banida/suspensa/revisão: o histórico fica ligado)
+    expect(unlink.text).toMatch(/u\.account_status = 'active' AND u\.review_hold_at IS NULL/);
+    const cut = new Date(NOW);
+    cut.setMonth(cut.getMonth() - 6);
+    expect(unlink.values).toEqual([cut.toISOString()]);
   });
 });

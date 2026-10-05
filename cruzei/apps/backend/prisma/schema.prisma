@@ -152,7 +152,8 @@ model Photo {
 /// objeto no storage (driver local ou s3) e fila de remoção do arquivo (migration 20261005000100_media_objects).
 /// Upload novo: ownerId = quem subiu, deleteAfter = +24 h até ser anexado. Foto apagada: o gatilho photos_release_media
 /// enfileira (deleteAfter = agora; rótulo 'urgent' = +180 dias). O MediaGcService apaga com lease e checagem de referência.
-/// ownerId sem FK: sobrevive à limpeza da conta. CHECK media_objects_kind_chk ('photo') só na migration.
+/// ownerId sem FK: sobrevive à limpeza da conta. CHECK media_objects_kind_chk ('photo', 'held') só na migration.
+/// kind 'held' = cópia privada de foto retida por denúncia (held/<uuid>, migration 20261005000400_photo_held_refs).
 model MediaObject {
   key            String    @id @db.VarChar(200)
   ownerId        String?   @map("owner_id") @db.Uuid
@@ -168,6 +169,9 @@ model MediaObject {
   deleteAfter    DateTime? @map("delete_after") @db.Timestamptz(6)
   deleteAttempts Int       @default(0) @map("delete_attempts") @db.SmallInt
   lastError      String?   @map("last_error") @db.VarChar(200)
+  /// cópia PÚBLICA de foto retida: chave da cópia privada (held/); o GC apaga mesmo com o dono em retenção.
+  /// Lida/gravada só por SQL cru (MediaGcService)
+  movedTo        String?   @map("moved_to") @db.VarChar(200)
 
   @@index([ownerId], map: "media_objects_owner_idx")
   @@map("media_objects")
@@ -858,6 +862,9 @@ model PhoneRelease {
   releasedBy    String?       @map("released_by") @db.Uuid
   /// conta criada depois com este número
   newUserId     String?       @map("new_user_id") @db.Uuid
+  /// vínculo com a conta nova desligado (conta limpa não banida, 6 meses depois da limpeza); linha com a marca não
+  /// liga de novo no próximo cadastro. Lida/gravada só por SQL cru (PhoneReleaseService, AccountPurgeService)
+  newUserUnlinkedAt DateTime?   @map("new_user_unlinked_at") @db.Timestamptz(6)
   createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([userId, createdAt(sort: Desc)], map: "phone_releases_user_idx")

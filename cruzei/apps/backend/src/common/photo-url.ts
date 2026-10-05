@@ -5,13 +5,32 @@ import { randomUUID } from 'node:crypto';
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 /** chave aceita pelo storage: minúsculas, sem '..' nem '//', com extensão */
 const KEY_RE = /^[a-z0-9][a-z0-9/_-]*\.[a-z0-9]{1,5}$/;
-/** chave que o GC pode apagar: p/<uuid>.jpg, p/<uuid>-t.jpg e o legado <uuid>.<ext> / <uuid>-t.jpg na raiz */
-const MANAGED_RE = new RegExp(`^(p/)?${UUID}(-t\\.jpg|\\.[a-z0-9]{1,5})$`);
+/**
+ * chave que o GC pode apagar: p/<uuid>.jpg, p/<uuid>-t.jpg, o legado <uuid>.<ext> / <uuid>-t.jpg na raiz e a cópia
+ * privada da foto retida por denúncia (held/<uuid>.<ext>)
+ */
+const MANAGED_RE = new RegExp(`^(p/|held/)?${UUID}(-t\\.jpg|\\.[a-z0-9]{1,5})$`);
 const ABSOLUTE_RE = /^https?:\/\//i;
 /** URL legada servida pelo próprio backend: http(s)://<qualquer host>/uploads/<chave> */
 const LEGACY_PREFIX_RE = /^https?:\/\/[^/]+\/uploads\//i;
 
 export const PHOTO_KEY_MAX = 200;
+
+/**
+ * Prefixo da foto retida por denúncia de menor/abuso infantil: nunca vira URL pública (photoUrl devolve null), o
+ * /uploads recusa e no bucket fica fora do acesso público. Só a moderação lê, pela rota autenticada.
+ */
+export const HELD_PREFIX = 'held/';
+
+/** tipo do arquivo pela extensão da chave (as fotos novas são sempre JPEG; o legado pode ser png/webp/heic) */
+const IMAGE_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
 
 export function isValidKey(k: unknown): k is string {
   return (
@@ -33,6 +52,23 @@ export function isManagedKey(k: unknown): k is string {
 export function newPhotoKeys(): { key: string; thumbKey: string } {
   const id = randomUUID();
   return { key: `p/${id}.jpg`, thumbKey: `p/${id}-t.jpg` };
+}
+
+export function isHeldKey(k: unknown): boolean {
+  return typeof k === 'string' && k.startsWith(HELD_PREFIX);
+}
+
+/**
+ * Chave da cópia privada de uma foto retida: uuid NOVO (a URL pública antiga não leva até ela) e a mesma extensão
+ * do original (os bytes são copiados como estão).
+ */
+export function newHeldKey(sourceKey: string): string {
+  const ext = sourceKey.split('.').pop()?.toLowerCase() ?? '';
+  return `${HELD_PREFIX}${randomUUID()}.${IMAGE_TYPES[ext] ? ext : 'jpg'}`;
+}
+
+export function imageContentType(key: string): string {
+  return IMAGE_TYPES[key.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 }
 
 let cachedBase: string | null = null;
@@ -68,11 +104,13 @@ export function resetPhotoUrlCache(): void {
 /**
  * URL pública de uma foto gravada no banco. null → null; URL absoluta (legado/externa) passa direto; chave vira
  * `${BASE}/${segmentos codificados}`. Caminho estranho (absoluto, '..', '//', '\') devolve null em vez de montar lixo.
+ * Foto retida (held/) também devolve null: nunca sai como URL pública.
  */
 export function photoUrl(stored: string | null | undefined): string | null {
   if (!stored) return null;
   if (ABSOLUTE_RE.test(stored)) return stored;
   if (
+    isHeldKey(stored) ||
     stored.startsWith('/') ||
     stored.includes('..') ||
     stored.includes('//') ||

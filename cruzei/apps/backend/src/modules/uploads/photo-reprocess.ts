@@ -5,7 +5,7 @@
 // legado. Sem Nest: o script (src/database/scripts/photos-reprocess.ts) e os testes injetam banco, storage e pipeline.
 import type { Prisma, PrismaClient } from '@prisma/client';
 
-import { isManagedKey, keyFromPhotoUrl, newPhotoKeys } from '../../common/photo-url';
+import { isHeldKey, isManagedKey, keyFromPhotoUrl, newPhotoKeys } from '../../common/photo-url';
 
 import { processPhoto, type ProcessedPhoto } from './image-pipeline';
 import { isUrgentPhoto } from './photo-retention';
@@ -32,8 +32,9 @@ export interface ReprocessPlan {
   oldKeys: string[];
 }
 
+// held/ é a cópia privada da foto retida: nunca volta pra uma chave pública
 const isLegacyKey = (k: string | null): k is string =>
-  !!k && isManagedKey(k) && !k.startsWith('p/');
+  !!k && isManagedKey(k) && !k.startsWith('p/') && !isHeldKey(k);
 
 /**
  * Linha legada → plano; null quando não há o que fazer: já reprocessada (p/), fakes/ do seed, URL externa, ou original
@@ -45,7 +46,7 @@ export function legacyPlan(
   const main = keyFromPhotoUrl(row.url);
   const thumb = keyFromPhotoUrl(row.thumbnail_url);
   if (!isLegacyKey(main) && !isLegacyKey(thumb)) return null;
-  if (!main || !isManagedKey(main)) return null;
+  if (!main || !isManagedKey(main) || isHeldKey(main)) return null;
   const oldKeys = [...new Set([main, thumb].filter((k): k is string => !!k && isManagedKey(k)))];
   return { sourceKey: main, oldKeys };
 }
@@ -87,12 +88,16 @@ export interface ReprocessOptions {
   graceHours?: number;
 }
 
-/** linhas que podem ser legado (o filtro fino é o legacyPlan): tudo que não começa com p/ */
+/**
+ * linhas que podem ser legado (o filtro fino é o legacyPlan): tudo que não começa com p/. Fica de fora a foto retida
+ * por denúncia: é prova (os bytes ficam como vieram) e vai pra cópia privada held/ pelo MediaGcService, nunca pra p/
+ */
 export async function findLegacyPhotos(db: Pick<Db, '$queryRaw'>): Promise<LegacyPhotoRow[]> {
   return db.$queryRaw<LegacyPhotoRow[]>`
     SELECT id::text AS id, user_id::text AS user_id, url, thumbnail_url, moderation_labels
       FROM photos
-     WHERE url NOT LIKE 'p/%' OR (thumbnail_url IS NOT NULL AND thumbnail_url NOT LIKE 'p/%')
+     WHERE (url NOT LIKE 'p/%' OR (thumbnail_url IS NOT NULL AND thumbnail_url NOT LIKE 'p/%'))
+       AND (moderation_labels -> 'retainedByReport') IS NULL
      ORDER BY created_at, id`;
 }
 

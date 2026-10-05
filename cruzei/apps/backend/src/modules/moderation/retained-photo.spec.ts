@@ -16,8 +16,21 @@ const retainedLabels = withRetainedMark(
   { at: '2026-10-05T12:00:00.000Z', prevStatus: 'approved', wasMain: true },
 );
 
-function moderation(photoLabels: unknown) {
+const HELD = `held/${PHOTO}.jpg`;
+
+function moderation(
+  photoLabels: unknown,
+  opts: { url?: string; files?: Record<string, Buffer>; auditFails?: boolean } = {},
+) {
   const decide = jest.fn(async () => undefined);
+  const audit = jest.fn(async (a: unknown) => {
+    if (opts.auditFails) throw new Error('banco caiu');
+    return a;
+  });
+  const storage = {
+    driver: 'local',
+    get: jest.fn(async (k: string) => opts.files?.[k] ?? null),
+  };
   const prisma = {
     user: {
       findUnique: jest.fn(async () => ({
@@ -35,7 +48,7 @@ function moderation(photoLabels: unknown) {
         photos: [
           {
             id: PHOTO,
-            url: `p/${PHOTO}.jpg`,
+            url: HELD,
             status: 'rejected',
             isMain: false,
             rejectReason: null,
@@ -54,7 +67,15 @@ function moderation(photoLabels: unknown) {
     },
     report: { findMany: jest.fn(async () => []) },
     moderationAction: { findMany: jest.fn(async () => []) },
-    photo: { findUnique: jest.fn(async () => ({ id: PHOTO, moderationLabels: photoLabels })) },
+    photo: {
+      findUnique: jest.fn(async () => ({
+        id: PHOTO,
+        userId: U,
+        url: opts.url ?? HELD,
+        moderationLabels: photoLabels,
+      })),
+    },
+    auditLog: { create: audit },
   };
   const svc = new ModerationService(
     prisma as unknown as PrismaService,
@@ -63,8 +84,9 @@ function moderation(photoLabels: unknown) {
     {} as never,
     { decide } as unknown as PhotoModerationService,
     {} as never,
+    storage as never,
   );
-  return { svc, decide };
+  return { svc, decide, audit, storage };
 }
 
 describe('ModerationService com foto retida', () => {
@@ -75,6 +97,58 @@ describe('ModerationService com foto retida', () => {
       ['outra', false],
     ]);
     expect(d.user.mainPhotoUrl).toContain('p/outra.jpg');
+  });
+
+  it('a retida sai pela rota AUTENTICADA da moderação, nunca pela URL pública (held/ nem vira URL)', async () => {
+    const d = await moderation(null).svc.userDetail(U);
+    const retained = d.photos.find((p) => p.id === PHOTO)!;
+    expect(retained.url).toBe(`/v1/admin/photos/${PHOTO}/file`);
+    expect(JSON.stringify(d)).not.toContain('held/');
+    // a comum continua com a URL pública
+    expect(d.photos.find((p) => p.id === 'outra')!.url).toMatch(/^https?:\/\/.*\/p\/outra\.jpg$/);
+  });
+
+  it('arquivo da retida: lê do storage (held/), devolve o tipo e grava a abertura na trilha', async () => {
+    const m = moderation(retainedLabels, { files: { [HELD]: Buffer.from('prova') } });
+    const f = await m.svc.retainedPhotoFile('mod-1', PHOTO);
+    expect(f.body.toString()).toBe('prova');
+    expect(f.contentType).toBe('image/jpeg');
+    expect(m.storage.get).toHaveBeenCalledWith(HELD);
+    expect(m.audit).toHaveBeenCalledWith({
+      data: {
+        userId: 'mod-1',
+        action: 'admin.photo.retained_view',
+        metadata: expect.objectContaining({ target: { kind: 'user', id: U }, photoId: PHOTO }),
+      },
+    });
+  });
+
+  it('retida ainda na chave pública (o cron não moveu) também abre; falha da trilha não barra', async () => {
+    const legacy = `http://192.168.0.9:3000/uploads/${PHOTO}.png`;
+    const m = moderation(retainedLabels, {
+      url: legacy,
+      files: { [`${PHOTO}.png`]: Buffer.from('png') },
+      auditFails: true,
+    });
+    const f = await m.svc.retainedPhotoFile('mod-1', PHOTO);
+    expect(f.contentType).toBe('image/png');
+  });
+
+  it('foto que não é retida, URL externa ou arquivo sumido: 404 (sem gravar trilha)', async () => {
+    await expect(
+      moderation({ labels: [] }, { files: { [HELD]: Buffer.from('x') } }).svc.retainedPhotoFile(
+        'mod-1',
+        PHOTO,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    const ext = moderation(retainedLabels, { url: 'https://cdn.externo/x.jpg' });
+    await expect(ext.svc.retainedPhotoFile('mod-1', PHOTO)).rejects.toMatchObject({ status: 404 });
+    expect(ext.storage.get).not.toHaveBeenCalled();
+    const gone = moderation(retainedLabels);
+    await expect(gone.svc.retainedPhotoFile('mod-1', PHOTO)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(gone.audit).not.toHaveBeenCalled();
   });
 
   it('aprovar/recusar a retida: 400 e nada muda', async () => {

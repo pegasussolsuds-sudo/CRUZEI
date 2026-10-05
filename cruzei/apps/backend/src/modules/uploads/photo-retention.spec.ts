@@ -8,6 +8,7 @@ import {
   RETAINED_LABEL,
   retainedMark,
   retainedOrderIndex,
+  retainedPhotoPath,
   withRetainedMark,
 } from './photo-retention';
 
@@ -60,6 +61,13 @@ describe('photo-retention', () => {
     expect(retainedOrderIndex(3)).toBe(-1);
     expect(retainedOrderIndex(-1)).toBe(-2);
     expect(retainedOrderIndex(-5)).toBe(-6);
+  });
+
+  it('a ficha lê a retida pela rota autenticada da moderação (prefixo da API)', () => {
+    const id = '0c000000-0000-4000-8000-00000000000c';
+    expect(retainedPhotoPath(id, 'v1')).toBe(`/v1/admin/photos/${id}/file`);
+    expect(retainedPhotoPath(id, '/api/')).toBe(`/api/admin/photos/${id}/file`);
+    expect(retainedPhotoPath(id, '')).toBe(`/admin/photos/${id}/file`);
   });
 
   it('urgent aceita boolean ou o texto do gatilho', () => {

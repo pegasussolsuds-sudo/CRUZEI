@@ -81,19 +81,44 @@ export function reviewHoldDeadline(requestedAt: Date, graceDays: number): Date {
   return new Date(requestedAt.getTime() + (graceDays + REVIEW_HOLD_MAX_DAYS) * 86_400_000);
 }
 
+/** denúncia em análise contra a pessoa, do jeito que a regra da limpeza olha */
+export interface OpenReportRef {
+  reporterId: string | null;
+  reason: string;
+}
+
 /**
- * Por que a limpeza espera; null = pode limpar. Denúncia contra a pessoa em análise segura sem prazo (a decisão vem
- * antes). Revisão sem denúncia (ex.: número reciclado de conta banida) segura só até `deadline`: depois limpa, guardando
- * o mínimo (keepPhoneOnPurge com reviewHoldAt).
+ * Separa as denúncias em análise: `blocking` = feita por alguém (reporterId) ou de segurança infantil/menor
+ * (LEGAL_KEEP_REASONS) — segura sem prazo; `automatic` = gerada pelo sistema (número reciclado de conta banida, GPS
+ * falso, filtro de golpe: reporterId nulo) — segura só até o teto, como a revisão.
+ */
+export function splitOpenReports(reports: OpenReportRef[]): {
+  blocking: number;
+  automatic: number;
+} {
+  let blocking = 0;
+  for (const r of reports) {
+    if (r.reporterId || (LEGAL_KEEP_REASONS as readonly string[]).includes(r.reason)) blocking++;
+  }
+  return { blocking, automatic: reports.length - blocking };
+}
+
+/**
+ * Por que a limpeza espera; null = pode limpar. Denúncia de alguém (ou de segurança infantil/menor) em análise segura
+ * sem prazo (a decisão vem antes). Revisão sem denúncia (ex.: número reciclado de conta banida) ou denúncia automática
+ * em análise (a do número reciclado nasce 'pending' e ninguém precisa decidir pra conta sair) seguram só até `deadline`:
+ * depois limpa, guardando o mínimo (keepPhoneOnPurge com reviewHoldAt).
  */
 export function holdReasonFor(
-  openReportsAgainst: number,
+  blockingReportsAgainst: number,
   reviewHoldAt: Date | null,
   now: Date,
   deadline: Date,
+  automaticReportsAgainst = 0,
 ): HoldReason | null {
-  if (openReportsAgainst > 0) return 'open_reports';
-  if (reviewHoldAt && now.getTime() < deadline.getTime()) return 'review_hold';
+  if (blockingReportsAgainst > 0) return 'open_reports';
+  if ((reviewHoldAt || automaticReportsAgainst > 0) && now.getTime() < deadline.getTime())
+    return 'review_hold';
   return null;
 }
 
@@ -129,6 +154,26 @@ export function phoneReleaseHashExpirySql(purgedBefore: Date): Prisma.Sql {
     UPDATE phone_releases pr SET phone_hash = NULL
       FROM users u
      WHERE u.id = pr.user_id AND pr.phone_hash IS NOT NULL AND u.purged_at < ${utcSql(purgedBefore)}`;
+}
+
+/**
+ * Número que veio PRA uma conta limpa não banida (phone_releases.new_user_id = ela): passados PHONE_HASH_RETENTION_MONTHS
+ * da limpeza, o vínculo sai (new_user_id NULL + new_user_unlinked_at). A linha continua sendo o histórico da conta
+ * ANTIGA (o número inteiro fica se ela foi banida: evasão de banimento), mas não aponta mais pra pessoa que excluiu a
+ * conta. O IP/porta/app do pedido dela (sem admin) sai junto, se ainda estiver lá. A marca impede que o cadastro
+ * seguinte com o número pegue a linha de novo (PhoneReleaseService.pendingReleases).
+ */
+export function phoneReleaseUnlinkSql(purgedBefore: Date): Prisma.Sql {
+  return Prisma.sql`
+    UPDATE phone_releases pr
+       SET new_user_id = NULL,
+           new_user_unlinked_at = now(),
+           ip = CASE WHEN pr.released_by IS NULL THEN NULL ELSE pr.ip END,
+           port = CASE WHEN pr.released_by IS NULL THEN NULL ELSE pr.port END,
+           user_agent = CASE WHEN pr.released_by IS NULL THEN NULL ELSE pr.user_agent END
+      FROM users u
+     WHERE u.id = pr.new_user_id AND u.purged_at < ${utcSql(purgedBefore)}
+       AND u.account_status = 'active' AND u.review_hold_at IS NULL`;
 }
 
 /** motivos de LEGAL_KEEP_REASONS como lista SQL ('child_safety', 'underage') */

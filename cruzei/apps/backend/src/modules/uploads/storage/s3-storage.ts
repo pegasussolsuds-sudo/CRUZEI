@@ -2,7 +2,7 @@
 // forcePathStyle=false usa virtual-host (<bucket>.<host>) da AWS. Retry em erro de rede, 5xx e 429; 403 e outros 4xx
 // não repetem. Mensagem de erro leva método, status, <Code> e a chave — nunca headers nem segredo.
 import { assertKey } from './assert-key';
-import type { ObjectStorage } from './object-storage';
+import type { ObjectStorage, PutOptions } from './object-storage';
 import { EMPTY_SHA256, sha256Hex, signV4, uriEncode } from './sigv4';
 
 export interface S3Config {
@@ -76,10 +76,10 @@ export class S3ObjectStorage implements ObjectStorage {
     );
   }
 
-  async put(key: string, body: Buffer, contentType: string): Promise<void> {
+  async put(key: string, body: Buffer, contentType: string, opts: PutOptions = {}): Promise<void> {
     const res = await this.send('PUT', key, body, {
       'content-type': contentType,
-      'cache-control': this.cfg.cacheControl,
+      'cache-control': opts.cacheControl ?? this.cfg.cacheControl,
     });
     await this.expect(res, 'PUT', key, [200]);
   }

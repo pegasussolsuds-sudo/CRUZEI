@@ -1,8 +1,10 @@
 // Foto retida por denúncia: o dono apagou com denúncia underage/child_safety pendente ou em análise contra ele. A linha
 // fica em photos (a ficha da moderação continua mostrando, com a marca), mas some do perfil do dono e do público:
 // status vira 'rejected' (toda consulta pública exige 'approved'), deixa de ser principal e vai pra um order_index
-// negativo (fora do UNIQUE dos visíveis). A marca mora em moderation_labels.retainedByReport (sem coluna nova). Quando
-// não sobra denúncia dessas aberta, MediaGcService.releaseRetainedPhotos apaga de verdade (gatilho → fila → GC).
+// negativo (fora do UNIQUE dos visíveis). A marca mora em moderation_labels.retainedByReport (sem coluna nova). O
+// arquivo vai pra uma cópia privada held/<uuid novo> (a pública sai no GC) e a ficha lê pela rota autenticada
+// (retainedPhotoPath). Quando não sobra denúncia dessas aberta, MediaGcService.releaseRetainedPhotos apaga de verdade
+// (gatilho → fila → GC; fechada com ação, 180 dias).
 // Funções puras: usadas no UsersService, na moderação, na cópia dos dados e no GC.
 import type { Prisma } from '@prisma/client';
 
@@ -52,6 +54,18 @@ export function ownerVisible<T extends { moderationLabels?: unknown }>(photos: T
 /** order_index da foto retida: abaixo de tudo (negativo), sem bater no UNIQUE(user_id, order_index) */
 export function retainedOrderIndex(minOrderIndex: number | null | undefined): number {
   return Math.min(minOrderIndex ?? 0, 0) - 1;
+}
+
+/**
+ * Onde a ficha da moderação lê a retida: rota AUTENTICADA (Bearer de moderador/admin), relativa à origem da API. O
+ * arquivo mora em held/ (fora do /uploads e do acesso público do bucket); a URL pública nunca é montada pra ela.
+ */
+export function retainedPhotoPath(
+  photoId: string,
+  apiPrefix = process.env.API_PREFIX ?? 'v1',
+): string {
+  const prefix = apiPrefix.replace(/^\/+|\/+$/g, '');
+  return `/${prefix ? `${prefix}/` : ''}admin/photos/${encodeURIComponent(photoId)}/file`;
 }
 
 /** foto marcada 'urgent' pela análise (possível menor): o arquivo fica 180 dias depois de sair (= gatilho) */

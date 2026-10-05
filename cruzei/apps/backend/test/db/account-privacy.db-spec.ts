@@ -547,15 +547,46 @@ describe('limpeza definitiva no fim do prazo', () => {
       await prisma.phoneRelease.count({ where: { userId: anaId, phone: { not: null } } }),
     ).toBe(0);
 
+    // até os 6 meses: as linhas que deram o número pra Ana continuam ligadas a ela (histórico da conta antiga)
+    expect(
+      await prisma.phoneRelease.count({
+        where: { id: { in: [inOld.id, inRecent.id] }, newUserId: anaId },
+      }),
+    ).toBe(2);
+
     // 200 dias depois: IP do pedido recente e o hash (6 meses depois da limpeza) saem na retenção
     const out2 = await purge.retention(new Date(Date.now() + 200 * DAY));
-    expect(out2).toMatchObject({ releaseMeta: 1, releaseHashes: 1 });
+    expect(out2).toMatchObject({ releaseMeta: 1, releaseHashes: 1, releaseLinks: 2 });
     expect(
       (await prisma.phoneRelease.findUniqueOrThrow({ where: { id: inRecent.id } })).ip,
     ).toBeNull();
     expect(
       (await prisma.phoneRelease.findUniqueOrThrow({ where: { id: out.id } })).phoneHash,
     ).toBeNull();
+    // ... e o vínculo com a conta limpa sai (com a marca); a linha fica como histórico da conta antiga
+    const links = await prisma.$queryRaw<
+      {
+        id: bigint;
+        new_user_id: string | null;
+        new_user_unlinked_at: Date | null;
+        phone: string | null;
+      }[]
+    >`SELECT id, new_user_id::text AS new_user_id, new_user_unlinked_at, phone FROM phone_releases
+       WHERE id = ANY(${[inOld.id, inRecent.id].map(String)}::bigint[])`;
+    expect(links).toHaveLength(2);
+    for (const l of links) {
+      expect(l.new_user_id).toBeNull();
+      expect(l.new_user_unlinked_at).not.toBeNull();
+      expect(l.phone).toBe(anaPhone);
+    }
+    // a marca impede que o próximo cadastro com o número pegue essas linhas de novo
+    expect(await phones.pendingReleases(prisma as never, anaPhone)).toEqual([]);
+    // a linha em que o número SAIU da Ana não tem vínculo a desligar (newUserId = Caio, conta viva)
+    expect((await prisma.phoneRelease.findUniqueOrThrow({ where: { id: out.id } })).newUserId).toBe(
+      caioId,
+    );
+    // rodar de novo não faz nada
+    expect((await purge.retention(new Date(Date.now() + 200 * DAY))).releaseLinks).toBe(0);
   });
 
   it('revisão sem denúncia: segura até o teto; passou, limpa guardando o número', async () => {
@@ -581,6 +612,56 @@ describe('limpeza definitiva no fim do prazo', () => {
       reason: 'account_deleted',
       accountStatus: 'active',
     });
+  });
+
+  it('número reciclado de conta banida: a denúncia automática (sem quem denunciou) segura só até o teto', async () => {
+    // o cadastro com o número cria isto (auth.service): revisão + denúncia 'other' pending, reporter_id NULL
+    await prisma.user.update({ where: { id: anaId }, data: { reviewHoldAt: new Date() } });
+    await prisma.report.create({
+      data: {
+        reporterId: null,
+        reportedId: anaId,
+        reason: 'other',
+        priority: 1,
+        status: 'pending',
+      },
+    });
+    await deletion.request(anaId, { confirm: 'EXCLUIR' });
+    await expireRequest(anaId);
+    expect(await purge.purgeDue(5)).toMatchObject({ held: 1, completed: 0 });
+    expect(
+      (await prisma.dataDeletionRequest.findFirstOrThrow({ where: { userId: anaId } })).holdReason,
+    ).toBe('review_hold');
+    // passou do teto: limpa mesmo com a automática ainda pending (antes ficava segurada pra sempre)
+    await prisma.dataDeletionRequest.updateMany({
+      where: { userId: anaId },
+      data: {
+        requestedAt: new Date(Date.now() - 61 * DAY),
+        scheduledFor: new Date(Date.now() - 60_000),
+      },
+    });
+    expect(await purge.purgeDue(5)).toMatchObject({ completed: 1 });
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: anaId } })).purgedAt).not.toBeNull();
+    // a denúncia continua lá (aponta pra conta limpa)
+    expect(await prisma.report.count({ where: { reportedId: anaId } })).toBe(1);
+  });
+
+  it('denúncia automática de menor/abuso infantil segura sem prazo, mesmo depois do teto', async () => {
+    await prisma.report.create({
+      data: { reporterId: null, reportedId: anaId, reason: 'underage', status: 'pending' },
+    });
+    await deletion.request(anaId, { confirm: 'EXCLUIR' });
+    await prisma.dataDeletionRequest.updateMany({
+      where: { userId: anaId },
+      data: {
+        requestedAt: new Date(Date.now() - 400 * DAY),
+        scheduledFor: new Date(Date.now() - 60_000),
+      },
+    });
+    expect(await purge.purgeDue(5)).toMatchObject({ held: 1, completed: 0 });
+    expect(
+      (await prisma.dataDeletionRequest.findFirstOrThrow({ where: { userId: anaId } })).holdReason,
+    ).toBe('open_reports');
   });
 
   it('cancelou antes da limpeza: pedido cancelado não é pego', async () => {

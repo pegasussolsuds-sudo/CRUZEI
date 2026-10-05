@@ -32,13 +32,21 @@ export class MediaGcTask {
     }
   }
 
-  /** fotos retidas por denúncia (photo-retention.ts) cuja denúncia já fechou: saem de hora em hora */
+  /**
+   * Fotos retidas por denúncia (photo-retention.ts), de hora em hora: as de denúncia já fechada saem; as que ainda
+   * apontam pra chave pública (cópia que não deu na hora, ou de antes da held/) vão pra cópia privada.
+   */
   @Cron('7 * * * *', { name: 'media-retained-release' })
   async releaseRetained(): Promise<void> {
     try {
       await this.gc.releaseRetainedPhotos();
     } catch (err) {
       this.logger.warn(`soltar fotos retidas falhou: ${(err as Error).message}`);
+    }
+    try {
+      await this.gc.moveRetainedToHeld();
+    } catch (err) {
+      this.logger.warn(`mover fotos retidas pra held/ falhou: ${(err as Error).message}`);
     }
   }
 }

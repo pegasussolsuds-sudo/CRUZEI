@@ -14,13 +14,15 @@ import type {
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import { maskPhone } from '../../common/phone-mask';
-import { photoUrl } from '../../common/photo-url';
+import { imageContentType, isManagedKey, keyFromPhotoUrl, photoUrl } from '../../common/photo-url';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
@@ -32,7 +34,12 @@ import {
   sanitizeContext,
   type ReportContextInput,
 } from '../reports/report-context';
-import { isRetainedPhoto } from '../uploads/photo-retention';
+import { isRetainedPhoto, retainedPhotoPath } from '../uploads/photo-retention';
+import {
+  OBJECT_STORAGE,
+  sharedObjectStorage,
+  type ObjectStorage,
+} from '../uploads/storage/object-storage';
 
 import { PhotoModerationService } from './photo-moderation.service';
 
@@ -82,7 +89,14 @@ export class ModerationService {
     private readonly gateway: ChatGateway,
     private readonly photos: PhotoModerationService,
     private readonly notify: NotifyService,
+    /** storage das fotos (UploadsModule global): a retida em held/ só sai por aqui, pra moderação */
+    @Optional() @Inject(OBJECT_STORAGE) private storageRef?: ObjectStorage,
   ) {}
+
+  private get storage(): ObjectStorage {
+    this.storageRef ??= sharedObjectStorage();
+    return this.storageRef;
+  }
 
   // ---------------------------------------------------------------------------------------------
   // automático
@@ -261,14 +275,21 @@ export class ModerationService {
         instagram: u.instagramHandle ?? null,
         phoneMasked: maskPhone(u.phone),
       },
-      photos: u.photos.map((p) => ({
-        id: p.id,
-        url: photoUrl(p.url) ?? p.url,
-        status: p.status,
-        isMain: p.isMain,
-        rejectReason: p.rejectReason,
-        retained: isRetainedPhoto(p.moderationLabels),
-      })),
+      photos: u.photos.map((p) => {
+        const retained = isRetainedPhoto(p.moderationLabels);
+        return {
+          id: p.id,
+          // retida com arquivo nosso: rota autenticada (Bearer de staff), nunca a URL pública
+          url:
+            retained && isManagedKey(keyFromPhotoUrl(p.url))
+              ? retainedPhotoPath(p.id)
+              : (photoUrl(p.url) ?? p.url),
+          status: p.status,
+          isMain: p.isMain,
+          rejectReason: p.rejectReason,
+          retained,
+        };
+      }),
       reports: reports.map((r) => this.report(r)),
       actions: actions.map((a) => ({
         action: a.action,
@@ -417,6 +438,41 @@ export class ModerationService {
           : null,
     });
     return { ok: true };
+  }
+
+  /**
+   * Arquivo da foto retida por denúncia, pra ficha da moderação (rota autenticada, só staff). Só a retida: as outras
+   * têm URL pública. Lê de held/ (ou da chave pública, se o cron ainda não moveu). Cada abertura fica na trilha do
+   * painel (audit_log 'admin.photo.retained_view'): é material de denúncia de menor/abuso infantil.
+   */
+  async retainedPhotoFile(
+    viewerId: string,
+    photoId: string,
+  ): Promise<{ body: Buffer; contentType: string }> {
+    const p = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+      select: { userId: true, url: true, moderationLabels: true },
+    });
+    if (!p || !isRetainedPhoto(p.moderationLabels))
+      throw new NotFoundException('Foto não encontrada');
+    const key = keyFromPhotoUrl(p.url);
+    if (!isManagedKey(key)) throw new NotFoundException('Foto não encontrada');
+    const body = await this.storage.get(key);
+    if (!body) throw new NotFoundException('Arquivo da foto não encontrado');
+    await this.prisma.auditLog
+      .create({
+        data: {
+          userId: viewerId,
+          action: 'admin.photo.retained_view',
+          metadata: {
+            target: { kind: 'user', id: p.userId },
+            detail: `foto retida ${photoId}`,
+            photoId,
+          },
+        },
+      })
+      .catch((e: Error) => this.log.error(`trilha da foto retida não gravada: ${e.message}`));
+    return { body, contentType: imageContentType(key) };
   }
 
   // ---------------------------------------------------------------------------------------------

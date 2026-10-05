@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 import { assertKey } from './assert-key';
-import type { ObjectStorage } from './object-storage';
+import type { ObjectStorage, PutOptions } from './object-storage';
 
 export class LocalObjectStorage implements ObjectStorage {
   readonly driver = 'local' as const;
@@ -24,7 +24,8 @@ export class LocalObjectStorage implements ObjectStorage {
     return p;
   }
 
-  async put(key: string, body: Buffer, _contentType: string): Promise<void> {
+  // Cache-Control não se aplica no disco (o /uploads põe o seu e nunca serve held/)
+  async put(key: string, body: Buffer, _contentType: string, _opts?: PutOptions): Promise<void> {
     const p = this.pathFor(key);
     await fs.mkdir(path.dirname(p), { recursive: true });
     const tmp = `${p}.${randomUUID()}.tmp`;

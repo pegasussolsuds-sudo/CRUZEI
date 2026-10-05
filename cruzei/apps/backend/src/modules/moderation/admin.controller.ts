@@ -1,10 +1,23 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UseGuards } from '@nestjs/common';
-import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import type { ModerationDecision } from '@cruzei/shared-types';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Res,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
+import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import type { Response } from 'express';
+
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
-import { ModeratorGuard } from './moderator.guard';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+
 import { ModerationService } from './moderation.service';
+import { ModeratorGuard } from './moderator.guard';
 
 class ActionDto {
   @IsIn(['dismiss', 'warn', 'suspend', 'ban', 'reinstate']) action!: ModerationDecision;
@@ -32,12 +45,41 @@ export class AdminController {
   // GET /admin/users/:id mudou pro painel (AdminUsersController): devolve esta ficha + o resto, no mesmo formato
 
   @Post('users/:id/action')
-  act(@CurrentUser() me: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ActionDto) {
+  act(
+    @CurrentUser() me: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ActionDto,
+  ) {
     return this.svc.act(me, id, dto);
   }
 
   @Post('photos/:id')
-  photo(@CurrentUser() me: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: PhotoDecisionDto) {
+  photo(
+    @CurrentUser() me: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PhotoDecisionDto,
+  ) {
     return this.svc.photoDecision(me.id, id, dto.decision, dto.reason);
+  }
+
+  /**
+   * Foto retida por denúncia (held/): só por aqui, com o Bearer de moderador/admin. Nada de cache (nem do navegador),
+   * nosniff e CSP sandbox (o arquivo legado pode não ser imagem de verdade).
+   */
+  @Get('photos/:id/file')
+  async photoFile(
+    @CurrentUser() me: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const f = await this.svc.retainedPhotoFile(me.id, id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    return new StreamableFile(f.body, {
+      type: f.contentType,
+      disposition: 'inline',
+      length: f.body.length,
+    });
   }
 }

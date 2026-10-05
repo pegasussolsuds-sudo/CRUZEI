@@ -165,19 +165,23 @@ export class PhoneReleaseService {
     tx: Tx,
     phone: string,
   ): Promise<{ id: bigint; userId: string; accountStatus: AccountStatus; createdAt: Date }[]> {
-    return tx.phoneRelease.findMany({
-      where: { phone, newUserId: null },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, userId: true, accountStatus: true, createdAt: true },
-    });
+    // SQL cru: new_user_unlinked_at (vínculo desligado da conta limpa, migration 20261005000410) não está no client.
+    // Linha desligada já teve dono: não liga de novo no próximo cadastro com o número
+    return tx.$queryRaw<
+      { id: bigint; userId: string; accountStatus: AccountStatus; createdAt: Date }[]
+    >`
+      SELECT id, user_id::text AS "userId", account_status::text AS "accountStatus", created_at AS "createdAt"
+        FROM phone_releases
+       WHERE phone = ${phone} AND new_user_id IS NULL AND new_user_unlinked_at IS NULL
+       ORDER BY created_at DESC`;
   }
 
   async linkNewAccount(tx: Tx, releaseIds: bigint[], newUserId: string): Promise<void> {
     if (!releaseIds.length) return;
-    await tx.phoneRelease.updateMany({
-      where: { id: { in: releaseIds }, newUserId: null },
-      data: { newUserId },
-    });
+    await tx.$executeRaw`
+      UPDATE phone_releases SET new_user_id = ${newUserId}::uuid
+       WHERE id = ANY(${releaseIds.map(String)}::bigint[])
+         AND new_user_id IS NULL AND new_user_unlinked_at IS NULL`;
   }
 
   /** a liberação veio de conta banida/suspensa? (evasão de banimento: a conta nova entra em revisão) */

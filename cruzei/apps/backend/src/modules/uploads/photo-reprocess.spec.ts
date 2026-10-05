@@ -51,6 +51,11 @@ describe('legacyPlan (pura)', () => {
     }
   });
 
+  it('cópia privada da foto retida (held/) nunca volta pra uma chave pública', () => {
+    expect(legacyPlan({ url: `held/${U(7)}.jpg`, thumbnail_url: `held/${U(7)}.jpg` })).toBeNull();
+    expect(legacyPlan({ url: `held/${U(7)}.png`, thumbnail_url: null })).toBeNull();
+  });
+
   it('original novo com miniatura legada (raro): refaz o par e larga os dois', () => {
     expect(legacyPlan({ url: `p/${U(6)}.jpg`, thumbnail_url: `${U(6)}-t.jpg` })).toEqual({
       sourceKey: `p/${U(6)}.jpg`,
@@ -119,6 +124,13 @@ const legacyRow = (n: number, extra: Partial<LegacyPhotoRow> = {}): LegacyPhotoR
 });
 
 describe('reprocessLegacyPhotos', () => {
+  it('a busca do legado deixa de fora a foto retida por denúncia (é prova; vai pra held/)', async () => {
+    const t = setup([]);
+    await reprocessLegacyPhotos({ db: t.db as never, storage: t.storage, process: t.process });
+    const sql = (t.db.$queryRaw.mock.calls[0] as unknown[])[0] as TemplateStringsArray;
+    expect(sql.join('?')).toContain("(moderation_labels -> 'retainedByReport') IS NULL");
+  });
+
   it('troca a linha pela cópia nova, registra o objeto e põe os antigos no GC com folga', async () => {
     const t = setup(
       [legacyRow(1), { ...legacyRow(9), url: 'fakes/fake-1.jpg', thumbnail_url: null }],

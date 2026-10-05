@@ -1,3 +1,4 @@
+import { PRIVATE_CACHE_CONTROL } from './object-storage';
 import { S3ObjectStorage, StorageRequestError, type S3Config } from './s3-storage';
 import {
   canonicalQuery,
@@ -140,6 +141,19 @@ describe('S3ObjectStorage — operações', () => {
     expect(c.headers.authorization).toContain(
       'SignedHeaders=cache-control;content-type;host;x-amz-content-sha256;x-amz-date',
     );
+    expectValidSignature(c);
+  });
+
+  it('PUT da foto retida (held/): Cache-Control privado no lugar do público, assinado', async () => {
+    const f = fakeFetch(new Response(null, { status: 200 }));
+    await storage(f.fetch).put(
+      'held/3f2b8c1e-9a4d-4e2f-8b7a-1c2d3e4f5a6b.jpg',
+      Buffer.from('prova'),
+      'image/jpeg',
+      { cacheControl: PRIVATE_CACHE_CONTROL },
+    );
+    const [c] = f.calls;
+    expect(c.headers['cache-control']).toBe('private, no-store');
     expectValidSignature(c);
   });
 

@@ -8,11 +8,13 @@ import { isRetainedPhoto, RETAINED_LABEL } from '../uploads/photo-retention';
 import { UsersService } from './users.service';
 
 // Apagar foto com denúncia underage/child_safety aberta contra o dono: a foto NÃO sai (some da frente do moderador);
-// fica retida — fora do perfil do dono e do público, na ficha com a marca — e o dono vê sumir igual. Banco falso em
-// memória; a transação de verdade (travas, gatilho) está em test/db/media.db-spec.ts.
+// fica retida — fora do perfil do dono e do público, na ficha com a marca — e o dono vê sumir igual. O arquivo vai pra
+// uma cópia privada (held/) e a pública sai no GC. Banco falso em memória; a transação de verdade (travas, gatilho,
+// storage) está em test/db/media.db-spec.ts.
 
 const OWNER = '0a000000-0000-4000-8000-00000000000a';
 const pid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const HELD = 'held/0b000000-0000-4000-8000-00000000000b.jpg';
 
 type PhotoRow = {
   id: string;
@@ -26,7 +28,16 @@ type PhotoRow = {
   moderationLabels: unknown;
 };
 
-function setup(opts: { held?: boolean; photos?: Partial<PhotoRow>[] } = {}) {
+function setup(
+  opts: {
+    held?: boolean;
+    /** retenção na checagem de antes da transação (padrão = held) */
+    heldBefore?: boolean;
+    /** o que a cópia privada devolve (null = não deu) */
+    copy?: string | null;
+    photos?: Partial<PhotoRow>[];
+  } = {},
+) {
   let photos: PhotoRow[] = (opts.photos ?? [{}, {}, {}]).map((p, i) => ({
     id: pid(i + 1),
     userId: OWNER,
@@ -88,6 +99,13 @@ function setup(opts: { held?: boolean; photos?: Partial<PhotoRow>[] } = {}) {
   };
   const prisma = {
     $transaction: jest.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
+    // checagem de retenção ANTES da transação (a cópia privada sai fora das travas)
+    $queryRaw: jest.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      if (!sql.includes('FROM reports')) throw new Error(`SQL inesperado: ${sql}`);
+      expect(values[1]).toEqual(['underage', 'child_safety']);
+      return (opts.heldBefore ?? opts.held) ? [{ id: OWNER }] : [];
+    }),
     photo: {
       ...tx.photo,
       updateMany: jest.fn(
@@ -112,14 +130,26 @@ function setup(opts: { held?: boolean; photos?: Partial<PhotoRow>[] } = {}) {
   };
   const redis = { invalidateProfile: jest.fn(async () => undefined) };
   const kick = jest.fn();
+  const gc = {
+    kick,
+    copyToHeld: jest.fn(async () => (opts.copy === undefined ? HELD : opts.copy)),
+    attachHeld: jest.fn(
+      async (_tx: unknown, _owner: string, _held: string, url: string, thumb: string | null) =>
+        [url, thumb].filter((k): k is string => !!k),
+    ),
+    abandonHeld: jest.fn(async () => undefined),
+  };
   const svc = new UsersService(
     prisma as unknown as PrismaService,
     redis as unknown as RedisService,
     {} as PhotoModerationService,
     {} as ChatGateway,
-    { kick } as unknown as MediaGcService,
+    gc as unknown as MediaGcService,
   );
-  return { svc, tx, prisma, redis, kick, actions, locks, all: () => photos };
+  const drop = (id: string) => {
+    photos = photos.filter((p) => p.id !== id);
+  };
+  return { svc, tx, prisma, redis, kick, gc, actions, locks, all: () => photos, drop };
 }
 
 describe('UsersService.deletePhoto — retenção por denúncia', () => {
@@ -134,9 +164,12 @@ describe('UsersService.deletePhoto — retenção por denúncia', () => {
     expect(t.actions).toHaveLength(0);
     // trava a conta e depois a foto (a mesma ordem do decide: sem deadlock)
     expect(t.locks).toEqual(['user', 'photo']);
+    // sem retenção: nem tenta a cópia privada
+    expect(t.gc.copyToHeld).not.toHaveBeenCalled();
+    expect(t.gc.abandonHeld).not.toHaveBeenCalled();
   });
 
-  it('com denúncia underage/child_safety aberta: a foto fica retida (não sai do banco nem do storage)', async () => {
+  it('com denúncia underage/child_safety aberta: a foto fica retida (a linha fica) e o arquivo vai pra cópia privada', async () => {
     const t = setup({
       held: true,
       photos: [{ moderationLabels: { labels: ['menor'], urgent: true } }, {}, {}],
@@ -144,8 +177,24 @@ describe('UsersService.deletePhoto — retenção por denúncia', () => {
     await expect(t.svc.deletePhoto(OWNER, pid(1))).resolves.toEqual({ ok: true });
 
     expect(t.tx.photo.delete).not.toHaveBeenCalled();
-    expect(t.kick).not.toHaveBeenCalled();
+    // cópia do arquivo que a linha aponta, ANTES da transação (storage lento não segura as travas)
+    expect(t.gc.copyToHeld).toHaveBeenCalledWith(OWNER, `p/${pid(1)}.jpg`);
+    expect(t.gc.copyToHeld.mock.invocationCallOrder[0]).toBeLessThan(
+      t.prisma.$transaction.mock.invocationCallOrder[0],
+    );
+    // a linha aponta pra cópia privada; as públicas vão pra fila (na transação) e pro GC (depois do commit)
+    expect(t.gc.attachHeld).toHaveBeenCalledWith(
+      t.tx,
+      OWNER,
+      HELD,
+      `p/${pid(1)}.jpg`,
+      `p/${pid(1)}-t.jpg`,
+    );
+    expect(t.kick).toHaveBeenCalledWith([`p/${pid(1)}.jpg`, `p/${pid(1)}-t.jpg`]);
+    expect(t.gc.abandonHeld).not.toHaveBeenCalled();
     const kept = t.all().find((p) => p.id === pid(1))!;
+    expect(kept.url).toBe(HELD);
+    expect(kept.thumbnailUrl).toBe(HELD);
     // fora do público (status) e do perfil do dono (marca), abaixo de tudo, sem ser principal
     expect(kept.status).toBe('rejected');
     expect(kept.isMain).toBe(false);
@@ -177,6 +226,36 @@ describe('UsersService.deletePhoto — retenção por denúncia', () => {
     expect(t.redis.invalidateProfile).toHaveBeenCalledWith(OWNER);
     // completude conta só as visíveis
     expect(t.prisma.user.update).toHaveBeenCalled();
+  });
+
+  it('cópia privada não deu (storage fora): retém no lugar, nada vai pro GC (o cron move depois)', async () => {
+    const t = setup({ held: true, copy: null });
+    await expect(t.svc.deletePhoto(OWNER, pid(1))).resolves.toEqual({ ok: true });
+    const kept = t.all().find((p) => p.id === pid(1))!;
+    expect(isRetainedPhoto(kept.moderationLabels)).toBe(true);
+    expect(kept.url).toBe(`p/${pid(1)}.jpg`);
+    expect(t.gc.attachHeld).not.toHaveBeenCalled();
+    expect(t.kick).not.toHaveBeenCalled();
+  });
+
+  it('denúncia fechou entre a cópia e a transação: apaga de verdade e a cópia privada vai pro GC', async () => {
+    const t = setup({ held: false, heldBefore: true });
+    await t.svc.deletePhoto(OWNER, pid(1));
+    expect(t.tx.photo.delete).toHaveBeenCalled();
+    expect(t.kick).toHaveBeenCalledWith([`p/${pid(1)}.jpg`, `p/${pid(1)}-t.jpg`]);
+    expect(t.gc.attachHeld).not.toHaveBeenCalled();
+    expect(t.gc.abandonHeld).toHaveBeenCalledWith(HELD);
+  });
+
+  it('foto sumiu entre a cópia e a transação (404): a cópia privada vai pro GC na hora', async () => {
+    const t = setup({ held: true });
+    t.gc.copyToHeld.mockImplementationOnce(async () => {
+      t.drop(pid(1)); // outro pedido apagou no meio
+      return HELD;
+    });
+    await expect(t.svc.deletePhoto(OWNER, pid(1))).rejects.toMatchObject({ status: 404 });
+    expect(t.gc.abandonHeld).toHaveBeenCalledWith(HELD);
+    expect(t.kick).not.toHaveBeenCalled();
   });
 
   it('segunda retida vai pra baixo da primeira (sem bater no UNIQUE)', async () => {

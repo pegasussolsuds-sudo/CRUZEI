@@ -9,9 +9,17 @@ import { S3ObjectStorage, type S3Deps } from './s3-storage';
 
 export { assertKey } from './assert-key';
 
+export interface PutOptions {
+  /** sobrescreve o Cache-Control público (STORAGE_CACHE_CONTROL); a foto retida vai com PRIVATE_CACHE_CONTROL */
+  cacheControl?: string;
+}
+
+/** objeto que nunca pode parar em cache de CDN/navegador (foto retida por denúncia, held/) */
+export const PRIVATE_CACHE_CONTROL = 'private, no-store';
+
 export interface ObjectStorage {
   readonly driver: StorageDriver;
-  put(key: string, body: Buffer, contentType: string): Promise<void>;
+  put(key: string, body: Buffer, contentType: string, opts?: PutOptions): Promise<void>;
   /** null quando não existe */
   get(key: string): Promise<Buffer | null>;
   exists(key: string): Promise<boolean>;

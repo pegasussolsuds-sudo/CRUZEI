@@ -636,12 +636,18 @@ export class UsersService {
    * Apaga a foto: o gatilho photos_release_media põe original e miniatura na fila media_objects (rótulo 'urgent' =
    * guarda 180 dias) e o GC apaga o arquivo logo depois do commit. Com denúncia underage/child_safety pendente ou em
    * análise contra o dono, a foto NÃO sai (sumiria da frente do moderador): fica retida — some do perfil dele e do
-   * público, a ficha da moderação mostra com a marca — até a denúncia fechar (photo-retention.ts). Pro dono é igual:
-   * a foto some. Reindexa e garante uma principal na mesma transação.
+   * público, a ficha da moderação mostra com a marca — até a denúncia fechar (photo-retention.ts). O arquivo da
+   * retida vai pra uma cópia privada (held/, fora do /uploads e do acesso público do bucket) e a cópia pública sai no
+   * GC; se a cópia não der, retém no lugar e o cron move depois. Pro dono é igual: a foto some. Reindexa e garante uma
+   * principal na mesma transação.
    */
   async deletePhoto(userId: string, photoId: string) {
     if (!UUID_RE.test(photoId)) throw new NotFoundException('Foto não encontrada');
-    const { photo, retained } = await this.prisma.$transaction(async (tx) => {
+    // retenção provável: a cópia privada sai ANTES da transação (storage lento não segura as travas da conta)
+    const heldKey = await this.prepareHeldCopy(userId, photoId);
+    let usedHeld = false;
+    let publicKeys: string[] = [];
+    const tx$ = this.prisma.$transaction(async (tx) => {
       // mesma trava do addPhoto: não cruza com um anexo simultâneo
       await tx.$queryRaw`SELECT 1 FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
       // e a da foto: a decisão da moderação (PhotoModerationService.decide) não cruza com a retenção
@@ -653,6 +659,8 @@ export class UsersService {
       const wasMain = found.isMain;
       const hold = (await ownersOnEvidenceHold(tx, [userId])).has(userId);
       if (hold) {
+        // a cópia só vale se veio do arquivo que a linha ainda aponta
+        const held = heldKey?.from === found.url ? heldKey.key : null;
         const min = await tx.photo.aggregate({ where: { userId }, _min: { orderIndex: true } });
         await tx.photo.update({
           where: { id: photoId },
@@ -665,8 +673,20 @@ export class UsersService {
               prevStatus: found.status,
               wasMain: found.isMain,
             }),
+            // a linha passa a apontar pra cópia privada (sem miniatura pública)
+            ...(held ? { url: held, thumbnailUrl: held } : {}),
           },
         });
+        if (held) {
+          publicKeys = await this.mediaGc!.attachHeld(
+            tx,
+            userId,
+            held,
+            found.url,
+            found.thumbnailUrl,
+          );
+          usedHeld = true;
+        }
         await tx.moderationAction.create({
           data: {
             moderatorId: null,
@@ -692,10 +712,38 @@ export class UsersService {
       }
       return { photo: found, retained: hold };
     });
-    // retida: o arquivo fica (continua em photos); o GC só entra quando a denúncia fechar
+    const { photo, retained } = await tx$.catch(async (e: unknown) => {
+      // a transação não aconteceu (foto sumiu no meio, banco fora): a cópia privada preparada vai pro GC já
+      if (heldKey) await this.mediaGc?.abandonHeld(heldKey.key).catch(() => undefined);
+      throw e;
+    });
+    // retida: a cópia privada fica (a linha aponta pra ela) e só a pública sai agora; sem retenção, sai tudo
     if (!retained) this.mediaGc?.kick([photo.url, photo.thumbnailUrl]);
+    else if (publicKeys.length) this.mediaGc?.kick(publicKeys);
+    // cópia feita à toa (a denúncia fechou ou a linha mudou no meio): vai pro GC
+    if (heldKey && !usedHeld) await this.mediaGc?.abandonHeld(heldKey.key).catch(() => undefined);
     await this.refreshCompleteness(userId);
     return { ok: true };
+  }
+
+  /**
+   * Antes da transação do apagar: se o dono tem denúncia underage/child_safety aberta, copia o arquivo pra held/.
+   * null = sem retenção, sem GC (testes) ou cópia que não deu (retém no lugar; o cron move depois).
+   */
+  private async prepareHeldCopy(
+    userId: string,
+    photoId: string,
+  ): Promise<{ key: string; from: string } | null> {
+    if (!this.mediaGc) return null;
+    // quase ninguém tem denúncia dessas: uma consulta só no caminho comum
+    if (!(await ownersOnEvidenceHold(this.prisma, [userId])).has(userId)) return null;
+    const p = await this.prisma.photo.findFirst({
+      where: { id: photoId, userId },
+      select: { url: true, moderationLabels: true },
+    });
+    if (!p || isRetainedPhoto(p.moderationLabels)) return null;
+    const key = await this.mediaGc.copyToHeld(userId, keyFromPhotoUrl(p.url));
+    return key ? { key, from: p.url } : null;
   }
 
   async reorderPhotos(userId: string, photoIds: string[]) {

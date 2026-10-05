@@ -81,6 +81,7 @@ pnpm clean              # limpa tudo
 - Produção recusa subir com `JWT_SECRET`, `LOCATION_SALT` ou `PHONE_HASH_SECRET` fracos (< 32 caracteres, de exemplo ou repetidos), `ALLOWED_ORIGINS` sem https ou com `*` e a senha de exemplo do Postgres. A mensagem lista só os nomes. `ALLOW_DEV_RECEIPTS=true` (beta fechado) é aceito, mas avisa em todo boot.
 - SMS do login (`SMS_DRIVER`): `log` no dev (não manda nada); produção exige `twilio` ou `zenvia` (HTTPS direto, sem SDK) com as credenciais. Tetos, trava por código errado e o número de revisão das lojas (`REVIEW_PHONE` + `REVIEW_CODE`, nunca manda SMS) estão comentados no `.env.example`. Config de SMS errada derruba o boot em qualquer ambiente.
 - Fotos (`STORAGE_DRIVER`): `local` (padrão, disco servido em `/uploads`) ou `s3` (Cloudflare R2/AWS S3 por HTTPS, sem SDK). Toda foto é reprocessada (sem EXIF/GPS) e o banco guarda só a chave; a URL sai de `STORAGE_PUBLIC_BASE_URL`, obrigatória (https) em produção. Celular na LAN do dev: `PUBLIC_BASE_URL=http://<ip>:3000`.
+- Foto retida por denúncia de menor/abuso infantil vai pra `held/<uuid>` (chave nova, sem cache público) e só a moderação abre, pela rota autenticada `GET /v1/admin/photos/:id/file`. O `/uploads` do driver local só serve a raiz, `p/` e `fakes/`. **Com `s3`, o prefixo `held/` não pode ser público**: no AWS S3, a política do bucket libera `GetObject` só em `p/*` (e nas chaves antigas da raiz, enquanto existirem); no R2 com domínio público, bloqueie `/held/*` numa regra do WAF do domínio.
 
 ## Banco de dados (migrations)
 
@@ -110,6 +111,10 @@ Produção: a migration é um passo separado do deploy, rodado antes de trocar a
 1. `pnpm --filter @cruzei/backend build`
 2. `pnpm --filter @cruzei/backend db:migrate:prod`, que usa o código compilado e não precisa de ts-node.
 3. Sobe a versão nova.
+4. **Uma vez só** (primeiro deploy com as fotos reprocessadas), depois do `db:migrate:prod` e com a versão nova no ar (é ela que monta a URL das chaves `p/`), de `apps/backend`, com os mesmos `.env`/`NODE_ENV` do servidor:
+   - `pnpm photos:reprocess:prod -- --dry-run`: não grava nada. Confira o relatório da última linha (`legado N · reprocessadas 0 · dry N · sem arquivo · recusadas · mudaram no meio`). `sem arquivo` e `recusadas` listam cada foto (`[photos] sem arquivo …` / `falhou …`): essas ficam como estão.
+   - Se o relatório estiver certo, `pnpm photos:reprocess:prod` (sem `--dry-run`). Confira de novo: `reprocessadas` deve bater com o `dry` do passo anterior (menos as que mudaram no meio), `recusadas 0` (com recusa o comando sai com código 2) e as primeiras URLs `[photos] nova:` abrem no navegador. Os arquivos antigos vão pro GC com 24 h de folga (`--grace-hours`).
+   - Rodar de novo é seguro (só pega o que faltou), mas não precisa repetir a cada deploy. Foto retida por denúncia fica de fora (é prova e vai pra cópia privada `held/`).
 
 Mudança que o código antigo não entende vai em duas etapas. Exemplo: a `20261005000200_photo_keys` troca URL por chave da foto, e o código antigo ainda devolveria a chave crua. Rode o `db:migrate:prod --up-to` da anterior, publique o código novo e só depois aplique a migration (no caso da `photo_keys`, limpe também o cache `profile:*` do Redis).
 

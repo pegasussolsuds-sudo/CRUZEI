@@ -1,7 +1,11 @@
 import {
+  HELD_PREFIX,
+  imageContentType,
+  isHeldKey,
   isManagedKey,
   isValidKey,
   keyFromPhotoUrl,
+  newHeldKey,
   newPhotoKeys,
   photoBaseHost,
   photoBaseUrl,
@@ -49,6 +53,35 @@ describe('photo-url — chaves', () => {
     expect(isManagedKey(`fakes/${UUID}.jpg`)).toBe(false);
     expect(isManagedKey(`p/${UUID}-t.png`)).toBe(false);
     expect(isManagedKey(`https://cdn.x/${UUID}.jpg`)).toBe(false);
+  });
+
+  it('held/: cópia privada da foto retida é gerenciada (o GC apaga quando a retenção acaba)', () => {
+    expect(isManagedKey(`held/${UUID}.jpg`)).toBe(true);
+    expect(isManagedKey(`held/${UUID}.png`)).toBe(true);
+    expect(isHeldKey(`held/${UUID}.jpg`)).toBe(true);
+    expect(isHeldKey(`p/${UUID}.jpg`)).toBe(false);
+    expect(isHeldKey(null)).toBe(false);
+    expect(isManagedKey(`held/x/${UUID}.jpg`)).toBe(false);
+    expect(HELD_PREFIX).toBe('held/');
+  });
+
+  it('newHeldKey: uuid NOVO (a URL pública antiga não leva até ela) e a extensão do original', () => {
+    const a = newHeldKey(`p/${UUID}.jpg`);
+    expect(a).toMatch(/^held\/[0-9a-f-]{36}\.jpg$/);
+    expect(a).not.toContain(UUID);
+    expect(newHeldKey(`p/${UUID}.jpg`)).not.toBe(a);
+    expect(newHeldKey(`${UUID}.png`)).toMatch(/\.png$/);
+    expect(newHeldKey(`${UUID}.webp`)).toMatch(/\.webp$/);
+    // extensão estranha vira jpg
+    expect(newHeldKey(`${UUID}.bin`)).toMatch(/\.jpg$/);
+    expect(isManagedKey(a)).toBe(true);
+  });
+
+  it('imageContentType pela extensão; desconhecida → octet-stream', () => {
+    expect(imageContentType(`held/${UUID}.jpg`)).toBe('image/jpeg');
+    expect(imageContentType(`${UUID}.PNG`)).toBe('image/png');
+    expect(imageContentType(`${UUID}.heic`)).toBe('image/heic');
+    expect(imageContentType('x.html')).toBe('application/octet-stream');
   });
 });
 
@@ -99,6 +132,12 @@ describe('photo-url — URL pública', () => {
     useBase('https://fotos.metch.app');
     for (const bad of ['/etc/passwd', '../x.jpg', 'p//x.jpg', 'p\\x.jpg'])
       expect(photoUrl(bad)).toBeNull();
+  });
+
+  it('foto retida (held/) nunca vira URL pública', () => {
+    useBase('https://fotos.metch.app');
+    expect(photoUrl(`held/${UUID}.jpg`)).toBeNull();
+    expect(photoUrl(`p/${UUID}.jpg`)).not.toBeNull();
   });
 
   it('a base fica em cache até resetPhotoUrlCache (lida uma vez por processo)', () => {
