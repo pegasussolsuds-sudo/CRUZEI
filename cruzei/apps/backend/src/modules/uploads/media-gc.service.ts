@@ -5,7 +5,7 @@
 // Foto retida por denúncia: o arquivo vai pra uma cópia privada (held/<uuid novo>) e a cópia pública sai da fila
 // marcada com moved_to — essa sai mesmo com o dono em retenção, porque a prova já está na cópia privada.
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 
 import {
@@ -37,6 +37,11 @@ export const GC_ALERT_ATTEMPTS = 12;
 export const HELD_ORPHAN_TTL_MIN = 60;
 /** retidas movidas pra held/ por rodada do cron (as que não deram na hora do apagar e as de antes da mudança) */
 export const HELD_MOVE_BATCH = 50;
+/** cópia pra held/ que falhou (storage fora): espera 30 min·2^(tentativas-1), no máximo 1 dia */
+export const HELD_MOVE_RETRY_BASE_MIN = 30;
+export const HELD_MOVE_RETRY_MAX_MIN = 24 * 60;
+/** a partir daqui avisa o Sentry (uma vez): a pública segue no ar enquanto não move */
+export const HELD_MOVE_ALERT_ATTEMPTS = 6;
 
 export type GcAction = 'forget' | 'reattach' | 'hold' | 'dry' | 'delete';
 
@@ -100,6 +105,40 @@ export interface RetainedSource {
 
 type Db = Pick<PrismaService, '$queryRaw' | '$executeRaw'>;
 
+type HeldCopyResult =
+  | { ok: true; key: string }
+  | { ok: false; reason: 'unmanaged' | 'missing' | 'error'; message?: string };
+
+/** retida ainda na chave pública (moveRetainedToHeld) */
+interface RetainedPublicRow {
+  id: string;
+  user_id: string;
+  url: string;
+  thumbnail_url: string | null;
+  /** tentativas de mover que já falharam (moderation_labels.retainedByReport.moveAttempts) */
+  move_attempts: number | null;
+}
+
+/**
+ * Miniatura pública da retida que ainda pode ser copiada pra held/ quando o original sumiu: chave nossa, fora de
+ * held/ e diferente do original (legado com miniatura = original não tem o que salvar). null = nada a tratar.
+ */
+export function publicThumbKey(
+  originalKey: string | null,
+  thumbnailUrl: string | null,
+): string | null {
+  const t = keyFromPhotoUrl(thumbnailUrl);
+  return isManagedKey(t) && !isHeldKey(t) && t !== originalKey ? t : null;
+}
+
+/** mescla `patch` na marca retainedByReport da linha (o resto da marca e dos rótulos fica) */
+function mergeRetainedMarkSql(patch: Record<string, unknown>): Prisma.Sql {
+  return Prisma.sql`jsonb_set(moderation_labels, '{retainedByReport}',
+               CASE WHEN jsonb_typeof(moderation_labels -> 'retainedByReport') = 'object'
+                    THEN moderation_labels -> 'retainedByReport' ELSE '{}'::jsonb END
+               || ${JSON.stringify(patch)}::jsonb)`;
+}
+
 /** donos com denúncia underage/child_safety pendente ou em análise (o GC segura; apagar foto vira reter) */
 export async function ownersOnEvidenceHold(db: Db, owners: string[]): Promise<Set<string>> {
   if (!owners.length) return new Set();
@@ -109,6 +148,67 @@ export async function ownersOnEvidenceHold(db: Db, owners: string[]): Promise<Se
        AND reason = ANY(${[...EVIDENCE_HOLD_REASONS]}::text[])
        AND status IN ('pending', 'reviewing')`;
   return new Set(rows.map((r) => r.id));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Predicados da foto retida (alias x = photos, u = users do dono): os mesmos na soltura e na limpeza da conta
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Retida que fechou COM ação: conta banida ou denúncia underage/child_safety resolvida (advertência, suspensão,
+ * banimento). Sai com 'urgent' e o gatilho guarda o arquivo 180 dias; dispensada sem ação, sai na hora.
+ */
+export function retainedActedSql(): Prisma.Sql {
+  return Prisma.sql`(u.account_status::text = 'banned' OR EXISTS (
+      SELECT 1 FROM reports r
+       WHERE r.reported_id = x.user_id
+         AND r.reason = ANY(${[...EVIDENCE_HOLD_REASONS]}::text[])
+         AND r.status = 'resolved'))`;
+}
+
+/** rótulo 'urgent' na linha (a MESMA leitura do gatilho photos_release_media: 180 dias ao sair) */
+export const URGENT_PHOTO_SQL = Prisma.sql`COALESCE(x.moderation_labels ->> 'urgent', '') = 'true'`;
+
+/** chave pública nossa (raiz legada, p/ ou URL /uploads/ antiga); held/, fakes/ e URL externa ficam de fora */
+export const PUBLIC_MANAGED_URL_SQL = Prisma.sql`x.url !~ '^held/'
+  AND x.url ~ '^(https?://[^/]+/uploads/)?(p/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]{1,5}$'`;
+
+/**
+ * Retida que ainda aponta pra chave pública e o cron pode mover (sem marca definitiva de arquivo sumido): se sair com
+ * 180 dias agora, a pública fica 180 dias no ar. Espera a cópia privada.
+ */
+export const AWAITING_HELD_MOVE_SQL = Prisma.sql`(${PUBLIC_MANAGED_URL_SQL}
+  AND (x.moderation_labels #> '{retainedByReport,moveFinal}') IS NULL)`;
+
+/**
+ * Limpeza da conta: apaga as fotos da pessoa menos `keep` (citadas em denúncia), com a regra da soltura das retidas:
+ * retida que fechou com ação ganha 'urgent' antes (o gatilho guarda 180 dias); retida com 'urgent' ainda na chave
+ * pública fica pro cron mover pra held/ e soltar depois (moveRetainedToHeld → releaseRetainedPhotos).
+ */
+export async function deleteUserPhotos(
+  db: Db,
+  userId: string,
+  keep: string[] = [],
+): Promise<{ url: string; thumbnail_url: string | null }[]> {
+  await db.$executeRaw`
+    UPDATE photos x SET moderation_labels = x.moderation_labels || '{"urgent": true}'::jsonb
+      FROM users u
+     WHERE u.id = x.user_id AND x.user_id = ${userId}::uuid
+       AND (x.moderation_labels -> 'retainedByReport') IS NOT NULL
+       AND ${retainedActedSql()}`;
+  return db.$queryRaw<{ url: string; thumbnail_url: string | null }[]>`
+    DELETE FROM photos x
+     WHERE x.user_id = ${userId}::uuid AND NOT (x.id = ANY(${keep}::uuid[]))
+       AND NOT ((x.moderation_labels -> 'retainedByReport') IS NOT NULL
+                AND ${URGENT_PHOTO_SQL} AND ${AWAITING_HELD_MOVE_SQL})
+    RETURNING x.url, x.thumbnail_url`;
+}
+
+/** próxima tentativa de mover pra held/ depois de `attempts` falhas (ISO, comparado como texto no SQL) */
+export function heldMoveRetryAt(attempts: number, now: Date): string {
+  const exp = Math.min(Math.max(attempts, 1) - 1, 16);
+  const min = Math.min(HELD_MOVE_RETRY_BASE_MIN * 2 ** exp, HELD_MOVE_RETRY_MAX_MIN);
+  return new Date(now.getTime() + min * 60_000).toISOString();
 }
 
 export function gcModeFromEnv(env: NodeJS.ProcessEnv = process.env): StorageGcMode {
@@ -188,19 +288,20 @@ export class MediaGcService {
       set.has(r.key) || (!!r.thumb_key && set.has(r.thumb_key));
 
     for (const r of rows) {
-      const ownerOnHold = !!r.owner_id && held.has(r.owner_id);
-      const action = gcDecision(
-        {
-          key: r.key,
-          inPhotos: cited(refs.inPhotos, r),
-          referencedElsewhere: cited(refs.elsewhere, r),
-          ownerOnHold,
-          // só confia na cópia privada se ela existe mesmo (senão a pública é a única prova e fica)
-          movedToHeld: ownerOnHold && !!r.moved_to && (await this.heldCopyExists(r.moved_to)),
-        },
-        this.mode,
-      );
       try {
+        const ownerOnHold = !!r.owner_id && held.has(r.owner_id);
+        const action = gcDecision(
+          {
+            key: r.key,
+            inPhotos: cited(refs.inPhotos, r),
+            referencedElsewhere: cited(refs.elsewhere, r),
+            ownerOnHold,
+            // só confia na cópia privada se ela existe mesmo (senão a pública é a única prova e fica); erro do
+            // storage cai no catch (backoff curto do lease), não vira "não existe" (seguraria 30 dias no ar)
+            movedToHeld: ownerOnHold && !!r.moved_to && (await this.heldCopyExists(r.moved_to)),
+          },
+          this.mode,
+        );
         await this.apply(action, r);
         if (action === 'delete') report.deleted++;
         else if (action === 'forget') report.forgotten++;
@@ -231,9 +332,10 @@ export class MediaGcService {
     return report;
   }
 
+  /** cópia privada existe? Erro do storage LANÇA (o drain conta como falha e tenta de novo em minutos) */
   private async heldCopyExists(key: string): Promise<boolean> {
     if (!isHeldKey(key) || !isManagedKey(key)) return false;
-    return this.storage.exists(key).catch(() => false);
+    return this.storage.exists(key);
   }
 
   private async apply(action: GcAction, r: LeasedRow): Promise<void> {
@@ -336,8 +438,9 @@ export class MediaGcService {
   /**
    * Fotos retidas por denúncia (photo-retention.ts) cujo dono não tem mais denúncia underage/child_safety pendente ou
    * em análise: agora a linha sai (o gatilho enfileira o arquivo) e o GC apaga. Se a denúncia fechou COM ação
-   * (resolvida: advertência, suspensão, banimento) ou a conta está banida, a foto ganha o rótulo 'urgent' ANTES de
-   * sair e o gatilho guarda o arquivo 180 dias; dispensada sem ação, sai na hora. Cron de hora em hora.
+   * (retainedActedSql: resolvida ou conta banida), a foto ganha o rótulo 'urgent' ANTES de sair e o gatilho guarda o
+   * arquivo 180 dias; dispensada sem ação, sai na hora. A que vai ficar 180 dias (com ação ou já 'urgent') e ainda
+   * está na chave pública espera a cópia privada (moveRetainedToHeld roda antes, no mesmo cron de hora em hora).
    * O predicado de retida é o do índice parcial photos_retained_idx (literal, igual ao da migration).
    */
   async releaseRetainedPhotos(limit = 200): Promise<number> {
@@ -345,12 +448,7 @@ export class MediaGcService {
     const reasons = [...EVIDENCE_HOLD_REASONS];
     const rows = await this.prisma.$transaction(async (tx) => {
       const picked = await tx.$queryRaw<{ id: string; acted: boolean }[]>`
-        SELECT x.id::text AS id,
-               (u.account_status::text = 'banned' OR EXISTS (
-                  SELECT 1 FROM reports r
-                   WHERE r.reported_id = x.user_id
-                     AND r.reason = ANY(${reasons}::text[])
-                     AND r.status = 'resolved')) AS acted
+        SELECT x.id::text AS id, ${retainedActedSql()} AS acted
           FROM photos x JOIN users u ON u.id = x.user_id
          WHERE (x.moderation_labels -> 'retainedByReport') IS NOT NULL
            AND NOT EXISTS (
@@ -358,6 +456,7 @@ export class MediaGcService {
                   WHERE r.reported_id = x.user_id
                     AND r.reason = ANY(${reasons}::text[])
                     AND r.status IN ('pending', 'reviewing'))
+           AND NOT ((${retainedActedSql()} OR ${URGENT_PHOTO_SQL}) AND ${AWAITING_HELD_MOVE_SQL})
          LIMIT ${n}
            FOR UPDATE OF x SKIP LOCKED`;
       if (!picked.length) return [];
@@ -388,10 +487,16 @@ export class MediaGcService {
    * arquivo sumido, storage fora): quem chama retém no lugar e o cron (moveRetainedToHeld) tenta de novo.
    */
   async copyToHeld(ownerId: string, sourceKey: string | null): Promise<string | null> {
-    if (!isManagedKey(sourceKey) || isHeldKey(sourceKey)) return null;
+    const r = await this.tryCopyToHeld(ownerId, sourceKey);
+    return r.ok ? r.key : null;
+  }
+
+  /** copyToHeld dizendo por que não deu: 'missing' (arquivo sumido) é definitivo; 'error' (storage/banco) passa */
+  private async tryCopyToHeld(ownerId: string, sourceKey: string | null): Promise<HeldCopyResult> {
+    if (!isManagedKey(sourceKey) || isHeldKey(sourceKey)) return { ok: false, reason: 'unmanaged' };
     try {
       const body = await this.storage.get(sourceKey);
-      if (!body) return null;
+      if (!body) return { ok: false, reason: 'missing' };
       const heldKey = newHeldKey(sourceKey);
       await this.prisma.$executeRaw`
         INSERT INTO media_objects (key, owner_id, kind, bytes, delete_after)
@@ -400,10 +505,11 @@ export class MediaGcService {
       await this.storage.put(heldKey, body, imageContentType(sourceKey), {
         cacheControl: PRIVATE_CACHE_CONTROL,
       });
-      return heldKey;
+      return { ok: true, key: heldKey };
     } catch (err) {
-      this.log.warn(`cópia privada de ${sourceKey} falhou: ${(err as Error).message}`);
-      return null;
+      const message = (err as Error).message ?? String(err);
+      this.log.warn(`cópia privada de ${sourceKey} falhou: ${message}`);
+      return { ok: false, reason: 'error', message };
     }
   }
 
@@ -447,27 +553,61 @@ export class MediaGcService {
 
   /**
    * Retidas que ainda apontam pra chave pública (a cópia não deu na hora do apagar, ou retidas de antes da held/):
-   * copia, troca a linha (só se ela não mudou no meio) e manda as públicas pro GC. Cron de hora em hora, depois da
-   * soltura. Só chave nossa (fakes/ e URL externa ficam onde estão). Devolve quantas mudaram.
+   * copia, troca a linha (só se ela não mudou no meio) e manda as públicas pro GC. Cron de hora em hora, ANTES da
+   * soltura (a que fechou com ação só sai depois de mover). Só chave nossa (fakes/ e URL externa ficam onde estão).
+   * Falha marca a linha (moveAttempts/moveRetryAt em retainedByReport) e ela fica de fora até a hora (backoff), pra
+   * não travar o lote nas mesmas; arquivo sumido ganha marca definitiva (moveFinal). Devolve quantas mudaram.
+   * Original sumido com a miniatura pública (p/<uuid>-t.jpg) ainda no storage: a miniatura vira a cópia privada (é o
+   * que sobrou da prova), a linha troca como sempre (marca heldFrom: 'thumbnail' + moveFinal) e a pública vai pro GC
+   * com moved_to. A marca definitiva só sai DEPOIS de a miniatura estar protegida: com ela a soltura segue, e uma
+   * retida que fechou com ação sairia com 'urgent' deixando a miniatura 180 dias aberta sem login.
    */
-  async moveRetainedToHeld(limit = HELD_MOVE_BATCH): Promise<number> {
+  async moveRetainedToHeld(limit = HELD_MOVE_BATCH, now = new Date()): Promise<number> {
     const n = Math.max(1, Math.min(500, limit));
-    const rows = await this.prisma.$queryRaw<
-      { id: string; user_id: string; url: string; thumbnail_url: string | null }[]
-    >`
-      SELECT x.id::text AS id, x.user_id::text AS user_id, x.url, x.thumbnail_url FROM photos x
+    // moveRetryAt é ISO do toISOString: compara como texto (lixo na marca nunca derruba a consulta)
+    const rows = await this.prisma.$queryRaw<RetainedPublicRow[]>`
+      SELECT x.id::text AS id, x.user_id::text AS user_id, x.url, x.thumbnail_url,
+             CASE WHEN jsonb_typeof(x.moderation_labels #> '{retainedByReport,moveAttempts}') = 'number'
+                  THEN LEAST((x.moderation_labels #>> '{retainedByReport,moveAttempts}')::numeric, 1000)::int
+             END AS move_attempts
+        FROM photos x
        WHERE (x.moderation_labels -> 'retainedByReport') IS NOT NULL
-         AND x.url !~ '^held/'
-         AND x.url ~ '^(https?://[^/]+/uploads/)?(p/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]{1,5}$'
+         AND ${AWAITING_HELD_MOVE_SQL}
+         AND COALESCE(x.moderation_labels #>> '{retainedByReport,moveRetryAt}', '') <= ${now.toISOString()}
        ORDER BY x.created_at, x.id
        LIMIT ${n}`;
     let moved = 0;
     for (const r of rows) {
-      const heldKey = await this.copyToHeld(r.user_id, keyFromPhotoUrl(r.url));
-      if (!heldKey) continue;
+      const originalKey = keyFromPhotoUrl(r.url);
+      let copy = await this.tryCopyToHeld(r.user_id, originalKey);
+      // original sumido: a miniatura pública pode ter ficado. Copia ela; se também sumiu, aí sim marca definitiva;
+      // storage fora na miniatura = falha passageira (backoff), nunca moveFinal com a pública no ar
+      let fromThumb = false;
+      if (!copy.ok && copy.reason === 'missing') {
+        const thumbKey = publicThumbKey(originalKey, r.thumbnail_url);
+        if (thumbKey) {
+          copy = await this.tryCopyToHeld(r.user_id, thumbKey);
+          fromThumb = copy.ok;
+        }
+      }
+      if (!copy.ok) {
+        await this.markMoveFailure(r, copy, now).catch((e: Error) =>
+          this.log.warn(`marca da retida ${r.id} não gravada: ${e.message}`),
+        );
+        continue;
+      }
+      const heldKey = copy.key;
+      // prova que sobrou é só a miniatura: a marca diz isso pra moderação e registra que o original não volta
+      const thumbMark = fromThumb
+        ? Prisma.sql`, moderation_labels = ${mergeRetainedMarkSql({
+            heldFrom: 'thumbnail',
+            moveFinal: 'missing',
+            moveFinalAt: now.toISOString(),
+          })}`
+        : Prisma.empty;
       const publicKeys = await this.prisma.$transaction(async (tx) => {
         const changed = await tx.$executeRaw`
-          UPDATE photos SET url = ${heldKey}, thumbnail_url = ${heldKey}
+          UPDATE photos SET url = ${heldKey}, thumbnail_url = ${heldKey}${thumbMark}
            WHERE id = ${r.id}::uuid AND url = ${r.url}
              AND COALESCE(thumbnail_url, '') = ${r.thumbnail_url ?? ''}
              AND (moderation_labels -> 'retainedByReport') IS NOT NULL`;
@@ -479,6 +619,11 @@ export class MediaGcService {
         continue;
       }
       this.kick(publicKeys);
+      if (fromThumb) {
+        this.log.warn(
+          `retida ${r.id}: original sumiu, a miniatura foi pra held/ e a pública vai pro GC`,
+        );
+      }
       moved++;
     }
     if (moved) this.log.log(`${moved} foto(s) retida(s) movida(s) pra cópia privada (held/)`);
@@ -486,19 +631,54 @@ export class MediaGcService {
   }
 
   /**
+   * Cópia pra held/ que não deu: arquivo sumido — original e miniatura — (ou chave que não é nossa) = marca definitiva
+   * (moveFinal; sem arquivo não há o que proteger e a soltura segue); erro de storage/banco = +1 tentativa e fica de
+   * fora até moveRetryAt. Só mexe na linha se ela não mudou desde a leitura.
+   */
+  private async markMoveFailure(
+    r: RetainedPublicRow,
+    copy: Exclude<HeldCopyResult, { ok: true }>,
+    now: Date,
+  ): Promise<void> {
+    const attempts = (r.move_attempts ?? 0) + 1;
+    const patch =
+      copy.reason === 'error'
+        ? {
+            moveAttempts: attempts,
+            moveRetryAt: heldMoveRetryAt(attempts, now),
+            moveError: (copy.message ?? '').slice(0, 120),
+          }
+        : { moveAttempts: attempts, moveFinal: copy.reason, moveFinalAt: now.toISOString() };
+    await this.prisma.$executeRaw`
+      UPDATE photos
+         SET moderation_labels = ${mergeRetainedMarkSql(patch)}
+       WHERE id = ${r.id}::uuid AND url = ${r.url}
+         AND (moderation_labels -> 'retainedByReport') IS NOT NULL`;
+    if (copy.reason !== 'error') {
+      this.log.warn(
+        `retida ${r.id}: arquivo ${copy.reason === 'missing' ? 'sumiu' : 'fora do storage'}, não vai pra held/`,
+      );
+    } else if (attempts === HELD_MOVE_ALERT_ATTEMPTS) {
+      Sentry.captureMessage(
+        `media GC: retida ${r.id} não foi pra held/ em ${attempts} tentativas (${(copy.message ?? '').slice(0, 120)})`,
+        'warning',
+      );
+    }
+  }
+
+  /**
    * Limpeza da conta: apaga as linhas de photos (o gatilho enfileira os arquivos, com a retenção do 'urgent') menos
-   * `keepPhotoIds` (fotos citadas em denúncia) e vence na hora os uploads soltos. Devolve as chaves enfileiradas.
-   * Com `tx`, quem chama faz `kick(chaves)` DEPOIS do commit; sem `tx`, roda numa transação própria e já chama.
+   * `keepPhotoIds` (fotos citadas em denúncia) e vence na hora os uploads soltos. Retida segue a regra da soltura
+   * (deleteUserPhotos: 'urgent' se fechou com ação; ainda na chave pública, fica pro cron). Devolve as chaves
+   * enfileiradas. Com `tx`, quem chama faz `kick(chaves)` DEPOIS do commit; sem `tx`, roda numa transação própria e
+   * já chama.
    */
   async releaseUser(
     userId: string,
     opts: { keepPhotoIds?: string[]; tx?: Prisma.TransactionClient } = {},
   ): Promise<string[]> {
     const run = async (db: Db): Promise<string[]> => {
-      const keep = opts.keepPhotoIds ?? [];
-      const deleted = await db.$queryRaw<{ url: string; thumbnail_url: string | null }[]>`
-        DELETE FROM photos WHERE user_id = ${userId}::uuid AND NOT (id = ANY(${keep}::uuid[]))
-        RETURNING url, thumbnail_url`;
+      const deleted = await deleteUserPhotos(db, userId, opts.keepPhotoIds ?? []);
       // só upload fresco (delete_after = created_at + TTL): não encurta a retenção de 180 dias de quem veio do gatilho
       const orphans = await db.$queryRaw<{ key: string }[]>`
         UPDATE media_objects SET delete_after = now()

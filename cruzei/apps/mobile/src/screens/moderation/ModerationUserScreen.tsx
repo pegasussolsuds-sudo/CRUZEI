@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { instagramUrl } from '@cruzei/shared-utils';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,9 +6,17 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ModerationActionPayload, ModerationDecision, ModerationUserDetail } from '@cruzei/shared-types';
 import { colors, fontFamily, radius, spacing, typography } from '@cruzei/ui-mobile';
+import { config } from '../../config';
 import { api, toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { reasonLabel } from './ModerationScreen';
+import {
+  apiAbsoluteUrl,
+  loadRetainedPhoto,
+  needsAuthPhoto,
+  type RetainedPhotoDeps,
+  type RetainedPhotoState,
+} from './retainedPhoto';
 import { isConversationOpen, reportConversationIds } from './reportConversations';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ModerationUser'>;
@@ -135,7 +143,7 @@ export function ModerationUserScreen({ route, navigation }: Props) {
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
           {d.photos.map((p) => (
             <View key={p.id}>
-              <Image source={{ uri: p.url }} style={styles.photo} />
+              <ModerationPhoto photo={p} />
               {/* retida: a pessoa apagou com denúncia de menor/abuso aberta; fica só aqui até a denúncia fechar */}
               <Text style={[styles.badge, (p.retained || p.status === 'rejected') && { color: colors.danger }]}>
                 {p.retained
@@ -261,6 +269,149 @@ function ReportConversationLinks({ ids, onOpen }: { ids: string[]; onOpen: (id: 
   );
 }
 
+/**
+ * GET da foto retida pelo axios do app (Bearer + renovação do token no 401), como bytes: a URL autenticada nunca vai
+ * pra <Image> (no Android o Fresco gravaria a foto no cache de disco). no-store no pedido também: o cache http do
+ * OkHttp não guarda. O caminho é relativo à origem da API, então vai a URL absoluta (a base do axios já tem o /v1).
+ */
+const retainedPhotoDeps: RetainedPhotoDeps = {
+  fetchImage: async (path, signal) => {
+    const res = await api.get<ArrayBuffer>(apiAbsoluteUrl(path, config.apiBaseUrl), {
+      responseType: 'arraybuffer',
+      signal,
+      timeout: 30_000,
+      headers: { Accept: 'image/*', 'Cache-Control': 'no-store' },
+    });
+    return { data: res.data, contentType: res.headers['content-type'] };
+  },
+};
+
+/** foto retida como data: URI; `retry` busca de novo. Ao sair (ou trocar de foto) aborta o pedido e solta a imagem */
+function useRetainedPhoto(path: string): { state: RetainedPhotoState; retry: () => void } {
+  const [state, setState] = useState<RetainedPhotoState>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const stop = loadRetainedPhoto(path, retainedPhotoDeps, setState);
+    return () => {
+      stop();
+      // o data: URI (a foto inteira em base64) não fica pendurado no estado
+      setState({ status: 'loading' });
+    };
+  }, [path, attempt]);
+  return { state, retry: () => setAttempt((n) => n + 1) };
+}
+
+/** selo sobre a foto retida (só a moderação vê) */
+function RetainedSeal() {
+  return (
+    <View style={styles.retainedSeal} pointerEvents="none">
+      <Text style={styles.retainedSealText}>retida por denúncia</Text>
+    </View>
+  );
+}
+
+/** carregando / não carregou + tentar de novo, no tamanho da foto */
+function PhotoState({
+  failed,
+  onRetry,
+  retained,
+}: {
+  failed: boolean;
+  onRetry: () => void;
+  retained?: boolean;
+}) {
+  return (
+    <View style={[styles.photo, styles.photoState]}>
+      {failed ? (
+        <>
+          <Text style={styles.photoStateText}>não carregou</Text>
+          <Pressable
+            onPress={onRetry}
+            style={({ pressed }) => [styles.photoRetry, pressed && { opacity: 0.6 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Tentar carregar a foto de novo"
+            hitSlop={8}
+          >
+            <Text style={styles.photoRetryText}>tentar de novo</Text>
+          </Pressable>
+        </>
+      ) : (
+        <ActivityIndicator color={colors.gray[500]} accessibilityLabel="Carregando foto" />
+      )}
+      {retained ? <RetainedSeal /> : null}
+    </View>
+  );
+}
+
+/**
+ * Foto da ficha. A retida por denúncia vem como rota autenticada da API: busca pelo axios e mostra como data: URI
+ * (RetainedPhoto). As outras: URL pública, como sempre.
+ */
+function ModerationPhoto({ photo }: { photo: ModerationUserDetail['photos'][number] }) {
+  if (needsAuthPhoto(photo)) return <RetainedPhoto path={photo.url} />;
+  return <PublicPhoto url={photo.url} retained={photo.retained} />;
+}
+
+function RetainedPhoto({ path }: { path: string }) {
+  const { state, retry } = useRetainedPhoto(path);
+  // a <Image> recusou os bytes (não decodificou): mesmo aviso, e o tentar de novo busca outra vez
+  const [decodeFailed, setDecodeFailed] = useState(false);
+  const uri = state.status === 'ready' ? state.uri : null;
+  if (!uri || decodeFailed) {
+    return (
+      <PhotoState
+        failed={state.status === 'error' || decodeFailed}
+        onRetry={() => {
+          setDecodeFailed(false);
+          retry();
+        }}
+        retained
+      />
+    );
+  }
+  return (
+    <View>
+      <Image
+        source={{ uri }}
+        style={styles.photo}
+        onError={() => setDecodeFailed(true)}
+        accessibilityLabel="Foto retida por denúncia"
+      />
+      <RetainedSeal />
+    </View>
+  );
+}
+
+function PublicPhoto({ url, retained }: { url: string; retained?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  // tentar de novo remonta a <Image>
+  const [attempt, setAttempt] = useState(0);
+  if (failed) {
+    return (
+      <PhotoState
+        failed
+        onRetry={() => {
+          setFailed(false);
+          setAttempt((n) => n + 1);
+        }}
+        retained={retained}
+      />
+    );
+  }
+  return (
+    <View>
+      <Image
+        key={attempt}
+        source={{ uri: url }}
+        style={styles.photo}
+        onError={() => setFailed(true)}
+        accessibilityLabel={retained ? 'Foto retida por denúncia' : 'Foto do perfil'}
+      />
+      {retained ? <RetainedSeal /> : null}
+    </View>
+  );
+}
+
 function statusText(u: ModerationUserDetail['user']): string {
   if (u.accountStatus === 'banned') return 'banida';
   if (u.accountStatus === 'suspended') return u.suspendedUntil ? `suspensa até ${new Date(u.suspendedUntil).toLocaleDateString('pt-BR')}` : 'suspensa até revisão';
@@ -278,6 +429,30 @@ const styles = StyleSheet.create({
   instaText: { ...typography.body, color: colors.info, textDecorationLine: 'underline' },
   section: { ...typography.label, color: colors.gray[500], textTransform: 'uppercase', letterSpacing: 1, marginTop: spacing.xl, marginBottom: spacing.sm },
   photo: { width: 120, height: 150, borderRadius: radius.md, backgroundColor: colors.gray[200] },
+  photoState: { alignItems: 'center', justifyContent: 'center', padding: spacing.sm },
+  photoStateText: { ...typography.caption, color: colors.gray[600], textAlign: 'center' },
+  photoRetry: {
+    marginTop: spacing.xs,
+    paddingVertical: 4,
+    paddingHorizontal: spacing.sm,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.gray[400],
+    backgroundColor: colors.white,
+  },
+  photoRetryText: { ...typography.caption, fontFamily: fontFamily.bodyBold, color: colors.black },
+  // selo sobre a foto retida (só a moderação vê)
+  retainedSeal: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingVertical: 3,
+    backgroundColor: colors.danger,
+    borderBottomLeftRadius: radius.md,
+    borderBottomRightRadius: radius.md,
+  },
+  retainedSealText: { ...typography.caption, color: colors.white, textAlign: 'center', fontFamily: fontFamily.bodyBold },
   badge: { ...typography.caption, color: colors.gray[600], marginTop: 2 },
   card: { backgroundColor: colors.white, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm, gap: 2 },
   cardTitle: { ...typography.body, fontFamily: fontFamily.bodyBold, color: colors.black },

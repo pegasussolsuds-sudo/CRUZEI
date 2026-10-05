@@ -3,6 +3,7 @@ jest.mock('@sentry/nestjs', () => ({ captureMessage: jest.fn() }));
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { Prisma } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 
 import type { PrismaService } from '../../database/prisma.service';
@@ -12,6 +13,8 @@ import {
   EVIDENCE_HOLD_REASONS,
   GC_ALERT_ATTEMPTS,
   gcDecision,
+  HELD_MOVE_ALERT_ATTEMPTS,
+  heldMoveRetryAt,
   MediaGcService,
   type GcCandidate,
 } from './media-gc.service';
@@ -34,6 +37,15 @@ type Row = {
   delete_attempts: number;
   moved_to?: string | null;
 };
+/** SQL do jeito que o Prisma manda pro banco: fragmentos Prisma.sql aninhados achatados (texto com ? e valores) */
+function flat(a0: unknown, rest: unknown[]): { sql: string; values: unknown[] } {
+  const q = Array.isArray(a0)
+    ? Prisma.sql(a0 as readonly string[], ...(rest as Prisma.Sql[]))
+    : (a0 as Prisma.Sql);
+  return { sql: q.strings.join('?'), values: q.values };
+}
+const callOf = (call: unknown[]) => flat(call[0], call.slice(1));
+
 type Exec = {
   kind: 'delete-row' | 'reattach' | 'hold' | 'dry' | 'error' | 'other';
   key: unknown;
@@ -51,7 +63,13 @@ function fakeDb(
     /** linhas que a soltura das retidas apaga (acted = denúncia fechou com ação / conta banida) */
     released?: { id?: string; url: string; thumbnail_url: string | null; acted?: boolean }[];
     /** retidas que ainda apontam pra chave pública (moveRetainedToHeld) */
-    retainedPublic?: { id: string; user_id: string; url: string; thumbnail_url: string | null }[];
+    retainedPublic?: {
+      id: string;
+      user_id: string;
+      url: string;
+      thumbnail_url: string | null;
+      move_attempts?: number | null;
+    }[];
     /** UPDATE photos da troca pra held/ devolve 0 (a linha mudou no meio) */
     swapMisses?: boolean;
   } = {},
@@ -60,8 +78,8 @@ function fakeDb(
   const exec: Exec[] = [];
   const queries: string[] = [];
   const db = {
-    $queryRaw: jest.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const sql = strings.join('?');
+    $queryRaw: jest.fn(async (a0: unknown, ...rest: unknown[]) => {
+      const { sql, values } = flat(a0, rest);
       queries.push(sql);
       if (sql.includes('UPDATE media_objects m')) {
         const only = values[0] as string[] | null;
@@ -95,17 +113,6 @@ function fakeDb(
         expect(values[1]).toEqual(['underage', 'child_safety']);
         return (opts.held ?? []).filter((o) => owners.includes(o)).map((id) => ({ id }));
       }
-      if (sql.includes("'retainedByReport'") && sql.includes("x.url !~ '^held/'")) {
-        return (opts.retainedPublic ?? []).slice(0, values[0] as number);
-      }
-      if (sql.includes("'retainedByReport'")) {
-        // fechou com ação (resolvida) e ainda aberta: os dois com os motivos de evidência
-        expect(values[0]).toEqual(['underage', 'child_safety']);
-        expect(values[1]).toEqual(['underage', 'child_safety']);
-        return (opts.released ?? [])
-          .slice(0, values[2] as number)
-          .map((r, i) => ({ id: r.id ?? U(500 + i), acted: !!r.acted }));
-      }
       if (sql.includes('DELETE FROM photos WHERE id = ANY')) {
         const ids = values[0] as string[];
         return (opts.released ?? [])
@@ -122,11 +129,23 @@ function fakeDb(
           { url: 'https://cdn.externo/x.jpg', thumbnail_url: null },
         ];
       }
+      if (sql.includes('AS move_attempts')) {
+        return (opts.retainedPublic ?? [])
+          .slice(0, values[values.length - 1] as number)
+          .map((r) => ({ move_attempts: null, ...r }));
+      }
+      if (sql.includes('AS acted')) {
+        // fechou com ação (resolvida), ainda aberta e a espera da held/: todas com os motivos de evidência
+        for (const v of values.slice(0, -1)) expect(v).toEqual(['underage', 'child_safety']);
+        return (opts.released ?? [])
+          .slice(0, values[values.length - 1] as number)
+          .map((r, i) => ({ id: r.id ?? U(500 + i), acted: !!r.acted }));
+      }
       if (sql.includes('UPDATE media_objects SET delete_after = now()')) return [{ key: key(3) }];
       throw new Error(`SQL inesperado: ${sql}`);
     }),
-    $executeRaw: jest.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
-      const sql = strings.join('?');
+    $executeRaw: jest.fn(async (a0: unknown, ...rest: unknown[]) => {
+      const { sql, values } = flat(a0, rest);
       const kind: Exec['kind'] = sql.includes('DELETE FROM media_objects')
         ? 'delete-row'
         : sql.includes('attached_at = COALESCE')
@@ -163,7 +182,10 @@ function fakeStorage(fail: string[] = [], files: Record<string, Buffer> = {}) {
       files[k] = b;
     }),
     get: jest.fn(async (k: string) => files[k] ?? null),
-    exists: jest.fn(async (k: string) => k in files),
+    exists: jest.fn(async (k: string) => {
+      if (fail.includes(k)) throw new Error(`S3 HEAD ${k} → 503`);
+      return k in files;
+    }),
     delete: jest.fn(async (k: string) => {
       if (fail.includes(k)) throw new Error(`S3 DELETE ${k} → 500`);
       deleted.push(k);
@@ -301,7 +323,7 @@ describe('MediaGcService.drain', () => {
     const f = fakeDb({ due: [row(1), row(2), row(3)] });
     const s = svc(f.prisma, fakeStorage().storage);
     expect((await s.drain({ keys: [key(2)], limit: 9999 })).leased).toBe(1);
-    expect(f.db.$queryRaw.mock.calls[0][3]).toBe(500);
+    expect(callOf(f.db.$queryRaw.mock.calls[0]).values[2]).toBe(500);
     expect((await s.drain({ limit: 0 })).leased).toBe(1);
   });
 });
@@ -343,12 +365,41 @@ describe('MediaGcService.kick e releaseUser', () => {
     const keep = [U(77)];
     const keys = await s.releaseUser(OWNER, { keepPhotoIds: keep });
     expect(keys.sort()).toEqual([key(1), thumb(1), `${U(2)}.png`, key(3)].sort());
-    const del = f.db.$queryRaw.mock.calls.find((c) =>
-      (c[0] as TemplateStringsArray).join('?').includes('DELETE FROM photos'),
-    )!;
-    expect(del.slice(1)).toEqual([OWNER, keep]);
+    const del = f.db.$queryRaw.mock.calls
+      .map(callOf)
+      .find((c) => c.sql.includes('DELETE FROM photos'))!;
+    expect(del.values).toEqual([OWNER, keep]);
     expect(f.db.$transaction).toHaveBeenCalledTimes(1);
     expect(kick).toHaveBeenCalledWith(keys);
+  });
+
+  it("releaseUser: retida que fechou com ação ganha 'urgent' ANTES do DELETE; a de 'urgent' ainda na pública fica pro cron", async () => {
+    const f = fakeDb();
+    const s = svc(f.prisma, fakeStorage().storage);
+    jest.spyOn(s, 'kick').mockImplementation(() => undefined);
+    await s.releaseUser(OWNER);
+
+    const mark = f.exec.find((e) => e.sql.includes('UPDATE photos x SET moderation_labels'))!;
+    expect(mark.sql).toContain(`x.moderation_labels || '{"urgent": true}'::jsonb`);
+    expect(mark.sql).toContain("(x.moderation_labels -> 'retainedByReport') IS NOT NULL");
+    // o MESMO "com ação" da soltura das retidas: banida ou denúncia de menor/abuso resolvida
+    expect(mark.sql).toMatch(
+      /account_status::text = 'banned' OR EXISTS[\s\S]*r\.status = 'resolved'/,
+    );
+    expect(mark.values).toEqual([OWNER, ['underage', 'child_safety']]);
+    const delCall = f.db.$queryRaw.mock.calls.findIndex((c) =>
+      callOf(c).sql.includes('DELETE FROM photos'),
+    );
+    expect(f.db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      f.db.$queryRaw.mock.invocationCallOrder[delCall],
+    );
+    // fora do DELETE: retida com 'urgent' que ainda aponta pra chave pública (sem marca de arquivo sumido)
+    const del = callOf(f.db.$queryRaw.mock.calls[delCall]).sql;
+    expect(del).toMatch(
+      /AND NOT \(\(x\.moderation_labels -> 'retainedByReport'\) IS NOT NULL\s+AND COALESCE\(x\.moderation_labels ->> 'urgent', ''\) = 'true'/,
+    );
+    expect(del).toContain("x.url !~ '^held/'");
+    expect(del).toContain("(x.moderation_labels #> '{retainedByReport,moveFinal}') IS NULL");
   });
 
   it('releaseUser com tx: usa a transação de quem chama e NÃO chama kick (quem chama faz depois do commit)', async () => {
@@ -468,7 +519,7 @@ describe('MediaGcService.releaseRetainedPhotos', () => {
     const kick = jest.spyOn(s, 'kick').mockImplementation(() => undefined);
     expect(await s.releaseRetainedPhotos()).toBe(2);
     expect(kick).toHaveBeenCalledWith([HELD, HELD, `${U(2)}.png`, null]);
-    const sql = f.queries.find((q) => q.includes("'retainedByReport'"))!;
+    const sql = f.queries.find((q) => q.includes('AS acted'))!;
     // só quem não tem denúncia underage/child_safety pendente/em análise; lote com trava que não espera
     expect(sql).toMatch(/NOT EXISTS[\s\S]*status IN \('pending', 'reviewing'\)/);
     expect(sql).toContain('FOR UPDATE OF x SKIP LOCKED');
@@ -487,7 +538,7 @@ describe('MediaGcService.releaseRetainedPhotos', () => {
     jest.spyOn(s, 'kick').mockImplementation(() => undefined);
     expect(await s.releaseRetainedPhotos()).toBe(2);
 
-    const sel = f.queries.find((q) => q.includes("'retainedByReport'"))!;
+    const sel = f.queries.find((q) => q.includes('AS acted'))!;
     // "com ação" = denúncia de menor/abuso resolvida ou conta banida
     expect(sel).toMatch(/account_status::text = 'banned' OR EXISTS[\s\S]*r\.status = 'resolved'/);
     const mark = f.exec.find((e) => e.sql.includes('UPDATE photos SET moderation_labels'))!;
@@ -496,12 +547,25 @@ describe('MediaGcService.releaseRetainedPhotos', () => {
     expect(mark.values[0]).toEqual([U(31)]);
     // o rótulo vem antes do DELETE
     const delAt = f.db.$queryRaw.mock.calls.findIndex((c) =>
-      (c[0] as TemplateStringsArray).join('?').includes('DELETE FROM photos WHERE id = ANY'),
+      callOf(c).sql.includes('DELETE FROM photos WHERE id = ANY'),
     );
     expect(f.db.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
       f.db.$queryRaw.mock.invocationCallOrder[delAt],
     );
-    expect(f.db.$queryRaw.mock.calls[delAt][1]).toEqual([U(31), U(32)]);
+    expect(callOf(f.db.$queryRaw.mock.calls[delAt]).values).toEqual([[U(31), U(32)]]);
+  });
+
+  it("a que vai ficar 180 dias (com ação ou já 'urgent') e ainda está na chave pública espera a held/", async () => {
+    const f = fakeDb();
+    await svc(f.prisma, fakeStorage().storage).releaseRetainedPhotos();
+    const sel = f.queries.find((q) => q.includes('AS acted'))!;
+    // fora do lote: (com ação OU 'urgent') E ainda na pública, sem marca definitiva de arquivo sumido
+    expect(sel).toMatch(
+      /AND NOT \(\(\(u\.account_status::text = 'banned'[\s\S]*\) OR COALESCE\(x\.moderation_labels ->> 'urgent', ''\) = 'true'\) AND \(x\.url !~ '\^held\/'/,
+    );
+    // o SQL recebe \. (ponto literal na regex do Postgres)
+    expect(sel).toContain('[0-9a-f]{12}\\.[a-z0-9]{1,5}$');
+    expect(sel).toContain("(x.moderation_labels #> '{retainedByReport,moveFinal}') IS NULL");
   });
 
   it('todas dispensadas (sem ação): nenhum rótulo, só o DELETE', async () => {
@@ -518,10 +582,11 @@ describe('MediaGcService.releaseRetainedPhotos', () => {
     const kick = jest.spyOn(s, 'kick');
     expect(await s.releaseRetainedPhotos(99999)).toBe(0);
     expect(kick).not.toHaveBeenCalled();
-    expect(f.db.$queryRaw.mock.calls[0][3]).toBe(1000);
+    const limitOf = (i: number) => callOf(f.db.$queryRaw.mock.calls[i]).values.at(-1);
+    expect(limitOf(0)).toBe(1000);
     expect(f.queries.some((q) => q.includes('DELETE FROM photos'))).toBe(false);
     await s.releaseRetainedPhotos(0);
-    expect(f.db.$queryRaw.mock.calls[1][3]).toBe(1);
+    expect(limitOf(1)).toBe(1);
   });
 });
 
@@ -529,6 +594,7 @@ describe('foto retida → cópia privada (held/)', () => {
   const SRC = key(40);
   const SRC_T = thumb(40);
   const bytes = Buffer.from('jpeg-da-foto');
+  beforeEach(() => jest.clearAllMocks());
 
   it('gcDecision: cópia pública com a privada guardada sai mesmo com o dono em retenção; citação ainda segura', () => {
     const c: GcCandidate = {
@@ -647,8 +713,9 @@ describe('foto retida → cópia privada (held/)', () => {
     const kick = jest.spyOn(s, 'kick').mockImplementation(() => undefined);
     expect(await s.moveRetainedToHeld()).toBe(1);
 
-    const sel = f.queries.find((q) => q.includes("x.url !~ '^held/'"))!;
+    const sel = f.queries.find((q) => q.includes('AS move_attempts'))!;
     expect(sel).toContain("(x.moderation_labels -> 'retainedByReport') IS NOT NULL");
+    expect(sel).toContain("x.url !~ '^held/'");
     const swap = f.exec.find((e) => e.sql.includes('UPDATE photos SET url'))!;
     const held = swap.values[0] as string;
     expect(held).toMatch(/^held\//);
@@ -677,19 +744,177 @@ describe('foto retida → cópia privada (held/)', () => {
     expect(kick).toHaveBeenCalledWith([abandon.values[0]]);
   });
 
-  it('moveRetainedToHeld: arquivo sumido não troca nada; lote fica entre 1 e 500', async () => {
+  it('drain: erro do storage ao conferir a cópia privada é FALHA (backoff curto), não "não existe" (30 dias)', async () => {
+    const heldX = `held/${U(55)}.jpg`;
+    const f = fakeDb({
+      due: [row(56, { owner_id: HELD_OWNER, moved_to: heldX })],
+      held: [HELD_OWNER],
+    });
+    // HEAD da held/ dá 503
+    const st = fakeStorage([heldX], { [heldX]: bytes });
+    const r = await svc(f.prisma, st.storage).drain();
+    expect(r).toMatchObject({ leased: 1, failed: 1, held: 0, deleted: 0 });
+    // nada de adiar 30 dias: só o erro fica gravado e o lease (10 min·2^tentativas) traz de volta
+    expect(kinds(f.exec, key(56))).toEqual(['error']);
+    expect(f.exec.find((e) => e.kind === 'error')!.values[0]).toBe(`S3 HEAD ${heldX} → 503`);
+    expect(st.mock.delete).not.toHaveBeenCalled();
+  });
+
+  it('moveRetainedToHeld: pula as que estão no backoff e as de arquivo sumido (marca definitiva)', async () => {
+    const f = fakeDb();
+    const now = new Date('2026-10-05T12:00:00.000Z');
+    await svc(f.prisma, fakeStorage().storage).moveRetainedToHeld(10, now);
+    const call = callOf(f.db.$queryRaw.mock.calls[0]);
+    expect(call.sql).toContain("(x.moderation_labels #> '{retainedByReport,moveFinal}') IS NULL");
+    expect(call.sql).toContain(
+      "COALESCE(x.moderation_labels #>> '{retainedByReport,moveRetryAt}', '') <= ?",
+    );
+    // ISO do agora (comparado como texto: lixo na marca nunca derruba a consulta) e o lote
+    expect(call.values).toEqual([now.toISOString(), 10]);
+  });
+
+  it('moveRetainedToHeld: storage fora marca a tentativa e a próxima hora (backoff), sem trocar a linha', async () => {
+    const now = new Date('2026-10-05T12:00:00.000Z');
+    const f = fakeDb({
+      retainedPublic: [
+        { id: U(63), user_id: OWNER, url: SRC, thumbnail_url: null },
+        { id: U(64), user_id: OWNER, url: key(41), thumbnail_url: null, move_attempts: 3 },
+      ],
+    });
+    // PUT em held/ quebrado
+    const st = fakeStorage(['held/'], { [SRC]: bytes, [key(41)]: bytes });
+    expect(await svc(f.prisma, st.storage).moveRetainedToHeld(50, now)).toBe(0);
+    expect(f.exec.some((e) => e.sql.includes('UPDATE photos SET url'))).toBe(false);
+    const marks = f.exec.filter((e) => e.sql.includes('jsonb_set(moderation_labels'));
+    expect(marks).toHaveLength(2);
+    // preserva o resto da marca (|| no objeto) e só mexe se a linha não mudou desde a leitura
+    expect(marks[0].sql).toMatch(/'\{retainedByReport\}'[\s\S]*\|\| \?::jsonb\)/);
+    expect(marks[0].sql).toMatch(/WHERE id = \?::uuid AND url = \?/);
+    expect(marks[0].values.slice(1)).toEqual([U(63), SRC]);
+    const first = JSON.parse(marks[0].values[0] as string) as Record<string, unknown>;
+    expect(first).toMatchObject({ moveAttempts: 1, moveRetryAt: '2026-10-05T12:30:00.000Z' });
+    expect(first.moveError).toMatch(/^S3 PUT held\/.+ → 500$/);
+    expect(first).not.toHaveProperty('moveFinal');
+    // 4ª falha: 30 min·2^3 = 4 h
+    expect(JSON.parse(marks[1].values[0] as string)).toMatchObject({
+      moveAttempts: 4,
+      moveRetryAt: '2026-10-05T16:00:00.000Z',
+    });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it(`moveRetainedToHeld: na ${HELD_MOVE_ALERT_ATTEMPTS}ª falha avisa o Sentry (uma vez)`, async () => {
+    const f = fakeDb({
+      retainedPublic: [
+        {
+          id: U(65),
+          user_id: OWNER,
+          url: SRC,
+          thumbnail_url: null,
+          move_attempts: HELD_MOVE_ALERT_ATTEMPTS - 1,
+        },
+      ],
+    });
+    await svc(f.prisma, fakeStorage(['held/'], { [SRC]: bytes }).storage).moveRetainedToHeld();
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(String((Sentry.captureMessage as jest.Mock).mock.calls[0][0])).toContain(U(65));
+  });
+
+  it('moveRetainedToHeld: arquivo sumido ganha marca definitiva (moveFinal) e não troca nada; lote entre 1 e 500', async () => {
+    const now = new Date('2026-10-05T12:00:00.000Z');
     const f = fakeDb({
       retainedPublic: [{ id: U(62), user_id: OWNER, url: SRC, thumbnail_url: null }],
     });
     const s = svc(f.prisma, fakeStorage().storage);
-    expect(await s.moveRetainedToHeld(9999)).toBe(0);
-    expect(f.db.$queryRaw.mock.calls[0][1]).toBe(500);
+    expect(await s.moveRetainedToHeld(9999, now)).toBe(0);
+    expect(callOf(f.db.$queryRaw.mock.calls[0]).values.at(-1)).toBe(500);
     expect(f.exec.some((e) => e.sql.includes('UPDATE photos SET url'))).toBe(false);
+    const mark = f.exec.find((e) => e.sql.includes('jsonb_set(moderation_labels'))!;
+    expect(JSON.parse(mark.values[0] as string)).toEqual({
+      moveAttempts: 1,
+      moveFinal: 'missing',
+      moveFinalAt: now.toISOString(),
+    });
+    // nada de cópia órfã registrada
+    expect(f.exec.some((e) => e.sql.includes('INSERT INTO media_objects'))).toBe(false);
+  });
+
+  it('moveRetainedToHeld: original sumido com a miniatura pública no storage → a miniatura vai pra held/, a linha troca e a pública vai pro GC', async () => {
+    const now = new Date('2026-10-05T12:00:00.000Z');
+    const thumbBytes = Buffer.from('jpeg-da-miniatura');
+    const f = fakeDb({
+      retainedPublic: [{ id: U(66), user_id: OWNER, url: SRC, thumbnail_url: SRC_T }],
+    });
+    const st = fakeStorage([], { [SRC_T]: thumbBytes });
+    const s = svc(f.prisma, st.storage);
+    const kick = jest.spyOn(s, 'kick').mockImplementation(() => undefined);
+    expect(await s.moveRetainedToHeld(50, now)).toBe(1);
+
+    const swap = f.exec.find((e) => e.sql.includes('UPDATE photos SET url'))!;
+    const held = swap.values[0] as string;
+    expect(held).toMatch(/^held\/[0-9a-f-]{36}\.jpg$/);
+    expect(st.files[held].equals(thumbBytes)).toBe(true);
+    // a troca já grava a marca (miniatura + original que não volta), com a mesma trava da linha que não mudou
+    expect(swap.sql).toMatch(
+      /moderation_labels = jsonb_set\(moderation_labels, '\{retainedByReport\}'/,
+    );
+    expect(JSON.parse(swap.values[2] as string)).toEqual({
+      heldFrom: 'thumbnail',
+      moveFinal: 'missing',
+      moveFinalAt: now.toISOString(),
+    });
+    expect(swap.values.slice(3)).toEqual([U(66), SRC, SRC_T]);
+    // nenhuma marca solta de "falhou" (a definitiva só veio com a miniatura protegida)
+    expect(f.exec.some((e) => e.sql.includes('SET moderation_labels = jsonb_set'))).toBe(false);
+    // original (sumido) + miniatura na fila com moved_to e pro GC na hora
+    const queued = f.exec.find((e) => e.sql.includes('INSERT INTO media_objects AS m'))!;
+    expect(queued.values).toEqual([SRC, OWNER, SRC_T, held]);
+    expect(kick).toHaveBeenCalledWith([SRC, SRC_T]);
+  });
+
+  it('moveRetainedToHeld: original sumido e a miniatura não copia (storage fora) → backoff, sem marca definitiva', async () => {
+    const now = new Date('2026-10-05T12:00:00.000Z');
+    const f = fakeDb({
+      retainedPublic: [{ id: U(67), user_id: OWNER, url: SRC, thumbnail_url: SRC_T }],
+    });
+    const s = svc(f.prisma, fakeStorage(['held/'], { [SRC_T]: bytes }).storage);
+    expect(await s.moveRetainedToHeld(50, now)).toBe(0);
+    expect(f.exec.some((e) => e.sql.includes('UPDATE photos SET url'))).toBe(false);
+    const mark = f.exec.find((e) => e.sql.includes('jsonb_set(moderation_labels'))!;
+    const patch = JSON.parse(mark.values[0] as string) as Record<string, unknown>;
+    expect(patch).toMatchObject({ moveAttempts: 1, moveRetryAt: '2026-10-05T12:30:00.000Z' });
+    expect(patch).not.toHaveProperty('moveFinal');
+  });
+
+  it('moveRetainedToHeld: original e miniatura sumidos (ou miniatura = original, fakes/, held/) → marca definitiva', async () => {
+    const now = new Date('2026-10-05T12:00:00.000Z');
+    for (const thumbnail_url of [SRC_T, SRC, 'fakes/fake-1.jpg', `held/${U(68)}.jpg`]) {
+      const f = fakeDb({
+        retainedPublic: [{ id: U(69), user_id: OWNER, url: SRC, thumbnail_url }],
+      });
+      const st = fakeStorage([], { 'fakes/fake-1.jpg': bytes, [`held/${U(68)}.jpg`]: bytes });
+      expect(await svc(f.prisma, st.storage).moveRetainedToHeld(50, now)).toBe(0);
+      expect(st.mock.put).not.toHaveBeenCalled();
+      const mark = f.exec.find((e) => e.sql.includes('jsonb_set(moderation_labels'))!;
+      expect(JSON.parse(mark.values[0] as string)).toMatchObject({ moveFinal: 'missing' });
+    }
+  });
+
+  it('heldMoveRetryAt: 30 min·2^(tentativas-1), no máximo 1 dia', () => {
+    const now = new Date('2026-10-05T00:00:00.000Z');
+    const plus = (min: number) => new Date(now.getTime() + min * 60_000).toISOString();
+    expect(heldMoveRetryAt(0, now)).toBe(plus(30));
+    expect(heldMoveRetryAt(1, now)).toBe(plus(30));
+    expect(heldMoveRetryAt(2, now)).toBe(plus(60));
+    expect(heldMoveRetryAt(3, now)).toBe(plus(120));
+    expect(heldMoveRetryAt(6, now)).toBe(plus(960));
+    expect(heldMoveRetryAt(7, now)).toBe(plus(1440));
+    expect(heldMoveRetryAt(500, now)).toBe(plus(1440));
   });
 });
 
 describe('MediaGcTask', () => {
-  it('releaseRetained: solta as retidas, move as que faltam pra held/ e não derruba o cron se falhar', async () => {
+  it('releaseRetained: PRIMEIRO move as que faltam pra held/, DEPOIS solta; não derruba o cron se falhar', async () => {
     const ok = jest.fn().mockResolvedValue(3);
     const move = jest.fn().mockResolvedValue(1);
     await new MediaGcTask({
@@ -698,7 +923,9 @@ describe('MediaGcTask', () => {
     } as unknown as MediaGcService).releaseRetained();
     expect(ok).toHaveBeenCalledTimes(1);
     expect(move).toHaveBeenCalledTimes(1);
-    // a soltura falhou: a mudança pra held/ roda igual
+    // a que fecha com ação só sai já em held/ (senão a pública ficaria 180 dias no ar)
+    expect(move.mock.invocationCallOrder[0]).toBeLessThan(ok.mock.invocationCallOrder[0]);
+    // a mudança pra held/ falhou: a soltura roda igual (e a falha dela também não derruba o cron)
     const boom = jest.fn().mockRejectedValue(new Error('banco caiu'));
     const move2 = jest.fn().mockRejectedValue(new Error('storage fora'));
     await expect(
@@ -708,6 +935,7 @@ describe('MediaGcTask', () => {
       } as unknown as MediaGcService).releaseRetained(),
     ).resolves.toBeUndefined();
     expect(move2).toHaveBeenCalledTimes(1);
+    expect(boom).toHaveBeenCalledTimes(1);
   });
 
   const report = (leased: number) => ({

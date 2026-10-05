@@ -59,13 +59,18 @@ const DEFAULT_MESSAGES: Record<number, string> = {
   429: 'Muitas tentativas seguidas. Espera um pouquinho.',
 };
 
-async function send(path: string, opts: RequestOptions): Promise<Response> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+/** caminho que a API devolve já com o prefixo e relativo à origem dela (ex.: /v1/admin/photos/:id/file) → URL completa */
+export function apiUrl(pathFromOrigin: string): string {
+  return `${API_ORIGIN}${pathFromOrigin.startsWith('/') ? '' : '/'}${pathFromOrigin}`;
+}
+
+async function sendTo(url: string, opts: RequestOptions, accept = 'application/json'): Promise<Response> {
+  const headers: Record<string, string> = { Accept: accept };
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
   const token = session.getAccessToken();
   if (opts.auth !== false && token) headers.Authorization = `Bearer ${token}`;
   try {
-    return await fetch(`${API_BASE}${path}${buildQuery(opts.query)}`, {
+    return await fetch(url, {
       method: opts.method ?? 'GET',
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
@@ -75,6 +80,10 @@ async function send(path: string, opts: RequestOptions): Promise<Response> {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
     throw new HttpError(0, OFFLINE_MESSAGE);
   }
+}
+
+function send(path: string, opts: RequestOptions): Promise<Response> {
+  return sendTo(`${API_BASE}${path}${buildQuery(opts.query)}`, opts);
 }
 
 async function toError(res: Response): Promise<HttpError> {
@@ -148,17 +157,31 @@ async function doRefresh(): Promise<RenewResult> {
   return { kind: 'denied' };
 }
 
-export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const res = await send(path, opts);
-  if (res.status === 401 && opts.auth !== false) {
-    if (!session.getRefreshToken()) {
-      session.end('Sua sessão expirou. Entre de novo.');
-      return parse<T>(res);
-    }
-    const r = await renewSession();
-    if (r.kind === 'ok') return parse<T>(await send(path, opts));
-    // servidor fora na hora de renovar: o erro é "sem conexão", não "sessão expirou" (e a sessão fica)
-    if (r.kind === 'unavailable') throw r.error;
+/** manda e, no 401 de rota autenticada, renova a sessão uma vez e manda de novo */
+async function withRenewal(doSend: () => Promise<Response>, auth: boolean): Promise<Response> {
+  const res = await doSend();
+  if (res.status !== 401 || !auth) return res;
+  if (!session.getRefreshToken()) {
+    session.end('Sua sessão expirou. Entre de novo.');
+    return res;
   }
-  return parse<T>(res);
+  const r = await renewSession();
+  if (r.kind === 'ok') return doSend();
+  // servidor fora na hora de renovar: o erro é "sem conexão", não "sessão expirou" (e a sessão fica)
+  if (r.kind === 'unavailable') throw r.error;
+  return res;
+}
+
+export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  return parse<T>(await withRenewal(() => send(path, opts), opts.auth !== false));
+}
+
+/**
+ * Arquivo de rota autenticada como Blob (Bearer + renovação no 401, igual ao request): a foto retida por denúncia vem
+ * como caminho relativo à origem da API e não abre em <img src> direto.
+ */
+export async function requestBlob(pathFromOrigin: string, opts: { signal?: AbortSignal } = {}): Promise<Blob> {
+  const res = await withRenewal(() => sendTo(apiUrl(pathFromOrigin), { signal: opts.signal }, 'image/*'), true);
+  if (!res.ok) throw await toError(res);
+  return res.blob();
 }

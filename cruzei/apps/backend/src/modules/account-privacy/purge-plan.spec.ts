@@ -77,12 +77,15 @@ describe('keepPhoneOnPurge / holdReasonFor / reviewHoldDeadline', () => {
   const later = new Date(NOW.getTime() + DAY);
   const before = new Date(NOW.getTime() - DAY);
 
-  it('banida/suspensa guarda o número; ativa só se a limpeza passou com revisão (teto)', () => {
+  it('banida/suspensa guarda o número; ativa só se a limpeza passou do teto com revisão ou denúncia automática', () => {
     expect(keepPhoneOnPurge('banned')).toBe(true);
     expect(keepPhoneOnPurge('suspended')).toBe(true);
     expect(keepPhoneOnPurge('active')).toBe(false);
     expect(keepPhoneOnPurge('active', null)).toBe(false);
     expect(keepPhoneOnPurge('active', NOW)).toBe(true);
+    // automática aberta sem revisão (golpe, GPS falso): guarda como na revisão (antes virava hash)
+    expect(keepPhoneOnPurge('active', null, 1)).toBe(true);
+    expect(keepPhoneOnPurge('active', null, 0)).toBe(false);
   });
 
   it('denúncia em análise segura sem prazo, mesmo depois do teto', () => {

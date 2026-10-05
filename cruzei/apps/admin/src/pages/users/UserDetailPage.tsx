@@ -34,6 +34,7 @@ import { ModerationActionDialog } from '@/components/moderation/ModerationAction
 import { PremiumDialog } from '@/components/moderation/PremiumDialog';
 import { RoleDialog } from '@/components/moderation/RoleDialog';
 import { PhotoDecisionButtons } from '@/components/moderation/PhotoDecision';
+import { PhotoThumb } from '@/components/moderation/PhotoThumb';
 import { Avatar } from '@/components/ui/Avatar';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -222,10 +223,8 @@ function Photos({ u, canModerate }: { u: AdminUserDetail; canModerate: boolean }
         <div className="photo-grid card-body">
           {photos.map((p) => (
             <figure key={p.id} className="photo-item">
-              <a className="thumb photo-thumb" href={p.url} target="_blank" rel="noreferrer noopener" aria-label="Abrir foto em tamanho real">
-                <img src={p.url} alt={`Foto de ${u.name}${p.isMain ? ' (principal)' : ''}`} loading="lazy" />
-                {p.isMain ? <span className="photo-main">Principal</span> : null}
-              </a>
+              {/* retida: rota autenticada (fetch com o Bearer → blob); as outras, URL pública */}
+              <PhotoThumb photo={p} alt={`Foto de ${u.name}${p.isMain ? ' (principal)' : ''}${p.retained ? ' (retida por denúncia)' : ''}`} />
               <figcaption className="col" style={{ gap: 6 }}>
                 {/* retida: a pessoa apagou com denúncia de menor/abuso aberta; só a moderação vê, sem aprovar/recusar */}
                 {p.retained ? (

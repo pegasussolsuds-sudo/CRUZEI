@@ -61,14 +61,19 @@ export function tombstoneData(now: Date, deletedAt: Date | null): Prisma.UserUpd
 }
 
 /**
- * Guarda o mínimo de conta banida (número em phone_releases + nota na moderação)? Banida/suspensa (o cadastro novo com
- * o número nasce em revisão) ou em revisão sem denúncia que passou do teto (fica o número, sem segurar o próximo dono).
+ * Guarda o mínimo da conta (número em phone_releases + nota na moderação)? Banida/suspensa (o cadastro novo com o
+ * número nasce em revisão), ou limpa depois do teto com revisão (reviewHoldAt) ou com denúncia automática em análise
+ * (`automaticOpenReports`: golpe, GPS falso, número reciclado — sem revisão ligada) — fica o número, sem segurar o
+ * próximo dono. Sem isso a automática sem revisão virava hash e o número sumia antes de alguém olhar a denúncia.
  */
 export function keepPhoneOnPurge(
   status: AccountStatus | string,
   reviewHoldAt: Date | null = null,
+  automaticOpenReports = 0,
 ): boolean {
-  return status === 'banned' || status === 'suspended' || !!reviewHoldAt;
+  return (
+    status === 'banned' || status === 'suspended' || !!reviewHoldAt || automaticOpenReports > 0
+  );
 }
 
 export type HoldReason = 'open_reports' | 'review_hold';
@@ -107,7 +112,7 @@ export function splitOpenReports(reports: OpenReportRef[]): {
  * Por que a limpeza espera; null = pode limpar. Denúncia de alguém (ou de segurança infantil/menor) em análise segura
  * sem prazo (a decisão vem antes). Revisão sem denúncia (ex.: número reciclado de conta banida) ou denúncia automática
  * em análise (a do número reciclado nasce 'pending' e ninguém precisa decidir pra conta sair) seguram só até `deadline`:
- * depois limpa, guardando o mínimo (keepPhoneOnPurge com reviewHoldAt).
+ * depois limpa, guardando o mínimo (keepPhoneOnPurge com reviewHoldAt ou com a contagem das automáticas).
  */
 export function holdReasonFor(
   blockingReportsAgainst: number,

@@ -278,6 +278,21 @@ describe('limpeza × denúncia automática (número reciclado de conta banida)',
     await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'completed' });
   });
 
+  it('automática sem revisão passou do teto: guarda o número como na revisão (não vira hash)', async () => {
+    openReports = [{ reporterId: null, reason: 'scam' }];
+    request!.requested_at = new Date(NOW.getTime() - 61 * DAY);
+    releases = [{ id: BigInt(7), phone: OLD_PHONE }];
+    await expect(service.purgeNext(NOW)).resolves.toMatchObject({ outcome: 'completed' });
+    // número inteiro guardado com a situação real (ativa: o cadastro novo com ele não nasce em revisão)
+    expect(releaseCreates).toEqual([
+      expect.objectContaining({ userId: U, phone: PHONE, accountStatus: 'active' }),
+    ]);
+    expect(String(modCreates[0].note)).toMatch(/denúncia automática/);
+    // o histórico de liberação dela não vira hash
+    expect(releaseUpdates()).toHaveLength(0);
+    expect(metaUpdates()).toHaveLength(0);
+  });
+
   it('automática de menor/abuso infantil segura sem prazo (LEGAL_KEEP_REASONS)', async () => {
     openReports = [recycled, { reporterId: null, reason: 'underage' }];
     request!.requested_at = new Date(NOW.getTime() - 400 * DAY);

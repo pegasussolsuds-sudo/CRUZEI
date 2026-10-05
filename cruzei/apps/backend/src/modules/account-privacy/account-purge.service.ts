@@ -10,7 +10,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { AccountStateService } from '../account/account-state.service';
 import { contextConversationIds } from '../reports/report-context';
-import { MediaGcService } from '../uploads/media-gc.service';
+import { deleteUserPhotos, MediaGcService } from '../uploads/media-gc.service';
 import { UPLOAD_ORPHAN_TTL_H } from '../uploads/uploads.constants';
 
 import {
@@ -59,7 +59,9 @@ const ALERT_AFTER_ATTEMPTS = 3;
 const NOTE_PHONE_KEPT =
   'Número guardado na limpeza da conta excluída (estava banida/suspensa): cadastro novo com ele nasce em revisão';
 const NOTE_PHONE_KEPT_HOLD =
-  'Número guardado na limpeza da conta excluída (estava em revisão sem denúncia aberta e passou do prazo da revisão)';
+  'Número guardado na limpeza da conta excluída (estava em revisão, sem denúncia de alguém aberta, e passou do prazo da revisão)';
+const NOTE_PHONE_KEPT_AUTO =
+  'Número guardado na limpeza da conta excluída (tinha denúncia automática em análise, como golpe ou GPS falso, e passou do prazo da revisão)';
 
 interface UserRow {
   id: string;
@@ -210,9 +212,10 @@ export class AccountPurgeService {
     );
     const toDelete = convs.map((c) => c.id).filter((id) => !evidence.has(id.toLowerCase()));
 
-    // d) telefone: banida/suspensa (ou revisão que passou do teto) guarda o número; teste grátis vira marca permanente
+    // d) telefone: banida/suspensa (ou revisão/denúncia automática que passou do teto) guarda o número; teste grátis
+    // vira marca permanente
     const hash = u.phone ? phoneHash(u.phone) : null;
-    const keepPhone = keepPhoneOnPurge(u.account_status, u.review_hold_at);
+    const keepPhone = keepPhoneOnPurge(u.account_status, u.review_hold_at, automatic);
     if (!keepPhone) await this.anonymizePhoneReleases(tx, userId, now);
     if (u.phone && keepPhone) {
       await tx.phoneRelease.create({
@@ -229,7 +232,11 @@ export class AccountPurgeService {
           moderatorId: null,
           targetUserId: userId,
           action: 'phone_released',
-          note: keepPhoneOnPurge(u.account_status) ? NOTE_PHONE_KEPT : NOTE_PHONE_KEPT_HOLD,
+          note: keepPhoneOnPurge(u.account_status)
+            ? NOTE_PHONE_KEPT
+            : u.review_hold_at
+              ? NOTE_PHONE_KEPT_HOLD
+              : NOTE_PHONE_KEPT_AUTO,
         },
       });
     }
@@ -258,7 +265,8 @@ export class AccountPurgeService {
 
     // f) perfil, localização e o resto da pessoa. Fotos: o gatilho photos_release_media põe os arquivos na fila
     // media_objects (rótulo 'urgent' fica 180 dias; denúncia underage/child_safety aberta segura no GC) e o upload
-    // solto vence na hora; os arquivos saem no GC (kick depois do commit)
+    // solto vence na hora; os arquivos saem no GC (kick depois do commit). Retida por denúncia que fechou com ação
+    // (banida ou denúncia resolvida) ganha 'urgent' antes, como na soltura (deleteUserPhotos)
     const media = this.mediaGc
       ? await this.mediaGc.releaseUser(userId, { tx })
       : await this.releasePhotosInTx(tx, userId);
@@ -317,9 +325,9 @@ export class AccountPurgeService {
     };
   }
 
-  /** sem o MediaGcService (testes): mesmas regras do releaseUser, sem o kick */
+  /** sem o MediaGcService (testes): mesmas regras do releaseUser (inclusive a da retida), sem o kick */
   private async releasePhotosInTx(tx: Tx, userId: string): Promise<string[]> {
-    await tx.photo.deleteMany({ where: { userId } });
+    await deleteUserPhotos(tx, userId);
     // só upload fresco: não encurta a retenção de 180 dias que o gatilho deu às fotos 'urgent'
     await tx.$executeRaw`
       UPDATE media_objects SET delete_after = now()

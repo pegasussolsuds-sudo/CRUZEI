@@ -11,6 +11,11 @@ import type { Prisma } from '@prisma/client';
 /** chave em photos.moderation_labels (a MESMA do índice parcial photos_retained_idx e do SQL do GC) */
 export const RETAINED_LABEL = 'retainedByReport';
 
+/**
+ * O cron que move pra held/ (MediaGcService.moveRetainedToHeld) também grava na marca: moveAttempts, moveRetryAt e
+ * moveError (falha passageira, backoff) e moveFinal/moveFinalAt (arquivo sumido: não tenta mais). Original sumido com
+ * a miniatura pública ainda lá: a miniatura vai pra held/ e a marca ganha heldFrom: 'thumbnail' (+ moveFinal).
+ */
 export interface RetainedMark {
   /** quando o dono apagou (ISO) */
   at: string;

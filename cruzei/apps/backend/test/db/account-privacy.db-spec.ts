@@ -646,6 +646,92 @@ describe('limpeza definitiva no fim do prazo', () => {
     expect(await prisma.report.count({ where: { reportedId: anaId } })).toBe(1);
   });
 
+  it('denúncia automática SEM revisão (filtro de golpe) passou do teto: guarda o número como na revisão', async () => {
+    const OLD = '+5534966665555';
+    await prisma.phoneRelease.create({
+      data: { userId: anaId, phone: OLD, reason: 'not_mine', accountStatus: 'active' },
+    });
+    await prisma.report.create({
+      data: { reporterId: null, reportedId: anaId, reason: 'scam', priority: 1, status: 'pending' },
+    });
+    await deletion.request(anaId, { confirm: 'EXCLUIR' });
+    await prisma.dataDeletionRequest.updateMany({
+      where: { userId: anaId },
+      data: {
+        requestedAt: new Date(Date.now() - 61 * DAY),
+        scheduledFor: new Date(Date.now() - 60_000),
+      },
+    });
+    expect(await purge.purgeDue(5)).toMatchObject({ completed: 1 });
+    // número inteiro guardado, com a situação real (ativa): o próximo dono dele não nasce em revisão
+    const kept = await prisma.phoneRelease.findFirstOrThrow({
+      where: { userId: anaId, reason: 'account_deleted' },
+    });
+    expect(kept).toMatchObject({ phone: anaPhone, accountStatus: 'active' });
+    // o histórico de liberação dela também fica inteiro (não vira hash)
+    expect(
+      await prisma.phoneRelease.findFirstOrThrow({ where: { userId: anaId, reason: 'not_mine' } }),
+    ).toMatchObject({ phone: OLD });
+    const note = await prisma.moderationAction.findFirstOrThrow({
+      where: { targetUserId: anaId, action: 'phone_released' },
+    });
+    expect(note.note).toMatch(/denúncia automática/);
+  });
+
+  it("foto retida por denúncia: com ação ganha 'urgent' (180 dias), dispensada sai já, e a com ação ainda na chave pública fica pro cron", async () => {
+    const [H1, H2, PUB, N] = [
+      '33333333-3333-4333-8333-333333333333',
+      '44444444-4444-4444-8444-444444444444',
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666',
+    ];
+    const mark = {
+      retainedByReport: { at: new Date().toISOString(), prevStatus: 'approved', wasMain: false },
+    };
+    // Ana: denúncia de menor resolvida (com ação). Bea: denúncia de menor dispensada (sem ação)
+    await prisma.report.createMany({
+      data: [
+        { reporterId: caioId, reportedId: anaId, reason: 'underage', status: 'resolved' },
+        { reporterId: caioId, reportedId: beaId, reason: 'underage', status: 'dismissed' },
+      ],
+    });
+    const rejected = { status: 'rejected' as const, moderationLabels: mark };
+    await prisma.photo.createMany({
+      data: [
+        {
+          userId: anaId,
+          url: `held/${H1}.jpg`,
+          thumbnailUrl: `held/${H1}.jpg`,
+          orderIndex: -1,
+          ...rejected,
+        },
+        { userId: anaId, url: `p/${PUB}.jpg`, orderIndex: -2, ...rejected },
+        { userId: anaId, url: `p/${N}.jpg`, orderIndex: 0, isMain: true },
+        { userId: beaId, url: `held/${H2}.jpg`, orderIndex: -1, ...rejected },
+      ],
+    });
+    for (const id of [anaId, beaId]) {
+      await deletion.request(id, { confirm: 'EXCLUIR' });
+      await expireRequest(id);
+    }
+    expect(await purge.purgeDue(5)).toMatchObject({ completed: 2, failed: 0 });
+
+    const media = await prisma.$queryRaw<{ key: string; due_days: number }[]>`
+      SELECT key, round(extract(epoch FROM (delete_after - now())) / 86400)::int AS due_days
+        FROM media_objects ORDER BY key`;
+    expect(media).toEqual([
+      { key: `held/${H1}.jpg`, due_days: 180 },
+      { key: `held/${H2}.jpg`, due_days: 0 },
+      { key: `p/${N}.jpg`, due_days: 0 },
+    ]);
+    // a retida com ação ainda na pública ficou (marcada 'urgent'): o cron move pra held/ e solta depois
+    const left = await prisma.photo.findMany({ where: { userId: { in: [anaId, beaId] } } });
+    expect(left.map((p) => p.url)).toEqual([`p/${PUB}.jpg`]);
+    expect(left[0].moderationLabels).toMatchObject({ urgent: true });
+    // a conta limpa passou mesmo assim (CHECK users_purged_clean_chk)
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: anaId } })).purgedAt).not.toBeNull();
+  });
+
   it('denúncia automática de menor/abuso infantil segura sem prazo, mesmo depois do teto', async () => {
     await prisma.report.create({
       data: { reporterId: null, reportedId: anaId, reason: 'underage', status: 'pending' },

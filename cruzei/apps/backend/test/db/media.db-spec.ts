@@ -9,6 +9,7 @@ import { resetPhotoUrlCache } from '../../src/common/photo-url';
 import type { PrismaService } from '../../src/database/prisma.service';
 import type { PhotoModerationService } from '../../src/modules/moderation/photo-moderation.service';
 import { MediaGcService } from '../../src/modules/uploads/media-gc.service';
+import { MediaGcTask } from '../../src/modules/uploads/media-gc.task';
 import { reprocessLegacyPhotos } from '../../src/modules/uploads/photo-reprocess';
 import { isRetainedPhoto } from '../../src/modules/uploads/photo-retention';
 import { LocalObjectStorage } from '../../src/modules/uploads/storage/local-storage';
@@ -112,6 +113,28 @@ async function errorOf(
 
 const uuidKey = (n: number, ext = 'jpg') =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}.${ext}`;
+
+/** marca de retida por denúncia (photo-retention.ts) */
+const retainedMark = () => ({
+  retainedByReport: { at: new Date().toISOString(), prevStatus: 'approved', wasMain: false },
+});
+
+/** storage local com o PUT em held/ quebrado (a cópia privada não dá) */
+const brokenHeldPut = (): ObjectStorage => ({
+  driver: 'local',
+  get: (k) => storage.get(k),
+  exists: (k) => storage.exists(k),
+  delete: (k) => storage.delete(k),
+  put: async (k, b, t) => {
+    if (k.startsWith('held/')) throw new Error('storage fora');
+    return storage.put(k, b, t);
+  },
+});
+
+const labelsOf = async (photoId: string) =>
+  ((await prisma.photo.findUniqueOrThrow({ where: { id: photoId } })).moderationLabels ?? {}) as {
+    retainedByReport?: Record<string, unknown>;
+  };
 
 beforeAll(async () => {
   await assertTestDatabase(prisma);
@@ -647,6 +670,244 @@ describe('apagar foto (DELETE /me/photos/:id) + GC', () => {
   });
 });
 
+describe('foto retida ainda na chave pública × soltura (cron de hora em hora)', () => {
+  /** retida que ficou na chave pública (a cópia privada não deu na hora do apagar) */
+  async function retainedOnPublic(reason: 'underage' | 'child_safety' = 'underage') {
+    const u = await newUser(prisma, 'Alvo');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const up = await upload(u.id);
+    const p = await users.addPhoto(u.id, { key: up.key });
+    await users.addPhoto(u.id, { key: (await upload(u.id)).key });
+    const report = await prisma.report.create({
+      data: { reporterId: reporter.id, reportedId: u.id, reason, status: 'pending' },
+    });
+    await usersWith(brokenHeldPut()).deletePhoto(u.id, p.id);
+    const kept = await prisma.photo.findUniqueOrThrow({ where: { id: p.id } });
+    expect(isRetainedPhoto(kept.moderationLabels)).toBe(true);
+    expect(kept.url).toBe(up.key);
+    return { u, up, photoId: p.id, reportId: report.id };
+  }
+
+  it('fechou COM ação: só sai depois de ir pra held/ (a pública não fica 180 dias no ar); o cron move e solta na mesma rodada', async () => {
+    const { u, up, photoId, reportId } = await retainedOnPublic();
+    await prisma.report.update({ where: { id: reportId }, data: { status: 'resolved' } });
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    // cópia privada órfã da tentativa que falhou no apagar (sai sozinha em 1 h): fora da conta abaixo
+    const orphans = (
+      await prisma.$queryRaw<{ key: string }[]>`
+        SELECT key FROM media_objects WHERE owner_id = ${u.id}::uuid AND kind = 'held'`
+    ).map((r) => r.key);
+
+    // soltura sozinha: espera (ainda na chave pública)
+    expect(await gc.releaseRetainedPhotos()).toBe(0);
+    expect(await prisma.photo.findUnique({ where: { id: photoId } })).not.toBeNull();
+    // a pública nem entrou na fila (segue anexada à linha retida)
+    expect(await mediaRow(up.key)).toMatchObject({ delete_after: null });
+
+    // cron: move pra held/ PRIMEIRO e solta DEPOIS
+    await new MediaGcTask(gc).releaseRetained();
+    expect(await prisma.photo.findUnique({ where: { id: photoId } })).toBeNull();
+    const helds = await prisma.$queryRaw<{ key: string; delete_after: Date }[]>`
+      SELECT key, delete_after FROM media_objects
+       WHERE owner_id = ${u.id}::uuid AND kind = 'held' AND attached_at IS NULL
+         AND NOT (key = ANY(${orphans}::text[]))`;
+    expect(helds).toHaveLength(1);
+    const [held] = helds;
+    expect(held.key).toMatch(/^held\//);
+    // a prova fica 180 dias na cópia privada; a pública sai já
+    expect(offsetFromNow(held.delete_after, 180)).toBeLessThan(60);
+    expect(await onDisk(held.key)).toBe(true);
+    const [pub] = await prisma.$queryRaw<{ moved_to: string; delete_after: Date }[]>`
+      SELECT moved_to, delete_after FROM media_objects WHERE key = ${up.key}`;
+    expect(pub.moved_to).toBe(held.key);
+    expect(pub.delete_after.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+    expect((await gc.drain({ keys: [up.key] })).deleted).toBe(1);
+    expect(await onDisk(up.key)).toBe(false);
+  });
+
+  it('dispensada (sem ação): sai na hora mesmo na chave pública (o arquivo não fica guardado)', async () => {
+    const { up, photoId, reportId } = await retainedOnPublic('child_safety');
+    await prisma.report.update({ where: { id: reportId }, data: { status: 'dismissed' } });
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.releaseRetainedPhotos()).toBe(1);
+    expect(await prisma.photo.findUnique({ where: { id: photoId } })).toBeNull();
+    expect(offsetFromNow((await mediaRow(up.key))!.delete_after, 0)).toBeLessThan(60);
+  });
+
+  it('cron de mover: arquivo sumido ganha marca definitiva; storage fora fica de fora até o backoff e tenta de novo', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const gone = `p/${uuidKey(60)}`;
+    const flaky = `p/${uuidKey(61)}`;
+    await storage.put(flaky, await jpeg(), 'image/jpeg');
+    const a = await insertPhoto(u.id, gone, null, {
+      status: 'rejected',
+      orderIndex: -1,
+      moderationLabels: retainedMark(),
+    });
+    const b = await insertPhoto(u.id, flaky, null, {
+      status: 'rejected',
+      orderIndex: -2,
+      moderationLabels: retainedMark(),
+    });
+    const broken = brokenHeldPut();
+    const put = jest.spyOn(broken, 'put');
+    const brokenGc = new MediaGcService(db, broken, 'on');
+    brokenGc.kick = jest.fn();
+
+    const t0 = new Date();
+    expect(await brokenGc.moveRetainedToHeld(50, t0)).toBe(0);
+    // sumido: marca definitiva, o resto da marca fica
+    expect((await labelsOf(a.id)).retainedByReport).toMatchObject({
+      prevStatus: 'approved',
+      moveAttempts: 1,
+      moveFinal: 'missing',
+    });
+    // storage fora: 1ª tentativa, volta em 30 min
+    const mb = (await labelsOf(b.id)).retainedByReport!;
+    expect(mb).toMatchObject({
+      prevStatus: 'approved',
+      moveAttempts: 1,
+      moveRetryAt: new Date(t0.getTime() + 30 * 60_000).toISOString(),
+    });
+    expect(String(mb.moveError)).toContain('storage fora');
+    expect(put).toHaveBeenCalledTimes(1);
+
+    // dentro do backoff: nem tenta (nenhum PUT), e a sumida nunca mais entra no lote
+    put.mockClear();
+    expect(await brokenGc.moveRetainedToHeld(50, new Date(t0.getTime() + 10 * 60_000))).toBe(0);
+    expect(put).not.toHaveBeenCalled();
+    // 2ª falha depois do prazo: dobra (1 h)
+    const t1 = new Date(t0.getTime() + 31 * 60_000);
+    expect(await brokenGc.moveRetainedToHeld(50, t1)).toBe(0);
+    expect((await labelsOf(b.id)).retainedByReport).toMatchObject({
+      moveAttempts: 2,
+      moveRetryAt: new Date(t1.getTime() + 60 * 60_000).toISOString(),
+    });
+
+    // storage de volta, passado o prazo: move (a sumida continua de fora)
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.moveRetainedToHeld(50, new Date(t1.getTime() + 61 * 60_000))).toBe(1);
+    expect((await prisma.photo.findUniqueOrThrow({ where: { id: b.id } })).url).toMatch(/^held\//);
+    expect((await prisma.photo.findUniqueOrThrow({ where: { id: a.id } })).url).toBe(gone);
+
+    // conta banida: a sumida (marca definitiva) sai mesmo na chave pública — não há arquivo pra proteger
+    await prisma.user.update({ where: { id: u.id }, data: { accountStatus: 'banned' } });
+    expect(await gc.releaseRetainedPhotos()).toBe(2);
+    expect(await prisma.photo.count({ where: { userId: u.id } })).toBe(0);
+  });
+
+  it('original sumido com a miniatura pública no storage: a miniatura vai pra held/ antes da marca definitiva (não fica 180 dias aberta)', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const gone = `p/${uuidKey(70)}`;
+    const thumbKey = `p/${uuidKey(70).replace('.jpg', '-t.jpg')}`;
+    const thumbBytes = await jpeg(40, 30);
+    await storage.put(thumbKey, thumbBytes, 'image/jpeg');
+    const p = await insertPhoto(u.id, gone, thumbKey, {
+      status: 'rejected',
+      orderIndex: -1,
+      moderationLabels: retainedMark(),
+    });
+    const report = await prisma.report.create({
+      data: { reporterId: reporter.id, reportedId: u.id, reason: 'underage', status: 'pending' },
+    });
+
+    // storage fora no PUT da held/: falha passageira (backoff), NUNCA a marca definitiva com a miniatura no ar
+    const brokenGc = new MediaGcService(db, brokenHeldPut(), 'on');
+    brokenGc.kick = jest.fn();
+    const t0 = new Date();
+    expect(await brokenGc.moveRetainedToHeld(50, t0)).toBe(0);
+    const m0 = (await labelsOf(p.id)).retainedByReport!;
+    expect(m0).toMatchObject({
+      moveAttempts: 1,
+      moveRetryAt: new Date(t0.getTime() + 30 * 60_000).toISOString(),
+    });
+    expect(m0).not.toHaveProperty('moveFinal');
+    // denúncia resolvida (fechou com ação): a soltura espera a miniatura ir pra held/
+    await prisma.report.update({ where: { id: report.id }, data: { status: 'resolved' } });
+    const kick = jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.releaseRetainedPhotos()).toBe(0);
+    expect(await prisma.photo.findUnique({ where: { id: p.id } })).not.toBeNull();
+
+    // storage de volta, passado o backoff: a miniatura vira a cópia privada e a linha troca
+    expect(await gc.moveRetainedToHeld(50, new Date(t0.getTime() + 31 * 60_000))).toBe(1);
+    const row = await prisma.photo.findUniqueOrThrow({ where: { id: p.id } });
+    expect(row.url).toMatch(/^held\/[0-9a-f-]{36}\.jpg$/);
+    expect(row.thumbnailUrl).toBe(row.url);
+    expect((await storage.get(row.url))!.equals(thumbBytes)).toBe(true);
+    expect((await labelsOf(p.id)).retainedByReport).toMatchObject({
+      prevStatus: 'approved',
+      heldFrom: 'thumbnail',
+      moveFinal: 'missing',
+    });
+    // original (sumido) + miniatura pública na fila com moved_to, pro GC na hora
+    expect(kick).toHaveBeenCalledWith([gone, thumbKey]);
+    const [pub] = await prisma.$queryRaw<{ moved_to: string; thumb_key: string }[]>`
+      SELECT moved_to, thumb_key FROM media_objects WHERE key = ${gone}`;
+    expect(pub).toEqual({ moved_to: row.url, thumb_key: thumbKey });
+    expect((await gc.drain({ keys: [gone] })).deleted).toBe(1);
+    expect(await onDisk(thumbKey)).toBe(false);
+    expect(await onDisk(row.url)).toBe(true);
+
+    // agora a soltura sai com 'urgent': a prova fica 180 dias só na cópia privada
+    expect(await gc.releaseRetainedPhotos()).toBe(1);
+    expect(offsetFromNow((await mediaRow(row.url))!.delete_after, 180)).toBeLessThan(60);
+    expect(await onDisk(thumbKey)).toBe(false);
+  });
+
+  it('original e miniatura sumidos: marca definitiva (sem arquivo não há o que proteger)', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const gone = `p/${uuidKey(71)}`;
+    const goneThumb = `p/${uuidKey(71).replace('.jpg', '-t.jpg')}`;
+    const p = await insertPhoto(u.id, gone, goneThumb, {
+      status: 'rejected',
+      orderIndex: -1,
+      moderationLabels: retainedMark(),
+    });
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    expect(await gc.moveRetainedToHeld()).toBe(0);
+    expect((await prisma.photo.findUniqueOrThrow({ where: { id: p.id } })).url).toBe(gone);
+    const mark = (await labelsOf(p.id)).retainedByReport!;
+    expect(mark).toMatchObject({ moveAttempts: 1, moveFinal: 'missing' });
+    expect(mark).not.toHaveProperty('heldFrom');
+  });
+
+  it('erro do storage ao conferir a cópia privada: falha com backoff curto (não segura 30 dias com a pública no ar)', async () => {
+    const u = await newUser(prisma, 'Alvo');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const up = await upload(u.id);
+    const p = await users.addPhoto(u.id, { key: up.key });
+    await prisma.report.create({
+      data: { reporterId: reporter.id, reportedId: u.id, reason: 'underage', status: 'pending' },
+    });
+    await users.deletePhoto(u.id, p.id);
+    expect((await prisma.photo.findUniqueOrThrow({ where: { id: p.id } })).url).toMatch(/^held\//);
+
+    const headDown: ObjectStorage = {
+      driver: 'local',
+      get: (k) => storage.get(k),
+      put: (k, b, t) => storage.put(k, b, t),
+      delete: (k) => storage.delete(k),
+      exists: async (k) => {
+        if (k.startsWith('held/')) throw new Error('HEAD 503');
+        return storage.exists(k);
+      },
+    };
+    const r = await new MediaGcService(db, headDown, 'on').drain({ keys: [up.key] });
+    expect(r).toMatchObject({ failed: 1, held: 0, deleted: 0 });
+    const m = (await mediaRow(up.key))!;
+    // lease: 10 min (1ª tentativa), não 30 dias
+    expect(m.delete_attempts).toBe(1);
+    expect(offsetFromNow(m.delete_after, 10 / 1440)).toBeLessThan(60);
+    expect(await onDisk(up.key)).toBe(true);
+
+    // storage de volta: a pública sai (a prova está em held/)
+    await dueNow(up.key);
+    expect((await gc.drain({ keys: [up.key] })).deleted).toBe(1);
+    expect(await onDisk(up.key)).toBe(false);
+  });
+});
+
 describe('referências fora de photos (selfie, capa, evidence_urls) por igualdade', () => {
   it('acha a chave crua, a URL da base atual e o legado /uploads/ de qualquer host', async () => {
     const u = await newUser(prisma, 'Ana');
@@ -841,6 +1102,74 @@ describe('limpeza da conta (releaseUser)', () => {
     expect(await onDisk(b.key)).toBe(true); // guardada (citada em denúncia)
     expect(await onDisk(c.key)).toBe(true); // urgent: 180 dias
     expect(await onDisk(antigo.key)).toBe(true);
+  });
+
+  it("retida em held/: fechou com ação (banida ou denúncia resolvida) ganha 'urgent' e fica 180 dias; dispensada sai já", async () => {
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    const cases = [
+      { name: 'banida, denúncia dispensada', close: 'dismissed', ban: true, days: 180 },
+      { name: 'denúncia de menor resolvida', close: 'resolved', ban: false, days: 180 },
+      { name: 'denúncia dispensada', close: 'dismissed', ban: false, days: 0 },
+    ] as const;
+    for (const c of cases) {
+      const u = await newUser(prisma, `Alvo ${c.name}`);
+      const reporter = await newUser(prisma, `Quem denunciou ${c.name}`);
+      const p = await users.addPhoto(u.id, { key: (await upload(u.id)).key });
+      const report = await prisma.report.create({
+        data: { reporterId: reporter.id, reportedId: u.id, reason: 'underage', status: 'pending' },
+      });
+      await users.deletePhoto(u.id, p.id);
+      const held = (await prisma.photo.findUniqueOrThrow({ where: { id: p.id } })).url;
+      expect(held).toMatch(/^held\//);
+      await prisma.report.update({ where: { id: report.id }, data: { status: c.close } });
+      if (c.ban)
+        await prisma.user.update({ where: { id: u.id }, data: { accountStatus: 'banned' } });
+
+      const keys = await gc.releaseUser(u.id);
+      expect(keys).toContain(held);
+      expect(await prisma.photo.count({ where: { userId: u.id } })).toBe(0);
+      expect(offsetFromNow((await mediaRow(held))!.delete_after, c.days)).toBeLessThan(60);
+    }
+  });
+
+  it('retida que fechou com ação ainda na chave pública: a linha fica pro cron mover e soltar (a pública não fica 180 dias no ar)', async () => {
+    jest.spyOn(gc, 'kick').mockImplementation(() => undefined);
+    const u = await newUser(prisma, 'Alvo');
+    const reporter = await newUser(prisma, 'Quem denunciou');
+    const up = await upload(u.id);
+    const p = await users.addPhoto(u.id, { key: up.key });
+    const other = await upload(u.id);
+    await users.addPhoto(u.id, { key: other.key });
+    const report = await prisma.report.create({
+      data: {
+        reporterId: reporter.id,
+        reportedId: u.id,
+        reason: 'child_safety',
+        status: 'pending',
+      },
+    });
+    await usersWith(brokenHeldPut()).deletePhoto(u.id, p.id);
+    await prisma.report.update({ where: { id: report.id }, data: { status: 'resolved' } });
+
+    const keys = await gc.releaseUser(u.id);
+    // a outra foto sai; a retida fica (com 'urgent' já marcado) e a chave pública nem entra na fila
+    expect(keys).toContain(other.key);
+    expect(keys).not.toContain(up.key);
+    const kept = await prisma.photo.findUniqueOrThrow({ where: { id: p.id } });
+    expect(kept.url).toBe(up.key);
+    expect(kept.moderationLabels).toMatchObject({ urgent: true });
+    expect(await mediaRow(up.key)).toMatchObject({ delete_after: null });
+
+    // cron: move pra held/ e solta com os 180 dias na cópia privada; a pública sai já
+    await new MediaGcTask(gc).releaseRetained();
+    expect(await prisma.photo.count({ where: { userId: u.id } })).toBe(0);
+    const [pub] = await prisma.$queryRaw<{ moved_to: string }[]>`
+      SELECT moved_to FROM media_objects WHERE key = ${up.key}`;
+    expect(pub.moved_to).toMatch(/^held\//);
+    expect(offsetFromNow((await mediaRow(pub.moved_to))!.delete_after, 180)).toBeLessThan(60);
+    expect((await gc.drain({ keys: [up.key] })).deleted).toBe(1);
+    expect(await onDisk(up.key)).toBe(false);
+    expect(await onDisk(pub.moved_to)).toBe(true);
   });
 });
 
