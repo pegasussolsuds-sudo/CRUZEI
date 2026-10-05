@@ -41,8 +41,8 @@ pnpm install
 # 2. Sobe Postgres + Redis (PostGIS habilitado)
 docker compose up -d
 
-# 3. Roda migrations e seed
-pnpm --filter @cruzei/backend prisma:migrate
+# 3. Aplica as migrations (executor próprio, ver "Banco de dados") e o seed
+pnpm --filter @cruzei/backend db:migrate
 pnpm --filter @cruzei/backend prisma:seed
 
 # 4. Sobe backend + mobile em paralelo
@@ -73,6 +73,45 @@ pnpm lint               # ESLint em todos os packages
 pnpm test               # Jest em todos os packages
 pnpm clean              # limpa tudo
 ```
+
+## Ambiente do backend
+
+- Copie `.env.example` pra `apps/backend/.env`. **`NODE_ENV` é obrigatório** (`development`, `test` ou `production`): sem ele o backend não sobe.
+- Dev com o código do SMS no app/painel e o recibo "dev" do Premium/Boost: `NODE_ENV=development` + `DEV_SHORTCUTS=true` (com qualquer outro `NODE_ENV` o boot recusa). Os scripts `apps/backend/test/*-audit.ts` precisam disso.
+- Produção recusa subir com `JWT_SECRET`, `LOCATION_SALT` ou `PHONE_HASH_SECRET` fracos (< 32 caracteres, de exemplo ou repetidos), `ALLOWED_ORIGINS` sem https ou com `*` e a senha de exemplo do Postgres. A mensagem lista só os nomes. `ALLOW_DEV_RECEIPTS=true` (beta fechado) é aceito, mas avisa em todo boot.
+- SMS do login (`SMS_DRIVER`): `log` no dev (não manda nada); produção exige `twilio` ou `zenvia` (HTTPS direto, sem SDK) com as credenciais. Tetos, trava por código errado e o número de revisão das lojas (`REVIEW_PHONE` + `REVIEW_CODE`, nunca manda SMS) estão comentados no `.env.example`. Config de SMS errada derruba o boot em qualquer ambiente.
+- Fotos (`STORAGE_DRIVER`): `local` (padrão, disco servido em `/uploads`) ou `s3` (Cloudflare R2/AWS S3 por HTTPS, sem SDK). Toda foto é reprocessada (sem EXIF/GPS) e o banco guarda só a chave; a URL sai de `STORAGE_PUBLIC_BASE_URL`, obrigatória (https) em produção. Celular na LAN do dev: `PUBLIC_BASE_URL=http://<ip>:3000`.
+
+## Banco de dados (migrations)
+
+As migrations são SQL puro em `apps/backend/prisma/migrations/<14 dígitos>_<nome>/migration.sql` e quem aplica é o executor do projeto (`apps/backend/src/database/migrate`), não o Prisma. O `schema.prisma` serve só pro client: **nunca** rode `prisma migrate dev`, `migrate deploy`, `migrate reset` ou `db push`. Eles não conhecem PostGIS, `place_*`, índices parciais e gatilhos, e o `migrate dev` oferece apagar o banco.
+
+```bash
+cd apps/backend
+pnpm db:migrate                 # aplica as pendentes, em ordem (--dry-run lista sem aplicar; --up-to <nome> para antes)
+pnpm db:migrate:status          # aplicada / PENDENTE / ALTERADA / SEM ARQUIVO (--check sai com 1 se não estiver em dia)
+pnpm db:migrate:new <nome>      # cria a pasta com o modelo e o próximo prefixo
+pnpm db:migrate:baseline        # uma vez, em banco montado antes do executor (ver abaixo)
+pnpm db:migrate:repair <nome>   # grava o checksum novo de uma aplicada (só se mudou comentário, depois de revisar)
+pnpm test:db:setup              # recria o cruzei_test do zero pelo executor (antes do pnpm test:db)
+```
+
+Como funciona:
+- O histórico fica na tabela `schema_migrations` (nome, sha256 do arquivo, quando, quem e se veio do baseline).
+- Cada arquivo roda numa transação só: se der erro, nada daquele arquivo fica no banco e as anteriores continuam. O `BEGIN;`/`COMMIT;` do arquivo é opcional (o executor ignora). `ROLLBACK`, `SAVEPOINT` e `SET` de sessão são recusados; use `SET LOCAL`. O `CREATE INDEX CONCURRENTLY` precisa de `-- migrate:no-transaction` no cabeçalho e de um arquivo idempotente.
+- Cada transação usa `SET LOCAL lock_timeout` (padrão `15s`, `MIGRATE_LOCK_TIMEOUT`). Um `ALTER TABLE` preso atrás do app desiste em vez de travar a fila; é só rodar de novo. O teto por arquivo é de 30 min (`MIGRATE_TX_TIMEOUT_MS`).
+- Um advisory lock impede que duas execuções ao mesmo tempo (dois deploys) apliquem a mesma migration.
+- O executor recusa rodar se um arquivo aplicado mudou (checksum), se um aplicado sumiu da pasta ou se uma pendente é mais antiga que a última aplicada (`--allow-out-of-order` libera, depois de conferir). **Migration aplicada não se edita: crie outra.**
+- URL: `MIGRATE_DATABASE_URL` (papel com DDL, conexão direta, sem pgbouncer) ou `DATABASE_URL`. O log mostra só `host:porta/banco`.
+
+Banco que já existia (montado com `psql` antes do executor): rode `pnpm db:migrate:baseline` uma vez. Ele monta um banco temporário `<banco>_baseline_check` do zero pelas migrations, compara o catálogo (tabelas, colunas, índices, constraints, gatilhos, funções, enums, extensões) e só marca como aplicado, sem executar, se bater. Se não bater, mostra a diferença e não marca nada. Migration só de dados (backfill, UPDATE) não aparece no catálogo, por isso o baseline recusa enquanto houver alguma desse tipo entre as que marcaria (no meio ou no fim) e lista todas: confira no banco e confirme as que já rodaram com `--assume-data <nome>…`; a que não rodou, marque até a anterior com `--up-to` e deixe o `db:migrate` aplicar (a mensagem diz os passos). Banco que já tem histórico também é recusado (lá se usa `db:migrate`). O dev foi marcado assim em 05/10/2026, até `20261005000100_media_objects`.
+
+Produção: a migration é um passo separado do deploy, rodado antes de trocar a versão do app.
+1. `pnpm --filter @cruzei/backend build`
+2. `pnpm --filter @cruzei/backend db:migrate:prod`, que usa o código compilado e não precisa de ts-node.
+3. Sobe a versão nova.
+
+Mudança que o código antigo não entende vai em duas etapas. Exemplo: a `20261005000200_photo_keys` troca URL por chave da foto, e o código antigo ainda devolveria a chave crua. Rode o `db:migrate:prod --up-to` da anterior, publique o código novo e só depois aplique a migration (no caso da `photo_keys`, limpe também o cache `profile:*` do Redis).
 
 ## Status
 

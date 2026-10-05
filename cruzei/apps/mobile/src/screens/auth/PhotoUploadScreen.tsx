@@ -559,7 +559,11 @@ export function PhotoUploadScreen() {
     },
     onError: (err) => {
       const e = toApiError(err);
-      showError(e.status === 413 ? 'Essa foto tá pesada demais. Tenta outra?' : 'Deu ruim no upload. Tenta de novo?');
+      // erro de foto do servidor já vem com a frase certa (formato, tamanho, envio fora do ar, upload vencido)
+      const fromServer = e.error.startsWith('photo_') || e.error === 'upload_not_found';
+      showError(
+        fromServer ? e.message : e.status === 413 ? 'Essa foto tá pesada demais. Tenta outra?' : 'Deu ruim no upload. Tenta de novo?',
+      );
     },
     onSettled: async () => {
       await qc.invalidateQueries({ queryKey: ['me'] });

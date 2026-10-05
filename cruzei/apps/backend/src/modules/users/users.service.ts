@@ -13,9 +13,11 @@ import {
   HttpStatus,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 
 import { avatarOrFallback } from '../../common/avatar';
+import { isValidKey, keyFromPhotoUrl, photoUrl } from '../../common/photo-url';
 import {
   ANON_FREE_MS,
   anonymousWindowAction,
@@ -29,6 +31,14 @@ import { RedisService } from '../../redis/redis.service';
 import { readSuperLikeQuota, superLikeDay, superLikeResetsAt } from '../likes/super-like-quota';
 import { PRIVACY } from '../location/discovery-privacy';
 import { PhotoModerationService } from '../moderation/photo-moderation.service';
+import { MediaGcService, ownersOnEvidenceHold } from '../uploads/media-gc.service';
+import {
+  isRetainedPhoto,
+  ownerVisible,
+  retainedOrderIndex,
+  withRetainedMark,
+} from '../uploads/photo-retention';
+import { UPLOAD_ATTACH_WINDOW_H, UPLOAD_ORPHAN_TTL_H } from '../uploads/uploads.constants';
 
 import {
   AGE_RANGE_INVALID,
@@ -52,6 +62,15 @@ const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'pre
 /** mesmo teto do app (PhotoUploadScreen): o servidor é quem garante */
 export const MAX_PHOTOS = 6;
 
+/** id de foto (uuid): fora disso é 404 sem chegar no cast ::uuid do SQL */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** upload de outra conta, vencido, já usado ou inexistente */
+export const UPLOAD_NOT_FOUND = {
+  error: 'upload_not_found',
+  message: 'Essa foto não chegou direito. Envia de novo?',
+};
+
 /**
  * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
  * → free + premium; senão só free. 'event' fica bloqueado pra todos por enquanto.
@@ -71,6 +90,8 @@ export class UsersService {
     private readonly redis: RedisService,
     private readonly photoModeration: PhotoModerationService,
     private readonly chat: ChatGateway,
+    // opcional: apagar foto só adianta o GC (o cron pega o resto); specs antigos constroem sem ele
+    @Optional() private readonly mediaGc?: MediaGcService,
   ) {}
 
   async me(userId: string) {
@@ -83,7 +104,8 @@ export class UsersService {
         photos: { orderBy: { orderIndex: 'asc' } },
         userInterests: { include: { interest: true } },
         seals: true,
-        _count: { select: { likesReceived: true } },
+        // conta com exclusão pedida não conta (some na hora; a linha fica pro arrependimento)
+        _count: { select: { likesReceived: { where: { liker: { deletedAt: null } } } } },
       },
     });
     if (!user || user.deletedAt) throw new NotFoundException('Usuário não encontrado');
@@ -92,7 +114,8 @@ export class UsersService {
     const [mutual] = await this.prisma.$queryRaw<{ n: number }[]>`
       SELECT count(*)::int AS n FROM likes a
        WHERE a.liker_id = ${userId}::uuid
-         AND EXISTS (SELECT 1 FROM likes b WHERE b.liker_id = a.liked_id AND b.liked_id = a.liker_id)`;
+         AND EXISTS (SELECT 1 FROM likes b WHERE b.liker_id = a.liked_id AND b.liked_id = a.liker_id)
+         AND EXISTS (SELECT 1 FROM users p WHERE p.id = a.liked_id AND p.deleted_at IS NULL)`;
     const matchesCount = mutual?.n ?? 0;
 
     // assinatura vencida → itens premium do avatar caem pro default (salva só se mudou)
@@ -170,10 +193,11 @@ export class UsersService {
       bio: user.bio,
       // @ do Instagram sem o @ (público no cartão)
       instagram: user.instagramHandle ?? null,
-      photos: user.photos.map((p) => ({
+      // retida por denúncia: pro dono, apagada (photo-retention.ts)
+      photos: ownerVisible(user.photos).map((p) => ({
         id: p.id,
-        url: p.url,
-        thumbnailUrl: p.thumbnailUrl,
+        url: photoUrl(p.url),
+        thumbnailUrl: photoUrl(p.thumbnailUrl),
         orderIndex: p.orderIndex,
         isMain: p.isMain,
         // em análise / recusada: só o dono vê (e o app avisa)
@@ -533,31 +557,59 @@ export class UsersService {
     return { ok: true };
   }
 
-  async addPhoto(userId: string, url: string, thumbnailUrl?: string, isMain?: boolean) {
-    const count = await this.prisma.photo.count({ where: { userId } });
-    const makeMain = isMain ?? count === 0; // primeira foto vira principal automaticamente
-
-    if (makeMain) {
-      await this.prisma.photo.updateMany({ where: { userId }, data: { isMain: false } });
-    }
-    if (count >= MAX_PHOTOS) throw new BadRequestException(`Máximo de ${MAX_PHOTOS} fotos`);
-    const photo = await this.prisma.photo.create({
-      data: {
-        userId,
-        url,
-        thumbnailUrl: thumbnailUrl ?? url,
-        isMain: makeMain,
-        orderIndex: count,
-        // com a moderação ligada a foto nasce "em análise": ninguém além do dono vê até ser aprovada
-        status: this.photoModeration.initialStatus(),
-      },
+  /**
+   * Anexa um upload ao perfil. Só vale upload do PRÓPRIO usuário, fresco (menos de 23 h) e ainda não usado
+   * (media_objects); a miniatura vem do upload, nunca do cliente. Repetir o mesmo pedido devolve a mesma foto.
+   * Trava a linha do usuário: dois POSTs juntos não colidem no UNIQUE(user_id, order_index).
+   */
+  async addPhoto(userId: string, ref: { key?: string; url?: string }, isMain?: boolean) {
+    const key = ref.key ?? keyFromPhotoUrl(ref.url);
+    if (!isValidKey(key)) throw new BadRequestException(UPLOAD_NOT_FOUND);
+    const { photo, created } = await this.prisma.$transaction(async (tx) => {
+      const [u] = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id::text AS id FROM users WHERE id = ${userId}::uuid AND deleted_at IS NULL FOR UPDATE`;
+      if (!u) throw new NotFoundException('Usuário não encontrado');
+      const same = await tx.photo.findFirst({ where: { userId, url: key } });
+      // a retida não volta pelo anexo repetido (o claim abaixo falha: o upload já foi usado)
+      if (same && !isRetainedPhoto(same.moderationLabels)) return { photo: same, created: false };
+      // teto ANTES de mexer na principal (antes zerava a principal e só depois dava 400); retida não conta
+      const count = ownerVisible(
+        await tx.photo.findMany({ where: { userId }, select: { moderationLabels: true } }),
+      ).length;
+      if (count >= MAX_PHOTOS) throw new BadRequestException(`Máximo de ${MAX_PHOTOS} fotos`);
+      // posse + frescor: delete_after = created_at + TTL é a marca de upload que ninguém liberou nem o GC pegou
+      const [claim] = await tx.$queryRaw<{ thumb_key: string | null }[]>`
+        UPDATE media_objects SET attached_at = now(), delete_after = NULL
+         WHERE key = ${key} AND owner_id = ${userId}::uuid AND kind = 'photo' AND attached_at IS NULL
+           AND created_at > now() - make_interval(hours => ${UPLOAD_ATTACH_WINDOW_H}::int)
+           AND delete_after = created_at + make_interval(hours => ${UPLOAD_ORPHAN_TTL_H}::int)
+        RETURNING thumb_key`;
+      if (!claim) throw new BadRequestException(UPLOAD_NOT_FOUND);
+      const makeMain = isMain ?? count === 0; // primeira foto vira principal automaticamente
+      if (makeMain) await tx.photo.updateMany({ where: { userId }, data: { isMain: false } });
+      const last = await tx.photo.aggregate({ where: { userId }, _max: { orderIndex: true } });
+      const row = await tx.photo.create({
+        data: {
+          userId,
+          url: key,
+          thumbnailUrl: claim.thumb_key ?? key,
+          isMain: makeMain,
+          // retidas ficam no negativo: a nova nunca nasce abaixo de 0
+          orderIndex: Math.max(last._max.orderIndex ?? -1, -1) + 1,
+          // com a moderação ligada a foto nasce "em análise": ninguém além do dono vê até ser aprovada
+          status: this.photoModeration.initialStatus(),
+        },
+      });
+      return { photo: row, created: true };
     });
-    this.photoModeration.enqueue(photo.id);
-    await this.refreshCompleteness(userId);
+    if (created) {
+      this.photoModeration.enqueue(photo.id);
+      await this.refreshCompleteness(userId);
+    }
     return {
       id: photo.id,
-      url: photo.url,
-      thumbnailUrl: photo.thumbnailUrl,
+      url: photoUrl(photo.url),
+      thumbnailUrl: photoUrl(photo.thumbnailUrl),
       orderIndex: photo.orderIndex,
       isMain: photo.isMain,
       status: photo.status,
@@ -580,28 +632,79 @@ export class UsersService {
     return { acceptedVersion: version, currentVersion: LEGAL_VERSION };
   }
 
+  /**
+   * Apaga a foto: o gatilho photos_release_media põe original e miniatura na fila media_objects (rótulo 'urgent' =
+   * guarda 180 dias) e o GC apaga o arquivo logo depois do commit. Com denúncia underage/child_safety pendente ou em
+   * análise contra o dono, a foto NÃO sai (sumiria da frente do moderador): fica retida — some do perfil dele e do
+   * público, a ficha da moderação mostra com a marca — até a denúncia fechar (photo-retention.ts). Pro dono é igual:
+   * a foto some. Reindexa e garante uma principal na mesma transação.
+   */
   async deletePhoto(userId: string, photoId: string) {
-    const photo = await this.prisma.photo.findFirst({ where: { id: photoId, userId } });
-    if (!photo) throw new NotFoundException('Foto não encontrada');
-    await this.prisma.photo.delete({ where: { id: photoId } });
-
-    // reindexa e garante uma principal
-    const rest = await this.prisma.photo.findMany({
-      where: { userId },
-      orderBy: { orderIndex: 'asc' },
+    if (!UUID_RE.test(photoId)) throw new NotFoundException('Foto não encontrada');
+    const { photo, retained } = await this.prisma.$transaction(async (tx) => {
+      // mesma trava do addPhoto: não cruza com um anexo simultâneo
+      await tx.$queryRaw`SELECT 1 FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
+      // e a da foto: a decisão da moderação (PhotoModerationService.decide) não cruza com a retenção
+      await tx.$queryRaw`SELECT 1 FROM photos WHERE id = ${photoId}::uuid AND user_id = ${userId}::uuid FOR UPDATE`;
+      const found = await tx.photo.findFirst({ where: { id: photoId, userId } });
+      // retida já saiu da vista do dono: pra ele, não existe mais
+      if (!found || isRetainedPhoto(found.moderationLabels))
+        throw new NotFoundException('Foto não encontrada');
+      const wasMain = found.isMain;
+      const hold = (await ownersOnEvidenceHold(tx, [userId])).has(userId);
+      if (hold) {
+        const min = await tx.photo.aggregate({ where: { userId }, _min: { orderIndex: true } });
+        await tx.photo.update({
+          where: { id: photoId },
+          data: {
+            status: 'rejected',
+            isMain: false,
+            orderIndex: retainedOrderIndex(min._min.orderIndex),
+            moderationLabels: withRetainedMark(found.moderationLabels, {
+              at: new Date().toISOString(),
+              prevStatus: found.status,
+              wasMain: found.isMain,
+            }),
+          },
+        });
+        await tx.moderationAction.create({
+          data: {
+            moderatorId: null,
+            targetUserId: userId,
+            action: 'photo_retain',
+            photoId,
+            note: 'apagada pela pessoa com denúncia aberta de menor/abuso infantil: retida pra análise',
+          },
+        });
+      } else {
+        await tx.photo.delete({ where: { id: photoId } });
+      }
+      const rest = ownerVisible(
+        await tx.photo.findMany({ where: { userId }, orderBy: { orderIndex: 'asc' } }),
+      );
+      for (let i = 0; i < rest.length; i++) {
+        const isMainNow = wasMain ? i === 0 : rest[i].isMain;
+        if (rest[i].orderIndex === i && rest[i].isMain === isMainNow) continue;
+        await tx.photo.update({
+          where: { id: rest[i].id },
+          data: { orderIndex: i, isMain: isMainNow },
+        });
+      }
+      return { photo: found, retained: hold };
     });
-    for (let i = 0; i < rest.length; i++) {
-      await this.prisma.photo.update({
-        where: { id: rest[i].id },
-        data: { orderIndex: i, isMain: photo.isMain ? i === 0 : rest[i].isMain },
-      });
-    }
+    // retida: o arquivo fica (continua em photos); o GC só entra quando a denúncia fechar
+    if (!retained) this.mediaGc?.kick([photo.url, photo.thumbnailUrl]);
     await this.refreshCompleteness(userId);
     return { ok: true };
   }
 
   async reorderPhotos(userId: string, photoIds: string[]) {
-    const own = await this.prisma.photo.findMany({ where: { userId }, select: { id: true } });
+    const own = ownerVisible(
+      await this.prisma.photo.findMany({
+        where: { userId },
+        select: { id: true, moderationLabels: true },
+      }),
+    );
     const ownIds = new Set(own.map((p) => p.id));
     const ordered = photoIds.filter((id) => ownIds.has(id));
     // dois passos pra não violar UNIQUE(userId, orderIndex)
@@ -616,6 +719,15 @@ export class UsersService {
   }
 
   async setMain(userId: string, photoId: string) {
+    // retida (ou de outra conta / inexistente) nunca vira principal: antes zerava a principal e não punha nenhuma
+    const target = UUID_RE.test(photoId)
+      ? await this.prisma.photo.findFirst({
+          where: { id: photoId, userId },
+          select: { moderationLabels: true },
+        })
+      : null;
+    if (!target || isRetainedPhoto(target.moderationLabels))
+      throw new NotFoundException('Foto não encontrada');
     await this.prisma.photo.updateMany({ where: { userId }, data: { isMain: false } });
     await this.prisma.photo.updateMany({ where: { id: photoId, userId }, data: { isMain: true } });
     await this.redis.invalidateProfile(userId);
@@ -671,7 +783,7 @@ export class UsersService {
     return profileCompleteness({
       name: u.name,
       bio: u.bio,
-      photos: u.photos.length,
+      photos: ownerVisible(u.photos).length,
       interests: u.userInterests.length,
       lookingFor: u.lookingFor,
       isVerified: u.isVerified,

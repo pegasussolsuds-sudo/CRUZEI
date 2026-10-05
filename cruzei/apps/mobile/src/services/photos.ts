@@ -53,7 +53,8 @@ export async function takePhoto(): Promise<string | null> {
   return result.assets[0].uri;
 }
 
-// Upload real precisaria de signed URL R2 — stub retorna URL local.
+// O servidor reprocessa a foto (tira GPS/EXIF) e devolve url + thumbnailUrl; POST /me/photos anexa pela url
+// (o servidor também aceita a `key`, mas a url funciona com backend novo e antigo).
 export async function uploadPhoto(localUri: string): Promise<{ url: string; thumbnailUrl?: string }> {
   const form = new FormData();
   form.append('file', { uri: localUri, name: 'photo.jpg', type: 'image/jpeg' } as never);

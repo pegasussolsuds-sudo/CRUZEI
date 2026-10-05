@@ -1,4 +1,9 @@
-import type { AccountClaim, Gender, PhoneReleaseReason } from '@cruzei/shared-types';
+import type {
+  AccountClaim,
+  AccountDeletionRestored,
+  Gender,
+  PhoneReleaseReason,
+} from '@cruzei/shared-types';
 import {
   checkProfileText,
   isAtLeast18,
@@ -7,9 +12,11 @@ import {
 } from '@cruzei/shared-utils';
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
   Injectable,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -21,6 +28,7 @@ import { decideAnonymous } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { AccountStateService } from '../account/account-state.service';
+import { DeletionStateService } from '../account/deletion-state.service';
 import {
   cleanBio,
   cleanInterestNames,
@@ -32,6 +40,7 @@ import {
 } from '../users/profile-prefs';
 
 import { claimFailsKey, PhoneReleaseService, type RequestMeta } from './phone-release.service';
+import { codeExpired, phoneInvalid } from './sms/sms-errors';
 import { SmsService } from './sms.service';
 
 /** tipo do token: o refresh (30 dias) nunca vale como Bearer; o access (15 min) nunca renova sessão */
@@ -66,6 +75,8 @@ export interface LoginResult {
   refreshToken: string | null;
   claim?: AccountClaim;
   released?: PhoneReleaseReason;
+  /** exclusão da conta cancelada agora (POST /auth/deletion/cancel) */
+  restored?: AccountDeletionRestored;
 }
 
 export interface SessionResult extends LoginResult {
@@ -132,10 +143,18 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly accounts: AccountStateService,
     private readonly phones: PhoneReleaseService,
+    /** exclusão com prazo de arrependimento (AccountModule global); ausente nos testes antigos = caminho legado */
+    @Optional() private readonly deletions?: DeletionStateService,
   ) {}
 
-  async requestCode(phone: string) {
-    return this.sms.sendCode(phone);
+  /** `ip` (req.ip) entra no teto de envios por conexão */
+  async requestCode(phone: string, ip?: string | null) {
+    return this.sms.sendCode(phone, ip);
+  }
+
+  /** número de revisão das lojas? (os testes antigos falsificam o SmsService sem esse método) */
+  private isReviewPhone(phone: string): boolean {
+    return typeof this.sms.isReviewPhone === 'function' && this.sms.isReviewPhone(phone);
   }
 
   /** dias sem uso pra conta contar como parada (AUTH_DORMANT_DAYS, padrão 90; 0 desliga a confirmação) */
@@ -167,9 +186,10 @@ export class AuthService {
 
   async login(phoneRaw: string, code: string, meta?: RequestMeta): Promise<LoginResult> {
     const phone = normalizePhoneBR(phoneRaw);
-    if (!phone) throw new UnauthorizedException('Telefone inválido');
+    if (!phone) throw phoneInvalid();
+    // true ou lança o erro do SMS (401 code_invalid/code_expired, 429 sms_locked); o `if` é só segurança
     const ok = await this.sms.verifyCode(phone, code);
-    if (!ok) throw new UnauthorizedException('Código inválido ou expirado');
+    if (!ok) throw codeExpired();
 
     const user = await this.prisma.user.findUnique({
       where: { phone },
@@ -177,10 +197,17 @@ export class AuthService {
     });
     // usuário será criado no /auth/register com dados completos
     if (!user) return this.startSignup(phone);
-    // conta excluída: o número fica livre na hora (conta nova nasce em revisão se a antiga estava banida)
-    if (user.deletedAt) return this.releaseAndStartSignup(user.id, phone, 'account_deleted', meta);
+    if (user.deletedAt) {
+      // exclusão pedida no prazo: nada de sessão nem de liberar o número; 409 com desafio pra cancelar a exclusão
+      const pending = await this.deletions?.loginChallenge(user.id, phone);
+      if (pending) throw new ConflictException(pending);
+      // exclusão antiga sem pedido: o número fica livre na hora (conta nova nasce em revisão se a antiga estava banida)
+      return this.releaseAndStartSignup(user.id, phone, 'account_deleted', meta);
+    }
     // conta parada: NADA de token nem de access_log (senão ela "acorda" e a próxima tentativa entra direto)
-    if (await this.isDormant(user)) return this.claimFor(user, phone, meta);
+    // número de revisão das lojas nunca cai no "Essa conta é sua?" (revisor não sabe a data); ban/suspensão valem
+    if (!this.isReviewPhone(phone) && (await this.isDormant(user)))
+      return this.claimFor(user, phone, meta);
     return this.issueTokens(user.id);
   }
 
@@ -386,6 +413,11 @@ export class AuthService {
     if (!canRenewWith(payload)) throw new UnauthorizedException('Refresh token inválido');
     // fora do try: conta banida/suspensa responde 403 com o motivo (não "token inválido"); sessão revogada 401
     return this.issueTokens(payload.sub, payload.iat);
+  }
+
+  /** sessão nova de uma conta já conferida por outro fluxo (ex.: exclusão cancelada): mesmas regras do login */
+  async openSession(userId: string): Promise<SessionResult> {
+    return this.issueTokens(userId);
   }
 
   async logout(userId: string): Promise<void> {

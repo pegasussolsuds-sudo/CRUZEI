@@ -25,6 +25,7 @@ import {
 import { Prisma } from '@prisma/client';
 
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
+import { photoUrl } from '../../common/photo-url';
 import { effectiveTier } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
@@ -695,7 +696,7 @@ export class SupportService {
       user: {
         id: r.user_id,
         name: r.user_name,
-        avatarUrl: r.avatar_url,
+        avatarUrl: photoUrl(r.avatar_url),
         premiumTier: effectiveTier(r.premium_tier, r.premium_expires_at),
         accountStatus: r.account_status,
       },

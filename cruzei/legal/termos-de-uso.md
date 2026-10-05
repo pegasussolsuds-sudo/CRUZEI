@@ -260,10 +260,13 @@ O Metch **não verifica antecedentes criminais** e não confirma a identidade da
 ### Por você
 
 - Você pode parar de usar o Metch quando quiser.
-- Para excluir a conta, envie o pedido para {{EMAIL_PRIVACIDADE}}, informando o número de telefone da conta. Podemos pedir que você confirme que a conta é sua. Respondemos em até 15 dias.
-- Enquanto o pedido é atendido, você pode pausar o perfil ou ligar o modo anônimo.
-- A exclusão apaga seu perfil, suas fotos, curtidas, conversas e mensagens. Guardamos apenas o que a lei ou a segurança exigem, como explica a Política de Privacidade.
-- Se tiver assinatura, cancele também na loja.
+- Para excluir a conta, vá em Perfil → Excluir conta e digite EXCLUIR para confirmar. Na hora, sua conta some para todo mundo e as sessões são encerradas.
+- Você tem **30 dias para voltar atrás**: entrando de novo com o seu número nesse prazo, o app oferece cancelar a exclusão e a conta volta como estava. Depois disso, a exclusão é definitiva e não dá para recuperar a conta.
+- A exclusão apaga seu perfil, suas fotos, curtidas, conversas e mensagens. Guardamos apenas o que a lei ou a segurança exigem, como explica a Política de Privacidade. Se houver denúncia contra você em análise, a limpeza espera a decisão da moderação.
+- Sem acesso ao app, peça pelo {{EMAIL_PRIVACIDADE}}, informando o número de telefone da conta. Podemos pedir que você confirme que a conta é sua. Respondemos em até 15 dias.
+- Contas da equipe (moderação e administração) não se excluem pelo app: o papel precisa ser retirado antes.
+- Excluir a conta não cancela a assinatura. Se tiver assinatura, cancele também na loja.
+- Antes de excluir, você pode baixar uma cópia dos seus dados em Perfil → Baixar meus dados.
 
 ### Por nós
 

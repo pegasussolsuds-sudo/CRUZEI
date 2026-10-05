@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 import { avatarOrFallback } from '../../common/avatar';
+import { photoUrl } from '../../common/photo-url';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { PRIVACY, lastSeenBand, type LastSeen } from '../location/discovery-privacy';
@@ -398,10 +399,11 @@ export class PoisService {
         id: u.id,
         name: u.name,
         age: u.showAge ? this.age(u.birthDate) : null,
-        mainPhotoUrl: u.photos[0]?.url ?? null,
+        // chave no banco → URL pública
+        mainPhotoUrl: photoUrl(u.photos[0]?.url),
         mapPhotoUrl:
           u.photos[0]?.thumbnailUrl && u.photos[0].thumbnailUrl !== u.photos[0].url
-            ? u.photos[0].thumbnailUrl
+            ? photoUrl(u.photos[0].thumbnailUrl)
             : null,
         avatar: avatarOrFallback(u),
         isVisible: true,

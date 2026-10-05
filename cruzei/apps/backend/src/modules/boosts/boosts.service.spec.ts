@@ -38,8 +38,27 @@ describe('BoostsService.purchase: recibo', () => {
     expect(prisma.boost.create).not.toHaveBeenCalled();
   });
 
-  it('fora de produção: "dev" ativa; outro recibo é 402', async () => {
+  it('sem NODE_ENV conta como produção: 402 (mesmo com "dev") e nenhum boost criado', async () => {
+    delete process.env.NODE_ENV;
+    delete process.env.ALLOW_DEV_RECEIPTS;
+    process.env.DEV_SHORTCUTS = 'true';
+    const { svc, prisma } = setup();
+    await expect(svc.purchase('u1', 1, 'android', 'dev')).rejects.toMatchObject({ status: 402 });
+    expect(prisma.boost.create).not.toHaveBeenCalled();
+  });
+
+  it('development sem DEV_SHORTCUTS: "dev" também é 402', async () => {
     process.env.NODE_ENV = 'development';
+    delete process.env.DEV_SHORTCUTS;
+    delete process.env.ALLOW_DEV_RECEIPTS;
+    const { svc, prisma } = setup();
+    await expect(svc.purchase('u1', 1, 'android', 'dev')).rejects.toMatchObject({ status: 402 });
+    expect(prisma.boost.create).not.toHaveBeenCalled();
+  });
+
+  it('development + DEV_SHORTCUTS: "dev" ativa; outro recibo é 402', async () => {
+    process.env.NODE_ENV = 'development';
+    process.env.DEV_SHORTCUTS = 'true';
     const { svc, prisma } = setup();
     await expect(svc.purchase('u1', 1, 'android', 'forjado')).rejects.toMatchObject({
       status: 402,

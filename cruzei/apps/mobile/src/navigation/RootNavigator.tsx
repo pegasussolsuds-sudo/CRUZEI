@@ -1,4 +1,4 @@
-import type { AccountClaim, LegalSlug, PhoneReleaseReason, ProximityBand } from '@cruzei/shared-types';
+import type { AccountClaim, AccountDeletionPendingError, LegalSlug, PhoneReleaseReason, ProximityBand } from '@cruzei/shared-types';
 import React, { useCallback, useEffect, useState } from 'react';
 import { NavigationContainer, type NavigatorScreenParams } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -11,6 +11,10 @@ import { WelcomeScreen } from '../screens/auth/WelcomeScreen';
 import { PhoneScreen } from '../screens/auth/PhoneScreen';
 import { CodeScreen } from '../screens/auth/CodeScreen';
 import { ClaimAccountScreen } from '../screens/auth/ClaimAccountScreen';
+import { RestoreAccountScreen } from '../screens/auth/RestoreAccountScreen';
+import { DeleteAccountScreen } from '../screens/profile/DeleteAccountScreen';
+import { DataExportScreen } from '../screens/profile/DataExportScreen';
+import { LocationHistoryScreen } from '../screens/profile/LocationHistoryScreen';
 import { ProfileSetupScreen } from '../screens/auth/ProfileSetupScreen';
 import { PhotoUploadScreen } from '../screens/auth/PhotoUploadScreen';
 import { AvatarCustomizerScreen } from '../screens/avatar/AvatarCustomizerScreen';
@@ -44,9 +48,12 @@ import { colors } from '@cruzei/ui-mobile';
 export type RootStackParamList = {
   Onboarding: undefined; // WelcomeScreen
   Login: undefined; // PhoneScreen
-  Code: { phone: string; devCode?: string | null; expiresIn?: number }; // CodeScreen (OTP)
+  // CodeScreen (OTP). resendIn: segundos até poder reenviar; alreadySent: o código anterior ainda vale (429 sms_cooldown)
+  Code: { phone: string; devCode?: string | null; expiresIn?: number; resendIn?: number; alreadySent?: boolean };
   // "Essa conta é sua?": conta do número parada há 90+ dias (número reciclado)
   ClaimAccount: { phone: string; claim: AccountClaim };
+  // conta com exclusão pedida dentro do prazo: "Quer cancelar a exclusão e voltar?"
+  RestoreAccount: { phone: string; pending: AccountDeletionPendingError };
   // ProfileSetupScreen; `released`: o número acabou de sair da conta antiga (a tela pode avisar)
   Register: { phone: string; released?: PhoneReleaseReason };
   Main: NavigatorScreenParams<MainTabParamList> | undefined; // aceita { screen: 'Paywall' } etc.
@@ -62,6 +69,9 @@ export type RootStackParamList = {
   ModerationUser: { userId: string };
   Notifications: undefined; // central de avisos
   SupportChat: undefined; // suporte ao vivo (Ajuda e segurança ou toque no push)
+  DataExport: undefined; // Baixar meus dados (LGPD)
+  LocationHistory: undefined; // Apagar histórico de localização
+  DeleteAccount: undefined; // Excluir conta (prazo de 30 dias pra voltar atrás)
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -171,6 +181,7 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
             <Stack.Screen name="Login" component={PhoneScreen} options={dark} />
             <Stack.Screen name="Code" component={CodeScreen} options={dark} />
             <Stack.Screen name="ClaimAccount" component={ClaimAccountScreen} options={{ ...dark, gestureEnabled: false }} />
+            <Stack.Screen name="RestoreAccount" component={RestoreAccountScreen} options={{ ...dark, gestureEnabled: false }} />
             <Stack.Screen name="Register" component={ProfileSetupScreen} options={dark} />
             <Stack.Screen name="Legal" component={LegalScreen} options={({ route }) => ({ ...lightHeader, title: LEGAL_TITLES[route.params.slug] })} />
           </>
@@ -211,6 +222,9 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
             <Stack.Screen name="ModerationUser" component={ModerationUserScreen} options={{ ...lightHeader, title: 'Revisar conta' }} />
             <Stack.Screen name="Notifications" component={NotificationsScreen} options={{ ...lightHeader, title: 'Avisos' }} />
             <Stack.Screen name="SupportChat" component={SupportChatScreen} options={{ ...lightHeader, title: 'Suporte' }} />
+            <Stack.Screen name="DataExport" component={DataExportScreen} options={{ ...lightHeader, title: 'Baixar meus dados' }} />
+            <Stack.Screen name="LocationHistory" component={LocationHistoryScreen} options={{ ...lightHeader, title: 'Histórico de localização' }} />
+            <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ ...lightHeader, title: 'Excluir conta' }} />
           </>
         )}
       </Stack.Navigator>

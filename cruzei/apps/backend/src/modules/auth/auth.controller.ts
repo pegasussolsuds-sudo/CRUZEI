@@ -5,7 +5,7 @@ import {
   PROFILE_LIMITS,
   SHOW_ME,
 } from '@cruzei/shared-types';
-import { Body, Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
   ArrayMaxSize,
@@ -20,7 +20,7 @@ import {
   Matches,
   MaxLength,
 } from 'class-validator';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -29,13 +29,14 @@ import { AnalyticsService } from '../analytics/analytics.service';
 
 import { AuthService } from './auth.service';
 import { requestMeta } from './phone-release.service';
+import { withRetryAfter } from './sms/sms-errors';
 
-class RequestCodeDto {
-  @IsString() phone!: string;
+export class RequestCodeDto {
+  @IsString() @MaxLength(32) phone!: string;
 }
-class LoginDto {
-  @IsString() phone!: string;
-  @IsString() code!: string;
+export class LoginDto {
+  @IsString() @MaxLength(32) phone!: string;
+  @Matches(/^\d{6}$/, { message: 'O código tem 6 dígitos' }) code!: string;
 }
 class RegisterDto {
   @IsString() phone!: string;
@@ -90,17 +91,28 @@ export class AuthController {
     private readonly analytics: AnalyticsService,
   ) {}
 
-  // Estrito — anti-bruteforce de SMS
+  // Estrito — anti-bruteforce de SMS (por IP); os tetos por número/IP/dia e a espera ficam no SmsService
   @Throttle({ strict: { ttl: 60_000, limit: 5 } })
   @Post('request-code')
-  requestCode(@Body() dto: RequestCodeDto) {
-    return this.auth.requestCode(dto.phone);
+  requestCode(
+    @Body() dto: RequestCodeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return withRetryAfter(res, () => this.auth.requestCode(dto.phone, requestMeta(req).ip));
   }
 
   @Throttle({ strict: { ttl: 60_000, limit: 5 } })
   @Post('login')
-  async login(@Body() dto: LoginDto, @Req() req: Request) {
-    const r = await this.auth.login(dto.phone, dto.code, requestMeta(req));
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    // 429 sms_locked leva também o header Retry-After
+    const r = await withRetryAfter(res, () =>
+      this.auth.login(dto.phone, dto.code, requestMeta(req)),
+    );
     // só sessão aberta conta como acesso: conta parada (claim) NÃO grava, senão "acorda" sem confirmar
     if (r.user.id && r.token) this.access.record(r.user.id, 'login', req);
     return r;

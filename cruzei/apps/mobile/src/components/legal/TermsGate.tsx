@@ -14,6 +14,7 @@ const TITLES: Record<LegalSlug, string> = {
   termos: 'Termos de Uso',
   privacidade: 'Política de privacidade',
   'seguranca-infantil': 'Segurança infantil',
+  'excluir-conta': 'Excluir conta',
 };
 
 /**

@@ -15,6 +15,7 @@ import {
 
 import { phoneHash } from '../../common/phone-hash';
 import { effectiveTier } from '../../common/premium';
+import { devReceiptsAllowed } from '../../common/store-receipt';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 
@@ -157,10 +158,8 @@ export class SubscriptionsService {
     if (!plan) throw new BadRequestException('Plano inválido');
 
     // Recibo: a validação de verdade (App Store Server API / Google Play Developer API) ainda não existe.
-    // O recibo "dev" só vale fora de produção (ou com ALLOW_DEV_RECEIPTS=true); qualquer outro é recusado com 402.
-    const devOk =
-      process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_RECEIPTS === 'true';
-    if (!(receipt === 'dev' && devOk))
+    // O recibo "dev" só vale com atalho de dev ou ALLOW_DEV_RECEIPTS=true (common/store-receipt); o resto é 402.
+    if (!(receipt === 'dev' && devReceiptsAllowed()))
       throw new HttpException('Recibo inválido ou validação indisponível', 402);
 
     const out = await this.prisma.$transaction(async (tx) => {

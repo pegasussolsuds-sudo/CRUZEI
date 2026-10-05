@@ -95,7 +95,10 @@ export class StatsService {
          WHERE t.is_anonymous`,
       this.prisma.$queryRaw<Record<string, number>[]>`
         SELECT (SELECT count(*) FROM reports WHERE status = 'pending')::int AS reports_pending,
-               (SELECT count(*) FROM photos WHERE status = 'pending')::int AS photos_pending`,
+               (SELECT count(*) FROM photos WHERE status = 'pending')::int AS photos_pending,
+               -- conta excluída com a limpeza adiada (denúncia em análise / revisão até o teto)
+               (SELECT count(*) FROM data_deletion_requests
+                 WHERE status = 'pending' AND hold_reason IS NOT NULL)::int AS deletion_held`,
       this.prisma.$queryRaw<Record<string, number>[]>`
         SELECT (SELECT count(*) FROM place_candidates WHERE status = 'pending')::int AS candidates,
                (SELECT count(DISTINCT r.poi_id) FROM poi_reports r JOIN pois p ON p.id = r.poi_id
@@ -154,6 +157,7 @@ export class StatsService {
       moderation: {
         reportsPending: mod[0]?.reports_pending ?? 0,
         photosPending: mod[0]?.photos_pending ?? 0,
+        deletionHeld: mod[0]?.deletion_held ?? 0,
         reviewHold: u.review_hold ?? 0,
       },
       places: {

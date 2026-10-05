@@ -13,3 +13,4 @@ export * from './support';
 export * from './admin';
 export * from './premium';
 export * from './analytics';
+export * from './privacy';

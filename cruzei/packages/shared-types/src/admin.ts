@@ -68,7 +68,8 @@ export interface AdminStats {
     banned: number;
     anonymousNow: number;
   };
-  moderation: { reportsPending: number; photosPending: number; reviewHold: number };
+  /** deletionHeld: contas excluídas com a limpeza adiada (denúncia em análise / revisão); ausente = servidor antigo */
+  moderation: { reportsPending: number; photosPending: number; reviewHold: number; deletionHeld?: number };
   places: { candidatesPending: number; poiReportsPending: number; eventsLive: number; eventsUpcoming: number };
   /** urgent: atendimentos URGENTES (botão de emergência) não resolvidos; ausente = servidor antigo */
   support: { open: number; unassigned: number; waitingStaff: number; avgFirstResponseMin7d: number | null; urgent?: number };
@@ -171,6 +172,34 @@ export interface AdminUserDetail extends AdminUserRow {
   devices: { platform: string; appVersion: string | null; lastUsedAt: string }[];
   counts: { likesSent: number; likesReceived: number; mutualLikes: number; conversations: number; messagesSent: number; blocksReceived: number };
   supportThreads: { id: string; status: 'open' | 'pending' | 'resolved'; createdAt: string }[];
+  /** exclusão pedida (some de tudo; dentro do prazo ainda volta); null/ausente = conta ativa */
+  deletedAt?: string | null;
+  /** limpeza definitiva feita ("Conta excluída", sem dado pessoal) */
+  purgedAt?: string | null;
+  /** pedidos de exclusão da conta, mais recente primeiro (vazio = nunca pediu) */
+  deletionRequests?: AdminDeletionRequest[];
+}
+
+/** ?status= da lista de usuários: contas excluídas com a limpeza adiada (fora dele a lista não mostra excluída) */
+export const USER_FILTER_DELETION_HELD = 'deletion_held';
+
+/** pedido de exclusão da conta na ficha (prazo de arrependimento + limpeza definitiva) */
+export interface AdminDeletionRequest {
+  requestedAt: string;
+  /** fim do prazo: a limpeza roda a partir daqui (adiada se houver bloqueio) */
+  scheduledFor: string;
+  status: 'pending' | 'cancelled' | 'completed';
+  /** de onde veio: app, suporte ou painel */
+  source: 'app' | 'support' | 'admin';
+  /** DELETION_REASONS (privacy.ts) ou null */
+  reason: string | null;
+  cancelledAt: string | null;
+  completedAt: string | null;
+  /** limpeza adiada: denúncia contra a pessoa em análise / conta em revisão */
+  holdReason: 'open_reports' | 'review_hold' | null;
+  attempts: number;
+  /** último erro da limpeza (só admin) */
+  lastError: string | null;
 }
 
 /**

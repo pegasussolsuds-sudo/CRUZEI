@@ -23,7 +23,8 @@ const LOOKUP_TTL_MS = 30_000;
  * user:<id>/staff:support são de lá). App: {isTyping} → a equipe vê o atendimento aberto da pessoa. Painel:
  * {threadId, isTyping} → a pessoa dona do atendimento (papel conferido de novo aqui, não só no connect).
  */
-@WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
+// CORS/Origin no SecureIoAdapter (mesmo servidor do ChatGateway)
+@WebSocketGateway({ transports: ['websocket', 'polling'] })
 export class SupportGateway {
   private readonly log = new Logger(SupportGateway.name);
 

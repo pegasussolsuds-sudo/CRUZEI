@@ -20,6 +20,7 @@ import {
 } from '@nestjs/common';
 
 import { maskPhone } from '../../common/phone-mask';
+import { photoUrl } from '../../common/photo-url';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
 import { RedisService } from '../../redis/redis.service';
@@ -31,6 +32,7 @@ import {
   sanitizeContext,
   type ReportContextInput,
 } from '../reports/report-context';
+import { isRetainedPhoto } from '../uploads/photo-retention';
 
 import { PhotoModerationService } from './photo-moderation.service';
 
@@ -163,7 +165,7 @@ export class ModerationService {
         const m = (p.moderationLabels ?? {}) as { labels?: string[]; urgent?: boolean };
         return {
           id: p.id,
-          url: p.url,
+          url: photoUrl(p.url) ?? p.url,
           userId: p.userId,
           userName: p.user.name,
           labels: m.labels ?? [],
@@ -186,9 +188,17 @@ export class ModerationService {
         instagramHandle: true,
         phone: true,
         role: true,
+        // inclui as retidas por denúncia (order_index negativo: vêm primeiro), com a marca
         photos: {
           orderBy: { orderIndex: 'asc' },
-          select: { id: true, url: true, status: true, isMain: true, rejectReason: true },
+          select: {
+            id: true,
+            url: true,
+            status: true,
+            isMain: true,
+            rejectReason: true,
+            moderationLabels: true,
+          },
         },
       },
     });
@@ -253,10 +263,11 @@ export class ModerationService {
       },
       photos: u.photos.map((p) => ({
         id: p.id,
-        url: p.url,
+        url: photoUrl(p.url) ?? p.url,
         status: p.status,
         isMain: p.isMain,
         rejectReason: p.rejectReason,
+        retained: isRetainedPhoto(p.moderationLabels),
       })),
       reports: reports.map((r) => this.report(r)),
       actions: actions.map((a) => ({
@@ -388,8 +399,16 @@ export class ModerationService {
     decision: 'approve' | 'reject',
     reason?: string,
   ): Promise<{ ok: true }> {
-    const p = await this.prisma.photo.findUnique({ where: { id: photoId }, select: { id: true } });
+    const p = await this.prisma.photo.findUnique({
+      where: { id: photoId },
+      select: { id: true, moderationLabels: true },
+    });
     if (!p) throw new NotFoundException('Foto não encontrada');
+    // aprovar a retida a poria de volta no perfil que a pessoa apagou
+    if (isRetainedPhoto(p.moderationLabels))
+      throw new BadRequestException(
+        'Foto retida por denúncia: a pessoa apagou e ela fica só pra análise',
+      );
     await this.photos.decide(photoId, decision === 'approve' ? 'approved' : 'rejected', {
       moderatorId,
       reason:
@@ -468,7 +487,7 @@ export class ModerationService {
       id: u.id,
       name: u.name,
       age: ageOf(u.birthDate),
-      mainPhotoUrl: u.photos[0]?.url ?? null,
+      mainPhotoUrl: photoUrl(u.photos[0]?.url),
       accountStatus: u.accountStatus,
       suspendedUntil: u.suspendedUntil?.toISOString() ?? null,
       reviewHoldAt: u.reviewHoldAt?.toISOString() ?? null,

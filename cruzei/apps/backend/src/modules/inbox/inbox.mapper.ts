@@ -9,6 +9,7 @@ import type {
 } from '@cruzei/shared-types';
 
 import { avatarOrFallback } from '../../common/avatar';
+import { photoUrl } from '../../common/photo-url';
 import { seesLikesReceived, visibleLikeStatus } from '../location/peer-social';
 
 import {
@@ -164,7 +165,7 @@ export function toSummary(r: SummaryRow, now: Date = new Date()): ConversationSu
         gender: r.peer_gender,
         avatarConfig: r.peer_avatar_config,
       }),
-      mainPhotoUrl: r.peer_photo_url,
+      mainPhotoUrl: photoUrl(r.peer_photo_url),
     },
     folder: folderFor(r.my_role, route),
     route,

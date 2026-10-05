@@ -1,8 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Request } from 'express';
+
 import { PrismaService } from '../../database/prisma.service';
 
-export type AccessEvent = 'login' | 'register' | 'refresh';
+/** delete_request / delete_cancel / data_export: conta e privacidade (pedido de exclusão, arrependimento, cópia) */
+export type AccessEvent =
+  | 'login'
+  | 'register'
+  | 'refresh'
+  | 'delete_request'
+  | 'delete_cancel'
+  | 'data_export';
 
 /**
  * Registros de acesso exigidos pelo Marco Civil da Internet (art. 15): data, hora, IP e porta de origem, guardados
@@ -22,7 +30,9 @@ export class AccessLogService {
     // não segura o login: grava em segundo plano e só avisa se falhar
     this.prisma.accessLog
       .create({ data: { userId, event, ip: ip?.slice(0, 45) ?? null, port, userAgent } })
-      .catch((e: Error) => this.log.warn(`registro de acesso não gravado (${event}): ${e.message}`));
+      .catch((e: Error) =>
+        this.log.warn(`registro de acesso não gravado (${event}): ${e.message}`),
+      );
   }
 
   /** apaga o que passou de 6 meses (cron diário) */

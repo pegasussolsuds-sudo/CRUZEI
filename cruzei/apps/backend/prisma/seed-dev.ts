@@ -5,6 +5,8 @@
 //
 // Acima de 8 pessoas o seed gera gente sintética cobrindo a matriz de testes do mapa (brief FOTO AVATAR §23):
 // sem foto, foto quebrada (404), foto desligada no mapa, nome longo/curto, gente nova, multidão no evento.
+// .env do backend ANTES de tudo (NODE_ENV, DATABASE_URL, REDIS_URL), igual ao main.ts
+import '../src/config/load-env';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -13,12 +15,13 @@ import { encodeGeohash, randomAvatarConfig } from '@cruzei/shared-utils';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 
+import { appEnv } from '../src/config/security';
 import { makeThumbnail, thumbNameFor } from '../src/modules/uploads/thumbnails';
 import { UPLOAD_DIR } from '../src/modules/uploads/uploads.constants';
 
-// seed de DEV: apaga/reescreve fotos e datas das contas fake — nunca contra produção
-if (process.env.NODE_ENV === 'production' || /prod/i.test(process.env.DATABASE_URL ?? '')) {
-  throw new Error('seed-dev não roda em produção');
+// seed de DEV: apaga/reescreve fotos e datas das contas fake — só com NODE_ENV=development (ausente = produção)
+if (appEnv() !== 'development' || /prod/i.test(process.env.DATABASE_URL ?? '')) {
+  throw new Error('seed-dev só roda com NODE_ENV=development (e nunca num banco de produção)');
 }
 const prisma = new PrismaClient();
 // Fotos dos fakes servidas pelo próprio backend (CORS liberado em /uploads) — o mapa desenha a bolha em canvas.

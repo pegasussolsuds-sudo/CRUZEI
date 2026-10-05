@@ -183,6 +183,7 @@ const MODERATION_ACTION_LABEL: Record<string, string> = {
   dismiss: 'Denúncias dispensadas',
   photo_approve: 'Foto aprovada',
   photo_reject: 'Foto recusada',
+  photo_retain: 'Foto retida por denúncia (a pessoa apagou)',
   auto_hold: 'Segurada pra revisão (automático)',
   auto_flag_gps: 'GPS suspeito (automático)',
   review_hold: 'Segurada pra revisão',

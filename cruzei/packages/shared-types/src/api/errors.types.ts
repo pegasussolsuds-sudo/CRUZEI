@@ -24,6 +24,18 @@ export interface ApiError {
  * - 429 age_range_limit {limit, resetsAt}: já mudou a faixa de idade AGE_RANGE_DAILY_CHANGES vezes hoje (PATCH /me/settings)
  * - 409 pass_undo_unavailable: "Voltar" (DELETE /passes/:userId) de um passar que não é o meu último ou tem mais de
  *   10 min — o passar fica; o app tira o botão e mostra a mensagem
+ * Leva 05/10/2026 (conta e privacidade, privacy.ts; SMS, auth.types.ts):
+ * - 400 confirm_required: POST /me/deletion sem o `confirm` exato (ACCOUNT_DELETION_CONFIRM)
+ * - 409 staff_account: conta da equipe (admin/moderador) não se exclui pelo app — tirar o papel no painel antes
+ * - 429 export_limit {retryAfter}: passou das cópias dos dados do dia (GET /me/export)
+ * - 409 account_deletion_pending {challengeId, requestedAt, scheduledFor, expiresIn}: login de conta com exclusão
+ *   pedida no prazo (AccountDeletionPendingError) → o app oferece cancelar
+ * - 401 deletion_challenge_expired: POST /auth/deletion/cancel com desafio vencido ou já usado → volta pro login
+ * - SMS (SmsErrorCode): phone_invalid, phone_not_mobile, phone_unreachable (400), sms_cooldown, sms_rate_limited
+ *   {scope}, sms_locked (429 com retryAfter), sms_unavailable (503), code_invalid {attemptsLeft}, code_expired (401)
+ * - Fotos (POST /uploads/photo, POST /me/photos): photo_invalid (400, não é imagem aceita pelo conteúdo),
+ *   photo_unsupported (400, ex.: HEIC), photo_too_big (413), photo_processing_unavailable / photo_busy (503),
+ *   upload_not_found (400, upload de outra conta, vencido ou já usado) — o `message` já vem pronto pra tela
  */
 export type ApiErrorCode =
   | 'session_revoked'
@@ -40,7 +52,27 @@ export type ApiErrorCode =
   | 'super_like_limit'
   | 'age_range_invalid'
   | 'age_range_limit'
-  | 'pass_undo_unavailable';
+  | 'pass_undo_unavailable'
+  | 'confirm_required'
+  | 'staff_account'
+  | 'export_limit'
+  | 'account_deletion_pending'
+  | 'deletion_challenge_expired'
+  | 'phone_invalid'
+  | 'phone_not_mobile'
+  | 'phone_unreachable'
+  | 'sms_cooldown'
+  | 'sms_rate_limited'
+  | 'sms_locked'
+  | 'sms_unavailable'
+  | 'code_invalid'
+  | 'code_expired'
+  | 'photo_invalid'
+  | 'photo_unsupported'
+  | 'photo_too_big'
+  | 'photo_processing_unavailable'
+  | 'photo_busy'
+  | 'upload_not_found';
 
 // ---------- filtro de abuso (pt-BR) ----------
 

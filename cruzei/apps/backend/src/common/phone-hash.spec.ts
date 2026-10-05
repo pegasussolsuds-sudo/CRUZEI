@@ -28,4 +28,12 @@ describe('phoneHash (teste grátis por número)', () => {
       expect.any(String),
     );
   });
+
+  it('sem NODE_ENV (ou desconhecido) conta como produção: sem segredo lança', () => {
+    expect(() => phoneHashSecret({} as NodeJS.ProcessEnv)).toThrow('PHONE_HASH_SECRET');
+    expect(() => phoneHashSecret({ NODE_ENV: 'staging' } as NodeJS.ProcessEnv)).toThrow(
+      'PHONE_HASH_SECRET',
+    );
+    expect(phoneHashSecret({ NODE_ENV: 'test' } as NodeJS.ProcessEnv)).toEqual(expect.any(String));
+  });
 });

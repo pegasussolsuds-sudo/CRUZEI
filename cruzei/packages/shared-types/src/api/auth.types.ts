@@ -1,13 +1,65 @@
 // Auth
+import type { AccountDeletionRestored } from '../privacy';
 import type { Gender, LookingFor, Orientation, ShowMe, VisibilityMode } from '../user';
 
 export interface RequestCodeRequest {
   phone: string;
 }
 
+/** POST /v1/auth/request-code. Erros: SmsErrorCode (errors.types.ts) */
 export interface RequestCodeResponse {
   sent: boolean;
-  expiresIn: number; // seconds
+  /** validade do código, em segundos */
+  expiresIn: number;
+  /** segundos até poder pedir outro código (servidor novo sempre manda; ausente = 30) */
+  resendIn?: number;
+  /** SÓ em desenvolvimento (NODE_ENV=development + DEV_SHORTCUTS=true, driver 'log'); nunca em produção */
+  devCode?: string;
+}
+
+// ---- SMS: erros do request-code e do login (corpo = ApiError + os campos abaixo) ----
+
+/**
+ * - 400 phone_invalid: número fora do formato (DDD + celular)
+ * - 400 phone_not_mobile: parece fixo (o código vai por SMS)
+ * - 400 phone_unreachable: o provedor recusou o número
+ * - 429 sms_cooldown {retryAfter}: pediu outro código cedo demais (o anterior ainda vale → o app vai pra tela do código)
+ * - 429 sms_rate_limited {retryAfter, scope}: passou do teto por número (5/h, 10/dia) ou por conexão (20/h, 60/dia)
+ * - 429 sms_locked {retryAfter}: 5 códigos errados → espera de 15 min e pede um código novo
+ * - 503 sms_unavailable: provedor fora ou teto global da hora (timeout do provedor ainda conta na cota)
+ * - 401 code_invalid {attemptsLeft}: código errado
+ * - 401 code_expired: código venceu ou já foi usado → pedir outro
+ */
+export const SMS_ERROR_CODES = [
+  'phone_invalid',
+  'phone_not_mobile',
+  'phone_unreachable',
+  'sms_cooldown',
+  'sms_rate_limited',
+  'sms_locked',
+  'sms_unavailable',
+  'code_invalid',
+  'code_expired',
+] as const;
+export type SmsErrorCode = (typeof SMS_ERROR_CODES)[number];
+
+/** de onde veio o teto do 429 sms_rate_limited */
+export type SmsRateLimitScope = 'phone' | 'ip';
+
+/** 429 com espera: `retryAfter` em segundos (também no header Retry-After); `message` já diz a espera legível */
+export interface SmsRetryError {
+  error: 'sms_cooldown' | 'sms_rate_limited' | 'sms_locked';
+  message: string;
+  retryAfter: number;
+  /** só no sms_rate_limited */
+  scope?: SmsRateLimitScope;
+}
+
+/** 401 do login: código errado, ainda há tentativas antes da espera de 15 min */
+export interface CodeInvalidError {
+  error: 'code_invalid';
+  message: string;
+  attemptsLeft: number;
 }
 
 export interface LoginRequest {
@@ -57,6 +109,8 @@ export interface AccountClaim {
  * - número sem conta (ou liberado agora): token null, user.isNew true → o app segue pro cadastro (Register)
  * - conta parada: token null, user.isNew false e `claim` → tela "Essa conta é sua?"
  * `released` vem quando o número acabou de ser liberado da conta antiga (o app avisa e segue pro cadastro).
+ * - exclusão pedida dentro do prazo: 409 account_deletion_pending (AccountDeletionPendingError, privacy.ts) → o app
+ *   oferece cancelar (POST /v1/auth/deletion/cancel), que devolve este LoginResponse com tokens e `restored`
  */
 export interface LoginResponse {
   user: AuthUser;
@@ -64,6 +118,8 @@ export interface LoginResponse {
   refreshToken: string | null;
   claim?: AccountClaim;
   released?: PhoneReleaseReason;
+  /** a exclusão da conta acabou de ser cancelada ("Que bom te ver de volta!") */
+  restored?: AccountDeletionRestored;
 }
 
 /** POST /v1/auth/claim/confirm → LoginResponse (acertou: tokens; esgotou as tentativas: isNew + released) */

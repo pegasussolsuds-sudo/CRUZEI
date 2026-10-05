@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { Flag, Search, UserX } from 'lucide-react';
-import type { AccountStatus, PremiumTier, UserRole } from '@cruzei/shared-types';
+import { USER_FILTER_DELETION_HELD, type AccountStatus, type PremiumTier, type UserRole } from '@cruzei/shared-types';
 import { adminApi } from '@/api/admin';
 import { qk } from '@/api/keys';
 import { useCursorQuery } from '@/api/useCursorQuery';
@@ -24,7 +24,7 @@ export default function UsersPage() {
   const [params, setParams] = useSearchParams();
   const [text, setText] = useState(params.get('q') ?? '');
   const q = useDebouncedValue(text.trim(), 300);
-  const status = (params.get('status') ?? '') as AccountStatus | '';
+  const status = (params.get('status') ?? '') as AccountStatus | typeof USER_FILTER_DELETION_HELD | '';
   const tier = (params.get('tier') ?? '') as PremiumTier | '';
   const role = (params.get('role') ?? '') as UserRole | '';
   const reports: 'pending' | '' = params.get('denuncias') === 'pendentes' ? 'pending' : '';
@@ -79,6 +79,8 @@ export default function UsersPage() {
               {ACCOUNT_STATUS_LABEL[s]}
             </option>
           ))}
+          {/* contas excluídas não aparecem na lista; esta opção mostra só as com a limpeza adiada */}
+          <option value={USER_FILTER_DELETION_HELD}>Exclusão segurada</option>
         </select>
         <select className="select" aria-label="Filtrar por plano" value={tier} onChange={(e) => setParam('tier', e.target.value)}>
           <option value="">Qualquer plano</option>

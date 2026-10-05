@@ -204,7 +204,18 @@ export interface ModerationMessage {
 export interface ModerationUserDetail {
   /** instagram: @ público da pessoa (sem o @), pra moderação checar spam/perfil falso; a orientação NÃO vem (minimização) */
   user: ModerationUserSummary & { bio: string | null; phoneMasked: string | null; instagram?: string | null };
-  photos: { id: string; url: string; status: PhotoStatus; isMain: boolean; rejectReason: string | null }[];
+  /**
+   * retained: a pessoa apagou com denúncia de menor/abuso infantil aberta — a foto fica só aqui ("retida por
+   * denúncia"), fora do perfil dela e do público, até a denúncia fechar; não aceita aprovar/recusar
+   */
+  photos: {
+    id: string;
+    url: string;
+    status: PhotoStatus;
+    isMain: boolean;
+    rejectReason: string | null;
+    retained?: boolean;
+  }[];
   reports: ModerationReport[];
   actions: {
     action: string;
@@ -232,7 +243,8 @@ export interface ModerationActionPayload {
 
 // ---- documentos legais ----
 
-export type LegalSlug = 'termos' | 'privacidade' | 'seguranca-infantil';
+/** 'excluir-conta': página pública de exclusão da conta (URL pedida pelo Google Play); não entra no aceite */
+export type LegalSlug = 'termos' | 'privacidade' | 'seguranca-infantil' | 'excluir-conta';
 
 /**
  * versão vigente dos Termos + Política (o aceite grava esta string; mudou → o app pede novo aceite).

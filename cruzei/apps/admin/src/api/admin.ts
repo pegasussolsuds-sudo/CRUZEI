@@ -1,5 +1,6 @@
 // Todas as rotas que o painel chama, num lugar só. Tipos do @cruzei/shared-types; o pouco que o contrato
 // ainda não descreve está marcado com "FORA DO CONTRATO".
+import type { USER_FILTER_DELETION_HELD } from '@cruzei/shared-types';
 import type {
   AdminActive,
   AdminFunnel,
@@ -73,7 +74,8 @@ export interface PhotoDecisionPayload {
 
 export interface UserListParams {
   q?: string;
-  status?: AccountStatus | '';
+  /** 'deletion_held' (USER_FILTER_DELETION_HELD): só contas excluídas com a limpeza adiada */
+  status?: AccountStatus | typeof USER_FILTER_DELETION_HELD | '';
   tier?: PremiumTier | '';
   role?: UserRole | '';
   /** 'pending': só quem tem denúncia esperando decisão */

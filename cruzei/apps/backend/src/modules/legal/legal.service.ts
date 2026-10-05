@@ -1,13 +1,22 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { LEGAL_EFFECTIVE_DATE, LEGAL_VERSION, type LegalDoc, type LegalDocMeta, type LegalSlug } from '@cruzei/shared-types';
+
+import {
+  LEGAL_EFFECTIVE_DATE,
+  LEGAL_VERSION,
+  type LegalDoc,
+  type LegalDocMeta,
+  type LegalSlug,
+} from '@cruzei/shared-types';
 import { fillTemplate, parseMiniMarkdown, templateKeys, type MdInline } from '@cruzei/shared-utils';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 const FILES: Record<LegalSlug, string> = {
   termos: 'termos-de-uso.md',
   privacidade: 'politica-de-privacidade.md',
   'seguranca-infantil': 'padroes-seguranca-infantil.md',
+  // página pública /legal/excluir-conta (URL de exclusão da ficha do Google Play)
+  'excluir-conta': 'exclusao-de-conta.md',
 };
 
 /** {{CHAVE}} dos textos ← variável de ambiente (dados da empresa só existem na configuração, nunca no repositório) */
@@ -39,7 +48,8 @@ export function missingLegalEnv(env: NodeJS.ProcessEnv = process.env): string[] 
   const dir = resolveLegalDir();
   if (!dir) return ['LEGAL_DIR (pasta cruzei/legal não encontrada)'];
   const keys = new Set<string>();
-  for (const f of Object.values(FILES)) for (const k of templateKeys(fs.readFileSync(path.join(dir, f), 'utf8'))) keys.add(k);
+  for (const f of Object.values(FILES))
+    for (const k of templateKeys(fs.readFileSync(path.join(dir, f), 'utf8'))) keys.add(k);
   return [...keys]
     .map((k) => LEGAL_ENV[k])
     .filter((v): v is string => Boolean(v))
@@ -51,7 +61,10 @@ export class LegalService {
   private readonly cache = new Map<LegalSlug, LegalDoc>();
 
   list(): LegalDocMeta[] {
-    return (Object.keys(FILES) as LegalSlug[]).map((slug) => ({ slug, title: this.get(slug).title }));
+    return (Object.keys(FILES) as LegalSlug[]).map((slug) => ({
+      slug,
+      title: this.get(slug).title,
+    }));
   }
 
   get(slug: string): LegalDoc {
@@ -62,11 +75,20 @@ export class LegalService {
     const dir = resolveLegalDir();
     if (!dir) throw new NotFoundException('Documentos legais indisponíveis');
     const raw = fs.readFileSync(path.join(dir, FILES[s]), 'utf8');
-    const vars: Record<string, string | undefined> = { VERSAO: LEGAL_VERSION, DATA_VIGENCIA: formatDate(LEGAL_EFFECTIVE_DATE) };
+    const vars: Record<string, string | undefined> = {
+      VERSAO: LEGAL_VERSION,
+      DATA_VIGENCIA: formatDate(LEGAL_EFFECTIVE_DATE),
+    };
     for (const [k, envName] of Object.entries(LEGAL_ENV)) vars[k] = process.env[envName];
     const markdown = fillTemplate(raw, vars);
     const title = /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim() ?? s;
-    const doc: LegalDoc = { slug: s, title, version: LEGAL_VERSION, effectiveDate: LEGAL_EFFECTIVE_DATE, markdown };
+    const doc: LegalDoc = {
+      slug: s,
+      title,
+      version: LEGAL_VERSION,
+      effectiveDate: LEGAL_EFFECTIVE_DATE,
+      markdown,
+    };
     this.cache.set(s, doc);
     return doc;
   }
@@ -76,12 +98,17 @@ export class LegalService {
     const doc = this.get(slug);
     const body = parseMiniMarkdown(doc.markdown)
       .map((b) => {
-        if ('items' in b) return `<${b.type}>${b.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${b.type}>`;
+        if ('items' in b)
+          return `<${b.type}>${b.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${b.type}>`;
         return `<${b.type}>${inline(b.inlines)}</${b.type}>`;
       })
       .join('\n');
     const nav = this.list()
-      .map((d) => (d.slug === doc.slug ? `<strong>${esc(d.title)}</strong>` : `<a href="/legal/${d.slug}">${esc(d.title)}</a>`))
+      .map((d) =>
+        d.slug === doc.slug
+          ? `<strong>${esc(d.title)}</strong>`
+          : `<a href="/legal/${d.slug}">${esc(d.title)}</a>`,
+      )
       .join(' · ');
     return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(doc.title)} · Metch</title>
@@ -100,14 +127,19 @@ function inline(parts: MdInline[]): string {
   return parts
     .map((p) => {
       const t = esc(p.text);
-      if (p.href && /^(https?:|mailto:|\/)/i.test(p.href)) return `<a href="${esc(p.href)}">${t}</a>`;
+      if (p.href && /^(https?:|mailto:|\/)/i.test(p.href))
+        return `<a href="${esc(p.href)}">${t}</a>`;
       return p.bold ? `<strong>${t}</strong>` : t;
     })
     .join('');
 }
 
 function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function formatDate(iso: string): string {

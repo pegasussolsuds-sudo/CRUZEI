@@ -20,4 +20,5 @@ export const LEGAL_TITLES = {
   termos: 'Termos de Uso',
   privacidade: 'Política de privacidade',
   'seguranca-infantil': 'Segurança infantil',
+  'excluir-conta': 'Excluir conta',
 } as const;

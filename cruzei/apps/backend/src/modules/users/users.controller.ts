@@ -7,18 +7,7 @@ import {
   type Orientation,
   type ShowMe,
 } from '@cruzei/shared-types';
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Put,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
 import {
   ArrayMaxSize,
   IsArray,
@@ -32,14 +21,13 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUrl,
+  Matches,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
-import type { Request } from 'express';
 
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { assertPhotoHost } from '../../common/photo-host';
 
 import { UsersService } from './users.service';
 
@@ -105,9 +93,22 @@ class PauseDto {
   @IsNumber() durationHours!: number;
 }
 
-class PhotoDto {
-  @IsUrl({ require_tld: false }) url!: string;
-  @IsOptional() @IsUrl({ require_tld: false }) thumbnailUrl?: string;
+/**
+ * Foto do perfil: `key` devolvida pelo POST /uploads/photo, ou a `url` que ele devolveu (APK antigo). Exige uma das
+ * duas; o servidor confere a posse do upload. thumbnailUrl só é aceito por compatibilidade (ignorado: a miniatura sai
+ * do próprio upload).
+ */
+export class PhotoDto {
+  @ValidateIf((o: PhotoDto) => o.key !== undefined || o.url === undefined)
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^(?!.*\/\/)[a-z0-9][a-z0-9/_-]*\.[a-z0-9]{1,5}$/)
+  key?: string;
+  @ValidateIf((o: PhotoDto) => o.key === undefined)
+  @IsString()
+  @MaxLength(500)
+  url?: string;
+  @IsOptional() @IsString() @MaxLength(500) thumbnailUrl?: string;
   @IsOptional() @IsBoolean() isMain?: boolean;
 }
 
@@ -178,12 +179,10 @@ export class UsersController {
   }
 
   @Post('photos')
-  addPhoto(@CurrentUser() user: AuthenticatedUser, @Body() dto: PhotoDto, @Req() req: Request) {
-    // a bolha do mapa faz TODO viewer baixar essa URL: só fotos hospedadas por nós (backend em dev, R2/CDN em prod),
-    // senão a URL vira pixel de rastreio / oráculo de quem está perto
-    assertPhotoHost(dto.url, req);
-    if (dto.thumbnailUrl) assertPhotoHost(dto.thumbnailUrl, req);
-    return this.svc.addPhoto(user.id, dto.url, dto.thumbnailUrl, dto.isMain);
+  addPhoto(@CurrentUser() user: AuthenticatedUser, @Body() dto: PhotoDto) {
+    // só upload do PRÓPRIO usuário (media_objects): URL de fora viraria pixel de rastreio / oráculo de quem está perto,
+    // e anexar o arquivo de outra conta deixaria apagá-lo
+    return this.svc.addPhoto(user.id, { key: dto.key, url: dto.url }, dto.isMain);
   }
 
   @Delete('photos/:id')

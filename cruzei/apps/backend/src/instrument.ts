@@ -6,6 +6,9 @@
 import * as Sentry from '@sentry/nestjs';
 import type { Breadcrumb, ErrorEvent } from '@sentry/nestjs';
 
+// puro (sem Nest/express): pode vir antes do Sentry.init
+import { appEnv } from './config/security';
+
 // ---- sanitização (mesmas regras do app: apps/mobile/src/services/sentry.ts) ----
 
 // token do Mapbox: pk. (público), sk. (secreto), tk. (temporário)
@@ -98,7 +101,7 @@ export const sentryEnabled = dsn !== '';
 if (sentryEnabled) {
   Sentry.init({
     dsn,
-    environment: process.env.NODE_ENV ?? 'development',
+    environment: appEnv(),
     // não acrescente dataCollection sem preencher TODAS as chaves: com ele presente o sendDefaultPii é ignorado e
     // o que faltar volta pro padrão (coleta tudo)
     sendDefaultPii: false,

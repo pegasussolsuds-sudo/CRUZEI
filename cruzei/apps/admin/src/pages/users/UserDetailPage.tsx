@@ -41,6 +41,7 @@ import { Card, CardHead } from '@/components/ui/Card';
 import { EmptyState, ErrorState, Skeleton } from '@/components/ui/States';
 import { CopyId, PageHeader } from '@/components/ui/misc';
 import { convAnchor, openConversation, reportConversationIds } from '@/lib/report-context';
+import { DeletionBadge, DeletionHistory } from './DeletionHistory';
 import { PhoneHistory, ReleasedBadge } from './PhoneHistory';
 import { ReleasePhoneDialog } from './ReleasePhoneDialog';
 
@@ -107,6 +108,7 @@ export default function UserDetailPage() {
               {u.visibilityMode === 'anonymous' ? <Badge tone="outline">Modo anônimo</Badge> : null}
               {mod.user.reviewHoldAt ? <Badge tone="warning">Em revisão desde {formatDate(mod.user.reviewHoldAt)}</Badge> : null}
               <ReleasedBadge at={u.phoneReleasedAt} />
+              <DeletionBadge u={u} />
               {pendingReports ? (
                 <Badge tone="danger" icon={<Flag />}>
                   {pendingReports} {pendingReports === 1 ? 'denúncia pendente' : 'denúncias pendentes'}
@@ -193,6 +195,7 @@ export default function UserDetailPage() {
         <div className="stack-lg">
           <Profile u={u} />
           <PhoneHistory u={u} isAdmin={me.role === 'admin'} />
+          <DeletionHistory u={u} />
           <Counts u={u} />
           <Plan u={u} />
           <Devices u={u} />
@@ -224,8 +227,15 @@ function Photos({ u, canModerate }: { u: AdminUserDetail; canModerate: boolean }
                 {p.isMain ? <span className="photo-main">Principal</span> : null}
               </a>
               <figcaption className="col" style={{ gap: 6 }}>
-                <PhotoStatusBadge status={p.status} />
-                {p.rejectReason ? <span className="xsmall faint">{p.rejectReason}</span> : null}
+                {/* retida: a pessoa apagou com denúncia de menor/abuso aberta; só a moderação vê, sem aprovar/recusar */}
+                {p.retained ? (
+                  <Badge tone="warning" title="A pessoa apagou com denúncia de menor/abuso infantil aberta. Fica só aqui até a denúncia fechar.">
+                    Retida por denúncia
+                  </Badge>
+                ) : (
+                  <PhotoStatusBadge status={p.status} />
+                )}
+                {p.rejectReason && !p.retained ? <span className="xsmall faint">{p.rejectReason}</span> : null}
                 {p.status === 'pending' && canModerate ? <PhotoDecisionButtons photoId={p.id} userId={u.id} compact /> : null}
               </figcaption>
             </figure>

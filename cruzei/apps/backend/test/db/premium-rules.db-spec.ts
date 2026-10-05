@@ -70,8 +70,12 @@ const future = (ms: number) => new Date(Date.now() + ms);
 const resetDb = () =>
   prisma.$executeRawUnsafe('TRUNCATE users, trial_claims RESTART IDENTITY CASCADE');
 
+// NODE_ENV=test não liga atalho de dev: o recibo 'dev' dos testes de assinatura precisa do ALLOW_DEV_RECEIPTS
+const savedAllowDevReceipts = process.env.ALLOW_DEV_RECEIPTS;
+
 beforeAll(async () => {
   await assertTestDatabase(prisma);
+  process.env.ALLOW_DEV_RECEIPTS = 'true';
 });
 
 beforeEach(async () => {
@@ -81,6 +85,8 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  if (savedAllowDevReceipts === undefined) delete process.env.ALLOW_DEV_RECEIPTS;
+  else process.env.ALLOW_DEV_RECEIPTS = savedAllowDevReceipts;
   await resetDb();
   await prisma.$disconnect();
 });

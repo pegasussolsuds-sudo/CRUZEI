@@ -1,13 +1,16 @@
-// Recibo de compra da loja (Boost; a assinatura segue a mesma regra em SubscriptionsService.subscribe).
+// Recibo de compra da loja (Boost e assinatura: SubscriptionsService.subscribe usa a mesma regra).
 // A validação de verdade (App Store Server API / Google Play Developer API) ainda não existe: o recibo 'dev' só vale
-// fora de produção (ou com ALLOW_DEV_RECEIPTS=true); qualquer outro recibo é recusado com 402 — nada é ativado.
+// com atalho de dev ligado (NODE_ENV=development + DEV_SHORTCUTS=true) ou com ALLOW_DEV_RECEIPTS=true (beta fechado,
+// avisa no boot); sem NODE_ENV conta como produção. Qualquer outro recibo é recusado com 402 — nada é ativado.
 import { HttpException } from '@nestjs/common';
+
+import { devShortcutsEnabled } from '../config/security';
 
 type Env = Record<string, string | undefined>;
 
-/** recibo 'dev' aceito? só fora de produção ou com ALLOW_DEV_RECEIPTS=true */
+/** recibo 'dev' aceito? só com atalho de dev ligado ou ALLOW_DEV_RECEIPTS=true */
 export function devReceiptsAllowed(env: Env = process.env): boolean {
-  return env.NODE_ENV !== 'production' || env.ALLOW_DEV_RECEIPTS === 'true';
+  return devShortcutsEnabled(env) || env.ALLOW_DEV_RECEIPTS?.trim() === 'true';
 }
 
 /** 402 com mensagem clara quando o recibo não pode ser aceito (produção sem validação de loja, ou recibo inválido) */

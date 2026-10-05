@@ -1,69 +1,122 @@
 import {
+  ArgumentsHost,
   BadRequestException,
+  Catch,
   Controller,
+  ExceptionFilter,
+  HttpException,
+  HttpStatus,
+  PayloadTooLargeException,
   Post,
-  Req,
+  ServiceUnavailableException,
   UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { Request } from 'express';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { v4 as uuid } from 'uuid';
+import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
+
+import { AuthenticatedUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { UPLOAD_DIR, UPLOAD_MAX_BYTES } from './uploads.constants';
-import { makeThumbnail, probeImage } from './thumbnails';
+
+import { PhotoBusy, PhotoProcessingUnavailable, PhotoRejected } from './image-pipeline';
+import { UPLOAD_MAX_BYTES } from './uploads.constants';
+import { PhotoStorageUnavailable, UploadsService } from './uploads.service';
 
 interface UploadedImage {
-  filename: string;
+  buffer: Buffer;
   mimetype: string;
   size: number;
 }
 
-const ALLOWED = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic']);
+/** mensagens pro app (pt-BR informal) */
+export const PHOTO_ERROR_MESSAGES = {
+  photo_invalid: 'Esse arquivo não é uma foto que a gente aceita. Manda um JPG ou PNG.',
+  photo_unsupported: 'Não deu pra abrir esse formato de foto. Tenta mandar em JPG ou PNG.',
+  photo_too_big: 'Essa foto é grande demais. Tenta outra?',
+  photo_processing_unavailable:
+    'O envio de fotos tá fora do ar agora. Tenta de novo daqui a pouco.',
+  photo_busy: 'Muita foto chegando ao mesmo tempo. Tenta de novo em alguns segundos.',
+} as const;
+
+/** erro do pipeline → HTTP no formato {error, message} */
+export function photoHttpError(err: unknown): HttpException | null {
+  if (err instanceof PhotoRejected) {
+    const body = { error: err.code, message: PHOTO_ERROR_MESSAGES[err.code] };
+    return err.code === 'photo_too_big'
+      ? new PayloadTooLargeException(body)
+      : new BadRequestException(body);
+  }
+  if (
+    err instanceof PhotoProcessingUnavailable ||
+    err instanceof PhotoBusy ||
+    err instanceof PhotoStorageUnavailable
+  ) {
+    return new ServiceUnavailableException({
+      error: err.code,
+      message: PHOTO_ERROR_MESSAGES[err.code],
+    });
+  }
+  return null;
+}
+
+/** arquivo acima de 10 MB (o multer barra antes do handler): 413 com o mesmo formato */
+@Catch(PayloadTooLargeException)
+class PhotoTooLargeFilter implements ExceptionFilter {
+  catch(_exception: PayloadTooLargeException, host: ArgumentsHost) {
+    host.switchToHttp().getResponse<Response>().status(HttpStatus.PAYLOAD_TOO_LARGE).json({
+      error: 'photo_too_big',
+      message: PHOTO_ERROR_MESSAGES.photo_too_big,
+      status: HttpStatus.PAYLOAD_TOO_LARGE,
+    });
+  }
+}
 
 @UseGuards(JwtAuthGuard)
 @Controller('uploads')
 export class UploadsController {
+  constructor(private readonly uploads: UploadsService) {}
+
+  /**
+   * Foto nova: fica em memória (sem disco), é reprocessada pelo conteúdo (nome e tipo do cliente não valem) e gravada
+   * como p/<uuid>.jpg. Anexar ao perfil é outro passo (POST /me/photos com a key), que confere a posse.
+   */
   @Post('photo')
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @UseFilters(PhotoTooLargeFilter)
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-          cb(null, UPLOAD_DIR);
-        },
-        filename: (_req, file, cb) => {
-          const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
-          cb(null, `${uuid()}${ext}`);
-        },
-      }),
-      limits: { fileSize: UPLOAD_MAX_BYTES },
+      limits: { fileSize: UPLOAD_MAX_BYTES, files: 1, fields: 5 },
+      // filtro barato: o tipo de verdade sai do conteúdo no pipeline
       fileFilter: (_req, file, cb) => {
-        if (!ALLOWED.has(file.mimetype)) {
-          cb(new BadRequestException('Formato não suportado (jpeg, png, webp, heic)'), false);
-          return;
-        }
-        cb(null, true);
+        const t = (file.mimetype ?? '').toLowerCase();
+        if (t.startsWith('image/') || t === 'application/octet-stream') return cb(null, true);
+        cb(
+          new BadRequestException({
+            error: 'photo_invalid',
+            message: PHOTO_ERROR_MESSAGES.photo_invalid,
+          }),
+          false,
+        );
       },
     }),
   )
-  async upload(@UploadedFile() file: UploadedImage | undefined, @Req() req: Request) {
-    if (!file) throw new BadRequestException('Arquivo "file" obrigatório');
-    const base = `${req.protocol}://${req.get('host')}`;
-    const filePath = path.join(UPLOAD_DIR, file.filename);
-    // extensão e mimetype vêm do cliente: confere pelo conteúdo (um .html com Content-Type image/jpeg não entra)
-    if ((await probeImage(filePath)) === null) {
-      fs.rmSync(filePath, { force: true });
-      throw new BadRequestException('O arquivo não é uma imagem válida');
+  async upload(
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file: UploadedImage | undefined,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException({
+        error: 'photo_invalid',
+        message: 'Faltou a foto (campo "file").',
+      });
     }
-    const url = `${base}/uploads/${file.filename}`;
-    // thumbnail 256x256 pra bolha de identidade do mapa e listas; sem ele (HEIC, sharp ausente) usa a própria foto
-    const thumb = await makeThumbnail(filePath);
-    const thumbnailUrl = thumb ? `${base}/uploads/${thumb}` : url;
-    return { url, thumbnailUrl, size: file.size, mimeType: file.mimetype };
+    try {
+      return await this.uploads.uploadPhoto(user.id, file.buffer);
+    } catch (err) {
+      throw photoHttpError(err) ?? err;
+    }
   }
 }

@@ -21,6 +21,7 @@ import {
   type JwtPayload,
 } from './auth.service';
 import type { PhoneReleaseService } from './phone-release.service';
+import { codeInvalid } from './sms/sms-errors';
 import type { SmsService } from './sms.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -349,6 +350,34 @@ describe('número reciclado: login', () => {
     cfgValues['auth.dormantDays'] = 0;
     const r = await service.login(OLD_PHONE, '123456');
     expect(r.token).toEqual(expect.any(String));
+  });
+
+  it('número de revisão das lojas (REVIEW_PHONE) nunca cai no "Essa conta é sua?"', async () => {
+    const s = sms as unknown as { isReviewPhone?: (p: string) => boolean };
+    s.isReviewPhone = jest.fn((p: string) => p === OLD_PHONE);
+    try {
+      const r = await service.login(OLD_PHONE, '123456');
+      expect(r.token).toEqual(expect.any(String));
+      expect(r.claim).toBeUndefined();
+    } finally {
+      delete s.isReviewPhone;
+    }
+  });
+
+  it('erro do SMS (código errado, trava) sobe como veio, sem olhar a conta; telefone ruim = 400 phone_invalid', async () => {
+    const wrong = codeInvalid(3, 900);
+    (sms.verifyCode as jest.Mock).mockRejectedValueOnce(wrong);
+    await expect(service.login(PHONE, '111111')).rejects.toBe(wrong);
+    (sms.verifyCode as jest.Mock).mockResolvedValueOnce(false);
+    await expect(service.login(PHONE, '111111')).rejects.toMatchObject({
+      response: { error: 'code_expired' },
+    });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    await expect(service.login('123', '111111')).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'phone_invalid' },
+    });
+    expect(sms.verifyCode).toHaveBeenCalledTimes(2);
   });
 
   it('conta excluída: o número é liberado direto (account_deleted) e segue pro cadastro', async () => {

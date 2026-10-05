@@ -19,8 +19,8 @@ Funções SQL: `f_unaccent(text)` (unaccent imutável) e `f_norm(text)` (minúsc
 ## Rodar (em `apps/backend`, com o `.env` apontando pro banco)
 
 ```bash
-# 0) uma vez: tabelas (o banco de dev não tem _prisma_migrations; `prisma migrate deploy` para no P3005)
-docker exec -i cruzei-postgres psql -U cruzei -d cruzei -v ON_ERROR_STOP=1 < prisma/migrations/20260930120000_geo_catalog/migration.sql
+# 0) uma vez: tabelas (pelo executor de migrations; nunca prisma migrate/db push — ver README da raiz)
+pnpm db:migrate
 npx prisma generate
 
 # 1) baixar (só leitura na rede; grava em data/geo/, que está no .gitignore)
@@ -41,7 +41,7 @@ npx ts-node --transpile-only scripts/geo/ibge-municipios.ts --refetch  # baixa d
 
 # 5) prédios extras da Microsoft onde o OSM não tem prédio (~70 s; idempotente; baixa ~24 MB MS + 17 MB OSM + 158 MB 3D-GloBFP,
 #    ~700 MB em disco com o shapefile extraído; só com --with-3dg; desligado por padrão: o modelo de altura dele usa referências do Google Open Buildings)
-docker exec -i cruzei-postgres psql -U cruzei -d cruzei -v ON_ERROR_STOP=1 < prisma/migrations/20260930140000_extra_buildings/migration.sql
+pnpm db:migrate                                                          # tabela extra_buildings, se ainda não tiver
 npx ts-node --transpile-only scripts/geo/buildings-msft.ts               # baixa o que faltar e carrega
 npx ts-node --transpile-only scripts/geo/buildings-msft.ts --only load   # só recarrega do que já está em data/geo
 #   --refetch (MS/OSM/índices de novo) · --height auto|3dglobfp|heuristic · --with-3dg · --overlap 0.2 · --bbox …

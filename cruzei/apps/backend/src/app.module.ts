@@ -13,6 +13,7 @@ import { isCronWorker } from './config/runtime';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health/health.controller';
 import { AccountModule } from './modules/account/account.module';
+import { AccountPrivacyModule } from './modules/account-privacy/account-privacy.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AnonymousModule } from './modules/anonymous/anonymous.module';
@@ -124,6 +125,8 @@ const hasStrictOverride = (ctx: ExecutionContext) =>
     SupportModule,
     // métricas próprias (/v1/analytics/*): funil do cadastro e retenção, sem empresa de fora
     AnalyticsModule,
+    // excluir conta (prazo + limpeza), baixar meus dados, apagar histórico de localização
+    AccountPrivacyModule,
   ],
   controllers: [HealthController],
   // Sem o guard registrado, @Throttle era só decoração — nenhum limite valia.

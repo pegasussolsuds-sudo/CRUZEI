@@ -1,5 +1,6 @@
 import type {
   AccountStatus,
+  AdminDeletionRequest,
   AdminSubscriptionRow,
   AdminUserDetail,
   AdminUserList,
@@ -12,6 +13,7 @@ import type {
   ReleasePhonePayload,
   UserRole,
 } from '@cruzei/shared-types';
+import { USER_FILTER_DELETION_HELD } from '@cruzei/shared-types';
 import {
   BadRequestException,
   ConflictException,
@@ -23,6 +25,7 @@ import { Prisma } from '@prisma/client';
 
 import type { AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { maskPhone } from '../../common/phone-mask';
+import { photoUrl } from '../../common/photo-url';
 import { effectiveTier, visibleAnonymousUntil } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
@@ -81,6 +84,36 @@ function ageOf(birth: Date | null): number | null {
   return a;
 }
 
+/** pedido de exclusão → ficha (último erro da limpeza só pra admin) */
+export function toAdminDeletion(
+  d: {
+    requestedAt: Date;
+    scheduledFor: Date;
+    status: string;
+    source: string;
+    reason: string | null;
+    cancelledAt: Date | null;
+    completedAt: Date | null;
+    holdReason: string | null;
+    attempts: number;
+    lastError: string | null;
+  },
+  isAdmin: boolean,
+): AdminDeletionRequest {
+  return {
+    requestedAt: d.requestedAt.toISOString(),
+    scheduledFor: d.scheduledFor.toISOString(),
+    status: d.status as AdminDeletionRequest['status'],
+    source: d.source as AdminDeletionRequest['source'],
+    reason: d.reason,
+    cancelledAt: d.cancelledAt?.toISOString() ?? null,
+    completedAt: d.completedAt?.toISOString() ?? null,
+    holdReason: d.holdReason as AdminDeletionRequest['holdReason'],
+    attempts: d.attempts,
+    lastError: isAdmin ? d.lastError : null,
+  };
+}
+
 /** Usuários no painel: busca, ficha, Premium manual e papel. Telefone inteiro só pra admin. */
 @Injectable()
 export class AdminUsersService {
@@ -102,7 +135,7 @@ export class AdminUsersService {
       name: u.name,
       phone: viewerRole === 'admin' ? u.phone : maskPhone(u.phone),
       age: ageOf(u.birth_date),
-      avatarUrl: u.avatar_url,
+      avatarUrl: photoUrl(u.avatar_url),
       role: u.role,
       accountStatus: u.account_status,
       suspendedUntil: u.suspended_until?.toISOString() ?? null,
@@ -133,7 +166,14 @@ export class AdminUsersService {
     role?: string;
     reports?: string;
   }): Prisma.Sql[] {
-    const where: Prisma.Sql[] = [Prisma.sql`u.deleted_at IS NULL`];
+    // status=deletion_held: só contas excluídas com a limpeza adiada (o resto da lista nunca mostra excluída)
+    const where: Prisma.Sql[] = [
+      q.status === USER_FILTER_DELETION_HELD
+        ? Prisma.sql`u.deleted_at IS NOT NULL AND u.purged_at IS NULL AND EXISTS (
+            SELECT 1 FROM data_deletion_requests d
+             WHERE d.user_id = u.id AND d.status = 'pending' AND d.hold_reason IS NOT NULL)`
+        : Prisma.sql`u.deleted_at IS NULL`,
+    ];
     const text = q.q?.trim().slice(0, 100);
     if (text) {
       const digits = text.replace(/\D/g, '');
@@ -210,10 +250,16 @@ export class AdminUsersService {
     };
   }
 
-  async row(viewer: AuthenticatedUser, id: string): Promise<AdminUserRow> {
+  /** `includeDeleted`: a ficha também abre conta com exclusão pedida ou já limpa (denúncias apontam pra ela) */
+  async row(
+    viewer: AuthenticatedUser,
+    id: string,
+    opts: { includeDeleted?: boolean } = {},
+  ): Promise<AdminUserRow> {
+    const alive = opts.includeDeleted ? Prisma.empty : Prisma.sql`AND u.deleted_at IS NULL`;
     const [u] = await this.prisma.$queryRaw<
       UserRowDb[]
-    >`SELECT ${ROW_SELECT} FROM users u WHERE u.id = ${id}::uuid AND u.deleted_at IS NULL`;
+    >`SELECT ${ROW_SELECT} FROM users u WHERE u.id = ${id}::uuid ${alive}`;
     if (!u) throw new NotFoundException({ error: 'not_found', message: 'Usuário não encontrado' });
     return this.toRow(u, viewer.role);
   }
@@ -226,12 +272,12 @@ export class AdminUsersService {
     viewer: AuthenticatedUser,
     id: string,
   ): Promise<AdminUserDetail & ModerationUserDetail> {
-    const row = await this.row(viewer, id);
-    const [moderation, extra, subs, devices, counts, threads, city] = await Promise.all([
+    const row = await this.row(viewer, id, { includeDeleted: true });
+    const [moderation, extra, subs, devices, counts, threads, city, deletions] = await Promise.all([
       this.moderation.userDetail(id),
       this.prisma.user.findUnique({
         where: { id },
-        select: { bio: true, instagramHandle: true, gender: true },
+        select: { bio: true, instagramHandle: true, gender: true, deletedAt: true, purgedAt: true },
       }),
       this.prisma.subscription.findMany({
         where: { userId: id },
@@ -258,6 +304,11 @@ export class AdminUsersService {
         select: { id: true, status: true, createdAt: true },
       }),
       this.cityOf(id),
+      this.prisma.dataDeletionRequest.findMany({
+        where: { userId: id },
+        orderBy: { requestedAt: 'desc' },
+        take: 10,
+      }),
     ]);
     const granters = [...new Set(subs.map((s) => s.grantedBy).filter((v): v is string => !!v))];
     const names = new Map(
@@ -306,6 +357,9 @@ export class AdminUsersService {
         status: t.status as 'open' | 'pending' | 'resolved',
         createdAt: t.createdAt.toISOString(),
       })),
+      deletedAt: extra?.deletedAt?.toISOString() ?? null,
+      purgedAt: extra?.purgedAt?.toISOString() ?? null,
+      deletionRequests: deletions.map((d) => toAdminDeletion(d, viewer.role === 'admin')),
     };
     return { ...moderation, ...admin };
   }

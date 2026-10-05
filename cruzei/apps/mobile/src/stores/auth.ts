@@ -4,6 +4,13 @@ import type { AccountClaim, Gender, LoginResponse, Orientation, PhoneReleaseReas
 import { api, clearSession, getToken, setRefreshToken, setToken, setUnauthorizedHandler } from '../services/api';
 import { getInstallId, linkInstallToUser } from '../services/analytics';
 import { unregisterPushDevice } from '../services/notifications';
+import { deletionPendingOf } from '../services/accountPrivacy';
+import type {
+  AccountDeletionPendingError,
+  AccountDeletionRequest,
+  AccountDeletionResponse,
+  AccountDeletionRestored,
+} from '@cruzei/shared-types';
 
 function statusOf(err: unknown): number | undefined {
   return (err as { response?: { status?: number } })?.response?.status;
@@ -96,6 +103,10 @@ export interface LoginOutcome {
   claim?: AccountClaim;
   /** o número acabou de sair da conta antiga (não é minha / errou a data / conta excluída) */
   released?: PhoneReleaseReason;
+  /** conta com exclusão pedida no prazo (409): sem sessão; a tela RestoreAccount oferece cancelar */
+  deletionPending?: AccountDeletionPendingError;
+  /** exclusão cancelada agora ("Que bom te ver de volta!") */
+  restored?: AccountDeletionRestored;
 }
 
 interface AuthState {
@@ -106,7 +117,8 @@ interface AuthState {
   onboardingStep: OnboardingStep;
   setOnboardingStep: (step: OnboardingStep) => void;
   hydrate: () => Promise<void>;
-  requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; devCode?: string }>;
+  /** RequestCodeResponse; os erros (espera, tetos, trava) o screens/auth/smsError.ts traduz */
+  requestCode: (phone: string) => Promise<{ sent: boolean; expiresIn: number; resendIn?: number; devCode?: string }>;
   /** `deferAuth`: guarda token+user mas NÃO vira `isAuthenticated` — a tela chama `commitAuth()` quando terminar a animação */
   verifyCode: (phone: string, code: string, opts?: { deferAuth?: boolean }) => Promise<LoginOutcome>;
   /**
@@ -116,6 +128,10 @@ interface AuthState {
   confirmClaim: (challengeId: string, birthDate: string, opts?: { deferAuth?: boolean }) => Promise<LoginOutcome>;
   /** "Não é minha": o número sai da conta antiga → { isNew: true, released: 'not_mine' } */
   releaseClaim: (challengeId: string) => Promise<LoginOutcome>;
+  /** "Cancelar exclusão" (desafio do 409 do login) → sessão + `restored`; vencido = 401 deletion_challenge_expired */
+  cancelDeletion: (challengeId: string, opts?: { deferAuth?: boolean }) => Promise<LoginOutcome>;
+  /** pede a exclusão (202) e encerra a sessão local (o servidor já revogou tudo) */
+  deleteAccount: (body: AccountDeletionRequest) => Promise<AccountDeletionResponse>;
   commitAuth: () => void;
   register: (input: RegisterInput) => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -155,7 +171,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       // sem rede / backend fora: segue logado como no hydrate(), as telas tentam /me de novo
     }
     set({ user: me, isAuthenticated: !opts?.deferAuth });
-    return { isNew: false };
+    return data.restored ? { isNew: false, restored: data.restored } : { isNew: false };
   }
 
   return {
@@ -195,7 +211,16 @@ export const useAuthStore = create<AuthState>((set, get) => {
     },
 
     async verifyCode(phone, code, opts) {
-      const res = await api.post<LoginResponse>('/auth/login', { phone, code });
+      let res;
+      try {
+        res = await api.post<LoginResponse>('/auth/login', { phone, code });
+      } catch (err) {
+        // exclusão pedida no prazo: não é erro do código, é a pergunta "quer voltar?"
+        const r = (err as { response?: { status?: number; data?: unknown } })?.response;
+        const pending = r?.status === 409 ? deletionPendingOf(r.data) : null;
+        if (pending) return { isNew: false, deletionPending: pending };
+        throw err;
+      }
       return openSession(res.data, opts);
     },
 
@@ -207,6 +232,20 @@ export const useAuthStore = create<AuthState>((set, get) => {
     async releaseClaim(challengeId) {
       const res = await api.post<LoginResponse>('/auth/claim/release', { challengeId });
       return openSession(res.data);
+    },
+
+    async cancelDeletion(challengeId, opts) {
+      const res = await api.post<LoginResponse>('/auth/deletion/cancel', { challengeId });
+      return openSession(res.data, opts);
+    },
+
+    async deleteAccount(body) {
+      const res = await api.post<AccountDeletionResponse>('/me/deletion', body);
+      // sessões, push e socket já caíram no servidor: só limpa o aparelho (sem /auth/logout, o token não vale mais)
+      await clearSession();
+      sessionGen += 1;
+      set({ user: null, isAuthenticated: false });
+      return res.data;
     },
 
     commitAuth() {

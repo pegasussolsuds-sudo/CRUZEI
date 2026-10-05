@@ -53,7 +53,10 @@ model User {
   verificationSelfieUrl String?               @map("verification_selfie_url") @db.VarChar(500)
   profileCompleteness   Int                   @default(0) @map("profile_completeness") @db.SmallInt
   dataRetentionUntil    DateTime?             @map("data_retention_until") @db.Date
+  /// exclusão pedida (some na hora; ACCOUNT_DELETION_GRACE_DAYS pra voltar); pedido em data_deletion_requests
   deletedAt             DateTime?             @map("deleted_at") @db.Timestamp(6)
+  /// limpeza definitiva feita: linha "conta limpa" sem dado pessoal, só pras FKs (CHECK users_purged_clean_chk na migration)
+  purgedAt              DateTime?             @map("purged_at") @db.Timestamp(6)
   createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamp(6)
   updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamp(6)
   lastActiveAt          DateTime              @default(now()) @map("last_active_at") @db.Timestamp(6)
@@ -119,6 +122,9 @@ model PrivateArea {
   @@map("private_areas")
 }
 
+/// url e thumbnailUrl guardam a CHAVE do objeto no storage (p/<uuid>.jpg) ou uma URL absoluta legada/externa; a URL
+/// pública sai de photoUrl(). O gatilho photos_release_media (AFTER DELETE → fila media_objects) e o índice único
+/// parcial photos_url_key_uq existem só na migration 20261005000100_media_objects.
 model Photo {
   id             String      @id @default(uuid()) @db.Uuid
   userId         String      @map("user_id") @db.Uuid
@@ -138,7 +144,33 @@ model Photo {
 
   @@unique([userId, orderIndex])
   @@index([userId, orderIndex])
+  @@index([url], map: "photos_url_idx")
+  @@index([thumbnailUrl], map: "photos_thumbnail_url_idx")
   @@map("photos")
+}
+
+/// objeto no storage (driver local ou s3) e fila de remoção do arquivo (migration 20261005000100_media_objects).
+/// Upload novo: ownerId = quem subiu, deleteAfter = +24 h até ser anexado. Foto apagada: o gatilho photos_release_media
+/// enfileira (deleteAfter = agora; rótulo 'urgent' = +180 dias). O MediaGcService apaga com lease e checagem de referência.
+/// ownerId sem FK: sobrevive à limpeza da conta. CHECK media_objects_kind_chk ('photo') só na migration.
+model MediaObject {
+  key            String    @id @db.VarChar(200)
+  ownerId        String?   @map("owner_id") @db.Uuid
+  kind           String    @default("photo") @db.VarChar(16)
+  thumbKey       String?   @map("thumb_key") @db.VarChar(200)
+  bytes          Int?
+  width          Int?      @db.SmallInt
+  height         Int?      @db.SmallInt
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// anexado a uma foto; null = upload solto
+  attachedAt     DateTime? @map("attached_at") @db.Timestamptz(6)
+  /// quando pode apagar do storage; null = em uso (índice parcial media_objects_delete_idx)
+  deleteAfter    DateTime? @map("delete_after") @db.Timestamptz(6)
+  deleteAttempts Int       @default(0) @map("delete_attempts") @db.SmallInt
+  lastError      String?   @map("last_error") @db.VarChar(200)
+
+  @@index([ownerId], map: "media_objects_owner_idx")
+  @@map("media_objects")
 }
 
 model Interest {
@@ -462,6 +494,7 @@ model Boost {
   user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
+  @@index([userId], map: "boosts_user_idx")
   @@map("boosts")
 }
 
@@ -502,15 +535,32 @@ model DeviceToken {
   @@map("device_tokens")
 }
 
+/// pedido de exclusão da conta (migration 20261005000000_account_privacy). Um pendente por pessoa (índice único parcial
+/// ddr_one_pending_uq); fila da limpeza em ddr_due_idx. CHECKs ddr_*_chk só na migration.
 model DataDeletionRequest {
   id           String    @id @default(uuid()) @db.Uuid
   userId       String    @map("user_id") @db.Uuid
   requestedAt  DateTime  @default(now()) @map("requested_at") @db.Timestamp(6)
+  /// fim do prazo de arrependimento: a limpeza definitiva roda a partir daqui
   scheduledFor DateTime  @map("scheduled_for") @db.Timestamp(6)
   completedAt  DateTime? @map("completed_at") @db.Timestamp(6)
+  /// 'pending' | 'cancelled' | 'completed' (completed exige completedAt; cancelled exige cancelledAt)
   status       String    @default("pending") @db.VarChar(20)
+  /// 'app' | 'support' | 'admin'
+  source       String    @default("app") @db.VarChar(10)
+  /// DELETION_REASONS (shared-types) ou null
+  reason       String?   @db.VarChar(20)
+  cancelledAt  DateTime? @map("cancelled_at") @db.Timestamp(6)
+  /// limpeza adiada: 'open_reports' (denúncia em análise) | 'review_hold' (conta em revisão); null = sem bloqueio
+  holdReason   String?   @map("hold_reason") @db.VarChar(20)
+  /// tentativas da limpeza e último erro (idempotente: a próxima rodada termina)
+  attempts     Int       @default(0) @db.SmallInt
+  lastError    String?   @map("last_error") @db.VarChar(255)
+  /// HMAC(PHONE_HASH_SECRET) do número, gravado na limpeza (nunca o número)
+  phoneHash    String?   @map("phone_hash") @db.VarChar(64)
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, requestedAt(sort: Desc)], map: "ddr_user_idx")
   @@map("data_deletion_requests")
 }
 
@@ -781,6 +831,7 @@ model MatchCelebration {
   seenAt    DateTime? @map("seen_at") @db.Timestamptz(6)
 
   @@id([userId, peerId])
+  @@index([peerId], map: "match_celebrations_peer_idx")
   @@map("match_celebrations")
 }
 
@@ -792,8 +843,10 @@ model PhoneRelease {
   id            BigInt        @id @default(autoincrement())
   /// conta antiga, que perdeu o número
   userId        String        @map("user_id") @db.Uuid
-  /// número inteiro (só admin vê inteiro)
-  phone         String        @db.VarChar(20)
+  /// número inteiro (só admin vê inteiro); null depois da limpeza de conta não banida (fica o phoneHash)
+  phone         String?       @db.VarChar(20)
+  /// HMAC do número que saiu na limpeza (6 meses, como data_deletion_requests.phone_hash)
+  phoneHash     String?       @map("phone_hash") @db.VarChar(64)
   reason        String        @db.VarChar(20)
   /// situação da conta antiga na hora (banida/suspensa → conta nova nasce em revisão)
   accountStatus AccountStatus @map("account_status")
@@ -878,6 +931,7 @@ model Pass {
   @@id([userId, targetId])
   @@index([createdAt], map: "passes_created_idx")
   @@index([userId, createdAt(sort: Desc)], map: "passes_user_recent_idx")
+  @@index([targetId], map: "passes_target_idx")
   @@map("passes")
 }
 

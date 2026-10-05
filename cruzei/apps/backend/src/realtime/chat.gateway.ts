@@ -54,7 +54,8 @@ export type JoinConversationAck = { ok: true } | { ok: false; code: 4003 | 4029 
 // Gateway único de tempo real: conversas, curtidas, acenos e moderação.
 // Cada socket entra na room "user:<id>"; o chat aberto entra em "conv:<id>" (só pro "digitando").
 // Nada de broadcast global: todo emit tem sala de destino.
-@WebSocketGateway({ cors: { origin: '*' }, transports: ['websocket', 'polling'] })
+// CORS/Origin e teto de mensagem ficam no SecureIoAdapter (config/http-security), não aqui
+@WebSocketGateway({ transports: ['websocket', 'polling'] })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server!: Server;
 

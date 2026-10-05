@@ -1,52 +1,27 @@
-// Thumbnails das fotos (brief FOTO AVATAR §16): o mapa nunca baixa a foto grande — a bolha de identidade
-// usa um quadrado de 256 px (cover, recorte "attention" pra manter o rosto, EXIF rotacionado, JPEG 82).
-// `sharp` é opcional em runtime: sem ele (ou com HEIC sem libheif) o upload segue e o thumbnail vira a própria foto.
-import { Logger } from '@nestjs/common';
+// Utilitários do sharp compartilhados: carregamento opcional (loadSharp), JPEG pra análise automática e o thumbnail
+// em disco que o seed-dev usa. O upload de verdade passa pelo image-pipeline.ts, que FALHA FECHADO sem sharp.
 import * as path from 'node:path';
+
+import { Logger } from '@nestjs/common';
+import type SharpNs from 'sharp';
 
 export const THUMB_SIZE = 256;
 export const THUMB_SUFFIX = '-t';
 
-type SharpFactory = (input: string) => {
-  rotate: () => SharpPipeline;
-  metadata: () => Promise<{ format?: string; width?: number; height?: number }>;
-};
-interface SharpPipeline {
-  resize: (w: number, h: number, opts: { fit: 'cover'; position: string }) => SharpPipeline;
-  flatten: (opts: { background: string }) => SharpPipeline;
-  jpeg: (opts: { quality: number; mozjpeg?: boolean }) => SharpPipeline;
-  toFile: (out: string) => Promise<unknown>;
-}
-
-const IMAGE_FORMATS = new Set(['jpeg', 'jpg', 'png', 'webp', 'heif', 'heic', 'avif']);
-
-/**
- * Confere pelo CONTEÚDO que o arquivo é uma imagem (extensão e mimetype vêm do cliente). Devolve o formato
- * detectado, ou null quando não é imagem; undefined quando não dá pra saber (sem sharp) — aí o upload segue.
- */
-export async function probeImage(filePath: string): Promise<string | null | undefined> {
-  const sharp = loadSharp();
-  if (!sharp) return undefined;
-  try {
-    const meta = await sharp(filePath).metadata();
-    const fmt = (meta.format ?? '').toLowerCase();
-    return IMAGE_FORMATS.has(fmt) && (meta.width ?? 0) > 0 ? fmt : null;
-  } catch {
-    return null;
-  }
-}
+export type SharpFactory = typeof SharpNs;
 
 const logger = new Logger('Thumbnails');
 let sharpFactory: SharpFactory | null | undefined;
 
-function loadSharp(): SharpFactory | null {
+/** sharp do processo, ou null quando o binário nativo não carrega (node_modules copiado de outro SO, por exemplo) */
+export function loadSharp(): SharpFactory | null {
   if (sharpFactory !== undefined) return sharpFactory;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     sharpFactory = require('sharp') as SharpFactory;
   } catch (err) {
     sharpFactory = null;
-    logger.warn(`sharp indisponível — fotos sem thumbnail (${(err as Error).message})`);
+    logger.error(`sharp indisponível — upload de fotos desligado (${(err as Error).message})`);
   }
   return sharpFactory;
 }
@@ -55,13 +30,18 @@ function loadSharp(): SharpFactory | null {
  * JPEG de até `maxSide` px (EXIF girado e descartado) pra mandar à análise automática de fotos: a Rekognition aceita
  * só JPEG/PNG de até 5 MB. null sem sharp ou com arquivo ilegível.
  */
-export async function jpegForAnalysis(input: string | Buffer, maxSide = 1600): Promise<Buffer | null> {
-  const sharp = loadSharp() as unknown as ((i: string | Buffer) => {
-    rotate: () => { resize: (w: number, h: number, o: object) => { jpeg: (o: object) => { toBuffer: () => Promise<Buffer> } } };
-  }) | null;
+export async function jpegForAnalysis(
+  input: string | Buffer,
+  maxSide = 1600,
+): Promise<Buffer | null> {
+  const sharp = loadSharp();
   if (!sharp) return null;
   try {
-    return await sharp(input).rotate().resize(maxSide, maxSide, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+    return await sharp(input, { failOn: 'error', limitInputPixels: 40_000_000 })
+      .autoOrient()
+      .resize(maxSide, maxSide, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
   } catch (err) {
     logger.warn(`foto ilegível pra análise: ${(err as Error).message}`);
     return null;
@@ -81,7 +61,7 @@ export function isThumbUrl(url: string | null | undefined): boolean {
 
 /**
  * Gera o thumbnail ao lado da foto e devolve o nome do arquivo gerado, ou null quando não deu
- * (sem sharp, formato não suportado, arquivo corrompido) — nunca lança: o upload não pode quebrar por causa disso.
+ * (sem sharp, formato não suportado, arquivo corrompido) — nunca lança. Usado pelo seed-dev (fotos fakes/).
  */
 export async function makeThumbnail(filePath: string): Promise<string | null> {
   const sharp = loadSharp();
@@ -89,7 +69,7 @@ export async function makeThumbnail(filePath: string): Promise<string | null> {
   const thumbName = thumbNameFor(path.basename(filePath));
   try {
     await sharp(filePath)
-      .rotate()
+      .autoOrient()
       .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'attention' })
       .flatten({ background: '#12122A' }) // PNG/WebP com transparência: fundo escuro do app em vez de preto
       .jpeg({ quality: 82, mozjpeg: true })

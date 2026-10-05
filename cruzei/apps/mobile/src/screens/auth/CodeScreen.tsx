@@ -22,13 +22,22 @@ import { maskPhoneBR } from '@cruzei/shared-utils';
 import { BlobBackground, FadeInView, ScaleOnPress } from '../../components/animated';
 import { OtpInput } from '../../components/ui/OtpInput';
 import { useAuthStore } from '../../stores/auth';
-import { toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { clock, readSmsError, secondsLeft } from './smsError';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Code'>;
 type Route = RouteProp<RootStackParamList, 'Code'>;
 
 const RESEND_SECONDS = 45;
+/** trava padrão se o servidor não disser (5 erros → 15 min) */
+const LOCK_FALLBACK_S = 900;
+const ALREADY_SENT_TEXT = 'Já mandei um código pra esse número agora há pouco. Usa ele, ou pede outro quando o tempo acabar.';
+
+/** primeira espera: a do 429 sms_cooldown (código anterior ainda vale) ou no mínimo os 45 s de sempre */
+function firstWait(p: { resendIn?: number; alreadySent?: boolean }): number {
+  if (p.alreadySent) return Math.max(1, Math.ceil(p.resendIn ?? RESEND_SECONDS));
+  return Math.max(RESEND_SECONDS, Math.ceil(p.resendIn ?? 0));
+}
 const VERIFIED_HOLD_MS = 650;
 const CHECK_SIZE = 96;
 // check desenhado numa caixa 96x96 (dois segmentos: descida curta + subida longa)
@@ -38,6 +47,7 @@ const CHECK_PATH = 'M 28 50 L 43 65 L 70 34';
  * CodeScreen (rota "Code"): confirma o SMS de 6 dígitos.
  * - OtpInput com bounce por dígito, shake em erro, verde quando verificado
  * - timer "Reenviar em 45s" em JetBrains Mono com barra que esvazia (UI thread) e pop a cada segundo
+ * - erros do servidor: tentativas que restam, trava de 15 min com contagem (OTP bloqueado), tetos de reenvio
  * - dica de dev (devCode) que preenche ao tocar
  * - verificação automática ao completar; sucesso desenha um check em Skia (Path trim) por ~600ms
  */
@@ -51,11 +61,16 @@ export function CodeScreen() {
   const [devCode, setDevCode] = useState<string | null>(params.devCode ?? null);
   const [code, setCode] = useState('');
   const [error, setError] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const initialWait = useRef(firstWait(params)).current;
+  const [message, setMessage] = useState<string | null>(params.alreadySent ? ALREADY_SENT_TEXT : null);
+  const [tone, setTone] = useState<'ok' | 'error'>(params.alreadySent ? 'ok' : 'error');
   const [verified, setVerified] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [resending, setResending] = useState(false);
-  const [seconds, setSeconds] = useState(RESEND_SECONDS);
+  const [seconds, setSeconds] = useState(initialWait);
+  // 429 sms_locked: até quando o número fica travado (o servidor apagou o código; depois pede outro)
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   const inFlight = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -70,11 +85,11 @@ export function CodeScreen() {
   const otpFade = useSharedValue(1); // OTP some enquanto o check aparece
 
   // ── countdown ─────────────────────────────────────────────────────────────
-  const startCountdown = useCallback(() => {
+  const startCountdown = useCallback((total: number = RESEND_SECONDS) => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    setSeconds(RESEND_SECONDS);
+    setSeconds(total);
     timerBar.value = 1;
-    timerBar.value = withTiming(0, { duration: RESEND_SECONDS * 1000, easing: Easing.linear });
+    timerBar.value = withTiming(0, { duration: total * 1000, easing: Easing.linear });
     intervalRef.current = setInterval(() => {
       setSeconds((s) => {
         if (s <= 1) {
@@ -87,8 +102,41 @@ export function CodeScreen() {
     }, 1000);
   }, [timerBar]);
 
+  /** libera o reenvio na hora (código venceu ou a trava acabou) */
+  const stopCountdown = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = null;
+    cancelAnimation(timerBar);
+    timerBar.value = 0;
+    setSeconds(0);
+  }, [timerBar]);
+
+  const lockFor = useCallback(
+    (secs: number) => {
+      stopCountdown();
+      setNow(Date.now());
+      setLockedUntil(Date.now() + secs * 1000);
+    },
+    [stopCountdown],
+  );
+
+  // contagem da trava; no fim libera pedir código novo
   useEffect(() => {
-    startCountdown();
+    if (!lockedUntil) return;
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= lockedUntil) {
+        setLockedUntil(null);
+        setTone('ok');
+        setMessage('Pronto, já dá pra pedir um código novo.');
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [lockedUntil]);
+
+  useEffect(() => {
+    startCountdown(initialWait);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (holdRef.current) clearTimeout(holdRef.current);
@@ -100,7 +148,7 @@ export function CodeScreen() {
       cancelAnimation(badge);
       cancelAnimation(otpFade);
     };
-  }, [startCountdown, timerBar, tick, checkProgress, badge, otpFade]);
+  }, [startCountdown, initialWait, timerBar, tick, checkProgress, badge, otpFade]);
 
   useEffect(() => {
     if (seconds <= 0) return;
@@ -129,6 +177,7 @@ export function CodeScreen() {
   }, [otpFade, badge, checkProgress]);
 
   const failWith = useCallback((msg: string) => {
+    setTone('error');
     setMessage(msg);
     setError(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -141,7 +190,7 @@ export function CodeScreen() {
 
   const onComplete = useCallback(
     async (value: string) => {
-      if (inFlight.current || verified) return;
+      if (inFlight.current || verified || lockedUntil) return;
       inFlight.current = true;
       setVerifying(true);
       setMessage(null);
@@ -149,12 +198,14 @@ export function CodeScreen() {
         // deferAuth: o RootNavigator só troca pra Main depois do commitAuth (deixa o check animar)
         const result = await verifyCode(phone, value, { deferAuth: true });
         // sessão aberta só quando não é conta nova nem conta parada ("Essa conta é sua?")
-        pendingCommit.current = !result.isNew && !result.claim;
+        pendingCommit.current = !result.isNew && !result.claim && !result.deletionPending;
         setVerified(true);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         playVerified();
         holdRef.current = setTimeout(() => {
-          if (result.claim) nav.replace('ClaimAccount', { phone, claim: result.claim });
+          // exclusão pedida no prazo: pergunta se quer cancelar (sem sessão até confirmar)
+          if (result.deletionPending) nav.replace('RestoreAccount', { phone, pending: result.deletionPending });
+          else if (result.claim) nav.replace('ClaimAccount', { phone, claim: result.claim });
           else if (result.isNew) nav.replace('Register', { phone, released: result.released });
           else {
             pendingCommit.current = false;
@@ -162,21 +213,23 @@ export function CodeScreen() {
           }
         }, VERIFIED_HOLD_MS);
       } catch (e) {
-        const err = toApiError(e);
-        if (err.status === 401) failWith('Código inválido. Tenta de novo?');
-        else if (err.status === 429) failWith(err.message);
-        else failWith('Não deu pra confirmar agora. Tenta de novo em instantes?');
+        // texto do servidor: code_invalid já diz quantas tentativas restam, sms_locked quanto esperar
+        const err = readSmsError(e, 'verify');
+        failWith(err.message);
+        if (err.code === 'sms_locked') lockFor(err.retryAfter ?? LOCK_FALLBACK_S);
+        // venceu ou já foi usado: libera o reenvio sem esperar o timer
+        else if (err.code === 'code_expired') stopCountdown();
       } finally {
         setVerifying(false);
         inFlight.current = false;
       }
     },
-    [phone, verified, verifyCode, commitAuth, nav, playVerified, failWith],
+    [phone, verified, lockedUntil, verifyCode, commitAuth, nav, playVerified, failWith, lockFor, stopCountdown],
   );
 
   // ── reenviar ──────────────────────────────────────────────────────────────
   const onResend = useCallback(async () => {
-    if (resending || seconds > 0 || verified) return;
+    if (resending || seconds > 0 || verified || lockedUntil) return;
     setResending(true);
     setMessage(null);
     setCode('');
@@ -184,27 +237,40 @@ export function CodeScreen() {
       const res = await requestCode(phone);
       setDevCode(res.devCode ?? null);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      setTone('ok');
       setMessage('Mandei outro. Dá uma olhada aí 👀');
-      startCountdown();
+      startCountdown(Math.max(RESEND_SECONDS, Math.ceil(res.resendIn ?? 0)));
     } catch (e) {
-      const err = toApiError(e);
-      setMessage(err.status === 429 ? err.message : 'Não rolou reenviar agora. Tenta de novo já já?');
+      const err = readSmsError(e, 'request');
+      if (err.code === 'sms_cooldown') {
+        setTone('ok');
+        setMessage('O último código ainda vale. Dá pra pedir outro quando o tempo acabar.');
+        startCountdown(err.retryAfter ?? 30);
+      } else {
+        setTone('error');
+        setMessage(err.message);
+        if (err.code === 'sms_locked') lockFor(err.retryAfter ?? LOCK_FALLBACK_S);
+        // teto por número/conexão ou global: o timer mostra quanto falta
+        else if (err.retryAfter && (err.code === 'sms_rate_limited' || err.code === 'sms_unavailable')) startCountdown(err.retryAfter);
+      }
     } finally {
       setResending(false);
     }
-  }, [resending, seconds, verified, requestCode, phone, startCountdown]);
+  }, [resending, seconds, verified, lockedUntil, requestCode, phone, startCountdown, lockFor]);
 
   const onChangeCode = useCallback(
     (v: string) => {
-      if (verified) return;
+      if (verified || lockedUntil) return;
       if (message && !error) setMessage(null);
       setCode(v);
     },
-    [verified, message, error],
+    [verified, lockedUntil, message, error],
   );
 
-  const canResend = seconds <= 0 && !verified && !resending;
-  const statusIsError = error || (message !== null && !message.startsWith('Mandei'));
+  const lockLeft = secondsLeft(lockedUntil, now);
+  const locked = lockedUntil !== null;
+  const canResend = seconds <= 0 && !verified && !resending && !locked;
+  const statusIsError = error || (message !== null && tone === 'error');
 
   return (
     <View style={styles.root}>
@@ -245,7 +311,10 @@ export function CodeScreen() {
               </FadeInView>
 
               <View style={styles.otpArea}>
-                <Animated.View style={[styles.otpWrap, otpStyle]} pointerEvents={verified ? 'none' : 'auto'}>
+                <Animated.View
+                  style={[styles.otpWrap, otpStyle, locked && styles.otpLocked]}
+                  pointerEvents={verified || locked ? 'none' : 'auto'}
+                >
                   <FadeInView delay={340} fromY={10}>
                     <OtpInput
                       value={code}
@@ -318,7 +387,15 @@ export function CodeScreen() {
             </View>
 
             <FadeInView delay={520} fromY={18} style={styles.footer}>
-              {canResend ? (
+              {locked ? (
+                <View style={styles.timerBox} accessible accessibilityLabel={`Código novo liberado em ${clock(lockLeft)}`}>
+                  <View style={styles.timerRow}>
+                    <Ionicons name="lock-closed" size={16} color={colors.white} style={styles.lockIcon} />
+                    <Text style={styles.timerLabel}>Código novo em</Text>
+                    <Text style={styles.timerValue}>{clock(lockLeft)}</Text>
+                  </View>
+                </View>
+              ) : canResend ? (
                 <ScaleOnPress
                   onPress={onResend}
                   glowColor={colors.primary}
@@ -330,11 +407,11 @@ export function CodeScreen() {
                   <Text style={styles.resendBtnText}>Reenviar código</Text>
                 </ScaleOnPress>
               ) : (
-                <View style={styles.timerBox} accessible accessibilityLabel={resending ? 'Reenviando código' : `Reenviar em ${seconds} segundos`}>
+                <View style={styles.timerBox} accessible accessibilityLabel={resending ? 'Reenviando código' : `Reenviar em ${clock(seconds)}`}>
                   <View style={styles.timerRow}>
                     <Text style={styles.timerLabel}>{resending ? 'Reenviando' : verified ? 'Tudo certo' : 'Reenviar em'}</Text>
                     {!verified && !resending ? (
-                      <Animated.Text style={[styles.timerValue, tickStyle]}>{`${seconds}s`}</Animated.Text>
+                      <Animated.Text style={[styles.timerValue, tickStyle]}>{clock(seconds)}</Animated.Text>
                     ) : null}
                   </View>
                   <View style={styles.timerTrack}>
@@ -379,6 +456,7 @@ const styles = StyleSheet.create({
   subtitle: { ...typography.bodyLarge, color: colors.white, opacity: 0.72, marginTop: spacing.sm },
   otpArea: { marginTop: spacing.xxl, minHeight: 100, justifyContent: 'center' },
   otpWrap: { alignSelf: 'stretch' },
+  otpLocked: { opacity: 0.35 },
   badge: {
     position: 'absolute',
     alignSelf: 'center',
@@ -422,6 +500,7 @@ const styles = StyleSheet.create({
   timerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
   timerLabel: { ...typography.label, color: colors.white, opacity: 0.8 },
   timerValue: { fontFamily: fontFamily.mono, fontSize: 18, color: colors.primary, minWidth: 40 },
+  lockIcon: { opacity: 0.8 },
   timerTrack: {
     position: 'absolute',
     left: 0,

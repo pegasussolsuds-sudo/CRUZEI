@@ -2,6 +2,8 @@
 // Regra de ouro: a máquina só APROVA o que é claramente ok e só RECUSA o que é claramente explícito; o resto
 // (sugestivo, violência, possível menor de idade) fica pendente pra um moderador decidir.
 
+import { isProduction } from '../../config/security';
+
 export interface ModerationLabelIn {
   Name?: string;
   ParentName?: string;
@@ -86,8 +88,10 @@ export function judgePhoto(labels: ModerationLabelIn[], faces: FaceAgeIn[]): Pho
     const names = [l.Name, l.ParentName].filter((n): n is string => Boolean(n));
     if (!names.length || conf < REVIEW_MIN) continue;
     seen.push(`${l.Name} ${Math.round(conf)}%`);
-    if (!reject && conf >= REJECT_MIN && names.some((n) => REJECT.has(n))) reject = l.Name ?? l.ParentName ?? 'conteúdo explícito';
-    else if (!review && names.some((n) => REVIEW.has(n) || REJECT.has(n))) review = l.Name ?? l.ParentName ?? 'conteúdo sensível';
+    if (!reject && conf >= REJECT_MIN && names.some((n) => REJECT.has(n)))
+      reject = l.Name ?? l.ParentName ?? 'conteúdo explícito';
+    else if (!review && names.some((n) => REVIEW.has(n) || REJECT.has(n)))
+      review = l.Name ?? l.ParentName ?? 'conteúdo sensível';
   }
   let minor = false;
   for (const f of faces) {
@@ -97,8 +101,20 @@ export function judgePhoto(labels: ModerationLabelIn[], faces: FaceAgeIn[]): Pho
     seen.push(`idade aparente ${lo}–${hi ?? '?'}`);
     if (lo < MINOR_AGE) minor = true;
   }
-  if (reject) return { decision: 'reject', reason: 'Nudez ou conteúdo explícito', labels: seen, urgent: minor };
-  if (minor) return { decision: 'review', reason: 'Possível menor de idade na foto', labels: seen, urgent: true };
+  if (reject)
+    return {
+      decision: 'reject',
+      reason: 'Nudez ou conteúdo explícito',
+      labels: seen,
+      urgent: minor,
+    };
+  if (minor)
+    return {
+      decision: 'review',
+      reason: 'Possível menor de idade na foto',
+      labels: seen,
+      urgent: true,
+    };
   if (review) return { decision: 'review', reason: review, labels: seen, urgent: false };
   return { decision: 'approve', reason: null, labels: seen, urgent: false };
 }
@@ -112,5 +128,6 @@ export type PhotoModerationMode = 'off' | 'manual' | 'rekognition';
 export function photoModerationMode(env: NodeJS.ProcessEnv = process.env): PhotoModerationMode {
   const v = (env.PHOTO_MODERATION ?? '').trim().toLowerCase();
   if (v === 'off' || v === 'manual' || v === 'rekognition') return v;
-  return env.NODE_ENV === 'production' ? 'rekognition' : 'off';
+  // sem NODE_ENV conta como produção: nunca "off" por esquecimento
+  return isProduction(env) ? 'rekognition' : 'off';
 }

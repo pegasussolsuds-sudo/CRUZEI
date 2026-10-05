@@ -1,11 +1,23 @@
-import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import type { GeoLabelResponse, GeoSearchResponse, GeoSearchResult } from '@cruzei/shared-types';
 import { decodeGeohash, encodeGeohash } from '@cruzei/shared-utils';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+
+import { isProduction } from '../../config/security';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { normalize } from '../places/places.ranking';
-import { expandAbbrev, labelFromAreas, labelFromPhoton, parsePhoton, rankGeoNames, type AreaRow, type GeoNameRow, type PhotonFeature } from './geo.ranking';
+
+import {
+  expandAbbrev,
+  labelFromAreas,
+  labelFromPhoton,
+  parsePhoton,
+  rankGeoNames,
+  type AreaRow,
+  type GeoNameRow,
+  type PhotonFeature,
+} from './geo.ranking';
 
 /** bairro/cidade mudam pouco: 7 dias por célula; ponto fora das áreas importadas, 1 h */
 const LABEL_TTL_SECONDS = 7 * 86_400;
@@ -45,8 +57,10 @@ export class GeoService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    if (process.env.NODE_ENV === 'production' && !this.photonUrl) {
-      this.log.warn('PHOTON_URL vazio em produção: rua e bairro só aparecem no bbox importado (fora dele, "ir até lá" e o cabeçalho ficam só com a cidade do IBGE)');
+    if (isProduction() && !this.photonUrl) {
+      this.log.warn(
+        'PHOTON_URL vazio em produção: rua e bairro só aparecem no bbox importado (fora dele, "ir até lá" e o cabeçalho ficam só com a cidade do IBGE)',
+      );
     }
   }
 
@@ -82,7 +96,11 @@ export class GeoService implements OnModuleInit {
       const ph = await this.photonLabel(c.latitude, c.longitude);
       // bairro do Photon só se for da mesma cidade (o /reverse pega o mais perto, que pode ser do vizinho)
       if (ph && (!out.city || !ph.city || normalize(ph.city) === normalize(out.city))) {
-        out = { city: out.city ?? ph.city, neighborhood: ph.neighborhood, state: out.state ?? ph.state };
+        out = {
+          city: out.city ?? ph.city,
+          neighborhood: ph.neighborhood,
+          state: out.state ?? ph.state,
+        };
       } else if (!ph) {
         ttl = LABEL_EMPTY_TTL_SECONDS; // Photon fora do ar ou sem nada: tenta de novo em 1 h
       }
@@ -121,7 +139,11 @@ export class GeoService implements OnModuleInit {
     if (!results) {
       results = (await this.photon(text, center, limit)) ?? [];
       if (results.length === 0) results = await this.local(text, center, limit);
-      await this.setJson(key, results, results.length > 0 ? SEARCH_TTL_SECONDS : SEARCH_EMPTY_TTL_SECONDS);
+      await this.setJson(
+        key,
+        results,
+        results.length > 0 ? SEARCH_TTL_SECONDS : SEARCH_EMPTY_TTL_SECONDS,
+      );
     }
     return { results, q: text };
   }
@@ -130,7 +152,10 @@ export class GeoService implements OnModuleInit {
   private async local(q: string, center: LatLng | null, limit: number): Promise<GeoSearchResult[]> {
     const terms = [...new Set([normalize(q), expandAbbrev(q)])].filter(Boolean);
     if (terms.length === 0) return [];
-    const match = Prisma.join(terms.map((t) => Prisma.sql`f_norm(${t}) <% name_norm`), ' OR ');
+    const match = Prisma.join(
+      terms.map((t) => Prisma.sql`f_norm(${t}) <% name_norm`),
+      ' OR ',
+    );
     const sim = Prisma.sql`GREATEST(${Prisma.join(terms.map((t) => Prisma.sql`word_similarity(f_norm(${t}), name_norm)`))})`;
     const rows = await this.prisma.$queryRaw<GeoNameRow[]>`
       SELECT id, kind, name, neighborhood, city, state, ST_Y(geog::geometry) AS lat, ST_X(geog::geometry) AS lng,
@@ -143,10 +168,15 @@ export class GeoService implements OnModuleInit {
   }
 
   /** Photon auto-hospedado (PHOTON_URL): null = desligado, falhou ou demorou (a busca local assume) */
-  private async photon(q: string, center: LatLng | null, limit: number): Promise<GeoSearchResult[] | null> {
+  private async photon(
+    q: string,
+    center: LatLng | null,
+    limit: number,
+  ): Promise<GeoSearchResult[] | null> {
     const params = new URLSearchParams({ q, limit: String(limit) });
     params.append('countrycode', 'BR');
-    for (const layer of ['house', 'street', 'locality', 'district', 'city']) params.append('layer', layer);
+    for (const layer of ['house', 'street', 'locality', 'district', 'city'])
+      params.append('layer', layer);
     // viés de proximidade pelo centro do mapa arredondado (~1 km)
     if (center) {
       params.set('lat', center.lat.toFixed(2));
@@ -158,23 +188,34 @@ export class GeoService implements OnModuleInit {
 
   /** bairro/cidade pelo /reverse do Photon (ponto já no centro da célula geohash-6) */
   private async photonLabel(lat: number, lng: number): Promise<GeoLabelResponse | null> {
-    const features = await this.photonGet('reverse', new URLSearchParams({ lat: lat.toFixed(4), lon: lng.toFixed(4), limit: '1' }));
+    const features = await this.photonGet(
+      'reverse',
+      new URLSearchParams({ lat: lat.toFixed(4), lon: lng.toFixed(4), limit: '1' }),
+    );
     return features ? labelFromPhoton(features) : null;
   }
 
-  private async photonGet(path: 'api' | 'reverse', params: URLSearchParams): Promise<PhotonFeature[] | null> {
+  private async photonGet(
+    path: 'api' | 'reverse',
+    params: URLSearchParams,
+  ): Promise<PhotonFeature[] | null> {
     if (!this.photonUrl) return null;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), PHOTON_TIMEOUT_MS);
     try {
-      const res = await fetch(`${this.photonUrl}/${path}?${params.toString()}`, { signal: ctrl.signal, headers: { accept: 'application/json' } });
+      const res = await fetch(`${this.photonUrl}/${path}?${params.toString()}`, {
+        signal: ctrl.signal,
+        headers: { accept: 'application/json' },
+      });
       if (!res.ok) {
         this.log.warn(`Photon respondeu ${res.status}`);
         return null;
       }
       return ((await res.json()) as { features?: PhotonFeature[] }).features ?? [];
     } catch (err) {
-      this.log.warn(`Photon falhou: ${(err as Error).name === 'AbortError' ? 'timeout' : (err as Error).message}`);
+      this.log.warn(
+        `Photon falhou: ${(err as Error).name === 'AbortError' ? 'timeout' : (err as Error).message}`,
+      );
       return null;
     } finally {
       clearTimeout(timer);

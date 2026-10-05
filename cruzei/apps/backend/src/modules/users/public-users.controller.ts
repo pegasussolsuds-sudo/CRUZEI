@@ -5,6 +5,7 @@ import { Throttle } from '@nestjs/throttler';
 import { avatarOrFallback } from '../../common/avatar';
 import { CurrentUser, AuthenticatedUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { photoUrl } from '../../common/photo-url';
 import { effectiveTier } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { LocationService } from '../location/location.service';
@@ -91,12 +92,13 @@ export class PublicUsersController {
       bio: u.bio,
       avatar: avatarOrFallback(u),
       placeName,
-      photos: u.photos.map((p) => ({
-        id: p.id,
-        url: p.url,
-        thumbnailUrl: p.thumbnailUrl,
-        isMain: p.isMain,
-      })),
+      // o banco guarda a chave: a URL pública sai do photoUrl()
+      photos: u.photos.flatMap((p) => {
+        const url = photoUrl(p.url);
+        return url
+          ? [{ id: p.id, url, thumbnailUrl: photoUrl(p.thumbnailUrl), isMain: p.isMain }]
+          : [];
+      }),
       interests: u.userInterests.map((ui) => ui.interest.name),
       // mesmo formato UserSeal do /me (o app lê type/progress/target/isCompleted)
       seals: u.seals.map((s) => ({

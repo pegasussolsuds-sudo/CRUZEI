@@ -3,18 +3,20 @@ import { createHmac } from 'node:crypto';
 import { normalizePhoneBR } from '@cruzei/shared-utils';
 import { Logger } from '@nestjs/common';
 
+import { DEV_PHONE_HASH_SECRET, isProduction } from '../config/security';
+
 // Marca do telefone sem guardar o número: HMAC-SHA256 (hex, 64) do número normalizado com PHONE_HASH_SECRET.
 // Usado no teste grátis do Premium (trial_claims: uma vez por número, sobrevive à exclusão/liberação da conta).
-// Trocar o segredo zera as marcações. Produção exige o segredo (configuration.validateEnv).
+// Trocar o segredo zera as marcações. Produção exige o segredo forte (configuration.validateEnv).
 
-const DEV_SECRET = 'metch-dev-phone-hash-nao-usar-em-producao';
+export const DEV_SECRET = DEV_PHONE_HASH_SECRET;
 let warned = false;
 
-/** segredo do HMAC; fora de produção cai num padrão de dev (com aviso uma vez) */
+/** segredo do HMAC; em dev/test cai num padrão (com aviso uma vez); sem NODE_ENV conta como produção e lança */
 export function phoneHashSecret(env: NodeJS.ProcessEnv = process.env): string {
   const s = env.PHONE_HASH_SECRET?.trim();
   if (s) return s;
-  if (env.NODE_ENV === 'production') throw new Error('PHONE_HASH_SECRET ausente');
+  if (isProduction(env)) throw new Error('PHONE_HASH_SECRET ausente');
   if (!warned) {
     warned = true;
     new Logger('PhoneHash').warn(

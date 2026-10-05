@@ -1,51 +1,26 @@
 #!/usr/bin/env bash
-# Recria DO ZERO o banco de TESTE cruzei_test (no mesmo container do dev) com o init + todas as migrations em ordem.
-# Idempotente: cada execução derruba e recria o banco. Só mexe no cruzei_test — o nome é fixo, nunca vem de fora.
-# (o banco não tem _prisma_migrations: nada de migrate dev / db push / reset; é psql puro, como no dev)
+# Recria DO ZERO o banco de TESTE cruzei_test e aplica todas as migrations pelo executor (src/database/migrate):
+# mesma ordem, mesmo checksum e mesma transação por arquivo do dev/produção. Prova que um banco NOVO sai completo.
+# Idempotente: cada execução derruba e recria o banco. O executor só aceita apagar banco *_test/*_check.
 #
 # Uso (de qualquer pasta):  bash apps/backend/test/db/setup-test-db.sh
 #   ou, em apps/backend:    pnpm test:db:setup
-# Variáveis opcionais:
-#   PG_CONTAINER=cruzei-postgres  PG_USER=cruzei       (padrão: docker exec no container do dev)
-#   PSQL="psql -h localhost -p 5432 -U cruzei"        (CI sem docker: psql direto, senha em PGPASSWORD)
+# URL: DATABASE_URL_TEST (CI) ou a DATABASE_URL do ambiente/.env trocando só o banco por cruzei_test
+# (mesma regra do test/db/env.ts). Não precisa de psql nem de docker exec; nada de senha é impresso.
 set -euo pipefail
 
-TEST_DB=cruzei_test
-PG_CONTAINER="${PG_CONTAINER:-cruzei-postgres}"
-PG_USER="${PG_USER:-cruzei}"
-PSQL="${PSQL:-docker exec -i ${PG_CONTAINER} psql -U ${PG_USER}}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIGRATIONS="$(cd "${SCRIPT_DIR}/../../prisma/migrations" && pwd)"
-INIT_DIR="20240923000000_init"
-
-# psql no banco de teste, SQL pela entrada padrão; para no primeiro erro e cala os NOTICEs de IF NOT EXISTS
-run_sql_file() {
-  echo "  -> $1"
-  ${PSQL} -d "${TEST_DB}" -v ON_ERROR_STOP=1 -q -c "SET client_min_messages = warning" -f - < "$2" > /dev/null
-}
-
-echo "[test-db] recriando ${TEST_DB}"
-${PSQL} -d postgres -v ON_ERROR_STOP=1 -q -c "SET client_min_messages = warning" -c "DROP DATABASE IF EXISTS ${TEST_DB} WITH (FORCE)"
-${PSQL} -d postgres -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE ${TEST_DB}"
-
-echo "[test-db] aplicando migrations"
-# 1) init (tabelas base)  2) manual_extensions (PostGIS, coluna geography de locations, triggers: precisa do init)
-# 3) as demais em ordem de nome (= ordem de data)
-run_sql_file "${INIT_DIR}" "${MIGRATIONS}/${INIT_DIR}/migration.sql"
-run_sql_file "manual_extensions.sql" "${MIGRATIONS}/manual_extensions.sql"
-for dir in $(cd "${MIGRATIONS}" && ls -d */ | sed 's#/$##' | sort); do
-  [ "${dir}" = "${INIT_DIR}" ] && continue
-  [ -f "${MIGRATIONS}/${dir}/migration.sql" ] || continue
-  run_sql_file "${dir}" "${MIGRATIONS}/${dir}/migration.sql"
+BACKEND_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# node-linker=hoisted: o ts-node mora no node_modules da raiz do monorepo (ou no PATH, quando vem pelo pnpm)
+TS_NODE=""
+for candidate in "${BACKEND_DIR}/node_modules/.bin/ts-node" "${BACKEND_DIR}/../../node_modules/.bin/ts-node"; do
+  if [ -f "${candidate}" ]; then TS_NODE="${candidate}"; break; fi
 done
+[ -n "${TS_NODE}" ] || TS_NODE="$(command -v ts-node || true)"
+if [ -z "${TS_NODE}" ]; then
+  echo "[test-db] ts-node não encontrado (rode pnpm install)" >&2
+  exit 1
+fi
 
-echo "[test-db] conferindo"
-${PSQL} -d "${TEST_DB}" -v ON_ERROR_STOP=1 -At -c "
-  SELECT 'banco=' || current_database()
-      || ' conversations=' || (to_regclass('public.conversations') IS NOT NULL)
-      || ' conversation_members=' || (to_regclass('public.conversation_members') IS NOT NULL)
-      || ' messages.conversation_id=' || (SELECT is_nullable FROM information_schema.columns
-                                           WHERE table_name = 'messages' AND column_name = 'conversation_id')
-      || ' postgis=' || (SELECT count(*) FROM pg_extension WHERE extname = 'postgis');"
-echo "[test-db] pronto: ${TEST_DB}"
+cd "${BACKEND_DIR}"
+exec "${TS_NODE}" --transpile-only src/database/migrate/cli.ts test-db

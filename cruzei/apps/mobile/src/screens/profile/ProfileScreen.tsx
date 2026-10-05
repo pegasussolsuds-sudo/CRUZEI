@@ -479,15 +479,23 @@ export function ProfileScreen() {
           />
           <Link
             icon="download-outline"
-            label="Baixar meus dados (LGPD)"
-            onPress={() => Alert.alert('Baixar meus dados', `Manda um "meus dados" pro ${BRAND.supportEmail} — o export automático chega no beta.`)}
+            label="Baixar meus dados"
+            hint="uma cópia de tudo, em arquivo (LGPD)"
+            onPress={() => nav.navigate('DataExport')}
+          />
+          <Link
+            icon="location-outline"
+            label="Apagar histórico de localização"
+            hint="posições guardadas e a casa aprendida"
+            onPress={() => nav.navigate('LocationHistory')}
           />
           <Link
             icon="trash-outline"
             label="Excluir conta"
+            hint="30 dias pra voltar atrás"
             danger
             last
-            onPress={() => Alert.alert('Excluir conta', `Manda um "excluir" pro ${BRAND.supportEmail} — a exclusão automática chega no beta.`)}
+            onPress={() => nav.navigate('DeleteAccount')}
           />
         </Section>
 
@@ -749,12 +757,29 @@ function Link({
       <View style={[styles.rowIcon, danger && styles.rowIconDanger]}>
         <Ionicons name={icon as never} size={20} color={danger ? colors.danger : colors.black} />
       </View>
-      <Text style={[styles.linkText, danger && { color: colors.danger }]}>{label}</Text>
-      {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
+      {/* dica longa vai embaixo do título: do lado, ela espremia o título até sumir (360 dp do S23) */}
+      {hint && hint.length > LINK_HINT_INLINE_MAX ? (
+        <View style={styles.linkStack}>
+          <Text style={[styles.linkLabel, danger && { color: colors.danger }]}>{label}</Text>
+          <Text style={styles.rowHint}>{hint}</Text>
+        </View>
+      ) : (
+        <>
+          <Text style={[styles.linkText, danger && { color: colors.danger }]}>{label}</Text>
+          {hint ? (
+            <Text style={[styles.rowHint, styles.linkHintInline]} numberOfLines={1}>
+              {hint}
+            </Text>
+          ) : null}
+        </>
+      )}
       <Ionicons name="chevron-forward" size={20} color={colors.gray[400]} />
     </ScaleOnPress>
   );
 }
+
+/** dica de até isso cabe do lado do título ("em breve", "suporte e termos"); mais longa vai embaixo */
+const LINK_HINT_INLINE_MAX = 18;
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background },
@@ -897,5 +922,8 @@ const styles = StyleSheet.create({
   rowHint: { ...typography.bodySmall, color: colors.gray[500] },
   link: { flexDirection: 'row', alignItems: 'center', padding: spacing.md, minHeight: 56, borderBottomWidth: 1, borderBottomColor: colors.gray[100], gap: spacing.md, backgroundColor: colors.white },
   linkText: { ...typography.body, color: colors.black, flex: 1 },
+  linkStack: { flex: 1, minWidth: 0, gap: 2 },
+  linkLabel: { ...typography.body, color: colors.black },
+  linkHintInline: { flexShrink: 1, maxWidth: '45%', textAlign: 'right' },
   version: { ...typography.bodySmall, color: colors.gray[400], textAlign: 'center', marginTop: spacing.lg },
 });

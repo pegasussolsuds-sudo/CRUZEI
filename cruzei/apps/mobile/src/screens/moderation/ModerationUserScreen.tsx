@@ -32,6 +32,7 @@ const ACTION_LABEL: Record<string, string> = {
   photo_approve: 'foto aprovada',
   photo_reject: 'foto recusada',
   photo_review: 'foto pra revisão',
+  photo_retain: 'foto retida por denúncia (a pessoa apagou)',
 };
 const actionLabel = (a: string) => {
   if (ACTION_LABEL[a]) return ACTION_LABEL[a];
@@ -135,8 +136,15 @@ export function ModerationUserScreen({ route, navigation }: Props) {
           {d.photos.map((p) => (
             <View key={p.id}>
               <Image source={{ uri: p.url }} style={styles.photo} />
-              <Text style={[styles.badge, p.status === 'rejected' && { color: colors.danger }]}>
-                {p.status === 'approved' ? 'aprovada' : p.status === 'pending' ? 'em análise' : 'recusada'}
+              {/* retida: a pessoa apagou com denúncia de menor/abuso aberta; fica só aqui até a denúncia fechar */}
+              <Text style={[styles.badge, (p.retained || p.status === 'rejected') && { color: colors.danger }]}>
+                {p.retained
+                  ? 'retida por denúncia'
+                  : p.status === 'approved'
+                    ? 'aprovada'
+                    : p.status === 'pending'
+                      ? 'em análise'
+                      : 'recusada'}
                 {p.isMain ? ' · principal' : ''}
               </Text>
             </View>

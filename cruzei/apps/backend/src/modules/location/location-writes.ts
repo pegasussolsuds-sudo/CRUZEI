@@ -6,8 +6,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
+
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+
+/** "apagar histórico de localização": ms do corte (linha da fila com t <= isto é descartada); TTL curto */
+export const locationForgetKey = (id: string) => `loc:forget:${id}`;
 
 /** hash userId → ms da última atividade (a escrita mais nova sobrescreve) */
 export const LAST_ACTIVE_PENDING = 'la:pending';
@@ -45,7 +49,8 @@ export function accuracyForDb(v: number | null | undefined): number | null {
 
 // pega e apaga numa operação só (quem chegar no meio vai pra próxima rodada, nada se perde nem duplica)
 const TAKE_HASH = "local v = redis.call('HGETALL', KEYS[1]); redis.call('DEL', KEYS[1]); return v";
-const TAKE_LIST = "local v = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1); redis.call('LTRIM', KEYS[1], tonumber(ARGV[1]), -1); return v";
+const TAKE_LIST =
+  "local v = redis.call('LRANGE', KEYS[1], 0, tonumber(ARGV[1]) - 1); redis.call('LTRIM', KEYS[1], tonumber(ARGV[1]), -1); return v";
 
 @Injectable()
 export class LocationWritesFlusher {
@@ -85,7 +90,8 @@ export class LocationWritesFlusher {
       await this.prisma.$executeRaw`
         UPDATE users u SET last_active_at = (to_timestamp(v.ts) AT TIME ZONE 'UTC')
           FROM unnest(${ids.slice(i, i + BATCH)}::uuid[], ${secs.slice(i, i + BATCH)}::float8[]) AS v(id, ts)
-         WHERE u.id = v.id AND u.last_active_at < (to_timestamp(v.ts) AT TIME ZONE 'UTC')`;
+         WHERE u.id = v.id AND u.last_active_at < (to_timestamp(v.ts) AT TIME ZONE 'UTC')
+           AND u.deleted_at IS NULL`;
     }
     return ids.length;
   }
@@ -103,15 +109,29 @@ export class LocationWritesFlusher {
           /* linha corrompida: descarta */
         }
       }
-      // conta excluída / lugar retirado no meio do caminho: a linha sai (senão a chave estrangeira derruba o lote todo)
-      const [users, pois] = await Promise.all([
-        this.prisma.$queryRaw<{ id: string }[]>`SELECT id::text AS id FROM users WHERE id = ANY(${[...new Set(rows.map((r) => r.u))]}::uuid[])`,
-        this.prisma.$queryRaw<{ id: bigint }[]>`SELECT id FROM pois WHERE id = ANY(${[...new Set(rows.filter((r) => r.p != null).map((r) => BigInt(r.p as number)))]}::bigint[])`,
+      // conta excluída / lugar retirado no meio do caminho: a linha sai (senão a chave estrangeira derruba o lote todo).
+      // Exclusão pedida (deleted_at) também sai, e "apagar histórico" (loc:forget) descarta o que já estava na fila
+      const userIds = [...new Set(rows.map((r) => r.u))];
+      const [users, pois, forgets] = await Promise.all([
+        this.prisma.$queryRaw<
+          { id: string }[]
+        >`SELECT id::text AS id FROM users WHERE id = ANY(${userIds}::uuid[]) AND deleted_at IS NULL`,
+        this.prisma.$queryRaw<
+          { id: bigint }[]
+        >`SELECT id FROM pois WHERE id = ANY(${[...new Set(rows.filter((r) => r.p != null).map((r) => BigInt(r.p as number)))]}::bigint[])`,
+        userIds.length
+          ? this.redis.client.mget(userIds.map(locationForgetKey))
+          : Promise.resolve([]),
       ]);
       const okUsers = new Set(users.map((u) => u.id));
       const okPois = new Set(pois.map((p) => Number(p.id)));
+      const forgetAt = new Map<string, number>();
+      userIds.forEach((id, i) => {
+        const v = Number(forgets[i]);
+        if (forgets[i] != null && Number.isFinite(v)) forgetAt.set(id, v);
+      });
       const data: Prisma.LocationCreateManyInput[] = rows
-        .filter((r) => okUsers.has(r.u))
+        .filter((r) => okUsers.has(r.u) && !(r.t <= (forgetAt.get(r.u) ?? -Infinity)))
         .map((r) => ({
           userId: r.u,
           latitude: r.la,

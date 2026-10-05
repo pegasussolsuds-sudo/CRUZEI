@@ -1,6 +1,9 @@
-import type { LogLevel } from '@nestjs/common';
 import cluster from 'node:cluster';
 import * as os from 'node:os';
+
+import type { LogLevel } from '@nestjs/common';
+
+import { appEnv, isProduction } from './security';
 
 /**
  * Parâmetros de execução lidos direto do process.env (antes do Nest existir): cluster, crons e logs.
@@ -11,7 +14,9 @@ const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'sim']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off', 'nao', 'não']);
 
 function cpuCount(): number {
-  return typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  return typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
 }
 
 /**
@@ -57,7 +62,11 @@ export function isCronWorker(env: NodeJS.ProcessEnv = process.env): boolean {
 
 // do mais verboso pro mais grave (mesma ordem de severidade do Nest)
 const LOG_LEVEL_ORDER: LogLevel[] = ['verbose', 'debug', 'log', 'warn', 'error', 'fatal'];
-const LOG_LEVEL_ALIASES: Record<string, LogLevel> = { info: 'log', warning: 'warn', trace: 'verbose' };
+const LOG_LEVEL_ALIASES: Record<string, LogLevel> = {
+  info: 'log',
+  warning: 'warn',
+  trace: 'verbose',
+};
 
 function toLogLevel(raw: string): LogLevel | null {
   const v = raw.trim().toLowerCase();
@@ -75,10 +84,15 @@ function toLogLevel(raw: string): LogLevel | null {
  */
 export function resolveLogLevels(env: NodeJS.ProcessEnv = process.env): LogLevel[] | undefined {
   const raw = (env.LOG_LEVEL ?? '').trim().toLowerCase();
-  if (!raw) return env.NODE_ENV === 'production' ? LOG_LEVEL_ORDER.slice(LOG_LEVEL_ORDER.indexOf('log')) : undefined;
+  // ambiente ausente/desconhecido conta como produção (logs enxutos)
+  if (!raw)
+    return isProduction(env) ? LOG_LEVEL_ORDER.slice(LOG_LEVEL_ORDER.indexOf('log')) : undefined;
   if (raw === 'off' || raw === 'silent' || raw === 'none') return [];
   if (raw.includes(',')) {
-    const list = raw.split(',').map(toLogLevel).filter((l): l is LogLevel => l !== null);
+    const list = raw
+      .split(',')
+      .map(toLogLevel)
+      .filter((l): l is LogLevel => l !== null);
     if (!list.includes('fatal') && list.includes('error')) list.push('fatal');
     return list.length ? list : undefined;
   }
@@ -97,7 +111,7 @@ export type RequestLogMode = 'all' | 'slow' | 'off';
 export function resolveRequestLogMode(env: NodeJS.ProcessEnv = process.env): RequestLogMode {
   const raw = (env.LOG_REQUESTS ?? '').trim().toLowerCase();
   if (raw === 'all' || raw === 'slow' || raw === 'off') return raw;
-  return (env.NODE_ENV ?? 'development') === 'development' ? 'all' : 'slow';
+  return appEnv(env) === 'development' ? 'all' : 'slow';
 }
 
 export function resolveSlowRequestMs(env: NodeJS.ProcessEnv = process.env): number {

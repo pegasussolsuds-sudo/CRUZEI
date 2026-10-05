@@ -51,7 +51,8 @@ export function LoginPage() {
     } catch (err) {
       setError(errorMessage(err));
       if (isHttpError(err, 429)) {
-        const secs = Number(/(\d+)\s*s/.exec(errorMessage(err))?.[1] ?? RESEND_SECONDS);
+        // retryAfter do corpo (espera, teto, trava); servidor antigo: "Aguarde Ns" no texto
+        const secs = err.retryAfter ?? Number(/(\d+)\s*s/.exec(errorMessage(err))?.[1] ?? RESEND_SECONDS);
         setCooldown(Number.isFinite(secs) ? secs : RESEND_SECONDS);
       }
     } finally {

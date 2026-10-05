@@ -1,8 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import type { Request } from 'express';
 
+import { photoBaseHost } from './photo-url';
+
 /**
  * Hosts que podem servir fotos: o próprio backend (host da requisição) + PHOTO_ALLOWED_HOSTS (R2/CDN em prod).
+ * Hoje só a mídia do chat passa por aqui: foto de perfil é anexada pela CHAVE do upload (POST /me/photos).
  * Toda URL de imagem que outra pessoa vai baixar (bolha do mapa, cartão, mídia do chat) passa por aqui: URL de fora
  * vira pixel de rastreio / oráculo de quem está perto.
  */
@@ -13,8 +16,15 @@ export function assertPhotoHost(url: string, req: Request): void {
   } catch {
     throw new BadRequestException('URL de foto inválida');
   }
+  // + host de STORAGE_PUBLIC_BASE_URL (bucket/CDN das fotos): a mídia do chat ainda chega como URL
   const allowed = new Set(
-    [req.get('host') ?? '', ...(process.env.PHOTO_ALLOWED_HOSTS ?? '').split(',')].map((h) => h.trim().toLowerCase()).filter(Boolean),
+    [
+      req.get('host') ?? '',
+      photoBaseHost() ?? '',
+      ...(process.env.PHOTO_ALLOWED_HOSTS ?? '').split(','),
+    ]
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
   );
   // dev: o app fala com o backend por 127.0.0.1/localhost/IP da LAN (túnel USB ou Wi-Fi) — mesma porta, hosts equivalentes
   const port = (req.get('host') ?? '').split(':')[1];

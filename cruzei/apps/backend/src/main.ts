@@ -4,19 +4,20 @@ import './config/load-env';
 import './instrument';
 import 'reflect-metadata';
 import cluster from 'node:cluster';
-import * as fs from 'node:fs';
 
 import { ValidationPipe, Logger, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import * as Sentry from '@sentry/nestjs';
-import * as express from 'express';
 
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { configureHttpSecurity } from './config/http-security';
 import { clusterWorkerCount, clusterWorkerIndex, resolveLogLevels } from './config/runtime';
+import { devShortcutsEnabled } from './config/security';
+import { mountUploads } from './modules/uploads/serve-uploads';
 import { UPLOAD_DIR } from './modules/uploads/uploads.constants';
 
 async function bootstrap() {
@@ -51,39 +52,25 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new LoggingInterceptor());
 
-  app.enableCors({
-    origin: (config.get<string>('corsOrigins') ?? '').split(','),
-    credentials: true,
-  });
+  // cabeçalhos de segurança, sem X-Powered-By, corpo de 100 KB, CORS por lista (HTTP e socket) — antes de /uploads
+  const sec = configureHttpSecurity(app, process.env, config.get<string>('apiPrefix') ?? 'v1');
+  if (worker <= 1) {
+    const dev = devShortcutsEnabled() ? '; atalhos de dev LIGADOS' : '';
+    logger.log(
+      `ambiente ${sec.env}; ${sec.origins.length} origem(ns) de navegador liberada(s)${dev}`,
+    );
+  }
 
-  // Fotos de dev — servidas direto do disco (prod: R2/CDN)
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  // CORS aberto nas fotos: o mapa (WebView) desenha avatares em canvas e precisa de imagens não-tainted
-  app.use(
-    '/uploads',
-    express.static(UPLOAD_DIR, {
-      maxAge: '7d',
-      immutable: true,
-      setHeaders: (res) => {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      },
-    }),
-  );
-  // foto que não existe mais: 404 limpo (com CORS) em vez de erro de CORS no console do WebView — só GET/HEAD,
-  // o resto segue pro router (POST /v1/uploads/photo não passa por aqui, mas não custa não engolir OPTIONS)
-  app.use('/uploads', (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.status(404).end();
-  });
+  // fotos do driver local em /uploads (só imagem, nosniff, CSP sandbox, CORS aberto pro canvas do mapa); com
+  // STORAGE_DRIVER=s3 as fotos saem do domínio do bucket e nada é montado aqui
+  const servesUploads = mountUploads(app);
 
   app.enableShutdownHooks();
 
   const port = config.get<number>('port') ?? 3000;
   await app.listen(port, '0.0.0.0');
   logger.log(`🚀 Metch API rodando em http://localhost:${port}/${config.get('apiPrefix')}`);
-  if (!worker) logger.log(`🖼️  Uploads em ${UPLOAD_DIR}`);
+  if (!worker && servesUploads) logger.log(`🖼️  Uploads em ${UPLOAD_DIR}`);
 }
 
 /**

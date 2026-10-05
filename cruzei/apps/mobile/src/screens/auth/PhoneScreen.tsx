@@ -27,11 +27,11 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
 import { colors, duration, fontFamily, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
-import { formatPhoneBR, isValidPhoneBR, normalizePhoneBR } from '@cruzei/shared-utils';
+import { formatPhoneBR, isValidPhoneBR, normalizePhoneBR, phoneKindBR } from '@cruzei/shared-utils';
 import { BlobBackground, FadeInView, ScaleOnPress, SlideInView } from '../../components/animated';
 import { useAuthStore } from '../../stores/auth';
-import { toApiError } from '../../services/api';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
+import { clock, PHONE_INVALID_TEXT, PHONE_NOT_MOBILE_TEXT, readSmsError, secondsLeft } from './smsError';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Login'>;
 
@@ -40,6 +40,8 @@ const FIELD_BG = 'rgba(250,250,250,0.06)';
 // "(11) 99999-9999" em JetBrains Mono: cada caractere avança 0,6em (+0,5 de letterSpacing).
 // A fonte encolhe até caber na largura do campo (em 360dp de tela, 22 corta o DDD).
 const PHONE_CHARS = 15;
+/** espera do servidor (teto de envios, trava, teto global): phone null = vale pra qualquer número (conexão/global) */
+type Wait = { phone: string | null; until: number; message: string };
 const INPUT_FS_MAX = 22;
 const INPUT_FS_MIN = 15;
 function inputFontSize(width: number): number {
@@ -64,8 +66,25 @@ export function PhoneScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputFs, setInputFs] = useState(INPUT_FS_MAX);
+  const [wait, setWait] = useState<Wait | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   const valid = isValidPhoneBR(phone);
+
+  // contagem da espera; no fim libera o botão e tira o aviso
+  useEffect(() => {
+    if (!wait) return;
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= wait.until) {
+        setWait(null);
+        setError((cur) => (cur === wait.message ? null : cur));
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [wait]);
+  const waitLeft = wait && error === wait.message ? secondsLeft(wait.until, now) : 0;
 
   // ── shared values (UI thread) ─────────────────────────────────────────────
   const focus = useSharedValue(0); // 0 = blur, 1 = foco
@@ -145,19 +164,45 @@ export function PhoneScreen() {
       inputRef.current?.focus();
       return;
     }
+    // mesma regra do servidor (phoneKindBR): fixo e DDD inexistente nem gastam pedido
+    const kind = phoneKindBR(phone);
+    if (kind !== 'mobile') {
+      shakeField();
+      setError(kind === 'landline' ? PHONE_NOT_MOBILE_TEXT : PHONE_INVALID_TEXT);
+      inputRef.current?.focus();
+      return;
+    }
+    // ainda na espera que o servidor mandou: nem chama de novo (gastaria o limite por IP da rota)
+    if (wait && (wait.phone === null || wait.phone === normalized) && secondsLeft(wait.until) > 0) {
+      shakeField();
+      setNow(Date.now());
+      setError(wait.message);
+      return;
+    }
     setLoading(true);
     try {
       const res = await requestCode(normalized);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      nav.navigate('Code', { phone: normalized, devCode: res.devCode ?? null, expiresIn: res.expiresIn });
+      nav.navigate('Code', { phone: normalized, devCode: res.devCode ?? null, expiresIn: res.expiresIn, resendIn: res.resendIn });
     } catch (e) {
-      const err = toApiError(e);
+      const err = readSmsError(e, 'request');
+      if (err.code === 'sms_cooldown') {
+        // pediu há poucos segundos (voltou e tocou de novo): o código anterior ainda vale, segue pra tela dele
+        nav.navigate('Code', { phone: normalized, devCode: null, resendIn: err.retryAfter ?? 30, alreadySent: true });
+        return;
+      }
       shakeField();
-      setError(err.status === 429 ? err.message : 'Deu ruim pra enviar o código. Tenta de novo?');
+      setError(err.message);
+      if (err.retryAfter && ['sms_rate_limited', 'sms_locked', 'sms_unavailable'].includes(err.code)) {
+        // teto por número e trava valem só pra este número; por conexão e global, pra qualquer um
+        const perPhone = err.code === 'sms_locked' || (err.code === 'sms_rate_limited' && err.scope !== 'ip');
+        setNow(Date.now());
+        setWait({ phone: perPhone ? normalized : null, until: Date.now() + err.retryAfter * 1000, message: err.message });
+      }
     } finally {
       setLoading(false);
     }
-  }, [loading, phone, requestCode, nav, shakeField]);
+  }, [loading, phone, wait, requestCode, nav, shakeField]);
 
   return (
     <View style={styles.root}>
@@ -242,9 +287,12 @@ export function PhoneScreen() {
                 {error ? (
                   <FadeInView key={error} fromY={-4} durationMs={duration.fast} style={styles.errorRow}>
                     <Ionicons name="alert-circle" size={16} color={colors.danger} />
-                    <Text style={styles.errorText} accessibilityLiveRegion="polite">
-                      {error}
-                    </Text>
+                    <View style={styles.errorBody}>
+                      <Text style={styles.errorText} accessibilityLiveRegion="polite">
+                        {error}
+                      </Text>
+                      {waitLeft > 0 ? <Text style={styles.waitText}>{`Libera em ${clock(waitLeft)}`}</Text> : null}
+                    </View>
                   </FadeInView>
                 ) : (
                   <FadeInView key="hint" fromY={-4} durationMs={duration.fast}>
@@ -343,7 +391,9 @@ const styles = StyleSheet.create({
   check: { marginLeft: spacing.xs },
   feedback: { minHeight: 44, marginTop: spacing.md },
   errorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs },
-  errorText: { ...typography.body, color: colors.danger, flex: 1 },
+  errorBody: { flex: 1, gap: 2 },
+  errorText: { ...typography.body, color: colors.danger },
+  waitText: { fontFamily: fontFamily.mono, fontSize: 13, color: colors.gray[400] },
   hint: { ...typography.bodySmall, color: colors.gray[400] },
   footer: { paddingHorizontal: spacing.xl, paddingBottom: spacing.lg, gap: spacing.md },
   cta: {

@@ -21,6 +21,7 @@ import type { Redis } from 'ioredis';
 import * as ngeohash from 'ngeohash';
 
 import { avatarOrFallback } from '../../common/avatar';
+import { photoUrl } from '../../common/photo-url';
 import { effectiveTier } from '../../common/premium';
 import { PrismaService } from '../../database/prisma.service';
 import { ChatGateway } from '../../realtime/chat.gateway';
@@ -1155,8 +1156,9 @@ export class LocationService implements OnModuleInit, OnModuleDestroy {
       id: u.id,
       name: u.name,
       age: u.showAge ? this.age(u.birthDate) : null,
-      mainPhotoUrl: u.photos[0]?.url ?? null,
-      mapPhotoUrl: u.showPhotoOnMap ? mapThumb(u.photos[0]) : null,
+      // chave no banco → URL pública (o mapThumb compara as chaves antes)
+      mainPhotoUrl: photoUrl(u.photos[0]?.url),
+      mapPhotoUrl: u.showPhotoOnMap ? photoUrl(mapThumb(u.photos[0])) : null,
       isNew: u.createdAt.getTime() > newSince,
       isAnonymous: false,
       premiumTier: u.premiumTier,

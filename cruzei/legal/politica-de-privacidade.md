@@ -16,7 +16,7 @@ Esta Política explica quais dados pessoais o Metch trata, para quê, com quem c
 - Se você informar seu @ do Instagram, ele fica visível para todo mundo que abrir seu perfil.
 - Mandamos notificações push de mensagens, curtidas, matches e avisos da conta. Você escolhe quais recebe.
 - Se o seu número de celular for reaproveitado por outra pessoa depois de 90 dias sem uso da conta, ela precisa confirmar a sua data de nascimento para entrar; se não confirmar, o número é desvinculado e sua conta fica pausada, sem ser apagada.
-- Você pode pedir cópia ou exclusão dos seus dados pelo {{EMAIL_PRIVACIDADE}}. Respondemos em até 15 dias.
+- No próprio app (Perfil) você baixa uma cópia dos seus dados, apaga seu histórico de localização e exclui a conta. A exclusão tem 30 dias para você voltar atrás; depois disso, a limpeza é definitiva (seção 7.1). Também dá para pedir pelo {{EMAIL_PRIVACIDADE}}, e respondemos em até 15 dias.
 
 ## 1. Quem trata seus dados
 
@@ -119,7 +119,7 @@ Explicamos na seção 4.
 
 ### 2.10 Registros de acesso e dados técnicos
 
-- **Registros de acesso:** a cada login, cadastro e renovação de sessão, guardamos data, hora, endereço IP, porta de origem e a identificação técnica do app e do aparelho (user agent).
+- **Registros de acesso:** a cada login, cadastro e renovação de sessão, e também quando você pede a exclusão da conta, cancela esse pedido ou baixa a cópia dos seus dados, guardamos data, hora, endereço IP, porta de origem e a identificação técnica do app e do aparelho (user agent).
 - **Base legal:** cumprimento de obrigação legal (art. 7º, II), porque o Marco Civil da Internet (art. 15) exige guardar esses registros por 6 meses.
 - **Segurança da conta:** o código do SMS é guardado só de forma cifrada (hash). Guardamos também contadores de uso temporários para limitar abusos. Base legal: legítimo interesse (art. 7º, IX).
 - **Diagnóstico de falhas:** quando o app ou o servidor dá erro ou fecha sozinho, um relatório técnico vai para o Sentry, serviço da Functional Software, Inc., com servidores fora do Brasil. O app também avisa se cada uso terminou normalmente ou com falha, para medirmos a estabilidade. O relatório traz só dados técnicos do aparelho, do app e do erro, com o identificador interno da sua conta, que é um código aleatório. Não inclui localização, telefone, nome, fotos nem conteúdo de conversas, e o endereço IP não é guardado. Serve só para encontrar e corrigir falhas. Base legal: legítimo interesse (art. 7º, IX).
@@ -208,6 +208,8 @@ As operadoras reaproveitam números de celular que ficam sem uso. Para proteger 
 4. **Residência aprendida.** Entre meia-noite e 6h (horário de Brasília), guardamos só a área de cerca de 150 metros em que você está e a data. Se a mesma área aparecer em 3 noites diferentes, ela e as áreas vizinhas passam a esconder você, como uma área privada. Esses registros duram 45 dias a partir da última noite registrada. Também contamos, sem identificar ninguém, quantas residências existem em cada área, para que ruas residenciais não virem "lugares" no mapa.
 5. **Sinal de multidão.** Explicamos na seção 3.4.
 6. **Referência contra localização falsa.** A última posição aceita, arredondada para cerca de 110 metros, com a hora e a precisão, para comparar com a próxima. Dura até 12 horas. Explicamos na seção 3.6.
+
+**Apagar histórico de localização.** Em Perfil → Apagar histórico de localização, você apaga na hora o histórico arredondado (inclusive o que ainda estava para ser gravado), os registros de presença em lugares, as confirmações "estou aqui", a posição atual no mapa (ela volta na próxima atualização do app), a referência contra localização falsa e, se escolher, a residência aprendida (o app volta a aprender do zero). O sinal de multidão não sai porque não identifica ninguém (seção 3.4). Se houver um alerta de localização falsa ativo na conta, a referência fica até ele passar. Dá para usar até 3 vezes por dia.
 
 ### 3.3 Quem vê o quê
 
@@ -302,7 +304,8 @@ Aplicativos de GPS falso permitem fingir estar perto de alguém ou tentar descob
 - Foto recusada não aparece para ninguém, e o app mostra a você o motivo.
 - **O que guardamos:** a foto, a situação (aprovada, recusada ou em análise), os rótulos da análise (como o tipo de conteúdo detectado, o grau de confiança e a faixa de idade estimada), o motivo da recusa e quem revisou, e quando.
 - A estimativa de idade não serve para identificar você e não criamos modelos do seu rosto para reconhecimento facial.
-- Só aceitamos fotos hospedadas pelo próprio Metch. Links externos não são aceitos, para impedir que alguém use uma foto para rastrear quem a visualiza.
+- **Metadados apagados:** ao receber uma foto, o servidor cria uma cópia nova. Ele gira a imagem para a posição certa, reduz o tamanho e apaga todos os dados escondidos no arquivo, como a localização do GPS, o modelo do celular e a data e a hora em que a foto foi tirada. Só essa cópia é guardada e aparece no app. O arquivo original que saiu do seu celular não é guardado. Fotos enviadas antes dessa mudança passaram pelo mesmo processo: a cópia nova substituiu a antiga, e o arquivo antigo sai dos nossos servidores em até 1 dia, salvo nas exceções de proteção a crianças e adolescentes da seção 7.
+- Só aceitamos fotos enviadas pelo próprio app. Links externos não são aceitos, para impedir que alguém use uma foto para rastrear quem a visualiza.
 - **Base legal:** legítimo interesse na segurança e no cumprimento dos Termos (art. 7º, IX). Para a estimativa de idade aparente, que analisa características do rosto, a base é a prevenção à fraude e a segurança do titular nos processos de cadastro (art. 11, II, "g"), com o objetivo de impedir o uso do app por menores de 18 anos.
 - **Revisão de decisão automática:** se uma foto sua for recusada automaticamente, você pode pedir revisão por uma pessoa (art. 20 da LGPD) pelo {{EMAIL_SUPORTE}} ou pelo {{EMAIL_PRIVACIDADE}}.
 
@@ -326,13 +329,13 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 
 ## 6. Transferência internacional
 
-- Alguns fornecedores tratam dados fora do Brasil: o OpenFreeMap, a partir da Hungria (União Europeia), com entrega pela rede global da Cloudflare; a Amazon Web Services, nos Estados Unidos; o Sentry, que recebe os relatórios de falha; e o Google (Firebase Cloud Messaging) e a Apple, que entregam as notificações push. Provedores de nuvem também podem armazenar dados em outros países.
+- Alguns fornecedores tratam dados fora do Brasil: o OpenFreeMap, a partir da Hungria (União Europeia), com entrega pela rede global da Cloudflare; a Amazon Web Services, nos Estados Unidos; o Sentry, que recebe os relatórios de falha; o provedor de envio de SMS, quando for de fora do Brasil (a Twilio, por exemplo, fica nos Estados Unidos); e o Google (Firebase Cloud Messaging) e a Apple, que entregam as notificações push. Provedores de nuvem também podem armazenar dados em outros países.
 - Fazemos essas transferências nas hipóteses do art. 33 da LGPD, como a execução do contrato com você (art. 33, IX) e cláusulas contratuais com os fornecedores, incluindo as cláusulas-padrão aprovadas pela ANPD quando aplicáveis.
 
 ## 7. Por quanto tempo guardamos
 
 - **Conta e perfil** (telefone, nome, data de nascimento, gênero, "Mostrar", intenção, orientação sexual e a data do consentimento se informada, @ do Instagram se informado, bio, interesses, avatar, configurações e aceite dos Termos): enquanto a conta existir. A orientação e o @ também podem ser apagados por você a qualquer momento no app.
-- **Fotos:** até você apagar a foto ou a conta. Os rótulos da análise automática ficam junto com a foto.
+- **Fotos:** até você apagar a foto ou a conta. Os rótulos da análise automática ficam junto com a foto. Quando a foto é apagada, o arquivo sai dos nossos servidores em seguida, em geral em minutos. Cópias guardadas no cache do seu aparelho ou da rede de entrega podem levar até 1 dia para sumir. Foto enviada que não chegou a entrar no perfil é apagada em até 24 horas. Há duas exceções, para proteger crianças e adolescentes: foto que a análise marcou como possível menor de idade fica guardada, com acesso restrito, por 180 dias depois de apagada; e, enquanto houver denúncia aberta de menor de idade ou de abuso infantil contra a conta, nenhuma foto dela é apagada: a foto que a pessoa apagar sai do perfil na hora, mas fica guardada só para a moderação até a decisão.
 - **Código do SMS:** até 5 minutos, só de forma cifrada. A confirmação de que o número é seu, usada no cadastro, dura até 10 minutos.
 - **Posição atual exata:** até 2 horas depois da última atualização.
 - **Histórico arredondado de posição:** cerca de 3 dias, no máximo 4.
@@ -345,27 +348,44 @@ Os provedores que tratam dados em nosso nome (operadores) só podem usá-los par
 - **Curtidas, conversas e bloqueios:** enquanto a conta existir.
 - **Dispensas ("Passar"):** 30 dias. Depois, são apagadas.
 - **Quantas super curtidas você usou em cada dia:** 7 dias.
-- **Mensagens:** enquanto a conta existir. As conversas não expiram. Quando uma conversa é arquivada, por exemplo por um bloqueio, as mensagens não são apagadas.
+- **Mensagens:** enquanto a conta existir. As conversas não expiram. Quando uma conversa é arquivada, por exemplo por um bloqueio, as mensagens não são apagadas. Quando uma das duas pessoas exclui a conta, a conversa some na hora e é apagada no fim do prazo de 30 dias, salvo se citada numa denúncia (seção 7.1).
 - **Acenos:** 24 horas.
 - **Comemorações de match** (quem, quando e se já foi vista): enquanto a conta existir.
 - **Token de notificações push:** até você sair da conta no aparelho, o token deixar de valer, o número ser liberado de uma conta parada (seção 2.14) ou a conta ser excluída.
 - **Denúncias e registros de moderação** (decisões e motivos): pelo tempo necessário para a segurança da plataforma e para cumprir obrigações legais, mesmo depois da exclusão da conta.
 - **Número de telefone de conta banida:** enquanto for necessário para impedir que a pessoa crie outra conta com ele.
-- **Histórico de número liberado** (seção 2.14): pelo tempo necessário para a segurança das contas e para atender pedidos de recuperação e contestações, mesmo depois da exclusão da conta.
+- **Histórico de número liberado** (seção 2.14): pelo tempo necessário para a segurança das contas e para atender pedidos de recuperação e contestações. Na limpeza de uma conta excluída que não estava banida, suspensa nem em revisão, o número dela sai desse histórico e fica só um código embaralhado por 6 meses; o IP, a porta e a identificação do app do pedido que ela fez saem quando completam 6 meses.
 - **Código embaralhado do número que usou o teste grátis:** de forma permanente, mesmo depois da exclusão da conta (seção 2.9).
 - **Material ligado a suspeita de exploração sexual infantil:** guardado de forma restrita e sigilosa, pelo tempo necessário para comunicar às autoridades e cumprir a lei.
 - **Registros de acesso:** 6 meses, e depois são apagados. Podem ser guardados por mais tempo se uma autoridade pedir, como permite o Marco Civil (art. 15, § 2º).
-- **Planos pagos:** enquanto a conta existir e, depois, pelo prazo exigido pelas leis fiscal e de defesa do consumidor.
+- **Planos pagos:** enquanto a conta existir e, depois da exclusão, por 5 anos (leis fiscal e de defesa do consumidor), sem ligação com seu nome ou telefone.
 - **Contadores de uso contra abuso:** até 24 horas. Os que evitam avisos repetidos de curtida e de match: até 7 dias. A contagem de erros da data de nascimento de uma conta parada (seção 2.14): até a data certa ser confirmada ou o número ser liberado.
 - **Relatórios de falha (Sentry):** até 90 dias.
 - **Métricas de uso (seção 2.15):** 13 meses.
 - **Mensagens barradas pelo filtro de abuso (seção 2.16):** não são guardadas. O trecho citado numa denúncia automática de possível golpe fica como os demais registros de moderação.
-- **Atendimentos pelo chat de suporte do app** (mensagens, notas internas e a marca de urgente do botão de emergência): enquanto a conta existir.
+- **Atendimentos pelo chat de suporte do app** (mensagens, notas internas e a marca de urgente do botão de emergência): enquanto a conta existir. Os urgentes ficam como prova depois da exclusão (seção 7.1).
+- **Pedido de exclusão da conta** (data, prazo, motivo se você escolher e situação): enquanto a conta existir; depois da limpeza, fica sem dado pessoal como prova de que o pedido foi atendido.
 - **Cópias temporárias do perfil (cache):** até 1 hora.
 - **Resultados de busca de lugares** (sem ligação com você): até 6 horas.
 - **E-mails de atendimento:** pelo tempo necessário para atender e comprovar o atendimento.
 
-Quando você exclui a conta, apagamos ou anonimizamos seus dados, exceto os que precisamos guardar pelos motivos e prazos acima.
+### 7.1 Quando você exclui a conta
+
+- **Na hora do pedido** (Perfil → Excluir conta): sua conta some do mapa, das curtidas, dos perfis e das conversas da outra pessoa; todas as sessões são encerradas e as notificações param. Nada é apagado ainda.
+- **Prazo para voltar atrás: 30 dias.** Se você entrar de novo com o seu número nesse prazo, o app pergunta se quer cancelar a exclusão. Cancelando, a conta volta como estava, com conversas e curtidas.
+- **No fim do prazo, a limpeza é definitiva:** apagamos perfil, fotos (os arquivos também), avatar, interesses, áreas privadas, residência aprendida, histórico de localização, curtidas, dispensas, visitas, bloqueios, notificações e preferências, e as conversas com as mensagens das duas pessoas. As métricas de uso perdem a ligação com você. A linha da conta continua existindo só como um registro vazio ("Conta excluída"), sem telefone, nome real, foto ou qualquer outro dado pessoal, para manter a ligação de denúncias e registros obrigatórios.
+- **Se houver denúncia contra você em análise**, a limpeza espera a decisão. Se a conta estiver só em revisão da moderação, sem denúncia em análise, a limpeza espera até 30 dias depois do fim do prazo; depois disso, ela acontece guardando só o mínimo para a segurança da plataforma, inclusive o número de telefone.
+
+**O que fica depois da limpeza, e por quanto tempo:**
+
+- Conversas citadas em denúncias (feitas por você ou contra você) e atendimentos abertos pelo botão de emergência: até 180 dias depois de a denúncia ser encerrada, só para a moderação. Casos de segurança infantil ou de menor de idade ficam pelo tempo que a lei exigir.
+- Fotos marcadas pela análise automática como urgentes: 180 dias, de forma restrita. Se houver denúncia de segurança infantil ou de menor de idade em análise, nenhum arquivo é apagado até a decisão.
+- Registros de pagamento: 5 anos.
+- Registros de acesso: o restante dos 6 meses do Marco Civil.
+- Denúncias e decisões de moderação, com o mínimo necessário para impedir a volta de quem foi banido, inclusive o número de telefone de conta banida, suspensa ou que ainda estava em revisão da moderação.
+- Um código embaralhado do número (hash com chave secreta, sem como recuperar o número) por 6 meses, para atender ordem judicial ligada aos registros de acesso, e o do teste grátis, de forma permanente (seção 2.9).
+- **Assinatura:** excluir a conta não cancela a assinatura na loja. Cancele na App Store ou no Google Play.
+- **Sem o app:** a página "Excluir conta" do Metch (no mesmo endereço desta Política) explica como pedir pelo {{EMAIL_PRIVACIDADE}}.
 
 ## 8. Segurança
 
@@ -403,8 +423,9 @@ Pela LGPD (art. 18), você pode pedir:
 
 - Envie um e-mail para {{EMAIL_PRIVACIDADE}}, informando o número de telefone da sua conta. Podemos pedir que você confirme que a conta é sua.
 - Respondemos em até 15 dias, sem custo.
-- **Excluir a conta:** por enquanto, a exclusão é feita por esse e-mail. O app ainda não faz a exclusão automática. Ao excluir a conta, você exerce também o direito previsto no Marco Civil da Internet (art. 7º, X), com as exceções de guarda obrigatória da seção 7.
-- **Cópia dos dados:** também é pedida por esse e-mail. Enviamos em formato eletrônico.
+- **Excluir a conta:** no app, em Perfil → Excluir conta. Você digita EXCLUIR para confirmar e tem 30 dias para voltar atrás (seção 7.1). Sem acesso ao app, peça por esse e-mail. Ao excluir a conta, você exerce também o direito previsto no Marco Civil da Internet (art. 7º, X), com as exceções de guarda obrigatória da seção 7.
+- **Cópia dos dados:** no app, em Perfil → Baixar meus dados. O arquivo (JSON, formato eletrônico legível por máquina) é salvo onde você escolher no aparelho e traz conta, perfil, configurações, fotos, áreas privadas (com o ponto central exato), residência aprendida, localização guardada, curtidas e dispensas que você fez, visitas, bloqueios, suas mensagens, denúncias que você fez, decisões de moderação sobre a conta, notificações, aparelhos, compras, atendimentos, métricas de uso, registros de acesso e pedidos de exclusão. Não entram as mensagens das outras pessoas, as denúncias feitas contra você (para proteger quem denunciou), fotos que você apagou e que ficaram guardadas só para a moderação por causa de uma denúncia em análise (seção 7), notas internas da equipe e dados antifraude. Como o arquivo tem dados sensíveis, guarde com cuidado. São até 3 cópias por dia. Também dá para pedir por esse e-mail.
+- **Apagar histórico de localização:** no app, em Perfil → Apagar histórico de localização (seção 3.2).
 - Você corrige a maior parte dos dados no próprio app: nome, bio, fotos, interesses, intenção, avatar, gênero, orientação sexual (inclusive apagar) e @ do Instagram. Para corrigir a data de nascimento, use o e-mail.
 - No app, você também controla o modo anônimo, a pausa, o modo de descoberta, "Mostrar", a faixa de idade, as áreas privadas, o que aparece no perfil (inclusive a orientação), "Mesma orientação primeiro", as notificações e os bloqueios.
 

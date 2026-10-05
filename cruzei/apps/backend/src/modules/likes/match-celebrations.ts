@@ -5,6 +5,7 @@ import type { MatchCelebration } from '@cruzei/shared-types';
 import { Prisma } from '@prisma/client';
 
 import { avatarOrFallback } from '../../common/avatar';
+import { photoUrl } from '../../common/photo-url';
 
 /** o que as consultas precisam do client (PrismaService ou o tx da curtida) */
 type RawDb = Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw'>;
@@ -54,7 +55,7 @@ export function toMatchCelebration(r: CelebrationRow): MatchCelebration {
         gender: r.peer_gender,
         avatarConfig: r.peer_avatar_config,
       }),
-      mainPhotoUrl: r.peer_photo_url,
+      mainPhotoUrl: photoUrl(r.peer_photo_url),
     },
     conversationId: r.conversation_id,
     matchedAt: r.matched_at.toISOString(),
