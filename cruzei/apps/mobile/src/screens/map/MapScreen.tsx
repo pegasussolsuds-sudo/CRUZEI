@@ -41,8 +41,9 @@ import { UserPreviewSheet, USER_SHEET_FRACTION, type UserPreviewSheetHandle } fr
 import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle } from '../../components/map/PlacePreviewSheet';
 import { FadeInView } from '../../components/animated/FadeInView';
 import { MapTourHost } from '../../components/tour/MapTourHost';
-import { buildAvatarLayers, buildAvatarRig, keyOf, resolveAvatar } from '../../avatar';
+import { keyOf, resolveAvatar } from '../../avatar';
 import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand, type MapEvent, type MapUser, type PerfTier, type PinPayload } from './bridge';
+import { mapAuraRgb, mapAvatarDef } from './native/images/mapAvatar';
 import { NativeMap, type NativeMapHandle } from './native/NativeMap';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import { distanceMeters, encodeGeohash, formatMapName, proximityRank } from '@cruzei/shared-utils';
@@ -187,6 +188,7 @@ export function MapScreen() {
 
   // ---------- definições de avatar (cache por visual, não por pessoa) ----------
   // O mapa desenha silhueta até receber as camadas da chave; mandamos cada chave UMA vez por vida do mapa.
+  // A definição (mapAvatarDef) leva as camadas 'lite', o rig com a cena (montaria), a animação assinatura e a config.
   const sentAvatarKeys = useRef(new Set<string>());
   const knownAvatars = useRef(new Map<string, AvatarConfig>());
   const defineAvatars = useCallback(
@@ -198,7 +200,7 @@ export function MapScreen() {
         knownAvatars.current.set(key, cfg);
         if (sentAvatarKeys.current.has(key)) continue;
         sentAvatarKeys.current.add(key);
-        defs[key] = { l: buildAvatarLayers(cfg, { groundShadow: true }), p: buildAvatarRig(cfg) };
+        defs[key] = mapAvatarDef(cfg);
         count += 1;
       }
       if (count > 0 && readyRef.current) inject(cmd.defineAvatars(defs));
@@ -373,7 +375,7 @@ export function MapScreen() {
           return {
             ...u,
             avatarKey: keyOf(cfg),
-            aura: cfg.aura,
+            aura: mapAuraRgb(cfg),
             label: formatMapName(u.name),
             photo: u.mapPhotoUrl ?? null,
             mutual: likeStatusOf(u) === 'MUTUAL',
@@ -515,11 +517,29 @@ export function MapScreen() {
         photoUrl: showMyPhoto ? myPhotoUrl : null,
         name: formatMapName(me?.name) || 'você',
         avatarKey: myAvatarKey,
-        aura: myAvatar.aura,
+        aura: mapAuraRgb(myAvatar),
       }),
       'setMe',
     );
   }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, showMyPhoto, me?.name, myAvatar, myAvatarKey, defineAvatars, send]);
+
+  // avatar salvo (o visual mudou pra mesma pessoa): minha figura toca a animação assinatura quando eu voltar pro mapa
+  const myVisualRef = useRef<{ id: string | undefined; key: string }>({ id: me?.id, key: myAvatarKey });
+  const [myEmotePending, setMyEmotePending] = useState(false);
+  useEffect(() => {
+    const prev = myVisualRef.current;
+    if (prev.id && prev.id === me?.id && prev.key !== myAvatarKey) setMyEmotePending(true);
+    myVisualRef.current = { id: me?.id, key: myAvatarKey };
+  }, [me?.id, myAvatarKey]);
+  useEffect(() => {
+    if (!myEmotePending || !active || !mapReady || lat == null) return;
+    // espera a figura nova assentar (desenho + registro da imagem) antes de animar
+    const id = setTimeout(() => {
+      setMyEmotePending(false);
+      send(cmd.emote('me', 'sig'));
+    }, 700);
+    return () => clearTimeout(id);
+  }, [myEmotePending, active, mapReady, lat, send]);
 
   // setData quando a lista memoizada muda (dados novos, minha posição pro corte dos 300, passar).
   // As definições de avatar vão ANTES: quem chega novo já nasce desenhado, sem silhueta.

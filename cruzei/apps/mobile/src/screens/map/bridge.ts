@@ -3,7 +3,8 @@
 // os comandos são objetos tipados entregues direto ao motor (sem JSON nem injectJavaScript) e os eventos chegam por callback.
 
 import type { InvisibleGroup, MapPosition, NearbyUser, POI } from '@cruzei/shared-types';
-import type { AvatarLayer, AvatarRig } from '../../avatar';
+
+import type { AvatarDef } from './native/contracts';
 
 export type MapTheme = 'day' | 'dusk' | 'night';
 export type PerfTier = 'low' | 'mid' | 'high';
@@ -20,23 +21,25 @@ export interface MeState {
   isAnonymous: boolean;
   photoUrl: string | null;
   name: string;
-  /** chave do visual do avatar (defineAvatars) + efeito especial do config */
+  /** chave do visual do avatar (defineAvatars) */
   avatarKey: string;
+  /** cor 'r,g,b' da poça de luz da aura (mapAuraRgb); '' = sem aura */
   aura: string;
 }
 
 /**
- * pessoa como vai pro mapa: NearbyUser + chave do avatar (o motor busca as camadas em avatarDefs[avatarKey]),
+ * pessoa como vai pro mapa: NearbyUser + chave do avatar (o motor busca as camadas em avatarDefs[avatarKey]), cor da
+ * aura ('r,g,b' de mapAuraRgb, '' = sem),
  * nome curto do rótulo ("Leonardo S."), a foto (thumbnail) da bolha de identidade — null = só avatar — e se os dois
  * se curtiram (anel magenta + selo ♥; calculado no app a partir do likeStatus do /nearby).
  */
 export type MapUser = NearbyUser & { avatarKey: string; aura: string; label: string; photo: string | null; mapPosition: MapPosition; mutual: boolean };
 
-/** { avatarKey: { l: camadas, p: pivôs do rig } } — só as chaves que o mapa ainda não conhece */
-export type AvatarDefs = Record<string, { l: AvatarLayer[]; p: AvatarRig }>;
+/** { avatarKey: mapAvatarDef(cfg) } — só as chaves que o mapa ainda não conhece */
+export type AvatarDefs = Record<string, AvatarDef>;
 
-/** reações curtas do avatar no mapa */
-export type EmoteKind = 'wave' | 'like' | 'celebrate' | 'match' | 'arrive';
+/** reações curtas do avatar no mapa; 'sig' = a animação assinatura do avatar (sem uma escolhida, acena) */
+export type EmoteKind = 'wave' | 'like' | 'celebrate' | 'match' | 'arrive' | 'sig';
 
 export interface MapDataPayload {
   users: MapUser[];

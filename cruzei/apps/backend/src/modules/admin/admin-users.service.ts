@@ -14,6 +14,7 @@ import type {
   UserRole,
 } from '@cruzei/shared-types';
 import { USER_FILTER_DELETION_HELD } from '@cruzei/shared-types';
+import { avatarTiersFor } from '@cruzei/shared-utils';
 import {
   BadRequestException,
   ConflictException,
@@ -532,7 +533,8 @@ export class AdminUsersService {
         data: { premiumTier: p.tier, premiumExpiresAt: expiresAt },
       });
     });
-    if (p.tier === 'free') await this.users.downgradeAvatarToFree(userId);
+    // avatar só com itens do plano novo (tirar o plano → free; Premium+ → Premium tira os itens 'plus' na hora)
+    await this.users.downgradeAvatar(userId, avatarTiersFor(p.tier));
     // invisível grátis não conversa: sai das salas abertas (as mensagens ficam guardadas até voltar ao visível)
     if (anonWindow) await this.gateway.leaveAllConversations(userId).catch(() => undefined);
     await this.redis.invalidateProfile(userId); // /me em cache estava com o plano antigo

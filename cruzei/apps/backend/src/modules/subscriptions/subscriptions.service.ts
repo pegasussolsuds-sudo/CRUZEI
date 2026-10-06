@@ -223,6 +223,7 @@ export class SubscriptionsService {
       return { id: sub.id, expiresAt, trialDays };
     });
     await this.redis.invalidateProfile(userId); // premiumTier mudou → /me em cache está velho
+    await this.lifecycle.fitAvatarToPlan(userId, plan.tier); // Premium+ → Premium: tira os itens 'plus' na hora
 
     return {
       subscriptionId: out.id,

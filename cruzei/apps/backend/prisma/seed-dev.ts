@@ -5,19 +5,24 @@
 //
 // Acima de 8 pessoas o seed gera gente sintética cobrindo a matriz de testes do mapa (brief FOTO AVATAR §23):
 // sem foto, foto quebrada (404), foto desligada no mapa, nome longo/curto, gente nova, multidão no evento.
+// Avatares (seed-avatars.ts): cada fake é uma pessoa diferente, com estilo, pet, veículo, objeto e, pra quem é
+// Premium, aura e fundo; pronomes e orgulho em alguns (voluntário). Os 8 nomeados têm o visual escolhido a dedo.
 // .env do backend ANTES de tudo (NODE_ENV, DATABASE_URL, REDIS_URL), igual ao main.ts
 import '../src/config/load-env';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { encodeGeohash, randomAvatarConfig } from '@cruzei/shared-utils';
+import type { AvatarConfig } from '@cruzei/shared-types';
+import { encodeGeohash } from '@cruzei/shared-utils';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 
 import { appEnv } from '../src/config/security';
 import { makeThumbnail, thumbNameFor } from '../src/modules/uploads/thumbnails';
 import { UPLOAD_DIR } from '../src/modules/uploads/uploads.constants';
+
+import { demoAvatar } from './seed-avatars';
 
 // seed de DEV: apaga/reescreve fotos e datas das contas fake — só com NODE_ENV=development (ausente = produção)
 if (appEnv() !== 'development' || /prod/i.test(process.env.DATABASE_URL ?? '')) {
@@ -56,6 +61,8 @@ type Fake = {
   showMe?: 'women' | 'men' | 'everyone';
   /** @ do Instagram (sem @, minúsculo) */
   instagram?: string;
+  /** visual escolhido (por cima do rosto sorteado); sem isso, o estilo também é sorteado */
+  avatar?: Partial<AvatarConfig>;
 };
 
 function fakePhoto(n: number): string {
@@ -76,6 +83,36 @@ const FAKES: Fake[] = [
     orientation: 'bisexual',
     showOrientation: true,
     instagram: 'aline.designer',
+    avatar: {
+      body: 'curvy',
+      skin: 's4',
+      faceShape: 'heart',
+      eyes: 'upturned',
+      brows: 'arched',
+      hair: 'long_curly',
+      hairColor: 'h_rosegold',
+      face: 'smirk',
+      faceDetail: 'freckles',
+      top: 'satin',
+      topColor: 'c_black',
+      outer: 'kimono',
+      outerColor: 'c_magenta',
+      bottom: 'wide',
+      bottomColor: 'c_black',
+      shoes: 'heels',
+      shoesColor: 'c_black',
+      glasses: 'cat_eye',
+      accessory: 'hoops',
+      pet: 'cat_siamese',
+      petPose: 'shoulder',
+      aura: 'supernova',
+      auraColor: 'a_magenta',
+      backdrop: 'stage',
+      emote: 'dance_vogue',
+      pronouns: 'ela',
+      pride: 'pin',
+      prideFlag: 'bi',
+    },
   },
   {
     name: 'Rafael',
@@ -86,6 +123,27 @@ const FAKES: Fake[] = [
     boosted: true,
     daysOld: 3,
     where: 'bar',
+    avatar: {
+      body: 'athletic',
+      skin: 's6',
+      faceShape: 'square',
+      eyes: 'hooded',
+      brows: 'thick',
+      nose: 'straight',
+      hair: 'undercut',
+      hairColor: 'h_black',
+      facialHair: 'stubble',
+      face: 'grin',
+      top: 'graphic',
+      topColor: 'c_white',
+      outer: 'denim',
+      outerColor: 'c_denim',
+      bottom: 'jeans',
+      shoes: 'sneakers',
+      vehicle: 'kick',
+      vehicleColor: 'c_black',
+      emote: 'wave',
+    },
   },
   {
     name: 'Bia',
@@ -99,6 +157,29 @@ const FAKES: Fake[] = [
     showOrientation: true,
     sameOrientationFirst: true,
     instagram: 'bia_cafe',
+    avatar: {
+      body: 'slim',
+      skin: 's2',
+      faceShape: 'round',
+      eyes: 'round',
+      brows: 'straight',
+      nose: 'button',
+      hair: 'pixie',
+      hairColor: 'h_red',
+      faceDetail: 'freckles',
+      glasses: 'round',
+      top: 'flannel',
+      topColor: 'c_red',
+      bottom: 'jeans',
+      shoes: 'combat',
+      shoesColor: 'c_black',
+      held: 'coffee',
+      pet: 'dog_caramel',
+      petPose: 'side',
+      pronouns: 'ela',
+      pride: 'band',
+      prideFlag: 'lesbian',
+    },
   },
   {
     name: 'Caio',
@@ -108,6 +189,28 @@ const FAKES: Fake[] = [
     photo: fakePhoto(4),
     daysOld: 25,
     where: 'bar',
+    avatar: {
+      body: 'athletic',
+      skin: 's7',
+      faceShape: 'oval',
+      eyes: 'almond',
+      hair: 'buzz',
+      hairColor: 'h_black',
+      facialHair: 'boxed',
+      face: 'smile',
+      top: 'basket',
+      topColor: 'c_blue',
+      bottom: 'shorts',
+      bottomColor: 'c_black',
+      shoes: 'sneakers',
+      shoesColor: 'c_white',
+      hat: 'headband',
+      hatColor: 'c_white',
+      wrist: 'fitness',
+      pet: 'dog_black',
+      petPose: 'side',
+      emote: 'clap',
+    },
   },
   {
     name: 'Marina',
@@ -119,6 +222,31 @@ const FAKES: Fake[] = [
     verified: true,
     daysOld: 90,
     where: 'bar',
+    avatar: {
+      body: 'plus',
+      skin: 's8',
+      faceShape: 'long',
+      eyes: 'almond',
+      brows: 'bushy',
+      hair: 'afro_puff',
+      hairColor: 'h_black',
+      face: 'laugh',
+      faceDetail: 'glam',
+      top: 'sequin',
+      topColor: 'c_gold',
+      bottom: 'wide',
+      bottomColor: 'c_black',
+      shoes: 'platform',
+      shoesColor: 'c_black',
+      accessory: 'hoops',
+      held: 'camera',
+      pet: 'arara',
+      petPose: 'shoulder',
+      aura: 'music',
+      auraColor: 'a_gold',
+      backdrop: 'confetti',
+      emote: 'dance_samba',
+    },
   },
   {
     name: 'Theo',
@@ -131,17 +259,70 @@ const FAKES: Fake[] = [
     where: 'spread',
     orientation: 'queer',
     showOrientation: true,
+    avatar: {
+      body: 'slim',
+      skin: 's5',
+      faceShape: 'diamond',
+      eyes: 'monolid',
+      brows: 'thin',
+      hair: 'curtain',
+      hairColor: 'h_dark',
+      face: 'cool',
+      faceDetail: 'liner',
+      top: 'oversized',
+      topColor: 'c_black',
+      outer: 'leather',
+      outerColor: 'c_black',
+      bottom: 'ripped',
+      bottomColor: 'c_black',
+      shoes: 'combat',
+      shoesColor: 'c_black',
+      accessory: 'ear_cuff',
+      neck: 'choker',
+      vehicle: 'skate',
+      vehicleColor: 'c_purple',
+      pronouns: 'elu',
+      pride: 'heart_pin',
+      prideFlag: 'nonbinary',
+    },
   },
   {
     name: 'Lívia',
     gender: 'female',
-    birth: '1996-12-02',
+    birth: '1974-12-02',
     bio: 'Yoga, praia e um bom vinho.',
     photo: fakePhoto(7),
     daysOld: 45,
     where: 'spread',
     orientation: 'straight',
     instagram: 'livia.yoga',
+    avatar: {
+      body: 'regular',
+      skin: 's10',
+      faceShape: 'oval',
+      eyes: 'downturned',
+      brows: 'soft',
+      hair: 'low_bun',
+      hairColor: 'h_silver',
+      face: 'serene',
+      lines: 'soft',
+      top: 'tunic',
+      topColor: 'c_white',
+      bottom: 'bermuda',
+      bottomColor: 'c_beige',
+      shoes: 'slides',
+      shoesColor: 'c_white',
+      hat: 'panama',
+      hatColor: 'c_beige',
+      glasses: 'sun',
+      neck: 'lei',
+      wrist: 'beads',
+      held: 'coconut',
+      pet: 'turtle',
+      petPose: 'side',
+      backdrop: 'beach',
+      emote: 'greet',
+    },
   },
   {
     name: 'Pedro',
@@ -153,6 +334,30 @@ const FAKES: Fake[] = [
     where: 'spread',
     orientation: 'gay',
     showMe: 'men',
+    avatar: {
+      body: 'plus',
+      skin: 's3',
+      faceShape: 'round',
+      eyes: 'almond',
+      brows: 'bushy',
+      hair: 'classic',
+      hairColor: 'h_brown',
+      facialHair: 'beard',
+      glasses: 'square',
+      top: 'graphic',
+      topColor: 'c_navy',
+      outer: 'varsity',
+      outerColor: 'c_red',
+      bottom: 'joggers',
+      bottomColor: 'c_gray',
+      shoes: 'hightops',
+      shoesColor: 'c_white',
+      vehicle: 'wheelchair',
+      vehicleColor: 'c_blue',
+      held: 'popcorn',
+      pet: 'pug',
+      petPose: 'side',
+    },
   },
 ];
 
@@ -207,7 +412,7 @@ function extraFake(i: number): Fake {
   return {
     name,
     gender: k % 3 === 0 ? 'female' : k % 3 === 1 ? 'male' : 'other',
-    birth: `${1990 + (k % 15)}-${String((k % 12) + 1).padStart(2, '0')}-${String((k % 27) + 1).padStart(2, '0')}`,
+    birth: `${k % 12 === 7 ? 1958 + (k % 19) : 1990 + (k % 15)}-${String((k % 12) + 1).padStart(2, '0')}-${String((k % 27) + 1).padStart(2, '0')}`,
     bio: BIOS[k % BIOS.length],
     photo,
     tier: k % 11 === 10 ? 'premium' : k % 29 === 28 ? 'premium_plus' : undefined,
@@ -294,8 +499,15 @@ async function main() {
   for (let i = 0; i < qty; i++) {
     const f = i < FAKES.length ? FAKES[i] : extraFake(i);
     const phone = `+5534900000${String(i + 1).padStart(3, '0')}`;
-    // avatar estável por fake (seed = telefone)
-    const avatar = randomAvatarConfig(phone, { gender: f.gender as never }) as never;
+    // avatar estável por fake (seed = telefone): pessoa e estilo variados, itens dentro do plano do fake
+    const age = new Date().getFullYear() - Number(f.birth.slice(0, 4));
+    const avatar = demoAvatar({
+      seed: phone,
+      gender: f.gender,
+      tier: f.tier,
+      age,
+      avatar: f.avatar,
+    }) as never;
     // posição: no bar (raio ~40m → hotspot), no evento (~30m), na aglomeração (~45m) ou espalhado até ~1,5km
     const where = f.where ?? 'spread';
     const angle = where === 'spread' ? i * 2.399963 : (i / 7) * Math.PI * 2;

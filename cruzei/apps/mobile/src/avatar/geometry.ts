@@ -100,3 +100,22 @@ export function luminance(hex: string): number {
   const [r, g, b] = hexToRgb(hex);
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
+
+// ---------------- paleta fixa do avatar (marca + tinta) ----------------
+
+/** cores fixas usadas pelas partes: tinta dos traços, branco de olho/dente e a paleta premium da marca */
+export const INK = '#1F1B2E';
+export const WHITE = '#F7F7FA';
+export const GOLD = '#FFD700';
+export const LIME = '#7FFF00';
+export const MAGENTA = '#FF1493';
+/** fundo escuro da marca */
+export const NIGHT = '#0A0A1A';
+
+/** curva cúbica aberta */
+export function cubic(x1: number, y1: number, c1x: number, c1y: number, c2x: number, c2y: number, x2: number, y2: number): string {
+  return `M${f(x1)},${f(y1)}C${f(c1x)},${f(c1y)} ${f(c2x)},${f(c2y)} ${f(x2)},${f(y2)}`;
+}
+
+/** número formatado com 2 casas (pra montar paths à mão nas partes) */
+export const fmt = f;

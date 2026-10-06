@@ -6,36 +6,33 @@
 //   engine/*          calcula offsets de ícone (icon-offset) com as mesmas funções
 //   layers.tsx        registra as imagens no <Images> com scale IMG_SCALE
 
+import type { AvatarConfig } from '@cruzei/shared-types';
 import { PixelRatio } from 'react-native';
 
 import type { AvatarLayer, AvatarRig } from '../../../avatar';
+import type { Pose, PoseVariation } from '../../../avatar/pose';
 
-/** camadas + pivôs de um visual de avatar (o que o antigo defineAvatars mandava pro WebView) */
+/** pose do rig e variação individual: a fonte é src/avatar/pose.ts (mesma do palco Skia e da folha de contato) */
+export type { Pose, PoseVariation };
+
+/**
+ * camadas + pivôs de um visual de avatar (images/mapAvatar.ts mapAvatarDef): l = camadas no nível 'lite', p = rig
+ * (p.scene = cena resolvida: a montaria vem daqui), e = animação assinatura (id do registro de emotes, null = nenhuma),
+ * c = a config (o motor monta sob demanda as expressões/objeto da animação e o braço solto)
+ */
 export interface AvatarDef {
   l: AvatarLayer[];
   p: AvatarRig;
+  e?: string | null;
+  c?: AvatarConfig;
 }
 
-export type AnimState = 'idle' | 'walk' | 'run' | 'wave' | 'like' | 'celebrate' | 'match' | 'arrive';
-export type EmoteState = 'wave' | 'like' | 'celebrate' | 'match' | 'arrive';
-
-/** pose do rig (graus e px do viewBox 100x140), igual ao CZ_ANIM do WebView */
-export interface Pose {
-  body: { r: number; dy: number; sx: number; sy: number };
-  head: { r: number; dy: number };
-  armL: { r: number };
-  armR: { r: number };
-  legL: { r: number };
-  legR: { r: number };
-  shadow: { s: number };
-}
-
-/** variação individual (hash do id): fase, velocidade da respiração, energia */
-export interface PoseVariation {
-  ph: number;
-  sp: number;
-  en: number;
-}
+/**
+ * estados da figura: os do CZ_ANIM + 'ride' (com veículo, andar vira deslizar com balanço leve; flutuante sobe e desce)
+ * + 'sig' (a animação assinatura do avatar, uma vez: toque na figura, avatar salvo)
+ */
+export type AnimState = 'idle' | 'walk' | 'run' | 'wave' | 'like' | 'celebrate' | 'match' | 'arrive' | 'ride' | 'sig';
+export type EmoteState = 'wave' | 'like' | 'celebrate' | 'match' | 'arrive' | 'sig';
 
 /** chave da aura do config do avatar (catalog) */
 export type AuraKey = 'lime' | 'magenta' | 'gold' | 'fest';
@@ -47,7 +44,10 @@ export interface FigureLook {
   boosted: boolean;
   premiumTier: 'free' | 'premium' | 'premium_plus';
   verified: boolean;
-  /** aura escolhida no avatar ('' = nenhuma) */
+  /**
+   * cor da poça de luz da aura do avatar, rgb 'r,g,b' (images/mapAvatar.ts mapAuraRgb: a cor escolhida em auraColor ou
+   * a cor própria do efeito); '' = sem aura. Aceita também as chaves antigas (lime/magenta/gold/fest).
+   */
   aura: string;
   /** modo invisível (só eu me vejo): véu escuro por cima */
   anonymous: boolean;
@@ -112,7 +112,7 @@ export interface BubbleStyle {
   tail: boolean;
 }
 
-/** cores rgb das auras (mapbox-html.ts:345) */
+/** cores rgb das auras antigas (mapbox-html.ts:345) */
 export const AURA_RGB: Record<AuraKey, string> = { lime: '127,255,0', magenta: '255,20,147', gold: '255,215,0', fest: '255,111,177' };
 
 /** emoji por categoria de POI (mapbox-html.ts:341) */
@@ -149,9 +149,22 @@ export interface MapImageEntry {
  * API de desenho (images/draw.ts). Tudo em Skia RASTER (Skia.Surface.Make, CPU): nada de MakeOffscreen/GPU —
  * o Moto g54 tem histórico de queda no driver GL. Cada função devolve o PNG (bitmap a IMG_SCALE) ou null se falhar.
  */
+/** opções de um quadro da figura */
+export interface FigureOpts {
+  /**
+   * a animação usa os braços (com volante/guidão/pet no colo, a cena só segura as mãos quando ela não usa). Número 0..1 =
+   * peso (a mão sai do guidão e volta aos poucos na entrada/saída da animação). Ausente = deduz pela pose (braço erguido
+   * além de 45°).
+   */
+  usesArms?: boolean | number;
+}
+
 export interface MapDraw {
-  /** figura em pé (mapbox-html.ts:391 drawFigure): aura no chão, avatar (pose ou neutro), anel, selo, véu anônimo; def null = silhueta */
-  figure(def: AvatarDef | null, look: FigureLook, dim: Dim, pose: Pose | null, mirror: boolean): Uint8Array | null;
+  /**
+   * figura em pé (mapbox-html.ts:391 drawFigure): aura no chão, avatar (pose ou neutro; cabeça MAP_HEAD_SCALE), anel,
+   * selo, véu anônimo; def null = silhueta
+   */
+  figure(def: AvatarDef | null, look: FigureLook, dim: Dim, pose: Pose | null, mirror: boolean, opts?: FigureOpts): Uint8Array | null;
   /** bolha de identidade (identity-bubble.ts drawBubble) em IMG.bubble; photo = thumb já recortado (null = placeholder) */
   bubble(photo: unknown | null, style: BubbleStyle): Uint8Array | null;
   /** ícone de POI 44x44 (mapbox-html.ts:629) */

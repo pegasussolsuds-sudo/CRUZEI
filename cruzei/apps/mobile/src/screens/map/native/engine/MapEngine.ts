@@ -16,10 +16,12 @@ import type { CameraRef, GeoJSONSourceRef, MapRef, ViewStateChangeEvent } from '
 import Supercluster from 'supercluster';
 import type { InvisibleGroup, POI } from '@cruzei/shared-types';
 
+import { AVATAR_RENDER_VERSION } from '../../../../avatar';
 import type { AvatarDefs, BurstPayload, CameraOpts, EmoteKind, MapCommand, MapDataPayload, MapEvent, MapPadding, MapTheme, MapUser, MeState, PerfTier, PinPayload, InitTier } from '../../bridge';
-import { BUB, IMG, IMG_SCALE, bubbleOffset, figOffset, type AvatarDef, type BubbleStyle, type Dim, type EmoteState, type FigureLook, type MapImageEntry, type MapImageRef, type PoseVariation } from '../contracts';
+import { BUB, IMG, IMG_SCALE, bubbleOffset, figOffset, type AnimState, type AvatarDef, type BubbleStyle, type Dim, type EmoteState, type FigureLook, type MapImageEntry, type MapImageRef, type PoseVariation } from '../contracts';
 import { mapDraw } from '../images/draw';
-import { DUR, pose, sizeFor, variationFor } from '../images/anim';
+import { DUR, RUN, WALK, edgeW, pose, ridePeriod, sizeFor, usesArmsOf, variationFor, type AnimExtras } from '../images/anim';
+import { drawingStamp, restArms, sigAssets, type SigAssets } from '../images/mapAvatar';
 import { mapImages } from '../images/store';
 import { mapPhotos } from '../images/photos';
 import { invisibleFeatures } from '../../../../components/map/invisible';
@@ -126,8 +128,17 @@ const FIG_CAP: Record<PerfTier, number> = { high: 90, mid: 60, low: 40 };
 /** teto de figuras animando ao mesmo tempo (eu, selecionado e o match sempre animam); o resto desliza parado */
 const ANIM_CAP: Record<PerfTier, number> = { high: 10, mid: 6, low: 3 };
 /** fps dos quadros: caminhada, corrida */
-const WALK_FPS: Record<PerfTier, number> = { high: 12, mid: 8, low: 8 };
-const RUN_FPS: Record<PerfTier, number> = { high: 18, mid: 12, low: 12 };
+// quadros por segundo da passada (um ciclo = passo esquerdo + direito: ~1 s andando, ~0,7 s correndo)
+const WALK_FPS: Record<PerfTier, number> = { high: 10, mid: 7, low: 6 };
+const RUN_FPS: Record<PerfTier, number> = { high: 14, mid: 10, low: 9 };
+/** fps do deslizar montado (um ciclo de balanço = ridePeriod) */
+const RIDE_FPS: Record<PerfTier, number> = { high: 10, mid: 8, low: 6 };
+/** animação assinatura: fps e teto de quadros por passada (dança longa cai de fps, não de duração) */
+const SIG_FPS: Record<PerfTier, number> = { high: 12, mid: 10, low: 8 };
+// cada quadro rasteriza o avatar inteiro na CPU (thread JS) e grava um PNG: teto baixo
+const SIG_MAX_FRAMES: Record<PerfTier, number> = { high: 18, mid: 14, low: 10 };
+/** toque + seleção da mesma pessoa chegam juntos: a assinatura não recomeça dentro dessa janela */
+const SIG_RETAP_MS = 500;
 /** fps dos anéis/sonar/auras (paint constante, sem relayout) */
 const RING_FPS: Record<PerfTier, number> = { high: 20, mid: 15, low: 8 };
 const PHOTO_MIN_ZOOM = 14;
@@ -150,6 +161,15 @@ const IMAGE_SETTLE_MAX_MS = 1200;
 const STATIC_GRACE_MS = 250;
 /** versão do desenho: muda quando draw.ts mudar o visual (invalida o cache em disco) */
 const RENDER_V = 'r1x' + IMG_SCALE;
+/**
+ * versão das FIGURAS: desenho do mapa (f2 = cabeça MAP_HEAD_SCALE, nível 'lite', silhueta nova) + versão do desenho do
+ * avatar + impressão digital das camadas do avatar padrão (o cache se refaz quando as partes mudam). Lida na 1ª figura.
+ */
+let figV: string | null = null;
+function figVersion(): string {
+  if (figV == null) figV = `f2.${AVATAR_RENDER_VERSION}.${drawingStamp()}|${RENDER_V}`;
+  return figV;
+}
 const DEG = Math.PI / 180;
 
 type UsersIndex = Supercluster<GeoJSON.GeoJsonProperties, GeoJSON.GeoJsonProperties>;
@@ -182,7 +202,8 @@ interface Fig {
   user: FigUser | null;
   pos: LngLat | null;
   move: { from: LngLat; to: LngLat; start: number; dur: number; run: boolean } | null;
-  one: { name: EmoteState; start: number } | null;
+  /** animação que toca uma vez: estado, início (ms) e duração (s) */
+  one: { name: EmoteState; start: number; dur: number } | null;
   mirror: boolean;
   v: PoseVariation;
   sz: number;
@@ -657,7 +678,7 @@ export class MapEngine {
     const person = hits.find((f) => 'sz' in props(f) && typeof props(f).id === 'string');
     if (person) {
       const uid = String(props(person).id);
-      this.emote(uid, 'arrive');
+      this.emote(uid, 'sig');
       this.emit({ type: 'userTap', id: uid });
       return;
     }
@@ -898,7 +919,7 @@ export class MapEngine {
 
   private registerBaseImages(): void {
     const P = (k: string) => `${k}|${RENDER_V}`;
-    this.requestShared('base', GENERIC_FIG, P('fig-generic'), () => mapDraw.figure(null, { recent: true, boosted: false, premiumTier: 'free', verified: false, aura: '', anonymous: false }, IMG.fig, null, false), -2);
+    this.requestShared('base', GENERIC_FIG, `fig-generic|${figVersion()}`, () => mapDraw.figure(null, { recent: true, boosted: false, premiumTier: 'free', verified: false, aura: '', anonymous: false }, IMG.fig, null, false), -2);
     this.requestShared('base', 'people-icon', P('people-icon'), () => mapDraw.peopleIcon(), -1);
     this.requestShared('base', 'me-cone', P('me-cone'), () => mapDraw.meCone(), -1);
     // partes paradas do que pulsa (o anel que cresce é CircleLayer)
@@ -985,7 +1006,7 @@ export class MapEngine {
       return;
     }
     const look = this.lookOf(u);
-    const key = `fig|${u.avatarKey || 'sil'}|${this.lookSig(look)}|${f.dim.w}x${f.dim.h}|n|${f.mirror ? 1 : 0}|${RENDER_V}`;
+    const key = `fig|${u.avatarKey || 'sil'}|${this.lookSig(look)}|${f.dim.w}x${f.dim.h}|n|${f.mirror ? 1 : 0}|${figVersion()}`;
     if (f.staticKey === key && f.staticRef) {
       if (!f.frameKey) this.showFig(f, f.staticRef);
       return;
@@ -1101,7 +1122,8 @@ export class MapEngine {
     if (!defs) return;
     for (const key of Object.keys(defs)) {
       const d = defs[key];
-      if (!d || !Array.isArray(d.l) || !d.l.length) continue;
+      // (não lê d.l aqui: as camadas do mapAvatarDef são montadas sob demanda, só quando for rasterizar)
+      if (!d || !d.p) continue;
       this.defs.set(key, d);
       const waiting = this.keyWaiters.get(key);
       this.keyWaiters.delete(key);
@@ -1114,10 +1136,34 @@ export class MapEngine {
     }
   }
 
+  /** definição do visual da figura (null enquanto não chegou) */
+  private defOf(f: Fig): AvatarDef | null {
+    const k = f.user?.avatarKey;
+    return k ? (this.defs.get(k) ?? null) : null;
+  }
+
+  /**
+   * reação curta da figura. 'sig' = a animação assinatura do avatar (uma passada); com movimento reduzido ou sem a
+   * definição ainda, vira o 'arrive' de sempre (um pulinho).
+   */
   emote(id: string, kind: EmoteKind): void {
     const f = this.figs.get(id);
-    if (!f || !DUR[kind] || !f.own) return;
-    f.one = { name: kind, start: Date.now() };
+    if (!f || !f.own) return;
+    const now = Date.now();
+    let name: EmoteState = kind;
+    let dur = DUR[kind];
+    if (kind === 'sig') {
+      if (f.one?.name === 'sig' && now - f.one.start < SIG_RETAP_MS) return;
+      const def = this.defOf(f);
+      const sig = def && !this.reduceMotion ? sigAssets(def) : null;
+      if (sig) dur = sig.def.dur;
+      else {
+        name = 'arrive';
+        dur = DUR.arrive;
+      }
+    }
+    if (!dur) return;
+    f.one = { name, start: now, dur };
     f.staticAt = 0;
     this.startClock();
   }
@@ -1340,7 +1386,7 @@ export class MapEngine {
    */
   private placeholderOf(u: FigUser, dim: Dim, mirror: boolean): string {
     const look = this.lookOf(u);
-    const key = `sil|${this.lookSig(look)}|${dim.w}x${dim.h}|${mirror ? 1 : 0}|${RENDER_V}`;
+    const key = `sil|${this.lookSig(look)}|${dim.w}x${dim.h}|${mirror ? 1 : 0}|${figVersion()}`;
     const ready = this.silReady.get(key);
     if (ready) return ready;
     if (!this.silPending.has(key)) {
@@ -1820,6 +1866,8 @@ export class MapEngine {
       this.ensureOwn(u);
       this.schedulePush(0);
     }
+    // (a animação assinatura toca no toque da figura no mapa, em onTap; seleção vinda da lista não toca: cada toque
+    // rasteriza vários quadros na CPU)
     this.ch.set('sel', u ? fc([point(u.pos, {})]) : EMPTY_FC);
     this.setRings({ sel: Boolean(u) });
     if (!u || !id) {
@@ -2092,13 +2140,13 @@ export class MapEngine {
     // quem pode animar agora: eu, selecionado e o match sempre; depois os mais perto do centro que estão na tela
     const animating: Fig[] = [];
     for (const [id, f] of this.figs) {
-      if (f.one && now - f.one.start > DUR[f.one.name] * 1000) f.one = null;
+      if (f.one && now - f.one.start > f.one.dur * 1000) f.one = null;
       if (f.move) {
         const k = (now - f.move.start) / f.move.dur;
         if (k >= 1) {
           f.pos = f.move.to;
           f.move = null;
-          if (f.own) f.one = { name: 'arrive', start: now };
+          if (f.own) f.one = { name: 'arrive', start: now, dur: DUR.arrive };
           if (id === 'me') meDirty = true;
           else usersDirty = true;
         } else {
@@ -2151,8 +2199,9 @@ export class MapEngine {
   }
 
   /**
-   * Quadro da animação: pose calculada pelo tempo, quantizada (caminhada 12/8 fps, corrida 18/12, emotes 12, match 10)
-   * pra os quadros serem reaproveitados do cache em disco. Se o quadro ainda não está pronto, fica o anterior.
+   * Quadro da animação: pose calculada pelo tempo, quantizada (caminhada 12/8 fps, corrida 18/12, montado 10/8/6,
+   * emotes 12, match 10, assinatura 12/10/8 com teto de quadros por tier) pra os quadros serem reaproveitados do cache
+   * em disco. Se o quadro ainda não está pronto, fica o anterior. Com veículo, andar/correr vira 'ride'.
    */
   private applyFrame(f: Fig, now: number): void {
     const u = f.user;
@@ -2160,34 +2209,71 @@ export class MapEngine {
     const def = u.avatarKey ? this.defs.get(u.avatarKey) : undefined;
     if (u.avatarKey && !def) return;
     f.staticAt = 0;
-    const st = f.one ? f.one.name : f.move?.run ? 'run' : 'walk';
+    const scene = def?.p.scene ?? null;
+    const mount = scene?.mount ?? null;
+    const one = f.one;
+    const st: AnimState = one ? one.name : mount ? 'ride' : f.move?.run ? 'run' : 'walk';
+    let sig: SigAssets | null = null;
+    if (st === 'sig') {
+      sig = def ? sigAssets(def) : null;
+      if (!sig) {
+        f.one = null;
+        return;
+      }
+    }
+    const loops = st === 'walk' || st === 'run' || st === 'ride';
     let k: number;
     let total: number;
     let tAt: (i: number) => number;
     if (st === 'walk' || st === 'run') {
-      const freq = (st === 'walk' ? 1.9 : 2.9) * f.v.sp;
+      const freq = (st === 'walk' ? WALK.freq : RUN.freq) * f.v.sp; // ciclos por segundo (anim.gait)
       const fpsSt = st === 'walk' ? WALK_FPS[this.tier] : RUN_FPS[this.tier];
       total = Math.max(4, Math.round(fpsSt / freq));
       const elapsed = (now - (f.move?.start ?? now)) / 1000;
       k = Math.floor(elapsed * freq * total) % total;
       tAt = (i) => i / (freq * total);
+    } else if (st === 'ride') {
+      const period = ridePeriod(mount);
+      total = Math.max(6, Math.round(period * (RIDE_FPS[this.tier] ?? 8)));
+      const elapsed = (now - (f.move?.start ?? now)) / 1000;
+      k = Math.floor((elapsed / period) * total) % total;
+      tAt = (i) => (i * period) / total;
     } else {
-      const fpsSt = st === 'match' ? 10 : 12;
-      total = Math.max(2, Math.ceil(DUR[st] * fpsSt));
-      const elapsed = (now - (f.one?.start ?? now)) / 1000;
+      const dur = one?.dur ?? DUR[st];
+      const fpsSt = sig ? Math.min(SIG_FPS[this.tier] ?? 10, (SIG_MAX_FRAMES[this.tier] ?? 28) / Math.max(0.5, dur)) : st === 'match' ? 10 : 12;
+      total = Math.max(2, Math.ceil(dur * fpsSt));
+      const elapsed = (now - (one?.start ?? now)) / 1000;
       k = Math.min(total - 1, Math.floor(elapsed * fpsSt));
-      tAt = (i) => i / fpsSt;
+      tAt = (i) => Math.min(dur, i / fpsSt);
     }
     const look = this.lookOf(u);
-    const base = `fr|${u.avatarKey || 'sil'}|${this.lookSig(look)}|${f.dim.w}x${f.dim.h}|${st}|${total}|${f.mirror ? 1 : 0}|${f.v.ph.toFixed(3)}.${f.v.sp.toFixed(3)}.${f.v.en.toFixed(3)}|${RENDER_V}`;
+    const base = `fr|${u.avatarKey || 'sil'}|${this.lookSig(look)}|${f.dim.w}x${f.dim.h}|${st}|${total}|${f.mirror ? 1 : 0}|${f.v.ph.toFixed(3)}.${f.v.sp.toFixed(3)}.${f.v.en.toFixed(3)}|${figVersion()}`;
     const keyOf = (i: number) => `${base}|${i}`;
     const dim = f.dim;
     const mirror = f.mirror;
     const v = f.v;
+    const sigDef = sig ? sig.def : null;
+    const usesArms = usesArmsOf(st, sigDef);
+    // braço solto só pra quem mexe os braços (o resto fica no repouso da pessoa)
+    const x: AnimExtras = { rest: def && (usesArms || st === 'walk' || st === 'run') ? restArms(def) : null, sig: sigDef, mount, bob: (scene as { bob?: number } | null)?.bob ?? 0 };
     const request = (i: number, pri: number) => {
       const key = keyOf(i);
       if (mapImages.get(key)) return;
-      void mapImages.request(key, pri, () => mapDraw.figure(def ?? null, look, dim, pose(st, tAt(i), v), mirror), IMG_SCALE).catch(() => null);
+      void mapImages
+        .request(
+          key,
+          pri,
+          () => {
+            const t = tAt(i);
+            // assinatura: expressão e objeto da animação trocados no quadro (como no palco)
+            const d = sig && def ? { l: sig.layersAt(t / sig.def.dur), p: def.p } : (def ?? null);
+            // a mão sai do guidão/volante/colo e volta junto com a entrada/saída da animação
+            const armsW = !usesArms ? 0 : loops ? 1 : edgeW(t, one?.dur ?? DUR[st]);
+            return mapDraw.figure(d, look, dim, pose(st, t, v, x), mirror, { usesArms: armsW });
+          },
+          IMG_SCALE,
+        )
+        .catch(() => null);
     };
     const key = keyOf(k);
     if (key !== f.frameKey) {
@@ -2199,7 +2285,7 @@ export class MapEngine {
     }
     // adianta os próximos quadros
     for (let j = 1; j <= 3; j++) {
-      const i = st === 'walk' || st === 'run' ? (k + j) % total : k + j;
+      const i = loops ? (k + j) % total : k + j;
       if (i < total) request(i, -2 + j * 0.1);
     }
   }

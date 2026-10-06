@@ -1,6 +1,7 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import BottomSheet, { BottomSheetView } from '@gorhom/bottom-sheet';
+import { useIsFocused } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
@@ -8,7 +9,8 @@ import type { NearbyUser, ProximityBand } from '@cruzei/shared-types';
 import { api } from '../../services/api';
 import type { ConversationFlag, LikeFlags } from '../../hooks/useInbox';
 import { resolveAvatar } from '../../avatar';
-import { CruzeiAvatar } from '../avatar/CruzeiAvatar';
+import { SignatureAvatar } from '../avatar/SignatureAvatar';
+import { PronounTag } from '../avatar/stage';
 import { IdentityBubble } from '../identity/IdentityBubble';
 import { FadeInView } from '../animated/FadeInView';
 import { Pulse } from '../animated/Pulse';
@@ -19,6 +21,8 @@ import { previewDistanceText } from './proximityText';
 // 56%: a composição foto + avatar (184 px) + chips + ações cabe em telas de ~640 dp sem cortar o "Ver perfil"
 export const USER_SHEET_FRACTION = 0.56;
 const SNAP_POINTS: string[] = ['56%'];
+/** palco do avatar: 144 de altura → 115 de largura (cabe nos 116 da coluna) e o boneco com ~124 */
+const STAGE = 144;
 
 // likeStatus/conversation do cartão público completam o que o /nearby ainda não trouxe
 interface UserCardLite extends LikeFlags, ConversationFlag {
@@ -60,6 +64,8 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
 ) {
   const sheetRef = useRef<React.ElementRef<typeof BottomSheet>>(null);
   useImperativeHandle(ref, () => ({ close: () => sheetRef.current?.close() }), []);
+  // o palco Skia por cima do mapa congela quando a tela do mapa sai de foco (crash antigo de HWUI no Moto)
+  const isFocused = useIsFocused();
 
   useEffect(() => {
     if (user) sheetRef.current?.snapToIndex(0);
@@ -117,7 +123,9 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
             <View style={styles.top}>
               <FadeInView fromScale={0.9} fromY={10} style={styles.avatarWrap}>
                 <View style={styles.avatarGlow} pointerEvents="none" />
-                <CruzeiAvatar config={avatar} mode="full" size={128} groundShadow accessibilityLabel={`Avatar de ${user.name}`} />
+                {/* vivo: mostra o fundo e toca a animação assinatura uma vez ao abrir (sem movimento reduzido) e a cada toque; sem
+                    respiração (por cima do MapLibre, canvas Skia parado poupa o HWUI do Moto); os pronomes vão ao lado do nome */}
+                <SignatureAvatar config={avatar} size={STAGE} groundShadow autoplay autoplayDelay={420} paused={!isFocused} idle={false} showPronouns={false} label={`Avatar de ${user.name}`} />
                 {/* a mesma bolha de identidade do mapa: foto = quem está por trás; avatar = como existe no Metch */}
                 <IdentityBubble
                   photoUrl={photo}
@@ -140,6 +148,11 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
                   {user.isVerified ? <Ionicons name="checkmark-circle" size={18} color={colors.info} accessibilityLabel="verificado" /> : null}
                   {user.premiumTier !== 'free' ? <Text style={styles.gem}>{user.premiumTier === 'premium_plus' ? '💎' : '⭐'}</Text> : null}
                 </View>
+                {avatar.pronouns && avatar.pronouns !== 'none' ? (
+                  <View style={styles.pronouns}>
+                    <PronounTag pronouns={avatar.pronouns} />
+                  </View>
+                ) : null}
                 <View style={styles.statusLine}>
                   <Pulse active={user.isOnline} maxScale={1.25} style={styles.dotWrap}>
                     <View style={[styles.dot, !user.isOnline && styles.dotOff]} />
@@ -264,6 +277,7 @@ const styles = StyleSheet.create({
   nameLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   name: { ...typography.h2, color: colors.white, flexShrink: 1 },
   gem: { fontSize: 14 },
+  pronouns: { alignSelf: 'flex-start' },
   statusLine: { flexDirection: 'row', alignItems: 'center' },
   dotWrap: { width: 14, height: 14, alignItems: 'center', justifyContent: 'center', marginRight: spacing.xs },
   dot: { width: 9, height: 9, borderRadius: 5, backgroundColor: colors.primary },

@@ -2,6 +2,8 @@ import type { AvatarTier, Gender, InterestItem, Orientation, ShowMe } from '@cru
 import { AGE_RANGE_DAILY_CHANGES, LEGAL_VERSION } from '@cruzei/shared-types';
 import {
   AVATAR_CONFIG_MAX_BYTES,
+  AVATAR_V11_SLOTS,
+  avatarTiersFor,
   checkProfileText,
   FREE_TIERS,
   isValidAvatarConfig,
@@ -57,8 +59,6 @@ import {
   profileCompleteness,
 } from './profile-prefs';
 
-const PREMIUM_TIERS: ReadonlySet<AvatarTier> = new Set<AvatarTier>(['free', 'premium']);
-
 /** mesmo teto do app (PhotoUploadScreen): o servidor é quem garante */
 export const MAX_PHOTOS = 6;
 
@@ -72,15 +72,29 @@ export const UPLOAD_NOT_FOUND = {
 };
 
 /**
- * Tiers de avatar liberados: premium/premium_plus com assinatura vigente (sem premiumExpiresAt ou no futuro)
- * → free + premium; senão só free. 'event' fica bloqueado pra todos por enquanto.
+ * Tiers de avatar liberados pelo plano EFETIVO (vigente = sem premiumExpiresAt ou vencendo no futuro):
+ * premium → free + premium; premium_plus → + plus; free ou vencido → só free. 'event' fica bloqueado pra todos.
  */
 export function allowedTiersFor(
   user: { premiumTier: string; premiumExpiresAt: Date | null } | null | undefined,
 ): ReadonlySet<AvatarTier> {
-  if (!user || user.premiumTier === 'free') return FREE_TIERS;
-  const active = user.premiumExpiresAt == null || user.premiumExpiresAt > new Date();
-  return active ? PREMIUM_TIERS : FREE_TIERS;
+  return avatarTiersFor(user?.premiumTier, isPremiumActive(user));
+}
+
+/**
+ * App de antes da v1.1 manda a config sem as chaves novas (pet, veículo, pronomes, aura…): elas vêm da config salva
+ * (pelo plano vigente), não do padrão — senão editar o avatar num aparelho antigo apagaria o que foi escolhido num novo.
+ */
+export function withSavedV11(
+  input: object,
+  saved: unknown,
+  tiers: ReadonlySet<AvatarTier>,
+): Record<string, unknown> {
+  const out = { ...(input as Record<string, unknown>) };
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return out;
+  const prev = normalizeAvatarConfig(saved, tiers) as unknown as Record<string, unknown>;
+  for (const k of AVATAR_V11_SLOTS) if (out[k] === undefined) out[k] = prev[k];
+  return out;
 }
 
 @Injectable()
@@ -118,15 +132,12 @@ export class UsersService {
          AND EXISTS (SELECT 1 FROM users p WHERE p.id = a.liked_id AND p.deleted_at IS NULL)`;
     const matchesCount = mutual?.n ?? 0;
 
-    // assinatura vencida → itens premium do avatar caem pro default (salva só se mudou)
-    let avatarConfig: unknown = user.avatarConfig;
-    if (
-      user.premiumTier !== 'free' &&
-      user.premiumExpiresAt &&
-      user.premiumExpiresAt <= new Date()
-    ) {
-      avatarConfig = await this.downgradeAvatarToFree(userId, avatarConfig);
-    }
+    // avatar só com itens do plano EFETIVO (salva só se mudou): vencido → free; Premium+ → Premium perde os 'plus'
+    const avatarConfig = await this.downgradeAvatar(
+      userId,
+      allowedTiersFor(user),
+      user.avatarConfig,
+    );
 
     // pausa vencida → volta na hora (o cron unpauseExpired cobre quem não abre o app)
     let isPaused = user.isPaused;
@@ -318,16 +329,17 @@ export class UsersService {
       if (Buffer.byteLength(JSON.stringify(dto.avatar) ?? '') > AVATAR_CONFIG_MAX_BYTES) {
         throw new BadRequestException('avatar muito grande');
       }
-      // free só usa itens free; premium/premium_plus com assinatura vigente liberam 'premium'
+      // config antiga (sem as chaves novas) ou completa; pelo plano vigente: free só itens free, Premium libera
+      // 'premium' e Premium+ também 'plus'
       const me = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { premiumTier: true, premiumExpiresAt: true },
+        select: { premiumTier: true, premiumExpiresAt: true, avatarConfig: true },
       });
       const tiers = allowedTiersFor(me);
       if (!isValidAvatarConfig(dto.avatar, tiers)) {
         throw new BadRequestException('avatar inválido ou com itens bloqueados');
       }
-      data.avatarConfig = normalizeAvatarConfig(dto.avatar, tiers);
+      data.avatarConfig = normalizeAvatarConfig(withSavedV11(dto.avatar, me?.avatarConfig, tiers), tiers);
     }
 
     if (dto.interests) {
@@ -790,10 +802,15 @@ export class UsersService {
   }
 
   /**
-   * Garante que o avatar só usa itens free (assinatura cancelada ou vencida): normaliza e salva se mudou.
-   * Devolve a config vigente. `current` evita uma query quando o caller já tem a config em mãos.
+   * Garante que o avatar só usa itens dos `tiers` (plano vencido, cancelado ou trocado de Premium+ pra Premium):
+   * normaliza e salva se mudou. Devolve a config vigente. `current` evita uma query quando o caller já tem a config.
+   * Valor que não é objeto fica como está (o avatarOrFallback desenha o boneco determinístico).
    */
-  async downgradeAvatarToFree(userId: string, current?: unknown): Promise<unknown> {
+  async downgradeAvatar(
+    userId: string,
+    tiers: ReadonlySet<AvatarTier>,
+    current?: unknown,
+  ): Promise<unknown> {
     const cfg =
       current !== undefined
         ? current
@@ -803,14 +820,20 @@ export class UsersService {
               select: { avatarConfig: true },
             })
           )?.avatarConfig;
-    if (cfg == null || isValidAvatarConfig(cfg, FREE_TIERS)) return cfg ?? null;
-    const normalized = normalizeAvatarConfig(cfg, FREE_TIERS);
+    if (cfg == null || typeof cfg !== 'object' || isValidAvatarConfig(cfg, tiers))
+      return cfg ?? null;
+    const normalized = normalizeAvatarConfig(cfg, tiers);
     await this.prisma.user.update({
       where: { id: userId },
       data: { avatarConfig: normalized as never },
     });
     await this.redis.invalidateProfile(userId);
     return normalized;
+  }
+
+  /** atalho do painel (admin-users.service): plano tirado → só itens free */
+  downgradeAvatarToFree(userId: string, current?: unknown): Promise<unknown> {
+    return this.downgradeAvatar(userId, FREE_TIERS, current);
   }
 
   private async refreshCompleteness(userId: string) {

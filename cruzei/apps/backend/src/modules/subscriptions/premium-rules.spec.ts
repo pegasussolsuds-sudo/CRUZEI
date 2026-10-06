@@ -47,7 +47,9 @@ function lifecycleWith(rows: unknown[]) {
     $executeRaw: jest.fn(async () => 0),
   };
   const redis = { invalidateProfile: jest.fn(async () => undefined) };
-  const users = { downgradeAvatarToFree: jest.fn(async () => null) };
+  const users = {
+    downgradeAvatar: jest.fn(async (_id: string, _tiers: ReadonlySet<string>) => null),
+  };
   const gateway = { emitToUser: jest.fn(), leaveAllConversations: jest.fn(async () => undefined) };
   const notify = { notify: jest.fn(async () => ({ notified: 1, pushSent: 0, pushFailed: 0 })) };
   const svc = new PremiumLifecycleService(
@@ -70,10 +72,11 @@ describe('PremiumLifecycleService', () => {
     const t = lifecycleWith(rows);
     expect(await t.svc.downgradeExpired()).toEqual(rows);
 
-    expect(t.users.downgradeAvatarToFree.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
-      'vis',
-      'anon',
-      'liberado',
+    // tier efetivo depois do rebaixamento = free: o avatar fica só com itens free
+    expect(t.users.downgradeAvatar.mock.calls.map((c) => [c[0], [...c[1]]])).toEqual([
+      ['vis', ['free']],
+      ['anon', ['free']],
+      ['liberado', ['free']],
     ]);
     expect(t.gateway.leaveAllConversations).toHaveBeenCalledTimes(1);
     expect(t.gateway.leaveAllConversations).toHaveBeenCalledWith('anon');
@@ -110,7 +113,7 @@ describe('PremiumLifecycleService', () => {
       { id: 'a', anonymous: false, released: false },
       { id: 'b', anonymous: false, released: false },
     ]);
-    t.users.downgradeAvatarToFree.mockRejectedValueOnce(new Error('boom'));
+    t.users.downgradeAvatar.mockRejectedValueOnce(new Error('boom'));
     await t.svc.downgradeExpired();
     expect(t.gateway.emitToUser).toHaveBeenCalledWith('b', 'account:changed', {
       reason: 'premium_expired',

@@ -13,7 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
+import { useIsFocused, useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -42,6 +42,8 @@ import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { SafetySheet } from '../../components/safety/SafetySheet';
 import { EmergencySheet } from '../../components/safety/EmergencySheet';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { SignatureAvatar } from '../../components/avatar/SignatureAvatar';
+import { PronounTag } from '../../components/avatar/stage';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { openChat } from '../../navigation/openChat';
@@ -149,6 +151,8 @@ export function UserCardScreen() {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
+  // os palcos do avatar congelam quando o cartão sai de cena (chat, perfil por cima)
+  const isFocused = useIsFocused();
 
   const HEADER_H = Math.min(Math.round(width * 1.25), Math.round(height * 0.72));
 
@@ -351,60 +355,68 @@ export function UserCardScreen() {
             height={HEADER_H}
             name={user.name}
             topInset={insets.top}
-            fallback={<CruzeiAvatar config={resolveAvatar(user.avatar, user.id)} mode="full" size={Math.round(HEADER_H * 0.62)} accessibilityLabel={`Avatar de ${user.name}`} />}
+            fallback={
+              photos.length ? (
+                // foto que não carregou: o boneco parado (um palco por foto seria pesado)
+                <CruzeiAvatar config={resolveAvatar(user.avatar, user.id)} mode="full" size={Math.round(HEADER_H * 0.62)} accessibilityLabel={`Avatar de ${user.name}`} />
+              ) : (
+                // sem foto: o avatar vivo é o protagonista (respira, fundo; toque toca a animação). Pronomes ficam no rodapé
+                <SignatureAvatar config={resolveAvatar(user.avatar, user.id)} size={Math.round(HEADER_H * 0.7)} groundShadow paused={!isFocused || !!match} showPronouns={false} label={`Avatar de ${user.name}`} />
+              )
+            }
           />
-          <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, headerFade]}>
+          {/* só o chip do avatar recebe toque: o resto deixa o gesto passar pro carrossel de fotos embaixo */}
+          <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, headerFade]}>
             <LinearGradient
+              pointerEvents="none"
               colors={['rgba(10,10,26,0)', 'rgba(10,10,26,0.15)', 'rgba(10,10,26,0.85)']}
               locations={[0.45, 0.65, 1]}
               style={StyleSheet.absoluteFill}
             />
-            <View style={styles.headerInfo}>
-              {/* avatar Cruzei — o mesmo boneco que aparece no mapa */}
+            <View style={styles.headerInfo} pointerEvents="box-none">
+              {/* avatar Metch — o mesmo boneco que aparece no mapa; vivo (respira, fundo) e anima no toque */}
               <FadeInView delay={40} fromScale={0.7} style={styles.avatarChip}>
-                <CruzeiAvatar
-                  config={resolveAvatar(user.avatar, user.id)}
-                  mode="bust"
-                  size={AVATAR_CHIP}
-                  backgroundColor={colors.black}
-                  accessibilityLabel={`Avatar de ${user.name}`}
-                />
+                <SignatureAvatar config={resolveAvatar(user.avatar, user.id)} mode="bust" size={AVATAR_CHIP} showPronouns={false} paused={!isFocused || !!match} label={`Avatar de ${user.name}`} />
               </FadeInView>
-              <FadeInView delay={80} fromY={12}>
-                <View style={styles.nameRow}>
-                  <Text style={styles.name} numberOfLines={1}>
-                    {user.name}
-                    {user.age != null ? <Text style={styles.age}>, {user.age}</Text> : null}
-                  </Text>
-                  {user.isVerified ? (
-                    <View style={styles.verified} accessibilityLabel="Perfil verificado">
-                      <Ionicons name="checkmark" size={13} color={colors.black} />
-                    </View>
-                  ) : null}
-                </View>
-              </FadeInView>
-              <FadeInView delay={160} fromY={10}>
-                <View style={styles.metaRow}>
-                  {distance ? (
-                    <View style={styles.metaChip}>
-                      <Ionicons name="location" size={13} color={colors.primary} />
-                      <Text style={styles.metaText}>{distance}</Text>
-                    </View>
-                  ) : null}
-                  {lastSeen ? (
-                    <View style={styles.metaChip}>
-                      <View style={[styles.dot, lastSeen === 'online' && { backgroundColor: colors.online }]} />
-                      <Text style={styles.metaText}>{lastSeen === 'online' ? 'online agora' : 'ativo há pouco'}</Text>
-                    </View>
-                  ) : null}
-                  {user.premiumTier !== 'free' ? (
-                    <View style={[styles.metaChip, styles.premiumChip]}>
-                      <Ionicons name="sparkles" size={12} color={colors.accent} />
-                      <Text style={[styles.metaText, { color: colors.accent }]}>Premium</Text>
-                    </View>
-                  ) : null}
-                </View>
-              </FadeInView>
+              <View pointerEvents="none">
+                <FadeInView delay={80} fromY={12}>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.name} numberOfLines={1}>
+                      {user.name}
+                      {user.age != null ? <Text style={styles.age}>, {user.age}</Text> : null}
+                    </Text>
+                    {user.isVerified ? (
+                      <View style={styles.verified} accessibilityLabel="Perfil verificado">
+                        <Ionicons name="checkmark" size={13} color={colors.black} />
+                      </View>
+                    ) : null}
+                  </View>
+                </FadeInView>
+                <FadeInView delay={160} fromY={10}>
+                  <View style={styles.metaRow}>
+                    {/* pronomes escolhidos no avatar (voluntário; sem escolha, nada aparece) */}
+                    <PronounTag pronouns={resolveAvatar(user.avatar, user.id).pronouns} size="md" />
+                    {distance ? (
+                      <View style={styles.metaChip}>
+                        <Ionicons name="location" size={13} color={colors.primary} />
+                        <Text style={styles.metaText}>{distance}</Text>
+                      </View>
+                    ) : null}
+                    {lastSeen ? (
+                      <View style={styles.metaChip}>
+                        <View style={[styles.dot, lastSeen === 'online' && { backgroundColor: colors.online }]} />
+                        <Text style={styles.metaText}>{lastSeen === 'online' ? 'online agora' : 'ativo há pouco'}</Text>
+                      </View>
+                    ) : null}
+                    {user.premiumTier !== 'free' ? (
+                      <View style={[styles.metaChip, styles.premiumChip]}>
+                        <Ionicons name="sparkles" size={12} color={colors.accent} />
+                        <Text style={[styles.metaText, { color: colors.accent }]}>Premium</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </FadeInView>
+              </View>
             </View>
           </Animated.View>
         </Animated.View>

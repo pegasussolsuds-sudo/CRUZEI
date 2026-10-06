@@ -1,4 +1,5 @@
 import type { AccountChangedPayload } from '@cruzei/shared-types';
+import { FREE_TIERS, avatarTiersFor } from '@cruzei/shared-utils';
 import { Injectable, Logger } from '@nestjs/common';
 
 import { ANON_FREE_HOURS } from '../../common/premium';
@@ -119,6 +120,18 @@ export class PremiumLifecycleService {
   }
 
   /**
+   * Compra que troca o plano (Premium+ → Premium): o avatar perde na hora os itens que o plano novo não libera, como
+   * o painel faz — senão os outros continuam vendo itens 'plus' no mapa até o próximo /me da pessoa. Falha só loga.
+   */
+  async fitAvatarToPlan(userId: string, tier: string): Promise<void> {
+    try {
+      await this.users.downgradeAvatar(userId, avatarTiersFor(tier));
+    } catch (e) {
+      this.log.warn(`avatar de ${userId} no plano ${tier} falhou: ${(e as Error).message}`);
+    }
+  }
+
+  /**
    * Depois do rebaixamento: avatar só com itens free, invisível sai das salas de conversa (agora está travado), /me e
    * candidato em cache caem, o app aberto busca o /me ('account:changed' premium_expired) e o aviso vai pra central +
    * push ('premium_expired', texto conforme estava invisível ou não).
@@ -127,7 +140,7 @@ export class PremiumLifecycleService {
     if (!rows.length) return;
     for (const r of rows) {
       try {
-        await this.users.downgradeAvatarToFree(r.id);
+        await this.users.downgradeAvatar(r.id, FREE_TIERS);
         if (r.anonymous) await this.gateway.leaveAllConversations(r.id).catch(() => undefined);
         await this.redis.invalidateProfile(r.id);
         const payload: AccountChangedPayload = { reason: 'premium_expired' };

@@ -1,3 +1,11 @@
+import type { AvatarConfig } from '@cruzei/shared-types';
+import {
+  AVATAR_V11_SLOTS,
+  DEFAULT_AVATAR,
+  FREE_TIERS,
+  isValidAvatarConfig,
+  PREMIUM_TIERS,
+} from '@cruzei/shared-utils';
 import { PrismaClient } from '@prisma/client';
 
 import { phoneHash } from '../../src/common/phone-hash';
@@ -69,6 +77,34 @@ const future = (ms: number) => new Date(Date.now() + ms);
 
 const resetDb = () =>
   prisma.$executeRawUnsafe('TRUNCATE users, trial_claims RESTART IDENTITY CASCADE');
+
+/** avatar só com itens free, com os slots novos */
+const FREE_AVATAR: AvatarConfig = {
+  ...DEFAULT_AVATAR,
+  hair: 'long_curly',
+  pronouns: 'elu',
+  pride: 'pin',
+  held: 'coffee',
+  pet: 'dog_caramel',
+  petPose: 'side',
+  vehicle: 'bike',
+};
+/** + itens premium (aura, fundo, pet e veículo pagos) */
+const PREMIUM_AVATAR: AvatarConfig = {
+  ...FREE_AVATAR,
+  aura: 'galaxy',
+  backdrop: 'galaxy',
+  pet: 'capybara',
+  vehicle: 'moto',
+};
+/** + itens só do Premium+ (supernova, disco voador, fênix) */
+const PLUS_AVATAR: AvatarConfig = {
+  ...PREMIUM_AVATAR,
+  aura: 'supernova',
+  vehicle: 'ufo',
+  pet: 'phoenix',
+  petPose: 'float',
+};
 
 // NODE_ENV=test não liga atalho de dev: o recibo 'dev' dos testes de assinatura precisa do ALLOW_DEV_RECEIPTS
 const savedAllowDevReceipts = process.env.ALLOW_DEV_RECEIPTS;
@@ -301,15 +337,17 @@ describe('tarefa periódica (PremiumTask → PremiumLifecycleService)', () => {
   });
 
   it('Premium vencido: rebaixa, avatar free, invisível ganha 24 h (não aparece de surpresa), aviso premium_expired', async () => {
-    const avatarSpy = jest.spyOn(users, 'downgradeAvatarToFree');
+    const avatarSpy = jest.spyOn(users, 'downgradeAvatar');
     const expiredAt = past(2 * H);
     const vis = await newUser(prisma, 'Vis', {
       premiumTier: 'premium',
       premiumExpiresAt: expiredAt,
+      avatarConfig: PREMIUM_AVATAR,
     });
     const anon = await newUser(prisma, 'Anon', {
       premiumTier: 'premium_plus',
       premiumExpiresAt: past(H),
+      avatarConfig: PLUS_AVATAR,
       visibilityMode: 'anonymous',
       anonymousUntil: past(3 * DAY), // janela velha: sem a ordem certa, a tarefa o jogaria no mapa
     });
@@ -351,6 +389,14 @@ describe('tarefa periódica (PremiumTask → PremiumLifecycleService)', () => {
 
     const touched = avatarSpy.mock.calls.map((c) => c[0]).sort();
     expect(touched).toEqual([vis.id, anon.id, released.id].sort());
+    expect(avatarSpy.mock.calls.every((c) => [...c[1]].join() === 'free')).toBe(true);
+    // avatar de verdade no banco: só itens free (pet, veículo, aura e fundo pagos caem; o resto fica)
+    for (const id of [vis.id, anon.id]) {
+      const cfg = (await row(id)).avatarConfig as unknown as AvatarConfig;
+      expect(isValidAvatarConfig(cfg, FREE_TIERS)).toBe(true);
+      expect(cfg).toMatchObject({ aura: 'none', backdrop: 'none', pet: 'none', vehicle: 'none' });
+      expect(cfg).toMatchObject({ hair: 'long_curly', pronouns: 'elu', held: 'coffee' });
+    }
     expect(gateway.leaveAllConversations).toHaveBeenCalledTimes(1);
     expect(gateway.leaveAllConversations).toHaveBeenCalledWith(anon.id);
     for (const id of [vis.id, anon.id, released.id]) {
@@ -556,5 +602,84 @@ describe('teste grátis: uma vez por conta E por número', () => {
     });
     // e a tarefa não o devolve ao mapa
     expect(await lifecycle.expireFreeAnonymous()).toEqual([]);
+  });
+});
+
+describe('avatar x plano (PATCH /me e /me pelo plano efetivo)', () => {
+  const avatarOf = async (id: string) => (await row(id)).avatarConfig as unknown as AvatarConfig;
+  const meAvatar = async (id: string) => ((await users.me(id)) as { avatar: AvatarConfig }).avatar;
+
+  it('PATCH aceita config antiga (sem as chaves novas) e completa; Premium+ salva plus, Premium recebe 400', async () => {
+    const free = await newUser(prisma, 'Free');
+    const legacy = Object.fromEntries(
+      Object.entries({ ...DEFAULT_AVATAR, accessory: 'scarf' }).filter(
+        ([k]) => !(AVATAR_V11_SLOTS as readonly string[]).includes(k),
+      ),
+    );
+    await users.update(free.id, { avatar: legacy });
+    expect(await avatarOf(free.id)).toEqual({
+      ...DEFAULT_AVATAR,
+      accessory: 'none',
+      neck: 'scarf',
+    });
+    await users.update(free.id, { avatar: FREE_AVATAR });
+    expect(await avatarOf(free.id)).toEqual(FREE_AVATAR);
+    await expect(users.update(free.id, { avatar: PREMIUM_AVATAR })).rejects.toMatchObject({
+      status: 400,
+    });
+
+    const plus = await newUser(prisma, 'Plus', { premiumTier: 'premium_plus' });
+    await users.update(plus.id, { avatar: PLUS_AVATAR });
+    expect(await avatarOf(plus.id)).toEqual(PLUS_AVATAR);
+
+    const prem = await newUser(prisma, 'Prem', {
+      premiumTier: 'premium',
+      premiumExpiresAt: future(DAY),
+    });
+    await expect(users.update(prem.id, { avatar: PLUS_AVATAR })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(
+      users.update(prem.id, { avatar: { ...PLUS_AVATAR, pad: 'x'.repeat(2100) } }),
+    ).rejects.toMatchObject({ status: 400, message: 'avatar muito grande' });
+    expect((await row(prem.id)).avatarConfig).toBeNull();
+  });
+
+  it('/me: Premium+ trocado pra Premium perde só os plus; vencido perde tudo; dentro do plano não grava', async () => {
+    const swapped = await newUser(prisma, 'Trocou', {
+      premiumTier: 'premium', // era premium_plus (painel), avatar ainda com itens plus
+      premiumExpiresAt: future(DAY),
+      avatarConfig: PLUS_AVATAR,
+    });
+    const expired = await newUser(prisma, 'Venceu', {
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: past(H),
+      avatarConfig: PLUS_AVATAR,
+    });
+    const plus = await newUser(prisma, 'Plus', {
+      premiumTier: 'premium_plus',
+      premiumExpiresAt: null,
+      avatarConfig: PLUS_AVATAR,
+    });
+
+    const a = await meAvatar(swapped.id);
+    expect(a).toEqual({ ...PLUS_AVATAR, aura: 'none', vehicle: 'none', pet: 'none' });
+    expect(isValidAvatarConfig(a, PREMIUM_TIERS)).toBe(true);
+    expect(await avatarOf(swapped.id)).toEqual(a);
+    expect(a.backdrop).toBe('galaxy'); // item premium continua
+
+    const b = await meAvatar(expired.id);
+    expect(isValidAvatarConfig(b, FREE_TIERS)).toBe(true);
+    expect(b).toMatchObject({
+      backdrop: 'none',
+      aura: 'none',
+      pronouns: 'elu',
+      hair: 'long_curly',
+    });
+    expect(await avatarOf(expired.id)).toEqual(b);
+
+    const before = (await row(plus.id)).updatedAt;
+    expect(await meAvatar(plus.id)).toEqual(PLUS_AVATAR);
+    expect((await row(plus.id)).updatedAt).toEqual(before);
   });
 });

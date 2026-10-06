@@ -20,7 +20,8 @@ import { resolveAvatar } from '../avatar';
 import { colors, radius, spacing, spring, typography } from '@cruzei/ui-mobile';
 import { openChat } from '../navigation/openChat';
 import { BlobBackground, Confetti, FadeInView, Glow, Pulse, ScaleOnPress, SlideInView } from './animated';
-import { CruzeiAvatar } from './avatar/CruzeiAvatar';
+import { SignatureAvatar } from './avatar/SignatureAvatar';
+import { PronounTag } from './avatar/stage';
 import { matchDistanceText } from './map/proximityText';
 import { BRAND } from '../brand';
 
@@ -64,7 +65,8 @@ const TR = {
 /** de quanto longe cada avatar vem (px) */
 const APPROACH = 104;
 
-const AVATAR = 110;
+/** palco do avatar dentro do anel (122 de altura → boneco com ~105; a aura transborda um pouco o anel, de propósito) */
+const AVATAR = 122;
 const RING = 124;
 const CARD_BG = '#12122A';
 
@@ -232,7 +234,7 @@ function Celebration({
             <View style={styles.avatars}>
               <SlideInView from="left" distance={avatarDistance} delay={avatarDelay} springPreset="bouncy">
                 <Glow color={colors.primary} spread={14} intensity={0.85} cycleMs={1800}>
-                  <AvatarRing config={myAvatar} ring={colors.primary} label="Seu avatar" />
+                  <AvatarRing config={myAvatar} ring={colors.primary} label="Seu avatar" playAt={avatarDelay + 650} />
                 </Glow>
               </SlideInView>
 
@@ -259,7 +261,7 @@ function Celebration({
                 <Glow color={colors.secondary} spread={14} intensity={0.85} cycleMs={1800}>
                   {/* recebido: o anel da pessoa pulsa (foi ela que fechou o match) */}
                   <Pulse maxScale={1.05} cycleMs={1400} active={received && !reduceMotion}>
-                    <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} />
+                    <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} playAt={avatarDelay + 800} />
                   </Pulse>
                 </Glow>
               </SlideInView>
@@ -337,11 +339,19 @@ function ShockRing({ delay, color }: { delay: number; color: string }) {
   return <Animated.View pointerEvents="none" style={[styles.shock, { borderColor: color }, style]} />;
 }
 
-/** avatar de corpo inteiro dentro de um anel neon (lima = você, magenta = a pessoa) */
-function AvatarRing({ config, ring, label }: { config: AvatarConfig; ring: string; label: string }) {
+/**
+ * avatar de corpo inteiro dentro de um anel neon (lima = você, magenta = a pessoa): vivo, toca a animação assinatura
+ * quando os dois já chegaram (`playAt` ms; nunca com movimento reduzido) e a cada toque; pronomes numa plaquinha no pé
+ */
+function AvatarRing({ config, ring, label, playAt }: { config: AvatarConfig; ring: string; label: string; playAt: number }) {
   return (
-    <View style={[styles.avatarRing, { borderColor: ring }]} accessibilityLabel={label} accessible>
-      <CruzeiAvatar config={config} mode="full" size={AVATAR} groundShadow accessibilityLabel={label} />
+    <View style={[styles.avatarRing, { borderColor: ring }]}>
+      <SignatureAvatar config={config} size={AVATAR} groundShadow autoplay autoplayDelay={playAt} showBackdrop={false} showPronouns={false} label={label} />
+      {config.pronouns && config.pronouns !== 'none' ? (
+        <View style={styles.pronouns} pointerEvents="none">
+          <PronounTag pronouns={config.pronouns} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -404,6 +414,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  pronouns: { position: 'absolute', bottom: -12, left: -8, right: -8, alignItems: 'center' },
   contextBox: {
     flexDirection: 'row',
     alignItems: 'center',

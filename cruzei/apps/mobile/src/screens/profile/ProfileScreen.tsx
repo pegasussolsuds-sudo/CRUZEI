@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
+import { useIsFocused, useNavigation, type CompositeNavigationProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -40,7 +40,7 @@ import { useVisibility } from '../../hooks/useVisibility';
 import { anonymousUntilLabel } from '../../services/anonymousWindow';
 import { unreadNotifications, useNotificationList } from '../../hooks/useNotifications';
 import { FadeInView, Glow, Pulse, ScaleOnPress } from '../../components/animated';
-import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
+import { SignatureAvatar } from '../../components/avatar/SignatureAvatar';
 import { SHOW_ME_RECIPROCAL_NOTE } from '../../components/showMeNote';
 import { resolveAvatar } from '../../avatar';
 import { Button } from '@cruzei/ui-mobile';
@@ -91,6 +91,8 @@ type SettingsPatch = {
 
 export function ProfileScreen() {
   const nav = useNavigation<ProfileNav>();
+  // o palco do avatar congela quando o perfil sai de cena (outra aba, editor por cima)
+  const isFocused = useIsFocused();
   const qc = useQueryClient();
   const insets = useSafeAreaInsets();
   const { logout, setUser } = useAuthStore();
@@ -383,7 +385,8 @@ export function ProfileScreen() {
           >
             <View style={styles.avatarStage}>
               <Glow color={colors.primary} spread={22} intensity={0.35} shape="circle" cycleMs={3000}>
-                <CruzeiAvatar config={cruzeiAvatar} mode="full" size={CRUZEI_AVATAR} groundShadow accessibilityLabel={`Seu avatar ${BRAND.name}`} />
+                {/* vivo: respira, mostra fundo e pronomes; tocar no boneco toca a animação (o resto do card personaliza) */}
+                <SignatureAvatar config={cruzeiAvatar} size={CRUZEI_AVATAR} groundShadow paused={!isFocused} label={`Seu avatar ${BRAND.name}`} />
               </Glow>
             </View>
             <View style={styles.avatarInfo}>

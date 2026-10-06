@@ -41,6 +41,7 @@ import { markNotificationRead } from '../hooks/useNotifications';
 import { askPushPermissionOnce } from '../services/notifications';
 import { MainTabs, type MainTabParamList } from './MainTabs';
 import { navigationRef } from './navigationRef';
+import { useDevLinks } from '../screens/dev/devLinks';
 import { openTargetRoute } from './openTarget';
 import { navBarScreenLayout } from './NavBarBackdrop';
 import { colors } from '@cruzei/ui-mobile';
@@ -72,6 +73,8 @@ export type RootStackParamList = {
   DataExport: undefined; // Baixar meus dados (LGPD)
   LocationHistory: undefined; // Apagar histórico de localização
   DeleteAccount: undefined; // Excluir conta (prazo de 30 dias pra voltar atrás)
+  // só __DEV__: galeria de revisão do avatar no aparelho (metch://dev/avatar-gallery?slot=…&mode=…&page=…)
+  AvatarGallery: { slot?: string; mode?: string; page?: number; p?: number; id?: string } | undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -97,6 +100,7 @@ const DARK_ROUTES = new Set(['UserCard', 'Boost', 'AvatarSetup', 'PhotoUpload', 
 
 export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  useDevLinks(isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const onboardingStep = useAuthStore((s) => s.onboardingStep);
   const blocked = useAccountBlockStore((s) => s.blocked);
@@ -225,6 +229,7 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
             <Stack.Screen name="DataExport" component={DataExportScreen} options={{ ...lightHeader, title: 'Baixar meus dados' }} />
             <Stack.Screen name="LocationHistory" component={LocationHistoryScreen} options={{ ...lightHeader, title: 'Histórico de localização' }} />
             <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ ...lightHeader, title: 'Excluir conta' }} />
+            {__DEV__ ? <Stack.Screen name="AvatarGallery" getComponent={() => require('../screens/dev/AvatarGalleryScreen').AvatarGalleryScreen} options={{ ...dark, animation: 'none' }} getId={({ params }) => JSON.stringify(params ?? {})} /> : null}
           </>
         )}
       </Stack.Navigator>

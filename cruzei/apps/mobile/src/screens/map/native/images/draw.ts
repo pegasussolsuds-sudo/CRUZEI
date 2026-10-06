@@ -13,11 +13,12 @@
 //   - translateSelf/rotateSelf/scaleSelf do DOMMatrix pós-multiplicam, igual a canvas.translate/rotate/scale do Skia;
 //   - lineCap padrão butt, lineJoin padrão miter (limite 10), exceto onde o original muda.
 
+import type { AvatarConfig } from '@cruzei/shared-types';
+import { DEFAULT_AVATAR } from '@cruzei/shared-utils';
 import {
   BlendMode,
   BlurStyle,
   ClipOp,
-  FillType,
   FilterMode,
   FontWeight,
   ImageFormat,
@@ -38,7 +39,14 @@ import {
   type SkShader,
   type SkSurface,
 } from '@shopify/react-native-skia';
+
 import type { AvatarGroup, AvatarLayer, AvatarRig } from '../../../../avatar';
+import { MAP_HEAD_SCALE, buildAnatomy, groundShadowPath, rigFromAnatomy, silhouettePaths } from '../../../../avatar/anatomy';
+import { fillConfig } from '../../../../avatar/ctx';
+import { blend, zero } from '../../../../avatar/pose';
+import { groupMatrix, mIsIdentity, mMul, mToSkia, type Mat } from '../../../../avatar/rig';
+import { EMPTY_SCENE, applyScene } from '../../../../avatar/scene';
+import { makeLayerPaints, paintLayer, parseLayerPath, type PaintEnv } from '../../../../avatar/skia/paintLayer';
 import {
   AURA_RGB,
   BUB,
@@ -52,6 +60,7 @@ import {
   type BubbleStyle,
   type Dim,
   type FigureLook,
+  type FigureOpts,
   type MapDraw,
   type Pose,
 } from '../contracts';
@@ -252,77 +261,52 @@ function layerPath(d: string, evenOdd: boolean): SkPath | null {
     pathCache.set(key, hit);
     return hit;
   }
-  let path: SkPath | null = null;
-  try {
-    const parsed = Skia.Path.MakeFromSVGString(d);
-    if (parsed && evenOdd) {
-      // entrada própria no cache com a regra evenodd (a de nonzero fica intacta)
-      const b = Skia.PathBuilder.MakeFromPath(parsed);
-      path = b.setFillType(FillType.EvenOdd).detach();
-      disposeAll([b, parsed]);
-    } else path = parsed;
-  } catch {
-    path = null;
-  }
+  // entrada própria no cache com a regra evenodd (a de nonzero fica intacta)
+  const path = parseLayerPath(d, evenOdd);
   if (pathCache.size >= PATH_CACHE_MAX) evictPaths();
   pathCache.set(key, path);
   return path;
 }
 
-/** gira em volta de um pivô: translateSelf(p) rotateSelf(deg) translateSelf(-p) */
-function pivotRotate(c: SkCanvas, pivot: [number, number], deg: number): void {
-  c.translate(pivot[0], pivot[1]);
-  c.rotate(deg, 0, 0);
-  c.translate(-pivot[0], -pivot[1]);
-}
-/** corpo: desloca, gira e escala a partir do quadril */
-function applyBody(c: SkCanvas, rig: AvatarRig, pose: Pose): void {
-  c.translate(rig.body[0], rig.body[1] + pose.body.dy);
-  c.rotate(pose.body.r, 0, 0);
-  c.scale(pose.body.sx, pose.body.sy);
-  c.translate(-rig.body[0], -rig.body[1]);
-}
-/** transformação do grupo sobre a base (hierarquia do avatar-anim.ts:127-156): pernas e sombra na raiz, cabeça e braços filhos do corpo */
-function applyGroup(c: SkCanvas, g: AvatarGroup, rig: AvatarRig, pose: Pose): void {
-  switch (g) {
-    case 'legL':
-      pivotRotate(c, rig.legL, pose.legL.r);
-      break;
-    case 'legR':
-      pivotRotate(c, rig.legR, pose.legR.r);
-      break;
-    case 'shadow':
-      c.translate(50, 135);
-      c.scale(pose.shadow.s, 1);
-      c.translate(-50, -135);
-      break;
-    case 'body':
-      applyBody(c, rig, pose);
-      break;
-    case 'head':
-      applyBody(c, rig, pose);
-      c.translate(rig.head[0], rig.head[1] + pose.head.dy);
-      c.rotate(pose.head.r, 0, 0);
-      c.translate(-rig.head[0], -rig.head[1]);
-      break;
-    case 'armL':
-      applyBody(c, rig, pose);
-      pivotRotate(c, rig.armL, pose.armL.r);
-      break;
-    case 'armR':
-      applyBody(c, rig, pose);
-      pivotRotate(c, rig.armR, pose.armR.r);
-      break;
-    default:
-      break; // grupo desconhecido: fica na base (T[g] || base)
-  }
+/** escala MAP_HEAD_SCALE em volta do pivô da cabeça (base do pescoço): M ∘ T(p) S(k) T(-p) */
+function headScale(rig: AvatarRig): Mat {
+  const k = MAP_HEAD_SCALE;
+  const [px, py] = rig.head;
+  return [k, 0, 0, k, px - k * px, py - k * py];
 }
 
 /**
- * drawLayers (pose neutra, mapbox-html.ts:361) e drawPosed (avatar-anim.ts:127) numa função só: com rig+pose cada
- * camada usa a transformação do seu grupo (l.g, padrão 'body'); a ordem do array é o z-order.
+ * transformação do grupo sobre a base: a matriz vem de avatar/rig.ts (a mesma do SVG estático e do palco Skia).
+ * Hierarquia do avatar-anim.ts (pernas e sombra na raiz, cabeça e braços filhos do corpo) + antebraço no cotovelo,
+ * canela no joelho, veículo na raiz (o piloto vai junto) e pet na raiz ou no corpo. Só no mapa, a cabeça inteira
+ * (rosto, cabelo, chapéu) cresce MAP_HEAD_SCALE em volta da base do pescoço: numa figura de ~48 px o rosto continua
+ * lendo (proporção acertada com o diretor de arte).
  */
-function drawAvatar(c: SkCanvas, layers: AvatarLayer[], rig: AvatarRig | null, pose: Pose | null, x: number, y: number, scale: number, mirror: boolean): void {
+/** cabeça maior (MAP_HEAD_SCALE): ligada no mapa; o avatarPng liga só no corpo inteiro pequeno */
+let headScaleOn = true;
+function applyGroup(c: SkCanvas, g: AvatarGroup, rig: AvatarRig, pose: Pose): void {
+  let M = groupMatrix(g, rig, pose);
+  if (g === 'head' && headScaleOn) M = mMul(M, headScale(rig));
+  if (!mIsIdentity(M)) c.concat(mToSkia(M));
+}
+
+/** ambiente de pintura das camadas: objetos temporários no saco do desenho, paths e cores com cache */
+const layerEnv: PaintEnv = {
+  track: (o) => track(o),
+  path: (d, evenOdd) => layerPath(d, evenOdd),
+  color: (css) => colorOf(css),
+};
+
+/** braço levantado além disso = a animação usa os braços (com veículo, senão as mãos voltam pro volante/guidão) */
+const ARMS_UP_DEG = 45;
+
+/**
+ * drawLayers (pose neutra, mapbox-html.ts:361) e drawPosed (avatar-anim.ts:127) numa função só: com rig cada camada
+ * usa a transformação do seu grupo (l.g, padrão 'body'); a ordem do array é o z-order. A cena da config (rig.scene:
+ * sentado, pernas na moto, mãos no volante) entra por cima da pose — inclusive na figura parada. `usesArms` diz se a
+ * animação mexe nos braços (a cena então não segura as mãos); ausente = deduz pelo braço erguido.
+ */
+function drawAvatar(c: SkCanvas, layers: AvatarLayer[], rig: AvatarRig | null, pose: Pose | null, x: number, y: number, scale: number, mirror: boolean, usesArmsIn?: boolean | number): void {
   c.save();
   c.translate(x, y);
   c.scale(scale, scale);
@@ -330,9 +314,16 @@ function drawAvatar(c: SkCanvas, layers: AvatarLayer[], rig: AvatarRig | null, p
     c.translate(100, 0);
     c.scale(-1, 1);
   }
-  const fill = fillPaint();
-  const stroke = strokePaint('#000000', 1, StrokeCap.Round, StrokeJoin.Round);
-  const posed = !!(rig && pose);
+  const paints = makeLayerPaints(layerEnv);
+  let posed: Pose | null = null;
+  if (rig) {
+    const base = pose ?? zero();
+    const w = usesArmsIn === undefined ? (Math.abs(base.armL.r) > ARMS_UP_DEG || Math.abs(base.armR.r) > ARMS_UP_DEG ? 1 : 0) : Math.min(1, Math.max(0, Number(usesArmsIn) || 0));
+    const held = w < 1 ? applyScene(base, rig.scene, 0, { usesArms: false }) : null;
+    const free = w > 0 ? applyScene(base, rig.scene, 0, { usesArms: true }) : null;
+    // mão no volante/guidão/colo ↔ animação de braço: mistura pelo peso (sem salto na entrada e na saída)
+    posed = held && free ? blend(held, free, w) : (free ?? held);
+  }
   let lastG: AvatarGroup | null = null;
   let pushed = false;
   for (let i = 0; i < layers.length; i++) {
@@ -343,57 +334,69 @@ function drawAvatar(c: SkCanvas, layers: AvatarLayer[], rig: AvatarRig | null, p
         if (pushed) c.restore();
         c.save();
         pushed = true;
-        applyGroup(c, g, rig as AvatarRig, pose as Pose);
+        applyGroup(c, g, rig as AvatarRig, posed);
         lastG = g;
       }
     }
-    const path = layerPath(l.d, l.r === 'evenodd');
-    if (!path) continue;
-    const a = l.o == null ? 1 : l.o;
-    if (l.f) {
-      setColor(fill, l.f, a);
-      c.drawPath(path, fill);
-    }
-    if (l.s) {
-      stroke.setStrokeWidth(l.w || 1);
-      stroke.setStrokeCap((l.c || 'round') === 'butt' ? StrokeCap.Butt : StrokeCap.Round);
-      setColor(stroke, l.s, a);
-      c.drawPath(path, stroke);
-    }
+    paintLayer(c, l, layerEnv, paints);
   }
   if (pushed) c.restore();
   c.restore();
 }
 
-/** silhueta neutra enquanto a definição do avatar não chegou (mapbox-html.ts:375) */
+/** manequim neutro (paths da anatomia do avatar padrão, cabeça já na escala do mapa) — montado uma vez */
+let silhouette: { body: string[]; head: string; shadow: string; head0: [number, number] } | null = null;
+function silhouetteShape(): NonNullable<typeof silhouette> {
+  if (silhouette) return silhouette;
+  const an = buildAnatomy(fillConfig(DEFAULT_AVATAR as AvatarConfig), EMPTY_SCENE);
+  const paths = silhouettePaths(an);
+  const head0 = rigFromAnatomy(an, EMPTY_SCENE).head;
+  silhouette = { body: paths.slice(0, -1), head: paths[paths.length - 1], shadow: groundShadowPath(an), head0: [head0[0], head0[1]] };
+  return silhouette;
+}
+
+/** silhueta neutra enquanto a definição do avatar não chegou ou fora do teto de figuras (mapbox-html.ts:375) */
 function drawSilhouette(c: SkCanvas, x: number, y: number, scale: number): void {
+  const sh = silhouetteShape();
   c.save();
   c.translate(x, y);
   c.scale(scale, scale);
-  c.drawOval(oval(50, 135, 26, 5), fillPaint('rgba(0,0,0,0.25)'));
-  const body = fillPaint('#8A8A96');
-  c.drawCircle(50, 33, 21, body);
-  c.drawRect(rect(31, 60, 38, 36), body);
-  c.drawRect(rect(34, 94, 13, 34), body);
-  c.drawRect(rect(53, 94, 13, 34), body);
-  c.drawRect(rect(20, 62, 10, 36), body);
-  c.drawRect(rect(70, 62, 10, 36), body);
+  const shadow = layerPath(sh.shadow, false);
+  if (shadow) c.drawPath(shadow, fillPaint('rgba(0,0,0,0.25)'));
+  // luz de cima: manequim cinza-lavanda com um degradê discreto (lê como gente, não como bloco)
+  const body = fillPaint();
+  body.setShader(linear(0, 10, 0, 134, '#A3A3B2', '#73737F'));
+  for (const d of sh.body) {
+    const p = layerPath(d, false);
+    if (p) c.drawPath(p, body);
+  }
+  const head = layerPath(sh.head, false);
+  if (head) {
+    const k = MAP_HEAD_SCALE;
+    const [px, py] = sh.head0;
+    c.save();
+    c.concat([k, 0, px - k * px, 0, k, py - k * py, 0, 0, 1]);
+    c.drawPath(head, body);
+    c.restore();
+  }
   c.restore();
 }
 
 function isAuraKey(k: string): k is AuraKey {
   return Object.prototype.hasOwnProperty.call(AURA_RGB, k);
 }
-/** cor rgb da poça de luz: boost → dourado; aura do avatar; premium+ → magenta (mapbox-html.ts:384) */
+const RGB_RE = /^\d{1,3},\d{1,3},\d{1,3}$/;
+/** cor rgb da poça de luz: boost → dourado; aura do avatar (cor 'r,g,b' ou chave antiga); premium+ → magenta (mapbox-html.ts:384) */
 function figureAura(look: FigureLook): string | null {
   if (look.boosted) return AURA_RGB.gold;
+  if (look.aura && RGB_RE.test(look.aura)) return look.aura;
   if (look.aura && isAuraKey(look.aura)) return AURA_RGB[look.aura];
   if (look.premiumTier === 'premium_plus') return AURA_RGB.magenta;
   return null;
 }
 
 /** figura em pé (mapbox-html.ts:391 drawFigure) */
-function drawFigure(c: SkCanvas, def: AvatarDef | null, look: FigureLook, dim: Dim, pose: Pose | null, mirror: boolean): void {
+function drawFigure(c: SkCanvas, def: AvatarDef | null, look: FigureLook, dim: Dim, pose: Pose | null, mirror: boolean, opts?: FigureOpts): void {
   const w = dim.w;
   const h = dim.h;
   const scale = figScale(dim);
@@ -407,7 +410,7 @@ function drawFigure(c: SkCanvas, def: AvatarDef | null, look: FigureLook, dim: D
     g.setShader(radial(cx, footY - 2, 3, w * 0.5, rgba(aura, 0.65), rgba(aura, 0)));
     c.drawOval(oval(cx, footY - 2, w * 0.5, w * 0.24), g);
   }
-  if (def && def.l) drawAvatar(c, def.l, pose && def.p ? def.p : null, pose, x, y, scale, mirror);
+  if (def && def.l) drawAvatar(c, def.l, def.p ?? null, pose, x, y, scale, mirror, opts?.usesArms);
   else drawSilhouette(c, x, y, scale);
   // anel de presença: lima se recente (≤ 15 min), senão dourado
   c.drawOval(oval(cx, footY - 3, w * 0.36, w * 0.13), strokePaint(look.recent ? '#7FFF00' : '#FFD700', 2));
@@ -587,8 +590,8 @@ function drawGlow(c: SkCanvas, size: number, rgb: string, alpha0: number, radius
 // API
 // ---------------------------------------------------------------------------------------------------------------
 export const mapDraw: MapDraw = {
-  figure(def, look, dim, pose, mirror) {
-    return render(dim.w, dim.h, (c) => drawFigure(c, def, look, dim, pose, mirror));
+  figure(def, look, dim, pose, mirror, opts) {
+    return render(dim.w, dim.h, (c) => drawFigure(c, def, look, dim, pose, mirror, opts));
   },
   bubble(photo, style) {
     const img = asImage(photo);
@@ -610,6 +613,23 @@ export const mapDraw: MapDraw = {
     return render(size, size, (c) => drawGlow(c, size, rgb, alpha0, radius, inner));
   },
 };
+
+/**
+ * só o avatar em PNG (miniaturas e listas do <CruzeiAvatar/>), com desfoque, recorte e gradiente de verdade — o SVG das
+ * listas só aproxima o desfoque e deixava faixas duras no rosto. vb = recorte em unidades do avatar; w×h lógicos.
+ */
+export function avatarPng(layers: AvatarLayer[], rig: AvatarRig, pose: Pose | null, vb: { x: number; y: number; w: number; h: number }, w: number, h: number, bigHead = false): Uint8Array | null {
+  return render(w, h, (c) => {
+    const prev = headScaleOn;
+    headScaleOn = bigHead;
+    try {
+      const s = w / vb.w;
+      drawAvatar(c, layers, rig, pose, -vb.x * s, -vb.y * s, s, false);
+    } finally {
+      headScaleOn = prev;
+    }
+  });
+}
 
 /** solta o cache de paths das camadas (ex.: aviso de memória baixa do sistema) */
 export function clearDrawCaches(): void {
