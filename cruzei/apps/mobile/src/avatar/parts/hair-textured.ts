@@ -10,7 +10,7 @@
 //   - nagô: fileiras de trança coladas no crânio com o couro cabeludo aparecendo entre elas.
 
 import { smoothPath, taperPath, type SP } from '../anatomy';
-import { mix } from '../shading';
+import { lum, mix } from '../shading';
 
 import { capOutline, paintCap, skullPt, softHairline } from './hair-cap';
 import {
@@ -217,6 +217,8 @@ function kinkyBall(k: HairKit, c: SP, rx: number, ry: number, seed: number, o: {
   ctx.push(d, t.base, { gf: massGrad(k, [c[0], c[1]], Math.max(rx, ry) * 1.15, t.base, { hi: 0.4, lo: 0.8 }), ...(o.clip ? { cp: o.clip } : {}) });
   // borda: um passo mais escura, por dentro (sem halo pra fora)
   edgeShade(k, pts, -0.9 * s, -0.4 * s, t.pale ? mix(t.base, t.deep, 0.5) : t.root, t.pale ? 0.35 : 0.5, 0.6);
+  // crespo escuro na miniatura: luz de recorte fria no alto/esquerda da borda — a silhueta não some no fundo escuro
+  if (lite && lum(ctx.col.hair) < 0.05) edgeShade(k, pts, 0.8 * s, 0.6 * s, t.sheen, 0.32, 0.6);
   // luz de topo larga (alto-esquerda)
   if (!lite) ctx.push(smoothPath(softOutline(c[0] - rx * 0.28, c[1] - ry * 0.42, rx * 0.5, ry * 0.32, 8, 0.3 * s, seed + 3)), t.sheen, { o: t.pale ? 0.28 : 0.3, b: 1.4, cp: d });
   // microcachos: escuros por todo lado, claros só em cima
@@ -224,7 +226,7 @@ function kinkyBall(k: HairKit, c: SP, rx: number, ry: number, seed: number, o: {
   if (!lite) {
     coils(k, d, box, t.pale ? mix(t.base, t.deep, 0.6) : t.deep, t.pale ? 0.4 : 0.55, 0.42 * s, 0.95 * s, seed + 5, 0.17 * s);
     coils(k, d, box, t.lock, t.pale ? 0.35 : 0.42, 0.38 * s, 1.15 * s, seed + 7, 0.15 * s, (x, y) => y < c[1] - ry * 0.1 + (x - c[0]) * 0.3);
-  } else {
+  } else if (!k.tiny) {
     coils(k, d, box, t.deep, 0.4, 0.6 * s, 1.8 * s, seed + 5, 0.3 * s);
   }
   return { d, pts };
@@ -255,6 +257,9 @@ function afroFront(k: HairKit): void {
   if (!lite) {
     coils(k, cap.d, box, t.pale ? mix(t.base, t.deep, 0.6) : t.deep, t.pale ? 0.4 : 0.55, 0.42 * k.s, 0.95 * k.s, 216, 0.17 * k.s);
     coils(k, cap.d, box, t.lock, t.pale ? 0.35 : 0.42, 0.38 * k.s, 1.15 * k.s, 218, 0.15 * k.s, (x, y) => y < g.c[1] - g.ry * 0.1 + (x - g.c[0]) * 0.3);
+  } else if (!k.tiny) {
+    // a mesma textura leve da massa de trás (kinkyBall): sem ela a frente lisa lia uma boina em volta da testa
+    coils(k, cap.d, box, t.deep, 0.4, 0.6 * k.s, 1.8 * k.s, 216, 0.3 * k.s);
   }
   // linha do cabelo macia (crespo cresce em penugem na borda)
   softHairline(k, cap.edge.slice(2, cap.edge.length - 2), cap.d, { temple: 1, mid: 0.35 });

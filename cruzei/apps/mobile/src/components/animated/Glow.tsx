@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, type LayoutChangeEvent, type ViewProps } from 'react-native';
 import { BlurMask, Canvas, Group, RoundedRect } from '@shopify/react-native-skia';
-import { Easing, cancelAnimation, useDerivedValue, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { Easing, cancelAnimation, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { colors } from '@cruzei/ui-mobile';
 
 export interface GlowProps extends ViewProps {
@@ -10,8 +10,13 @@ export interface GlowProps extends ViewProps {
   spread?: number;
   /** intensidade 0..1 */
   intensity?: number;
-  /** anima o halo (respira) — desligue pra glow estático */
+  /** o halo respira algumas vezes ao aparecer e para no brilho cheio — desligue pra já nascer parado */
   animated?: boolean;
+  /**
+   * quantas respirações antes de parar (default 2). Nunca é eterno: cada quadro redesenha o desfoque do Skia na thread
+   * de UI, e o halo respirando sem parar deixava Perfil/Boost com 100% dos quadros travados (medido no S23)
+   */
+  cycles?: number;
   /** formato: círculo (avatares) ou pílula (botões) */
   shape?: 'circle' | 'pill';
   cycleMs?: number;
@@ -19,7 +24,8 @@ export interface GlowProps extends ViewProps {
 
 /**
  * Halo luminoso atrás do conteúdo (Premium+, boost, CTA em destaque), com blur REAL (Skia BlurMask).
- * Mede o conteúdo via onLayout e desenha um Canvas maior por baixo — roda na GPU, sem re-render por frame.
+ * Mede o conteúdo via onLayout e desenha um Canvas maior por baixo. Respira `cycles` vezes e fica parado (parado, o
+ * Canvas não redesenha); com movimento reduzido já nasce parado.
  * Ex.: <Glow color="#FF1493" spread={14} shape="pill"><Button .../></Glow>
  */
 export function Glow({
@@ -27,6 +33,7 @@ export function Glow({
   spread = 12,
   intensity = 0.7,
   animated = true,
+  cycles = 2,
   shape = 'circle',
   cycleMs = 1600,
   style,
@@ -34,16 +41,20 @@ export function Glow({
   ...rest
 }: GlowProps) {
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const t = useSharedValue(animated ? 0 : 1);
+  const reduceMotion = useReducedMotion();
+  const breathe = animated && !reduceMotion;
+  const t = useSharedValue(breathe ? 0 : 1);
 
   useEffect(() => {
-    if (!animated) {
+    if (!breathe) {
+      cancelAnimation(t);
       t.value = 1;
       return;
     }
-    t.value = withRepeat(withTiming(1, { duration: cycleMs, easing: Easing.inOut(Easing.sin) }), -1, true);
+    // número ímpar de idas e voltas a partir de 0: termina em 1, o mesmo brilho do glow parado
+    t.value = withRepeat(withTiming(1, { duration: cycleMs, easing: Easing.inOut(Easing.sin) }), Math.max(1, Math.round(cycles)) * 2 - 1, true);
     return () => cancelAnimation(t);
-  }, [animated, cycleMs, t]);
+  }, [breathe, cycleMs, cycles, t]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;

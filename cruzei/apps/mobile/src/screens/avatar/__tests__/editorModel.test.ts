@@ -150,6 +150,20 @@ describe('aplicar e miniaturas', () => {
     expect(applyItem(a, 'pet', 'husky')).toBe(a);
   });
 
+  it('capa da bandeira e capa/manto por cima não convivem: vale a última escolhida', () => {
+    const a = applyItem({ ...base, outer: 'cape' }, 'pride', 'cape');
+    expect([a.pride, a.outer]).toEqual(['cape', 'none']);
+    const b = applyItem(a, 'outer', 'mantle');
+    expect([b.pride, b.outer]).toEqual(['none', 'mantle']);
+  });
+
+  it('animação que pede pet, sem pet: a miniatura ganha um pet de prévia', () => {
+    const id = ['pet_love', 'pet_cuddle'].find((e) => tilePreviewConfig(base, 'emote', e).pet !== 'none');
+    expect(id).toBeDefined();
+    const t = tilePreviewConfig({ ...base, pet: 'none' }, 'emote', id as string);
+    expect(t.pet).toBe('cat_orange');
+  });
+
   it('miniatura limpa: sem veículo/pet/aura fora das abas deles; rosto sem chapéu e óculos', () => {
     const cfg: AvatarConfig = { ...base, vehicle: 'car', pet: 'pug', aura: 'galaxy', hat: 'cap', glasses: 'round' };
     const top = tilePreviewConfig(cfg, 'top', 'tux');
@@ -179,6 +193,22 @@ describe('aplicar e miniaturas', () => {
     }
     expect(emoteStillPose('none')).toBeNull();
     expect(emoteStillPose('nao-existe')).toBeNull();
+  });
+
+  it('miniaturas de gesto diferentes entre si: nenhum par com braços e pernas quase iguais (beijo = acenar, vitória = pulo = estrelas = fogos)', () => {
+    const ids = ['wave', 'kiss', 'victory', 'jump', 'starfall', 'fireworks', 'flex', 'magic', 'greet'];
+    const sig = (id: string) => {
+      const p = emoteStillPose(id)!;
+      return [p.armL.r, p.armR.r, p.foreL?.r ?? 0, p.foreR?.r ?? 0, p.legL?.r ?? 0, p.legR?.r ?? 0, p.shinL?.r ?? 0, p.shinR?.r ?? 0];
+    };
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = sig(ids[i]);
+        const b = sig(ids[j]);
+        const far = Math.max(...a.map((v, k) => Math.abs(v - b[k])));
+        expect({ par: `${ids[i]}×${ids[j]}`, distinto: far > 25 }).toEqual({ par: `${ids[i]}×${ids[j]}`, distinto: true });
+      }
+    }
   });
 });
 

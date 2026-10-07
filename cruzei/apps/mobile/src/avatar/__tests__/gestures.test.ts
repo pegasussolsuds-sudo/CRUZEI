@@ -356,6 +356,7 @@ describe('partículas (EmoteFx)', () => {
   });
 
   it('nada antes de começar nem depois do fim de um gesto; o quadro-chave (movimento reduzido) tem partículas', () => {
+    const STILL_WITHOUT_FX = new Set(['pose_hero', 'kiss', 'jump']);
     for (const id of IDS) {
       const def = GESTURES[id];
       const S = emoteFxSpec(def);
@@ -363,7 +364,9 @@ describe('partículas (EmoteFx)', () => {
       // até o fim as partículas morrem sozinhas (a vida encurta): no último quadro quase nada
       expect(drawEmoteFx(fakePen(), S, def.dur - 0.01, ANCH, false)).toBeLessThanOrEqual(2);
       const key = drawEmoteFx(fakePen(), S, def.keyK * def.dur, ANCH, true);
-      if (id !== 'pose_hero') expect({ id, key: key > 0 }).toEqual({ id, key: true });
+      // o quadro parado do beijo (mão na boca, biquinho) e do pulo (agachado pegando impulso) vem antes das partículas:
+      // a pose já diz o que é, e com elas no alto as miniaturas saíam iguais às do acenar e da vitória
+      if (!STILL_WITHOUT_FX.has(id)) expect({ id, key: key > 0 }).toEqual({ id, key: true });
     }
   });
 

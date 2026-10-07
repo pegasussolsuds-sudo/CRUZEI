@@ -29,7 +29,7 @@ import { BlobBackground, FadeInView, Glow, ScaleOnPress } from '../../components
 import { PressScale } from '../../components/animated/PressScale';
 import { AvatarItemTile } from '../../components/avatar/AvatarItemTile';
 import { CruzeiPremiumBadge } from '../../components/avatar/CruzeiPremiumBadge';
-import { AvatarStage, useEmotePlayer } from '../../components/avatar/stage';
+import { AvatarStage, STAGE_ASPECT, useEmotePlayer } from '../../components/avatar/stage';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
 import { api, toApiError } from '../../services/api';
 import { useAuthStore } from '../../stores/auth';
@@ -67,6 +67,10 @@ const GAP = spacing.sm;
 const TOAST_MS = 2800;
 const DRAFT_SAVE_MS = 500;
 const COLS = 4;
+/** animação em loop (danças) tocando na prévia para sozinha depois disto: editor parado não fica animando */
+const LOOP_PREVIEW_MS = 8000;
+/** coluna dos botões ao lado da prévia (Surpreender, Reproduzir…) */
+const SIDE_W = 84;
 
 /** uma célula da grade (o tipo depende da aba) */
 type Cell =
@@ -98,7 +102,8 @@ function initialTab(draft: AvatarDraft | null): { cat: EditorCatKey; tab: Editor
 
 /**
  * AvatarSetup: "Monta o seu avatar" (pós-cadastro) / "Seu avatar" (vindo do perfil). Editor e loja do avatar.
- * - prévia grande animada (AvatarStage: respiração, fundo, pronomes) mostrando o que está sendo experimentado — inclusive
+ * - prévia grande (AvatarStage parado: anima só tocando a animação ou ~4 s depois de trocar aura/fundo; fundo, pronomes),
+ *   centrada, mostrando o que está sendo experimentado — inclusive
  *   itens bloqueados, com o selo "Prévia";
  * - categorias (AVATAR_CATEGORIES + Looks) → abas de slot → linhas contextuais (cores, intensidade, posição do pet,
  *   bandeira) → filtros → grade virtualizada de tiles (miniatura SVG estática, raridade, estado, Novo, Animado);
@@ -127,7 +132,8 @@ export function AvatarCustomizerScreen() {
   // --- rascunho: o da memória entra já (volta do Paywall sem piscar); o do aparelho chega logo depois -------------
   const [boot] = useState(() => {
     const known = userId ? peekAvatarDraft(userId) : null;
-    const draft = known && keyOf(known.config) !== savedKey ? known : null;
+    // compara normalizado: rascunho da memória guarda a config crua (campo faltando ≠ visual diferente)
+    const draft = known && keyOf(normalizeAvatarConfig(known.config)) !== savedKey ? known : null;
     return { draft, pending: !!userId && known === undefined };
   });
   const [config, setConfig] = useState<AvatarConfig>(boot.draft?.config ?? saved);
@@ -250,9 +256,21 @@ export function AvatarCustomizerScreen() {
     if (reduce) setExplicit(true);
     replayEmote();
   }, [replayEmote, reduce]);
+  // dança em loop: para sozinha depois de LOOP_PREVIEW_MS (o botão toca de novo)
+  const loops = !!emote?.loop;
+  useEffect(() => {
+    if (!isPlaying || !loops || stillMode) return;
+    const id = setTimeout(() => {
+      pause();
+      setExplicit(false);
+    }, LOOP_PREVIEW_MS);
+    return () => clearTimeout(id);
+  }, [isPlaying, loops, stillMode, pause, player.replayToken]);
 
   // --- layout -----------------------------------------------------------------
-  const stageSize = Math.max(170, Math.min(260, Math.round(screenH * 0.27)));
+  // prévia centrada e grande: limitada pela altura (a grade precisa de espaço) e pela largura livre entre o status (à
+  // esquerda) e os botões (à direita) — a margem do canvas (aura) pode passar um pouco por baixo deles
+  const stageSize = Math.max(170, Math.min(300, Math.round(screenH * 0.3), Math.floor((screenW - 2 * (SIDE_W + H_PAD - 4) + 40) / STAGE_ASPECT)));
   const gridW = screenW - H_PAD * 2;
   const kind = tabKind(tab);
   const cols = kind === 'items' ? COLS : kind === 'colors' ? colsFor(gridW, 56, 4) : kind === 'flags' ? 3 : 2;
@@ -556,7 +574,8 @@ export function AvatarCustomizerScreen() {
 
   return (
     <View style={styles.root}>
-      <BlobBackground intensity={0.2} speed={0.8} palette={[colors.primary, colors.secondary, colors.info]} paused={!focused || reduce} />
+      {/* parado: 3 blobs com desfoque de 90–110 px animando em tela cheia custavam quadro o tempo todo */}
+      <BlobBackground intensity={0.2} speed={0.8} palette={[colors.primary, colors.secondary, colors.info]} paused />
       <LinearGradient
         colors={['rgba(10,10,26,0.25)', 'rgba(10,10,26,0.8)', 'rgba(10,10,26,0.98)']}
         locations={[0, 0.45, 1]}
@@ -597,7 +616,7 @@ export function AvatarCustomizerScreen() {
           ) : null}
         </FadeInView>
 
-        {banner ? (
+        {banner && dirty ? (
           <View style={styles.banner} accessibilityLiveRegion="polite">
             <Ionicons name="time-outline" size={16} color={colors.primary} />
             <Text style={styles.bannerText} numberOfLines={1}>
@@ -614,7 +633,7 @@ export function AvatarCustomizerScreen() {
 
         {/* prévia */}
         <View style={[styles.previewArea, { height: stageSize + spacing.sm }]}>
-          <Glow color={colors.primary} spread={22} intensity={0.22} shape="circle" cycleMs={3200} animated={!reduce}>
+          <Glow color={colors.primary} spread={22} intensity={0.22} shape="circle" animated={false} style={styles.stageGlow}>
             <Animated.View style={popStyle}>
               <AvatarStage
                 config={config}
@@ -626,7 +645,7 @@ export function AvatarCustomizerScreen() {
                 playing={stillMode ? !!emote : playing}
                 loop={stillMode ? true : undefined}
                 reduceMotion={stillMode}
-                idle={!reduce}
+                fxPreview
                 showBackdrop
                 showPronouns
                 paused={!focused}
@@ -792,7 +811,9 @@ const styles = StyleSheet.create({
   bannerBtnText: { ...typography.label, color: colors.primary, textDecorationLine: 'underline' },
   bannerClose: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
 
-  previewArea: { alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs },
+  previewArea: { alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', marginTop: spacing.xs },
+  // o Glow nasce alinhado à esquerda (alignSelf flex-start): a prévia ficava encostada, com vazio à direita
+  stageGlow: { alignSelf: 'center' },
   status: { position: 'absolute', left: H_PAD, top: spacing.xs, maxWidth: '27%', gap: 3 },
   statusCaption: { fontFamily: fontFamily.bodyBold, fontSize: 10, lineHeight: 13, letterSpacing: 1, textTransform: 'uppercase', color: colors.primary },
   statusName: { fontFamily: fontFamily.bodySemiBold, fontSize: 12, lineHeight: 16, color: colors.white },
@@ -800,7 +821,7 @@ const styles = StyleSheet.create({
   previewBadgeText: { fontFamily: fontFamily.bodyBold, fontSize: 9, lineHeight: 12, letterSpacing: 0.4, textTransform: 'uppercase', color: colors.black },
   sideActions: { position: 'absolute', right: H_PAD - 4, top: 0, gap: spacing.xs, alignItems: 'center' },
   sideBtn: {
-    width: 84,
+    width: SIDE_W,
     minHeight: 50,
     borderRadius: radius.md,
     alignItems: 'center',

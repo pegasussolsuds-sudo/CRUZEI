@@ -49,6 +49,8 @@ export interface FxFrame {
   hr: number;
   /** escala das partículas (busto = close: partículas menores em unidades) */
   u: number;
+  /** meia largura extra das roupas largas (asas, capa, saia de gala) além dos ombros; 0 = sem */
+  wide?: number;
 }
 
 export interface AuraSpec {
@@ -100,9 +102,18 @@ export const AURA_PALETTES: Record<string, Rgb[]> = {
 export const AURA_BASE: Record<string, string> = Object.fromEntries(
   Object.entries(AURA_PALETTES).map(([k, v]) => [k, '#' + v[0].toString(16).padStart(6, '0').toUpperCase()]),
 );
+// cor de base de cada aura distinta das vizinhas (no mapa a aura vira uma poça dessa cor): o orgulho fica rosa (o mapa
+// deve usar a bandeira), o arco-íris vai pro verde da paleta, os cianos/amarelos/rosas se separam
 AURA_BASE.pride = '#FF5AA7';
-AURA_BASE.rainbow = '#FF5AA7';
+AURA_BASE.rainbow = '#3DDC84';
 AURA_BASE.fest = '#FF6FB1';
+AURA_BASE.electric = '#4F8BFF';
+AURA_BASE.crystals = '#BDF4FF';
+AURA_BASE.golden = '#FFAA2B';
+AURA_BASE.stardust = '#FFF3B8';
+AURA_BASE.hearts = '#FF3B5C';
+AURA_BASE.petals = '#FFA8CF';
+AURA_BASE.supernova = '#D46BFF';
 
 /** ids com desenho (todas as auras do catálogo menos 'none') */
 export const AURA_IDS = Object.keys(AURA_PALETTES);
@@ -178,6 +189,8 @@ export interface AuraFigure {
   sole: number;
   /** meia largura dos ombros */
   hw: number;
+  /** meia largura extra das roupas largas (asas, capa, saia de gala), 0 = sem */
+  wide?: number;
 }
 
 /** corpo médio em pé (reserva quando o palco não passa a figura) */
@@ -190,10 +203,15 @@ export function auraFigure(cfg: AvatarConfig, mode: 'full' | 'bust' = 'full'): A
   const an = buildAnatomy(full, scene);
   const dy = (scene.lift || 0) + (scene.seated ? an.seatDrop : 0);
   const top = headAnchors(an).top[1];
-  return { hx: an.head.cx, hy: an.head.cy + dy, hr: an.head.r, top: top + dy, sole: an.foot.soleY, hw: (an.x1 - an.x0) / 2 };
+  // roupa larga: a aura que nasce do contorno (chamas) acompanha a silhueta da roupa, não só a do corpo
+  const wings = typeof full.bag === 'string' && full.bag.startsWith('wings');
+  const cape = full.outer === 'cape' || full.outer === 'mantle' || full.pride === 'cape';
+  const skirt = full.top === 'gown' || full.top === 'wizard' || full.bottom === 'tutu';
+  const wide = wings ? 28 : skirt ? 8 : cape ? 6 : 0;
+  return { hx: an.head.cx, hy: an.head.cy + dy, hr: an.head.r, top: top + dy, sole: an.foot.soleY, hw: (an.x1 - an.x0) / 2, wide };
 }
 
-type FigureBox = Pick<FxFrame, 'cx' | 'cy' | 'rx' | 'ry' | 'hx' | 'hy' | 'hr' | 'u'>;
+type FigureBox = Pick<FxFrame, 'cx' | 'cy' | 'rx' | 'ry' | 'hx' | 'hy' | 'hr' | 'u' | 'wide'>;
 
 /** elipse da figura em unidades: corpo inteiro (cabelo até os pés) ou busto (cabeça e ombros dentro do recorte) */
 function figure(fig: AuraFigure, bustVb: { x: number; y: number; w: number; h: number } | null): FigureBox {
@@ -204,7 +222,7 @@ function figure(fig: AuraFigure, bustVb: { x: number; y: number; w: number; h: n
     return { cx: fig.hx, cy: (top + bot) / 2, rx: bustVb.w * 0.47, ry: (bot - top) / 2, ...head, u: bustVb.w / 72 };
   }
   const top = fig.top - 4;
-  return { cx: fig.hx, cy: (top + fig.sole) / 2, rx: 22 + fig.hw, ry: (fig.sole - top) / 2 + 2, ...head, u: 1 };
+  return { cx: fig.hx, cy: (top + fig.sole) / 2, rx: 22 + fig.hw, ry: (fig.sole - top) / 2 + 2, ...head, u: 1, wide: fig.wide ?? 0 };
 }
 
 /**
@@ -236,6 +254,22 @@ function faceFade(F: FxFrame, x: number, y: number): number {
   const dx = (x - F.hx) / (F.hr * 1.1);
   const dy = (y - F.hy) / (F.hr * 1.3);
   return smooth(0.95, 1.6, Math.sqrt(dx * dx + dy * dy));
+}
+
+/** 0 perto da cabeça (raio k × o do rosto, contando orelhas e cabelo) → 1 longe */
+function headFade(F: FxFrame, x: number, y: number, k: number): number {
+  'worklet';
+  const dx = (x - F.hx) / (F.hr * k);
+  const dy = (y - F.hy) / (F.hr * k * 1.1);
+  return smooth(0.9, 1.3, Math.sqrt(dx * dx + dy * dy));
+}
+
+/** 0 sobre o corpo (coluna do tronco às pernas e pés) → 1 fora: partícula da frente não gruda na virilha, no joelho, no pé */
+function bodyFade(F: FxFrame, x: number, y: number): number {
+  'worklet';
+  if (F.bust) return 1;
+  if (y < F.hy + F.hr * 1.2 || y > F.g + 9) return 1;
+  return smooth(F.rx * 0.3, F.rx * 0.5, Math.abs(x - F.cx));
 }
 
 /** a partícula i vai na frente? (~1/3) */
@@ -288,7 +322,8 @@ function auraSparkle(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean)
     const x = F.cx + Math.cos(ang) * F.rx * rho * 1.08;
     const y = F.cy + Math.sin(ang) * F.ry * rho - ph * 5 * F.u;
     const tw = Math.sin(Math.PI * ph);
-    const a = tw * tw * S.k * (front ? faceFade(F, x, y) : 1);
+    // longe do corpo nas duas camadas: atrás, entre os pés, a faísca ficava grudada no chão
+    const a = tw * tw * S.k * bodyFade(F, x, y) * (front ? faceFade(F, x, y) : 1);
     const sz = (1.6 + 2 * rnd(i, 7)) * F.u * S.z * (0.55 + 0.45 * tw);
     spark(P, x, y, sz, rnd(i, 8) < 0.3 ? S.c[2] : S.c[0], a, 12 * ph);
   }
@@ -359,11 +394,15 @@ function auraMagenta(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean)
   'worklet';
   const [cm, cl, , ch] = S.c;
   const T = 2.7;
+  // o anel de fora não passa da caixa visível (no SVG estático a caixa é o viewBox: cortava reto em cima e embaixo)
+  const cy0 = F.cy - F.ry * 0.04;
+  const mg = 3 * F.u;
+  const Rmax = Math.max(0.6, Math.min(1.28, (F.b - cy0 - mg) / (F.ry * 0.94), (cy0 - F.t - mg) / (F.ry * 0.94), (F.r - F.cx - mg) / F.rx, (F.cx - F.l - mg) / F.rx));
   if (!front) {
     halo(P, F, cm, 0.22 * S.k);
     for (let j = 0; j < 3; j++) {
       const k = fract(t / T + j / 3);
-      const R = mixN(0.38, 1.28, easeOut3(k));
+      const R = mixN(0.38, Rmax, easeOut3(k));
       const a = smooth(0, 0.12, k) * Math.pow(1 - k, 1.5) * S.k;
       const rx = F.rx * R;
       const ry = F.ry * R * 0.94;
@@ -376,7 +415,7 @@ function auraMagenta(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean)
     const j = i % 3;
     const k = fract(t / T + j / 3 + 0.04 * rnd(i, 3));
     const cyc = Math.floor(t / T + j / 3);
-    const R = mixN(0.38, 1.28, easeOut3(k));
+    const R = mixN(0.38, Rmax, easeOut3(k));
     const ang = rnd(i * 7 + cyc, 9) * TAU;
     const x = F.cx + Math.cos(ang) * F.rx * R;
     const y = F.cy - F.ry * 0.04 + Math.sin(ang) * F.ry * R * 0.94;
@@ -417,6 +456,35 @@ function auraGold(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): v
   }
 }
 
+/**
+ * um trecho de fita de papel: polígono liso pelos pontos (xs, ys) de a até b, meia largura pela torção |ws| e afinando
+ * nas pontas; cor = face da fita (verso mais escuro)
+ */
+function ribbonRun(P: Pen, xs: number[], ys: number[], ws: number[], a: number, b: number, seg: number, col: Rgb, unit: number, alpha: number): void {
+  'worklet';
+  const L: number[] = [];
+  const R: number[] = [];
+  for (let k = a; k <= b; k++) {
+    const kp = k > 0 ? k - 1 : 0;
+    const kn = k < seg ? k + 1 : seg;
+    let dx = xs[kn] - xs[kp];
+    let dy = ys[kn] - ys[kp];
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    dx /= len;
+    dy /= len;
+    const taper = Math.pow(Math.sin((Math.PI * k) / seg), 0.6);
+    const hw = (0.22 + 0.68 * Math.abs(ws[k])) * unit * taper;
+    L.push(xs[k] - dy * hw, ys[k] + dx * hw);
+    R.push(xs[k] + dy * hw, ys[k] - dx * hw);
+  }
+  if (L.length < 4) return;
+  const cmds: number[] = [0, L[0], L[1]];
+  for (let q = 2; q < L.length; q += 2) cmds.push(1, L[q], L[q + 1]);
+  for (let q = R.length - 2; q >= 0; q -= 2) cmds.push(1, R[q], R[q + 1]);
+  cmds.push(4);
+  P.path(cmds, { c: ws[(a + b) >> 1] < 0 ? darken(col, 0.3) : col, a: alpha });
+}
+
 /** Aura Metch Fest: serpentinas espiralando em volta + confete nas cores da marca */
 function auraFest(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): void {
   'worklet';
@@ -425,31 +493,47 @@ function auraFest(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): v
     P.glowOval(F.cx - F.rx * 0.2, F.cy - F.ry * 0.1, F.rx * 1.05, F.ry * 0.9, cols[0], 0.16 * S.k);
     P.glowOval(F.cx + F.rx * 0.25, F.cy + F.ry * 0.15, F.rx * 0.95, F.ry * 0.8, cols[1], 0.12 * S.k);
   }
-  // serpentinas: fitas de papel em hélice, só a metade de trás (passam por trás do corpo e aparecem dos lados); a largura
-  // varia com o giro da fita (torção) e o verso é mais escuro
+  // serpentinas: fitas de papel em hélice, só a metade de trás (passam por trás do corpo e aparecem dos lados). Cada trecho
+  // visível vira UM polígono liso (antes: um traço reto por segmento, que lia como graveto quebrado); a largura segue a
+  // torção, o verso é mais escuro e as fitas começam abaixo do queixo (atrás da cabeça liam como espeto no rosto)
   if (!front) {
     const ribbons = P.lite ? 2 : 3;
-    const seg = P.lite ? 16 : 34;
+    const seg = P.lite ? 44 : 64;
+    const y0 = F.bust ? F.cy - F.ry * 0.9 : Math.max(F.cy - F.ry * 0.9, F.hy + F.hr * 1.3);
+    const y1 = F.cy + F.ry * 0.85;
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const zs: number[] = [];
+    const ws: number[] = [];
     for (let j = 0; j < ribbons; j++) {
       const col = cols[j % 3];
-      let px = 0;
-      let py = 0;
-      let pz = 0;
       for (let k = 0; k <= seg; k++) {
-        const s = k / seg;
-        const y = F.cy - F.ry * 0.9 + s * F.ry * 1.75;
-        const ang = s * TAU * 1.3 + t * 1.2 + j * 2.1;
-        const x = F.cx + Math.cos(ang) * F.rx * (1.02 + 0.08 * Math.sin(s * 6 + j));
-        const z = Math.sin(ang);
-        if (k > 0 && pz + z < 0) {
-          const twist = Math.cos(s * 9 + t * 2 + j);
-          const fade = Math.sin(Math.PI * s);
-          P.path([0, px, py, 1, x, y], { c: twist < 0 ? darken(col, 0.3) : col, a: (0.3 + 0.55 * fade) * S.k, w: (0.5 + 1.3 * Math.abs(twist)) * F.u * S.z, cap: 1 });
-        }
-        px = x;
-        py = y;
-        pz = z;
+        const sk = k / seg;
+        const ang = sk * TAU * 1.3 + t * 1.2 + j * 2.1;
+        xs[k] = F.cx + Math.cos(ang) * F.rx * (1.02 + 0.08 * Math.sin(sk * 6 + j));
+        ys[k] = mixN(y0, y1, sk);
+        // perto da cabeça a fita some (vale como "na frente"): no busto ela atravessava atrás da cabeça na altura dos olhos
+        zs[k] = headFade(F, xs[k], ys[k], 1.5) < 0.5 ? 1 : Math.sin(ang);
+        ws[k] = Math.cos(sk * 9 + t * 2 + j);
       }
+      // trechos contínuos da metade de trás; troca de face (torção passa por zero, a fita está no mais fino) = trecho novo
+      let st = -1;
+      for (let k = 0; k <= seg; k++) {
+        if (zs[k] >= 0) {
+          if (st >= 0 && k - 1 > st) ribbonRun(P, xs, ys, ws, st, k - 1, seg, col, F.u * S.z, 0.8 * S.k);
+          st = -1;
+          continue;
+        }
+        if (st < 0) {
+          st = k;
+          continue;
+        }
+        if (ws[k] < 0 !== ws[k - 1] < 0) {
+          ribbonRun(P, xs, ys, ws, st, k, seg, col, F.u * S.z, 0.8 * S.k);
+          st = k;
+        }
+      }
+      if (st >= 0 && seg > st) ribbonRun(P, xs, ys, ws, st, seg, seg, col, F.u * S.z, 0.8 * S.k);
     }
   }
   for (let i = 0; i < S.n; i++) {
@@ -586,7 +670,8 @@ function auraGalaxy(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
     if (z > 0 !== front) continue;
     const x = dcx + lx * ct - ly * st;
     const y = dcy + lx * st + ly * ct;
-    const ff = front ? faceFade(F, x, y) : 1;
+    // na frente, longe do rosto E da coluna do corpo (o quadro parado deixava uma faísca bem na virilha)
+    const ff = front ? faceFade(F, x, y) * bodyFade(F, x, y) : 1;
     const tw = 0.55 + 0.45 * Math.sin(t * (2 + rnd(i, 53) * 3) + i);
     const col = sampleCycle([c[0], c[1], c[2], c[3]], rnd(i, 54));
     const a = tw * S.k * ff;
@@ -616,11 +701,17 @@ function auraFlames(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
   'worklet';
   const [cOr, cYe, cCore, cRed, cDeep] = S.c;
   const g = F.bust ? F.b + 2 : F.g + 1;
-  const draw = (x: number, base: number, w: number, h: number, sway: number, a: number) => {
-    const outer: FxGrad = { t: 'l', x1: 0, y1: base, x2: 0, y2: base - h, s: [[0, cRed, 0.0], [0.06, cRed, 0.85 * a], [0.3, cOr, 0.9 * a], [0.7, cRed, 0.55 * a], [1, cDeep, 0]] };
+  // soft = língua que nasce do contorno: a base some por ~35% da altura (antes ficava opaca já em 6% e o núcleo quase
+  // branco: blocos empilhados com base reta e faixa cor de pêssego); a fogueira do chão mantém a base no brilho do chão
+  const draw = (x: number, base: number, w: number, h: number, sway: number, a: number, soft: boolean) => {
+    const outer: FxGrad = soft
+      ? { t: 'l', x1: 0, y1: base, x2: 0, y2: base - h, s: [[0, cRed, 0], [0.34, cOr, 0.55 * a], [0.52, cOr, 0.82 * a], [0.8, cRed, 0.5 * a], [1, cDeep, 0]] }
+      : { t: 'l', x1: 0, y1: base, x2: 0, y2: base - h, s: [[0, cRed, 0], [0.1, cRed, 0.7 * a], [0.32, cOr, 0.85 * a], [0.72, cRed, 0.5 * a], [1, cDeep, 0]] };
     P.path(flameCmds(x, base, w, h, sway), { g: outer, b: 1 });
     const ih = h * 0.52;
-    const inner: FxGrad = { t: 'l', x1: 0, y1: base, x2: 0, y2: base - ih, s: [[0, cYe, 0], [0.08, cCore, 0.8 * a], [0.45, cYe, 0.6 * a], [1, cOr, 0]] };
+    const inner: FxGrad = soft
+      ? { t: 'l', x1: 0, y1: base, x2: 0, y2: base - ih, s: [[0, cYe, 0], [0.42, cYe, 0.5 * a], [0.7, cOr, 0.32 * a], [1, cOr, 0]] }
+      : { t: 'l', x1: 0, y1: base, x2: 0, y2: base - ih, s: [[0, cYe, 0], [0.14, mixRgb(cYe, cCore, 0.35), 0.62 * a], [0.5, cYe, 0.45 * a], [1, cOr, 0]] };
     P.path(flameCmds(x + sway * 0.15, base, w * 0.52, ih, sway * 0.55), { g: inner, b: 1 });
   };
   if (!front) {
@@ -636,14 +727,17 @@ function auraFlames(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
         const id = k * 2 + (side > 0 ? 1 : 0);
         const v = per === 1 ? 0.5 : k / (per - 1);
         const y = mixN(g - 6, shY + 2, v) + (rnd(id, 11) - 0.5) * 4;
-        const hwb = F.bust ? F.rx * 0.62 : mixN(F.rx * 0.27, F.rx * 0.42, v);
-        const x = F.cx + side * (hwb + 3.5);
+        // a base nasce DENTRO da silhueta (fica escondida atrás do corpo); roupa larga (asas, capa, saia) empurra pra borda
+        // dela, senão as línguas somem atrás da roupa
+        const hwb = F.bust ? F.rx * 0.58 : mixN(F.rx * 0.16, F.rx * 0.24, v) + (F.wide ?? 0) * (0.35 + 0.55 * v);
+        const x = F.cx + side * hwb;
         const fl = 0.75 + 0.4 * noise1(t * 2.9 + id * 4.7, id + 3);
-        const h = (16 + 12 * (1 - v * 0.4) + 12 * rnd(id, 12)) * fl * S.z * F.u * (F.bust ? 0.8 : 1);
+        const h = (19 + 14 * (1 - v * 0.4) + 12 * rnd(id, 12)) * fl * S.z * F.u * (F.bust ? 0.8 : 1);
         const w = (7 + 3 * rnd(id, 13)) * F.u * S.z;
-        const sway = side * w * (1.2 + 0.5 * v) + (noise1(t * 2.1 + id * 3.1, id + 40) - 0.5) * w * 1.1;
-        draw(x, y + w * 0.3, w, h, sway, S.k * 0.72);
-        P.glow(x + sway * 0.5, y - h * 0.4, h * 0.55, cOr, 0.1 * S.k, 1);
+        // inclinada pra fora: a base fica atrás do corpo e a língua sai pela lateral
+        const sway = side * w * (1.7 + 0.6 * v) + (noise1(t * 2.1 + id * 3.1, id + 40) - 0.5) * w * 1.1;
+        draw(x, y + w * 0.3, w, h, sway, S.k * 0.72, true);
+        P.glow(x + sway * 0.5, y - h * 0.55, h * 0.5, cOr, 0.1 * S.k, 1);
       }
     }
     // fogueira baixa nos pés
@@ -653,7 +747,7 @@ function auraFlames(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
       const fl = 0.8 + 0.3 * noise1(t * 2.7 + j * 7.1, j);
       const h = (F.bust ? 10 : 18) * (1 - Math.abs(xn) * 0.6) * fl * S.z * F.u;
       const w = (10 + 4 * rnd(j, 3)) * F.u * S.z;
-      draw(F.cx + xn * F.rx * 0.8, g, w, h, (noise1(t * 1.8 + j * 3.3, j + 50) - 0.5) * w, S.k);
+      draw(F.cx + xn * F.rx * 0.8, g, w, h, (noise1(t * 1.8 + j * 3.3, j + 50) - 0.5) * w, S.k, false);
     }
   } else {
     // na frente: só lambidas baixas nos lados dos pés (o sapato continua visível)
@@ -665,7 +759,7 @@ function auraFlames(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
       const h = (F.bust ? 7 : 12) * fl * S.z * F.u;
       const w = (6 + 2.5 * rnd(j, 8)) * F.u * S.z;
       const sway = (noise1(t * 2.2 + j * 2.9, j + 70) - 0.5) * w;
-      draw(x, g + 2, w, h, sway, S.k * 0.8);
+      draw(x, g + 2, w, h, sway, S.k * 0.8, false);
     }
   }
   for (let i = 0; i < S.n; i++) {
@@ -690,7 +784,8 @@ function boltCmds(F: FxFrame, a0: number, a1: number, rho: number, seed: number,
     const r = rho + 0.16 * Math.sin(Math.PI * s);
     const j = k === 0 || k === n ? 0 : (rnd(seed, k) - 0.5) * 2 * amp;
     const x = F.cx + Math.cos(a) * (F.rx * r + j);
-    const y = F.cy + Math.sin(a) * (F.ry * r * 0.96 + j);
+    // dentro da caixa visível (no SVG estático o raio de baixo saía cortado reto pela base)
+    const y = Math.max(F.t + 2, Math.min(F.b - 2, F.cy + Math.sin(a) * (F.ry * r * 0.96 + j)));
     out.push(k ? 1 : 0, x, y);
   }
   return out;
@@ -804,7 +899,7 @@ function auraMist(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): v
     halo(P, F, cm, 0.16 * S.k);
     // fitas de fumaça: cada uma nasce no chão, sobe ondulando e some; traço largo e macio por cima de um fino
     const K = P.lite ? 3 : 6;
-    const seg = P.lite ? 6 : 10;
+    const seg = P.lite ? 10 : 14;
     for (let j = 0; j < K; j++) {
       const [ph] = life(t, 5 + rnd(j, 1) * 2.5, rnd(j, 2));
       const x0 = F.cx + (j / (K - 1) - 0.5) * 2 * F.rx * 0.95;
@@ -820,17 +915,23 @@ function auraMist(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): v
       }
       const a = life01 * S.k;
       const grad = (k: number): FxGrad => ({ t: 'l', x1: 0, y1: y0, x2: 0, y2: y1, s: [[0, col, 0], [0.22, col, k * a], [0.6, col, k * a * 0.5], [1, col, 0]] });
-      P.path(cmds, { g: grad(0.1), w: 18 * F.u * S.z, b: 1 });
-      P.path(cmds, { g: grad(0.18), w: 9 * F.u * S.z, b: 1 });
-      P.path(cmds, { g: grad(0.24), w: 2.4 * F.u * S.z, b: 1 });
+      // seis traços de largura crescente e alfa decrescente: borda macia (três traços liam como pente de faixas duras)
+      P.path(cmds, { g: grad(0.05), w: 21 * F.u * S.z, b: 1 });
+      P.path(cmds, { g: grad(0.06), w: 15.5 * F.u * S.z, b: 1 });
+      P.path(cmds, { g: grad(0.07), w: 11 * F.u * S.z, b: 1 });
+      P.path(cmds, { g: grad(0.08), w: 7.2 * F.u * S.z, b: 1 });
+      P.path(cmds, { g: grad(0.1), w: 4.2 * F.u * S.z, b: 1 });
+      P.path(cmds, { g: grad(0.16), w: 1.8 * F.u * S.z, b: 1 });
     }
   }
   const banks = front ? (P.lite ? 2 : 3) : P.lite ? 3 : 5;
   for (let j = 0; j < banks; j++) {
     const id = front ? j + 20 : j;
-    const x = F.cx + (j / (banks - 1) - 0.5) * 2 * F.rx * (front ? 0.8 : 1.15) + Math.sin(t * 0.35 + id * 1.7) * 7 * F.u;
-    const y = g + (front ? 1.5 : -2) - rnd(id, 5) * 3;
     const rx = (17 + 7 * rnd(id, 6)) * F.u * S.z;
+    const x0 = F.cx + (j / (banks - 1) - 0.5) * 2 * F.rx * (front ? 0.8 : 1.15) + Math.sin(t * 0.35 + id * 1.7) * 7 * F.u;
+    // o banco cabe na caixa visível (no SVG estático a borda do viewBox cortava a névoa reto)
+    const x = Math.max(F.l + rx * 0.85, Math.min(F.r - rx * 0.85, x0));
+    const y = g + (front ? 1.5 : -2) - rnd(id, 5) * 3;
     P.glowOval(x, y, rx, rx * 0.36, id % 2 ? c2 : cm, (front ? 0.4 : 0.62) * S.k);
     P.glowOval(x, y - rx * 0.06, rx * 0.6, rx * 0.16, lighten(cm, 0.5), (front ? 0.2 : 0.28) * S.k, 1);
   }
@@ -856,22 +957,35 @@ function auraStardust(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean
     return [x, top + s * H, Math.sin(ang)];
   };
   if (!front) halo(P, F, cm, 0.12 * S.k);
-  // rastro das fitas (fino + largo), segmento a segmento
-  const seg = P.lite ? 14 : 28;
+  // rastro das fitas (largo + fino): cada trecho visível vira UMA curva lisa pelos pontos médios, com o esmaecimento das
+  // pontas num gradiente vertical (antes: traços retos de ~6,7 por volta, que liam como gaiola de arame hexagonal)
+  const seg = P.lite ? 48 : 64;
+  const fadeG = (c: Rgb, k: number): FxGrad => ({ t: 'l', x1: 0, y1: top, x2: 0, y2: top + H, s: [[0, c, 0], [0.15, c, 0.6 * k], [0.5, c, k], [0.85, c, 0.6 * k], [1, c, 0]] });
+  const strandPath = (pts: number[]) => {
+    if (pts.length < 6) return;
+    const cmds: number[] = [0, pts[0], pts[1]];
+    for (let q = 2; q < pts.length - 2; q += 2) cmds.push(2, pts[q], pts[q + 1], (pts[q] + pts[q + 2]) / 2, (pts[q + 1] + pts[q + 3]) / 2);
+    cmds.push(1, pts[pts.length - 2], pts[pts.length - 1]);
+    P.path(cmds, { g: fadeG(cm, 0.08 * S.k), w: 4 * F.u * S.z, b: 1, cap: 1 });
+    P.path(cmds, { g: fadeG(cl, 0.19 * S.k), w: 0.35 * F.u, b: 1, cap: 1 });
+  };
   for (let strand = 0; strand < 2; strand++) {
-    let p = helix(0, strand);
-    for (let k = 1; k <= seg; k++) {
+    let run: number[] = [];
+    for (let k = 0; k <= seg; k++) {
       const q = helix(k / seg, strand);
-      if (p[2] + q[2] > 0 === front) {
-        const fade = Math.sin((Math.PI * k) / seg) * S.k * (front ? faceFade(F, q[0], q[1]) : 1);
-        P.path([0, p[0], p[1], 1, q[0], q[1]], { c: cm, a: 0.07 * fade, w: 3.2 * F.u * S.z, b: 1, cap: 1 });
-        P.path([0, p[0], p[1], 1, q[0], q[1]], { c: cl, a: 0.26 * fade, w: 0.4 * F.u, b: 1, cap: 1 });
+      if (q[2] > 0 === front && (!front || faceFade(F, q[0], q[1]) > 0.5)) {
+        run.push(q[0], q[1]);
+      } else {
+        strandPath(run);
+        run = [];
       }
-      p = q;
     }
+    strandPath(run);
   }
-  for (let i = 0; i < S.n; i++) {
-    const fall = i % 4 === 3;
+  // no quadro parado das listas (poucas partículas), mais poeira brilhando em cima das fitas
+  const N = S.n + (P.lite ? 8 : 0);
+  for (let i = 0; i < N; i++) {
+    const fall = i < S.n && i % 4 === 3;
     let x: number;
     let y: number;
     let z: number;
@@ -881,7 +995,7 @@ function auraStardust(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean
       y = F.t + ph * (F.b - F.t);
       z = inFront(i, 0.3) ? 1 : -1;
     } else {
-      const s = fract(i / S.n + rnd(i, 4) * 0.05 + t * 0.05);
+      const s = fract(i / N + rnd(i, 4) * 0.05 + t * 0.05);
       [x, y, z] = helix(s, i % 2);
       x += (rnd(i, 5) - 0.5) * 3 * F.u;
       y += (rnd(i, 6) - 0.5) * 3 * F.u;
@@ -931,8 +1045,12 @@ function auraHologram(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean
     halo(P, F, cm, 0.1 * S.k);
     // feixe: trapézio do disco pra cima, some no alto
     const topY = F.bust ? F.t : F.cy - F.ry * 1.05;
-    const beam: FxGrad = { t: 'l', x1: 0, y1: g, x2: 0, y2: topY, s: [[0, cm, 0.24 * S.k], [0.6, cm, 0.07 * S.k], [1, cm, 0]] };
-    P.path([0, F.cx - drx, g, 1, F.cx - drx * 1.25, topY, 1, F.cx + drx * 1.25, topY, 1, F.cx + drx, g, 4], { g: beam, b: 1 });
+    // borda macia: cinco trapézios encaixados (o SVG não tem gradiente nos dois sentidos; um só tinha borda reta e dura)
+    const beam: FxGrad = { t: 'l', x1: 0, y1: g, x2: 0, y2: topY, s: [[0, cm, 0.056 * S.k], [0.6, cm, 0.017 * S.k], [1, cm, 0]] };
+    for (let q = 0; q < 5; q++) {
+      const f = 1.08 - q * 0.17;
+      P.path([0, F.cx - drx * f, g, 1, F.cx - drx * 1.25 * f, topY, 1, F.cx + drx * 1.25 * f, topY, 1, F.cx + drx * f, g, 4], { g: beam, b: 1 });
+    }
     // linhas de varredura dentro da elipse da aura
     if (!P.lite) {
       P.save();
@@ -1058,10 +1176,11 @@ function auraRainbow(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean)
   P.translate(F.cx, F.bust ? F.hy - F.hr * 1.3 : F.cy - F.ry * 0.3);
   P.rotate(F.bust ? -8 : -14);
   const r2 = F.bust ? F.hr * 1.25 / 0.9 : rr;
-  P.ring(0, 0, r2 * 0.9, r2 * 0.27 * 0.9, W * 3.2, cols, -t * 70, 0.12 * S.k, a0, 180, 1);
+  // brilho largo da frente mais fraco: por cima da camiseta clara lia como faixa esbranquiçada
+  P.ring(0, 0, r2 * 0.9, r2 * 0.27 * 0.9, W * 3.2, cols, -t * 70, (front ? 0.06 : 0.12) * S.k, a0, 180, 1);
   P.ring(0, 0, r2 * 0.9, r2 * 0.27 * 0.9, W * 0.55, cols, -t * 70, 0.85 * S.k, a0, 180);
   P.restore();
-  P.ring(F.cx, ringY, rr, ry, W * 3, cols, t * 55, 0.16 * S.k, a0, 180, 1);
+  P.ring(F.cx, ringY, rr, ry, W * 3, cols, t * 55, (front ? 0.08 : 0.16) * S.k, a0, 180, 1);
   P.ring(F.cx, ringY, rr, ry, W, cols, t * 55, 0.92 * S.k, a0, 180);
   P.ring(F.cx, ringY - W * 0.18, rr, ry, W * 0.25, [0xffffff, 0xffffff], 0, 0.45 * S.k, a0, 180);
   for (let i = 0; i < S.n; i++) {
@@ -1081,12 +1200,14 @@ function auraRainbow(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean)
 function heart(P: Pen, S: AuraSpec, x: number, y: number, sz: number, rot: number, a: number): void {
   'worklet';
   const [cm, cl, cd] = S.c;
+  // sumindo, clareia (a parada escura do volume com pouca alfa virava mancha bordô quase preta)
+  const lt = clamp01((0.75 - a) / 0.75);
   P.glow(x, y, sz * 2.2, cm, 0.3 * a, 1);
   P.save();
   P.translate(x, y);
   P.rotate(rot);
   P.scale(sz, sz);
-  P.shape('heart', 0, 0, 1, 0, { g: { t: 'r', cx: -0.35, cy: -0.45, r: 1.55, s: [[0, cl, 1], [0.5, cm, 1], [1, cd, 1]] }, a });
+  P.shape('heart', 0, 0, 1, 0, { g: { t: 'r', cx: -0.35, cy: -0.45, r: 1.55, s: [[0, cl, 1], [0.5, mixRgb(cm, cl, lt * 0.5), 1], [1, mixRgb(cd, cm, lt), 1]] }, a });
   P.save();
   P.translate(-0.45, -0.46);
   P.rotate(-35);
@@ -1109,7 +1230,8 @@ function auraHearts(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean):
     const beat = 1 + 0.09 * Math.max(0, Math.sin(t * 7 + i));
     const sz = (2.1 + 1.9 * rnd(i, 4)) * F.u * S.z * beat * (fr ? 1.15 : 1);
     const a = smooth(0, 0.14, ph) * (1 - smooth(0.7, 1, ph)) * S.k * (front ? faceFade(F, x, y) : 1);
-    if (a <= 0.01) continue;
+    // quadro parado das listas: coração no meio do sumiço lê como sujeira
+    if (a <= (P.lite ? 0.35 : 0.01)) continue;
     heart(P, S, x, y, sz, Math.sin(ph * 5 + i) * 14, a);
   }
 }
@@ -1166,7 +1288,8 @@ function auraSnow(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolean): v
     const x0 = F.l + 2 + rnd(i * 3 + cyc, 3) * (F.r - F.l - 4);
     const x = x0 + Math.sin(t * 0.8 + i * 1.3) * 3.5 * F.u + ph * 3 * F.u;
     const y = F.t - 4 + ph * (F.b - F.t + 8);
-    const a = smooth(0, 0.06, ph) * (1 - smooth(0.9, 1, ph)) * S.k * (front ? faceFade(F, x, y) : 0.9);
+    // floco colado na orelha/cabelo ou na frente do joelho lia como defeito
+    const a = smooth(0, 0.06, ph) * (1 - smooth(0.9, 1, ph)) * S.k * headFade(F, x, y, 1.7) * (front ? faceFade(F, x, y) * bodyFade(F, x, y) : 0.9);
     if (a <= 0.01) continue;
     const big = fr ? 1.3 : 1;
     if (rnd(i, 4) < 0.42) {
@@ -1194,12 +1317,14 @@ function auraFireflies(P: Pen, S: AuraSpec, F: FxFrame, t: number, front: boolea
     const x = bx + Math.sin(t * (0.5 + 0.4 * rnd(i, 3)) + i * 2.1) * 6 * F.u + Math.sin(t * 1.3 + i) * 1.8 * F.u;
     const y = by + Math.cos(t * (0.45 + 0.35 * rnd(i, 4)) + i * 1.3) * 5 * F.u;
     const bl = Math.pow(0.5 + 0.5 * Math.sin(t * (1.1 + rnd(i, 5) * 1.2) + i * 2.7), 3);
-    const a = (0.18 + 0.82 * bl) * S.k * (front ? faceFade(F, x, y) : 1);
+    // miniatura (lite, ~150 px): maiores e acesos, senão a aura lia como "Sem efeito"
+    const a = (P.lite ? 0.6 + 0.4 * bl : 0.18 + 0.82 * bl) * S.k * (front ? faceFade(F, x, y) : 1);
     if (a <= 0.01) continue;
     const c = rnd(i, 6) < 0.3 ? cw : cm;
-    P.glow(x, y, 6.5 * F.u * S.z, c, 0.45 * a, 1);
-    P.glow(x, y, 2 * F.u * S.z, cl, 0.9 * a, 1);
-    P.circle(x, y, 0.42 * F.u * S.z, { c: 0xffffff, a: 0.95 * a });
+    const zz = P.lite ? 1.5 : 1;
+    P.glow(x, y, 6.5 * F.u * S.z * zz, c, 0.45 * a, 1);
+    P.glow(x, y, 2 * F.u * S.z * zz, cl, 0.9 * a, 1);
+    P.circle(x, y, 0.42 * F.u * S.z * zz, { c: 0xffffff, a: 0.95 * a });
   }
 }
 

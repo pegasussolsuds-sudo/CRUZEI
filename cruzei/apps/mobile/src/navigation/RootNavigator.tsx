@@ -116,9 +116,9 @@ export function RootNavigator({ splashing = false }: { splashing?: boolean }) {
   }, [syncRoute]);
   const { theme: mapTheme } = useMapTheme();
   const qc = useQueryClient();
-  const user = useAuthStore((s) => s.user);
+  // seletor fino: o navegador inteiro não re-renderiza a cada /me novo (contador de curtidas, foto…)
+  const termsPending = useAuthStore((s) => Boolean(s.user?.legal && s.user.legal.acceptedVersion !== s.user.legal.currentVersion));
   const mapLoaded = useBootStore((s) => s.mapReady);
-  const termsPending = Boolean(user?.legal && user.legal.acceptedVersion !== user.legal.currentVersion);
 
   // toque num push (app frio ou quente): abre o destino quando o login e a navegação estiverem prontos
   const pendingPush = usePushRouteStore((s) => s.pending);

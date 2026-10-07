@@ -12,7 +12,7 @@ overrides:
 
 patchedDependencies:
   '@maplibre/maplibre-react-native@11.4.0':
-    hash: dg3trtl2hpubd2kf3n6ivjcxfi
+    hash: oascvknkof6wjhgdgp3fvfd7vq
     path: patches/@maplibre__maplibre-react-native@11.4.0.patch
 
 importers:
@@ -288,7 +288,7 @@ importers:
         version: 5.2.14(qhapopxrn7o4iyoof32va5cvdy)
       '@maplibre/maplibre-react-native':
         specifier: 11.4.0
-        version: 11.4.0(patch_hash=dg3trtl2hpubd2kf3n6ivjcxfi)(@types/geojson@7946.0.16)(@types/react@19.2.18)(expo@57.0.25)(react-native@0.86.3(@babel/core@7.29.7)(@react-native-community/cli@13.6.9)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)
+        version: 11.4.0(patch_hash=oascvknkof6wjhgdgp3fvfd7vq)(@types/geojson@7946.0.16)(@types/react@19.2.18)(expo@57.0.25)(react-native@0.86.3(@babel/core@7.29.7)(@react-native-community/cli@13.6.9)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)
       '@react-navigation/bottom-tabs':
         specifier: 7.19.2
         version: 7.19.2(mogpwubo24lo4n4ir7lqe234fu)
@@ -9897,7 +9897,7 @@ snapshots:
       quickselect: 3.0.0
       tinyqueue: 3.0.0
 
-  '@maplibre/maplibre-react-native@11.4.0(patch_hash=dg3trtl2hpubd2kf3n6ivjcxfi)(@types/geojson@7946.0.16)(@types/react@19.2.18)(expo@57.0.25)(react-native@0.86.3(@babel/core@7.29.7)(@react-native-community/cli@13.6.9)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)':
+  '@maplibre/maplibre-react-native@11.4.0(patch_hash=oascvknkof6wjhgdgp3fvfd7vq)(@types/geojson@7946.0.16)(@types/react@19.2.18)(expo@57.0.25)(react-native@0.86.3(@babel/core@7.29.7)(@react-native-community/cli@13.6.9)(@react-native/jest-preset@0.86.3(@babel/core@7.29.7)(react@19.2.3))(@react-native/metro-config@0.87.1(@babel/core@7.29.7))(@types/react@19.2.18)(react@19.2.3))(react@19.2.3)':
     dependencies:
       '@maplibre/maplibre-gl-style-spec': 26.2.1
       '@turf/distance': 7.4.0

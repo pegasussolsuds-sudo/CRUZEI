@@ -7,7 +7,8 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 // Reanimated mínimo (o mock oficial inicializa o módulo nativo de worklets): SharedValue = objeto com value,
-// derivado = calcula uma vez (roda o worklet de verdade no JS), relógio desligado
+// derivado = calcula uma vez (roda o worklet de verdade no JS), relógio desligado (cada liga/desliga fica anotado)
+const mockClock: boolean[] = [];
 jest.mock('react-native-reanimated', () => {
   const R = jest.requireActual('react');
   return {
@@ -19,7 +20,7 @@ jest.mock('react-native-reanimated', () => {
       if (!same) ref.current = { sv: { value: fn() }, deps };
       return ref.current!.sv;
     },
-    useFrameCallback: () => ({ setActive: jest.fn(), isActive: false, callbackId: 1 }),
+    useFrameCallback: () => ({ setActive: (v: boolean) => mockClock.push(v), isActive: false, callbackId: 1 }),
     useReducedMotion: () => false,
     runOnJS: (f: unknown) => f,
   };
@@ -67,6 +68,10 @@ jest.mock('../assets', () => {
       const runs = st.stageRuns(merged).map((r: { g: string; role: string }, i: number) => ({ g: r.g, role: r.role, picture: { id: i, g: r.g } }));
       return { key: avatar.keyOf(cfg), rig: avatar.buildAvatarRig(cfg, { mode }), runs, altFaces, hasProp: prop.length > 0, hasHands: hands.length > 0 };
     },
+    // sem raster nos testes: o palco toca as SkPictures (o caminho dos sprites tem a prova dele, stageSprites.test)
+    peekStageSprites: () => null,
+    stageSprites: () => null,
+    holdStage: () => () => undefined,
   };
 });
 
@@ -160,6 +165,38 @@ describe('AvatarStage (fumaça)', () => {
       expect(groups.foreL[0]).not.toBe(groups.foreR[0]); // a animação gira o braço direito: as matrizes diferem
       for (const [g, ms] of Object.entries(groups)) expect([g, new Set(ms).size]).toEqual([g, 1]);
     }
+    unmount(r);
+  });
+
+  it('parado não anima: com aura e fundo, o relógio nunca liga; liga só tocando animação ou com respiração pedida', () => {
+    const fancy = { ...base, aura: 'galaxy', auraLevel: 'max', backdrop: 'beach' } as AvatarConfig;
+    mockClock.length = 0;
+    let r = mount(<AvatarStage config={fancy} size={200} showBackdrop showPronouns />);
+    expect(mockClock.includes(true)).toBe(false);
+    // assinatura parada (sem tocar) também não
+    act(() => r.update(<AvatarStage config={fancy} size={200} showBackdrop emote="test_wave" playing={false} />));
+    expect(mockClock.includes(true)).toBe(false);
+    act(() => r.update(<AvatarStage config={fancy} size={200} showBackdrop emote="test_wave" playing />));
+    expect(mockClock[mockClock.length - 1]).toBe(true);
+    unmount(r);
+    mockClock.length = 0;
+    r = mount(<AvatarStage config={base} size={200} idle />);
+    expect(mockClock[mockClock.length - 1]).toBe(true);
+    unmount(r);
+  });
+
+  it('trocar aura/fundo só anima com fxPreview (editor); fora dele (folha trocando de pessoa, /me chegando) fica parado', () => {
+    const a = { ...base, aura: 'galaxy', auraLevel: 'max', backdrop: 'beach' } as AvatarConfig;
+    const b = { ...base, aura: 'flames', auraLevel: 'max', backdrop: 'pride' } as AvatarConfig;
+    mockClock.length = 0;
+    let r = mount(<AvatarStage config={a} size={200} showBackdrop />);
+    act(() => r.update(<AvatarStage config={b} size={200} showBackdrop />));
+    expect(mockClock.includes(true)).toBe(false);
+    unmount(r);
+    mockClock.length = 0;
+    r = mount(<AvatarStage config={a} size={200} showBackdrop fxPreview />);
+    act(() => r.update(<AvatarStage config={b} size={200} showBackdrop fxPreview />));
+    expect(mockClock[mockClock.length - 1]).toBe(true);
     unmount(r);
   });
 

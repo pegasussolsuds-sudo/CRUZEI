@@ -1,4 +1,5 @@
 import {
+  notifyManager,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -26,6 +27,7 @@ import {
   type MessageReadPayload,
 } from '@cruzei/shared-types';
 import { api, toApiError } from '../services/api';
+import { monoNow } from '../services/frameBatch';
 import { inboxPollMs } from '../services/socket';
 
 // Mensagens: Principal + Solicitações. Chaves, queries e as funções que acertam o cache com os eventos do socket.
@@ -226,6 +228,16 @@ export function settleOutbox(outbox: OutboxMessage[], delivered: ReadonlyMap<str
 
 // ───────────────────────────── cache (socket e ações) ─────────────────────────────
 
+/**
+ * Um evento = uma passada de render: as várias escritas no cache (histórico, as duas pastas, detalhe, conversa do par)
+ * avisam as telas num lote só. Fora do lote, cada setQueryData agenda o próprio aviso e a tela de Mensagens, o chat e a
+ * aba renderizavam 2–4 vezes por evento (socketRenders.test.tsx).
+ */
+const inOneBatch =
+  <A extends unknown[]>(fn: (...args: A) => void) =>
+  (...args: A): void =>
+    notifyManager.batch(() => fn(...args));
+
 function sortKey(c: ConversationSummary): string {
   return c.lastMessageAt ?? '';
 }
@@ -292,9 +304,32 @@ function refetchIfInFlight(qc: QueryClient, queryKey: readonly unknown[]): void 
   if (qc.getQueryState(queryKey)?.fetchStatus === 'fetching') refetchFresh(qc, queryKey);
 }
 
+/**
+ * As duas pastas buscam de novo UMA vez no fim da tarefa, depois de todos os eventos dela: um lote de 20 mensagens com
+ * a lista em voo reiniciava a busca 20 vezes (cada reinício é um GET que sai e cuja resposta é jogada fora).
+ * 'always' (conversa fora do cache) vale mais que 'ifInFlight'.
+ */
+let listsPending: { qc: QueryClient; always: boolean } | null = null;
+function scheduleLists(qc: QueryClient, always: boolean): void {
+  if (listsPending) {
+    listsPending.always ||= always;
+    return;
+  }
+  listsPending = { qc, always };
+  // microtarefa: roda no fim desta tarefa, depois de todos os eventos do lote
+  void Promise.resolve().then(() => {
+    const job = listsPending;
+    listsPending = null;
+    if (!job) return;
+    for (const folder of ['inbox', 'requests'] as const) {
+      if (job.always) refetchFresh(job.qc, inboxKeys.list(folder));
+      else refetchIfInFlight(job.qc, inboxKeys.list(folder));
+    }
+  });
+}
+
 function refetchListsIfInFlight(qc: QueryClient): void {
-  refetchIfInFlight(qc, inboxKeys.list('inbox'));
-  refetchIfInFlight(qc, inboxKeys.list('requests'));
+  scheduleLists(qc, false);
 }
 
 /** GET /conversations/with/:userId no cache (cartão e chat em rascunho acham a conversa sem ir ao servidor) */
@@ -305,18 +340,29 @@ function setLookup(qc: QueryClient, userId: string, ref: ConversationLookupRespo
 }
 
 function invalidateLists(qc: QueryClient): void {
-  refetchFresh(qc, inboxKeys.list('inbox'));
-  refetchFresh(qc, inboxKeys.list('requests'));
+  scheduleLists(qc, true);
 }
 
 let countsTimer: ReturnType<typeof setTimeout> | null = null;
-/** a contagem da aba vem do servidor: junta rajadas de eventos numa requisição só */
+let countsAt = -Infinity;
+/** rajada contínua: no máx. uma contagem a cada 2 s (era uma a cada 800 ms: ~75 GETs/min numa rajada de mensagens) */
+const COUNTS_GAP_MS = 2_000;
+/**
+ * A contagem da aba vem do servidor: junta rajadas de eventos numa requisição só, 800 ms depois do 1º evento (a
+ * requisição sai depois dos commits de todos os eventos da janela) e, com a rajada continuando, no máx. uma a cada 2 s.
+ * Não reinicia a espera a cada evento: com mensagens chegando a cada < 800 ms, um debounce nunca buscaria.
+ */
 export function refreshCounts(qc: QueryClient): void {
-  if (countsTimer) clearTimeout(countsTimer);
-  countsTimer = setTimeout(() => {
-    countsTimer = null;
-    qc.invalidateQueries({ queryKey: inboxKeys.counts });
-  }, 800);
+  if (countsTimer) return;
+  countsTimer = setTimeout(
+    () => {
+      countsTimer = null;
+      countsAt = monoNow();
+      qc.invalidateQueries({ queryKey: inboxKeys.counts });
+    },
+    // (no máx. o intervalo: um relógio que voltou não congela o contador)
+    Math.max(800, Math.min(COUNTS_GAP_MS, countsAt + COUNTS_GAP_MS - monoNow())),
+  );
 }
 
 /**
@@ -343,7 +389,7 @@ export function upsertMessage(qc: QueryClient, conversationId: string, m: Cached
 }
 
 /** 'message:new' (inclui a de sistema; unreadCount é o meu, contado pelo servidor) */
-export function applyMessageNew(qc: QueryClient, p: MessageNewPayload): void {
+export const applyMessageNew = inOneBatch((qc: QueryClient, p: MessageNewPayload): void => {
   upsertMessage(qc, p.conversationId, p.message);
   const found = findSummary(qc, p.conversationId);
   if (found) {
@@ -359,19 +405,19 @@ export function applyMessageNew(qc: QueryClient, p: MessageNewPayload): void {
   );
   refetchIfInFlight(qc, detailKey);
   refreshCounts(qc);
-}
+});
 
 /** 'conversation:new' (um por lado: pasta, peer e unread já vêm do meu ponto de vista) */
-export function applyConversationNew(qc: QueryClient, p: ConversationNewPayload): void {
+export const applyConversationNew = inOneBatch((qc: QueryClient, p: ConversationNewPayload): void => {
   const c = p.conversation;
   placeInList(qc, c);
   refetchListsIfInFlight(qc);
   setLookup(qc, c.peer.id, { id: c.id, folder: c.folder });
   refreshCounts(qc);
-}
+});
 
 /** 'conversation:promoted': solicitação → principal (banner some, conversa troca de aba) */
-export function applyPromoted(qc: QueryClient, p: ConversationPromotedPayload): void {
+export const applyPromoted = inOneBatch((qc: QueryClient, p: ConversationPromotedPayload): void => {
   const promote = <T extends ConversationSummary>(c: T): T =>
     ({
       ...c,
@@ -404,13 +450,13 @@ export function applyPromoted(qc: QueryClient, p: ConversationPromotedPayload): 
   refetchIfInFlight(qc, detailKey);
   if (peerId) setLookup(qc, peerId, { id: p.conversationId, folder: 'inbox' });
   refreshCounts(qc);
-}
+});
 
 /**
  * 'message:read'. Eu li (neste ou em outro aparelho): o servidor zerou o unread_count dessa conversa.
  * O outro leu: recibo (✓✓) nas minhas mensagens até upToMessageId.
  */
-export function applyRead(qc: QueryClient, p: MessageReadPayload, myId: string | undefined): void {
+export const applyRead = inOneBatch((qc: QueryClient, p: MessageReadPayload, myId: string | undefined): void => {
   if (p.readerId === myId) {
     const last = findSummary(qc, p.conversationId)?.item.lastMessage ?? qc.getQueryData<ConversationDetail>(inboxKeys.conversation(p.conversationId))?.lastMessage;
     // leu até a última (ou tudo): o servidor zerou. Leitura parcial: busca a contagem certa em vez de calcular aqui
@@ -438,20 +484,20 @@ export function applyRead(qc: QueryClient, p: MessageReadPayload, myId: string |
     return changed ? next : prev;
   });
   refetchIfInFlight(qc, key);
-}
+});
 
 /** não lidas de uma conversa com o número que o servidor devolveu (POST /read) */
-export function applyUnread(qc: QueryClient, conversationId: string, unreadCount: number): void {
+export const applyUnread = inOneBatch((qc: QueryClient, conversationId: string, unreadCount: number): void => {
   patchInList(qc, conversationId, (c) => (c.unreadCount === unreadCount ? c : { ...c, unreadCount }));
   refetchListsIfInFlight(qc);
   const detailKey = inboxKeys.conversation(conversationId);
   qc.setQueryData<ConversationDetail>(detailKey, (d) => (d && d.unreadCount !== unreadCount ? { ...d, unreadCount } : d));
   refetchIfInFlight(qc, detailKey);
   refreshCounts(qc);
-}
+});
 
 /** 'conversation:removed' (bloqueio, moderação) ou arquivar: some das listas; o chat aberto fecha sozinho */
-export function applyRemoved(qc: QueryClient, conversationId: string): void {
+export const applyRemoved = inOneBatch((qc: QueryClient, conversationId: string): void => {
   const found = findSummary(qc, conversationId);
   removeFromList(qc, 'inbox', conversationId);
   removeFromList(qc, 'requests', conversationId);
@@ -462,4 +508,4 @@ export function applyRemoved(qc: QueryClient, conversationId: string): void {
   qc.removeQueries({ queryKey: inboxKeys.messages(conversationId), type: 'inactive' });
   qc.removeQueries({ queryKey: inboxKeys.conversation(conversationId), type: 'inactive' });
   refreshCounts(qc);
-}
+});

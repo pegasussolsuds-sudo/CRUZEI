@@ -35,7 +35,15 @@ export interface HeldDef {
   /** deslocamento da origem a partir da pegada (referencial da mão: x pra fora, y rumo às pontas dos dedos) */
   dx?: number;
   dy?: number;
+  /** escala no corpo inteiro pequeno (mapa, miniatura ≤ 100 px); padrão LITE_HELD_SCALE */
+  liteK?: number;
 }
+
+/**
+ * no corpo inteiro pequeno (lod 'lite' fora do busto: mapa e miniatura ≤ 100 px) o objeto cresce em volta da pegada, como
+ * a cabeça cresce MAP_HEAD_SCALE no mapa: no tamanho real ele vira um pontinho de 2–4 px (estrelinha, microfone, café…)
+ */
+export const LITE_HELD_SCALE = 1.6;
 
 export const HELD_DEFS: Record<string, HeldDef> = { ...HELD_FLORA, ...HELD_FOOD, ...HELD_THINGS, ...HELD_MAGIC };
 
@@ -122,7 +130,8 @@ function regrip(ctx: LayerCtx, zone: string): void {
     ctx.push(h.nails, mix(t.lighter, '#FFE8E0', 0.4), { o: 0.6, cp: zone });
   }
   const palm: Pt = h.palm;
-  ctx.push(h.thumb, '#140A0C', { o: 0.22, b: 0.4, cp: zone });
+  // sombra do polegar: sem o desfoque (lite) o polegar logo abaixo cobre ela inteira
+  if (!lite) ctx.push(h.thumb, '#140A0C', { o: 0.22, b: 0.4, cp: zone });
   ctx.push(h.thumb, t.base, { gf: { t: 'r', cx: palm[0] - 1.0, cy: palm[1] - 0.6, r: 5.5 * hs, s: [[0, t.lighter], [0.5, t.light], [1, t.base]] }, cp: zone });
 }
 
@@ -132,7 +141,8 @@ export function heldItem(ctx: LayerCtx): void {
   const def = heldDef(ctx.cfg.held);
   if (!def) return;
   const f = heldFrame(ctx);
-  const hand = makePen(ctx, f.x, f.y, f.s, f.rot);
+  const k = isLite(ctx) && ctx.opts.mode !== 'bust' ? (def.liteK ?? LITE_HELD_SCALE) : 1;
+  const hand = makePen(ctx, f.x, f.y, f.s * k, f.rot);
   const q = def.dx || def.dy || def.rot ? hand.sub(def.dx ?? 0, def.dy ?? 0, 1, def.rot ?? 0) : hand;
   const zone = def.draw(q);
   if (zone) regrip(ctx, zone);

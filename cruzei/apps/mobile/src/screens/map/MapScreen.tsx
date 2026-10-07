@@ -15,6 +15,7 @@ import { noteSuperLikeLimit, noteSuperLikeSent, useSuperLikeLimitPrompt } from '
 import { superLikeLimitOf } from '../../services/superLikes';
 import { api, toApiError } from '../../services/api';
 import { connectSocket } from '../../services/socket';
+import { monoNow } from '../../services/frameBatch';
 import { useMyLocation } from '../../hooks/useMyLocation';
 import { pushLastFix } from '../../services/location';
 import { useLocationStore } from '../../stores/location';
@@ -42,7 +43,7 @@ import { PlacePreviewSheet, PLACE_SHEET_FRACTION, type PlacePreviewSheetHandle }
 import { FadeInView } from '../../components/animated/FadeInView';
 import { MapTourHost } from '../../components/tour/MapTourHost';
 import { keyOf, resolveAvatar } from '../../avatar';
-import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand, type MapEvent, type MapUser, type PerfTier, type PinPayload } from './bridge';
+import { cmd, type AvatarDefs, type CommandName, type InitTier, type MapCommand, type MapEvent, type MapUser, type MeState, type PerfTier, type PinPayload } from './bridge';
 import { mapAuraRgb, mapAvatarDef } from './native/images/mapAvatar';
 import { NativeMap, type NativeMapHandle } from './native/NativeMap';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
@@ -119,7 +120,14 @@ export function MapScreen() {
   const active = isFocused && appActive;
 
   // ---------- dados próprios ----------
-  const me = useAuthStore((s) => s.user);
+  // só os campos usados: cada curtida/match troca o contador do /me e, lendo o usuário inteiro, re-renderizava o mapa
+  const meId = useAuthStore((s) => s.user?.id);
+  const meName = useAuthStore((s) => s.user?.name);
+  const myTierRaw = useAuthStore((s) => s.user?.premiumTier);
+  const myPhotos = useAuthStore((s) => s.user?.photos);
+  const showPhotoPref = useAuthStore((s) => s.user?.settings?.showPhotoOnMap);
+  const meAvatar = useAuthStore((s) => s.user?.avatar);
+  const meGender = useAuthStore((s) => s.user?.gender);
   // tracking: posição acompanhada + presença renovada só enquanto o mapa está em foco e o app em primeiro plano
   const { lat, lng, status: locStatus, asking: locAsking, locate, refresh: refreshLocation } = useMyLocation(true, active);
   const { isAnonymous, askToggle: askToggleVisibility, isPending: togglePending } = useVisibility();
@@ -129,7 +137,7 @@ export function MapScreen() {
   // super curtida acabou no dia (403 super_like_limit): no grátis, convite pro Premium
   const askSuperLimit = useSuperLikeLimitPrompt();
   const { theme } = useMapTheme();
-  const boostQuery = useActiveBoost(Boolean(me), active);
+  const boostQuery = useActiveBoost(Boolean(meId), active);
   const boost = boostQuery.data ?? null;
   // boost vale até expiresAt (não pelo snapshot de minutos): some na hora certa mesmo sem novo poll
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -142,17 +150,17 @@ export function MapScreen() {
   const boostMsLeft = boost ? Date.parse(boost.expiresAt) - nowMs : 0;
   const isBoosted = boostMsLeft > 0;
   const boostMinutes = isBoosted ? Math.ceil(boostMsLeft / 60_000) : null;
-  const myTier = me?.premiumTier ?? 'free';
+  const myTier = myTierRaw ?? 'free';
   const isFree = myTier === 'free';
   const radiusM = PEOPLE_RADIUS_M;
   const myPhotoUrl = useMemo(() => {
-    const main = me?.photos?.find((p) => p.isMain) ?? me?.photos?.[0];
+    const main = myPhotos?.find((p) => p.isMain) ?? myPhotos?.[0];
     return main?.thumbnailUrl ?? main?.url ?? null;
-  }, [me?.photos]);
+  }, [myPhotos]);
   // minha bolha de identidade no mapa: preferência "mostrar minha foto no mapa" e nunca em modo anônimo (§7)
-  const showMyPhoto = (me?.settings?.showPhotoOnMap ?? true) && !isAnonymous;
+  const showMyPhoto = (showPhotoPref ?? true) && !isAnonymous;
   // meu avatar: o mesmo do onboarding/perfil (fallback determinístico enquanto não personalizou)
-  const myAvatar = useMemo(() => resolveAvatar(me?.avatar ?? null, me?.id ?? 'me', me?.gender ?? null), [me?.avatar, me?.id, me?.gender]);
+  const myAvatar = useMemo(() => resolveAvatar(meAvatar ?? null, meId ?? 'me', meGender ?? null), [meAvatar, meId, meGender]);
   const myAvatarKey = keyOf(myAvatar);
 
   // ---------- mapa nativo (MapLibre, tiles do OpenFreeMap: sem token) ----------
@@ -191,12 +199,12 @@ export function MapScreen() {
   // A definição (mapAvatarDef) leva as camadas 'lite', o rig com a cena (montaria), a animação assinatura e a config.
   const sentAvatarKeys = useRef(new Set<string>());
   const knownAvatars = useRef(new Map<string, AvatarConfig>());
+  // recebe [chave, config] já calculados (resolver + chave de 300 pessoas custa: uma vez por /nearby, no mapUsers)
   const defineAvatars = useCallback(
-    (configs: Iterable<AvatarConfig>) => {
+    (configs: Iterable<readonly [string, AvatarConfig]>) => {
       const defs: AvatarDefs = {};
       let count = 0;
-      for (const cfg of configs) {
-        const key = keyOf(cfg);
+      for (const [key, cfg] of configs) {
         knownAvatars.current.set(key, cfg);
         if (sentAvatarKeys.current.has(key)) continue;
         sentAvatarKeys.current.add(key);
@@ -210,7 +218,7 @@ export function MapScreen() {
   // mapa novo (retry depois de erro fatal): as chaves precisam ir de novo
   const resendAvatars = useCallback(() => {
     sentAvatarKeys.current.clear();
-    defineAvatars(knownAvatars.current.values());
+    defineAvatars(Array.from(knownAvatars.current));
   }, [defineAvatars]);
 
   const flushOnReady = useCallback(() => {
@@ -282,7 +290,6 @@ export function MapScreen() {
   const [match, setMatch] = useState<MatchInfo | null>(null);
   const [moment, setMoment] = useState<{ name: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [heading, setHeading] = useState<number | null>(null);
   const [containerH, setContainerH] = useState(0);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [peekH, setPeekH] = useState(0);
@@ -365,24 +372,27 @@ export function MapScreen() {
 
   // pessoas como vão pro mapa: cada uma com a chave do seu avatar (o desenho fica em cache no mapa por chave)
   // só quem tem posição VISUAL (o servidor omite o marcador de quem está em região esparsa)
-  const mapUsers = useMemo<MapUser[]>(
-    () =>
-      users
-        .filter((u): u is NearbyUser & { mapPosition: MapPosition } => u.mapPosition != null)
-        .map((u) => {
-          const cfg = resolveAvatar(u.avatar, u.id);
-          // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
-          return {
-            ...u,
-            avatarKey: keyOf(cfg),
-            aura: mapAuraRgb(cfg),
-            label: formatMapName(u.name),
-            photo: u.mapPhotoUrl ?? null,
-            mutual: likeStatusOf(u) === 'MUTUAL',
-          };
-        }),
-    [users],
-  );
+  // (e a config de cada visual, pro defineAvatars não resolver tudo de novo)
+  const { mapUsers, mapConfigs } = useMemo(() => {
+    const configs = new Map<string, AvatarConfig>();
+    const list: MapUser[] = users
+      .filter((u): u is NearbyUser & { mapPosition: MapPosition } => u.mapPosition != null)
+      .map((u) => {
+        const cfg = resolveAvatar(u.avatar, u.id);
+        const avatarKey = keyOf(cfg);
+        configs.set(avatarKey, cfg);
+        // rótulo curto (§5) e foto da bolha (§7: só o thumbnail e só com a preferência da pessoa ligada — o servidor já filtra)
+        return {
+          ...u,
+          avatarKey,
+          aura: mapAuraRgb(cfg),
+          label: formatMapName(u.name),
+          photo: u.mapPhotoUrl ?? null,
+          mutual: likeStatusOf(u) === 'MUTUAL',
+        };
+      });
+    return { mapUsers: list, mapConfigs: configs };
+  }, [users]);
 
   const selectedUser = useMemo(() => users.find((u) => u.id === selected) ?? null, [users, selected]);
   const selectedPoi = useMemo(
@@ -446,16 +456,28 @@ export function MapScreen() {
   const hints = useDiscoveryHints(users, pois, bandById, active && mapReady, `${centerGeohash ?? ''}|${radiusM}`);
   const hintsRef = useRef(hints);
   hintsRef.current = hints;
-  const indicators = useMemo(() => {
-    const hot = pois.filter((p) => (p.userCount ?? 0) >= HOT_MIN).length;
-    const near = users.filter((u) => proximityRank(bandById.get(u.id)) <= 1).length; // bem perto + perto (≤ 250 m)
-    return { hot, near, fresh: Boolean(hints.hint) };
-  }, [pois, users, bandById, hints.hint]);
+  // números primeiro, objeto depois: o /nearby de 45 s troca a lista, mas o cabeçalho (memo) só re-renderiza se a contagem mudar
+  const hotCount = useMemo(() => pois.filter((p) => (p.userCount ?? 0) >= HOT_MIN).length, [pois]);
+  const nearCount = useMemo(() => users.filter((u) => proximityRank(bandById.get(u.id)) <= 1).length, [users, bandById]); // bem perto + perto (≤ 250 m)
+  const freshHint = Boolean(hints.hint);
+  const indicators = useMemo(() => ({ hot: hotCount, near: nearCount, fresh: freshHint }), [hotCount, nearCount, freshHint]);
 
   // ---------- heading (só tier high, só em foco, só com o mapa pronto; throttle 100ms) ----------
+  // vai direto pro motor (ref, não estado): com o celular na mão chegava a 10x/s e cada um re-renderizava a tela inteira
+  const headingRef = useRef<number | null>(null);
+  const meStateRef = useRef<MeState | null>(null);
+  const sendHeading = useCallback(
+    (h: number | null) => {
+      if (headingRef.current === h) return;
+      headingRef.current = h;
+      const base = meStateRef.current;
+      if (base) send(cmd.setMe({ ...base, heading: h }), 'setMe');
+    },
+    [send],
+  );
   useEffect(() => {
     if (tier !== 'high' || !active || !mapReady || locStatus !== 'ready') {
-      setHeading(null);
+      sendHeading(null);
       return;
     }
     let sub: Location.LocationSubscription | null = null;
@@ -470,7 +492,7 @@ export function MapScreen() {
       if (last != null && Math.abs(((value - last + 540) % 360) - 180) < HEADING_MIN_DELTA) return;
       last = value;
       lastAt = now;
-      setHeading(Math.round(value));
+      sendHeading(Math.round(value));
     })
       .then((s) => {
         if (cancelled) s.remove();
@@ -481,7 +503,7 @@ export function MapScreen() {
       cancelled = true;
       sub?.remove();
     };
-  }, [tier, active, mapReady, locStatus]);
+  }, [tier, active, mapReady, locStatus, sendHeading]);
 
   // ---------- comandos de estado (idempotentes; reaplicados no próximo 'ready') ----------
   useEffect(() => {
@@ -505,32 +527,31 @@ export function MapScreen() {
     } else {
       stateCmds.current.set('reveal', revealJs); // só pro próximo 'ready' (retry/crash): voa pra onde estou AGORA
     }
-    defineAvatars([myAvatar]);
-    send(
-      cmd.setMe({
-        lat,
-        lng,
-        heading,
-        tier: myTier,
-        isBoosted,
-        isAnonymous,
-        photoUrl: showMyPhoto ? myPhotoUrl : null,
-        name: formatMapName(me?.name) || 'você',
-        avatarKey: myAvatarKey,
-        aura: mapAuraRgb(myAvatar),
-      }),
-      'setMe',
-    );
-  }, [lat, lng, heading, myTier, isBoosted, isAnonymous, myPhotoUrl, showMyPhoto, me?.name, myAvatar, myAvatarKey, defineAvatars, send]);
+    defineAvatars([[myAvatarKey, myAvatar]]);
+    const meState: MeState = {
+      lat,
+      lng,
+      heading: headingRef.current,
+      tier: myTier,
+      isBoosted,
+      isAnonymous,
+      photoUrl: showMyPhoto ? myPhotoUrl : null,
+      name: formatMapName(meName) || 'você',
+      avatarKey: myAvatarKey,
+      aura: mapAuraRgb(myAvatar),
+    };
+    meStateRef.current = meState;
+    send(cmd.setMe(meState), 'setMe');
+  }, [lat, lng, myTier, isBoosted, isAnonymous, myPhotoUrl, showMyPhoto, meName, myAvatar, myAvatarKey, defineAvatars, send]);
 
   // avatar salvo (o visual mudou pra mesma pessoa): minha figura toca a animação assinatura quando eu voltar pro mapa
-  const myVisualRef = useRef<{ id: string | undefined; key: string }>({ id: me?.id, key: myAvatarKey });
+  const myVisualRef = useRef<{ id: string | undefined; key: string }>({ id: meId, key: myAvatarKey });
   const [myEmotePending, setMyEmotePending] = useState(false);
   useEffect(() => {
     const prev = myVisualRef.current;
-    if (prev.id && prev.id === me?.id && prev.key !== myAvatarKey) setMyEmotePending(true);
-    myVisualRef.current = { id: me?.id, key: myAvatarKey };
-  }, [me?.id, myAvatarKey]);
+    if (prev.id && prev.id === meId && prev.key !== myAvatarKey) setMyEmotePending(true);
+    myVisualRef.current = { id: meId, key: myAvatarKey };
+  }, [meId, myAvatarKey]);
   useEffect(() => {
     if (!myEmotePending || !active || !mapReady || lat == null) return;
     // espera a figura nova assentar (desenho + registro da imagem) antes de animar
@@ -546,7 +567,7 @@ export function MapScreen() {
   const hasData = Boolean(nearbyQuery.data || poisQuery.data);
   useEffect(() => {
     if (!hasData) return;
-    defineAvatars(users.map((u) => resolveAvatar(u.avatar, u.id)));
+    defineAvatars(mapConfigs);
     send(cmd.setData({ users: mapUsers, pois, hotMin: HOT_MIN }), 'setData');
     const focusId = pendingFocus.current;
     if (focusId != null && pois.some((p) => p.id === focusId)) {
@@ -558,7 +579,7 @@ export function MapScreen() {
     used.add(myAvatarKey);
     for (const key of Array.from(sentAvatarKeys.current)) if (!used.has(key)) sentAvatarKeys.current.delete(key);
     for (const key of Array.from(knownAvatars.current.keys())) if (!used.has(key)) knownAvatars.current.delete(key);
-  }, [hasData, users, mapUsers, pois, myAvatarKey, defineAvatars, send]);
+  }, [hasData, mapUsers, mapConfigs, pois, myAvatarKey, defineAvatars, send]);
 
   // gente invisível (modo anônimo) por perto: só Premium — pra quem é grátis o servidor manda null e o mapa fica vazio.
   // Vai direto do /nearby pro mapa, agrupada por lugar/quadra (nunca quem é); nada disso é guardado ou registrado aqui
@@ -588,16 +609,17 @@ export function MapScreen() {
 
   // padding do mapa acompanha o sheet frame a frame (animatedPosition do gorhom), throttle 16ms
   const paddingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastPaddingAt = useRef(0);
+  const lastPaddingAt = useRef(-Infinity);
   const sendPadding = useCallback(
     (bottom: number) => {
       const fire = () => {
         paddingTimer.current = null;
-        lastPaddingAt.current = Date.now();
+        lastPaddingAt.current = monoNow();
         lastBottomRef.current = bottom;
         send(cmd.setPadding({ top: headerHRef.current, bottom }), 'setPadding');
       };
-      const wait = PADDING_THROTTLE_MS - (Date.now() - lastPaddingAt.current);
+      // (monotônico e no máx. o intervalo: com o Date, o relógio voltando segurava o padding do mapa pelo tamanho do salto)
+      const wait = Math.min(PADDING_THROTTLE_MS, PADDING_THROTTLE_MS - (monoNow() - lastPaddingAt.current));
       if (paddingTimer.current) clearTimeout(paddingTimer.current);
       if (wait <= 0) fire();
       else paddingTimer.current = setTimeout(fire, wait);
@@ -921,8 +943,12 @@ export function MapScreen() {
     },
     [qc, send, showToast, bandById, playMoment, likedIds, localMutual, likeLocked, askInvisibleLike, askSuperLimit],
   );
-  const onLike = useCallback((u: NearbyUser) => void like(u, false), [like]);
-  const onSuperLike = useCallback((u: NearbyUser) => void like(u, true), [like]);
+  // estáveis (a curtida lê o estado mais novo pela ref): o `like` muda a cada /nearby (bandById) e, passado direto, fazia
+  // toda linha visível da lista re-renderizar
+  const likeRef = useRef(like);
+  likeRef.current = like;
+  const onLike = useCallback((u: NearbyUser) => void likeRef.current(u, false), []);
+  const onSuperLike = useCallback((u: NearbyUser) => void likeRef.current(u, true), []);
 
   const onWave = useCallback(
     async (u: NearbyUser) => {
@@ -957,11 +983,13 @@ export function MapScreen() {
   const onSelectUser = useCallback((u: NearbyUser) => {
     setSelected(u.id);
   }, []);
+  const bandByIdRef = useRef(bandById);
+  bandByIdRef.current = bandById;
   const onOpenProfile = useCallback(
     (u: NearbyUser) => {
-      rootNav.navigate('UserCard', { userId: u.id, band: bandById.get(u.id) ?? null });
+      rootNav.navigate('UserCard', { userId: u.id, band: bandByIdRef.current.get(u.id) ?? null });
     },
-    [rootNav, bandById],
+    [rootNav],
   );
   // "Mensagem"/"Conversar" da sheet: sem conversa ainda, o chat abre em rascunho (a 1ª mensagem cria)
   const onChat = useCallback((u: NearbyUser, conversationId: string | null) => {

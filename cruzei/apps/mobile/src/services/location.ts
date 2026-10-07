@@ -44,9 +44,8 @@ export async function pushLocation(loc: CruzeiLocation): Promise<{ ok: boolean; 
     useLocationStore.getState().setDiscoverable(res.data.discoverable !== false, res.data.hiddenReason ?? null);
     return { ok: true, geohash: res.data.geohash, discoverable: res.data.discoverable };
   } catch (err) {
-    const e = toApiError(err);
     // eslint-disable-next-line no-console
-    console.warn('pushLocation failed:', e.message);
+    if (__DEV__) console.warn('pushLocation failed:', toApiError(err).message);
     return { ok: false };
   }
 }

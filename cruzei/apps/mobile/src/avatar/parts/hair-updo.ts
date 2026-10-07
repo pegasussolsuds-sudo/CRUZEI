@@ -11,7 +11,7 @@ import { mix } from '../shading';
 import { capOutline, partLine, softHairline, type CapOpts } from './hair-cap';
 import { castOnBody, fallGrad, flyaways, massGrad, paintLocks, qAt, rnd, ringSheen, saltPepper, shift, shoulderTop, spineSlice, type HairKit, type Lock } from './hair-kit';
 
-type Style = { back?: (k: HairKit) => void; front?: (k: HairKit) => void; belowWrap?: boolean };
+type Style = { back?: (k: HairKit) => void; front?: (k: HairKit) => void };
 
 // ---------------------------------------------------------------------------------------------------------------
 // calota puxada
@@ -64,9 +64,12 @@ export function sleekCap(k: HairKit, o: SleekOpts): string {
     ctx.push(dk, t.deep, { o: t.pale ? 0.4 : 0.45, b: 0.15, cp: cap.d });
   }
   // brilho anelar no alto do crânio (cabelo esticado brilha mais)
+  // no 'lite' (traço sem desfoque) a faixa sobe pro alto do crânio: colada na linha do cabelo, os traços de brilho
+  // viravam dois riscos cinza na testa (coque baixo)
+  const ringY = lite ? CR + 1.9 : CR + 3.2;
   const ring = (x: number) => {
     const u = (x - k.cx) / ((k.Wc + 1) * s);
-    return H(0, CR + 3.2)[1] + (u * u * 3 + u * 0.5) * s;
+    return H(0, ringY)[1] + (u * u * 3 + u * 0.5) * s;
   };
   ringSheen(k, lines, ring, { len: 0.16, wk: 0.38, o: t.pale ? 0.6 : 0.75, seed: 21, pair: true });
   if (o.part != null) partLine(k, cap.d, o.part, -7.6, o.part * 0.9, CR + 0.4);
@@ -202,12 +205,13 @@ function updoFront(k: HairKit): void {
 /** coque baixo: risca no meio, cabelo descendo por trás das orelhas até a nuca, coque aparecendo dos lados do pescoço */
 function lowBunBack(k: HairKit): void {
   const { ctx, t, H, s, cx, nk } = k;
-  const y = H(0, k.jawY + 3.4)[1];
-  // massa que desce atrás das orelhas até o coque (estreita: não pode virar "protetor de orelha")
-  const side = smoothPath([H(-(k.Wc - 0.6), -3), H(k.Wc - 0.6, -3), H(k.Wc - 1.2, 3), [cx + nk + 0.8, y], [cx - nk - 0.8, y], H(-(k.Wc - 1.2), 3)]);
+  const y = H(0, k.jawY + 3.0)[1];
+  // massa que desce atrás das orelhas até a nuca, DENTRO da silhueta da mandíbula na vista de frente (antes passava da
+  // mandíbula e descia até o queixo dos dois lados, como jugular de capacete)
+  const side = smoothPath([H(-(k.Wc - 0.6), -3), H(k.Wc - 0.6, -3), H(k.Jw - 0.6, k.jawY - 1), [cx + nk - 0.2, y], [cx - nk + 0.2, y], H(-(k.Jw - 0.6), k.jawY - 1)]);
   ctx.push(side, t.root, { gf: fallGrad(k, H(0, -3)[1], y, mix(t.base, t.root, 0.4)) });
-  // o coque fica atrás do pescoço: só as bordas aparecem dos dois lados
-  bunMass(k, [cx, y + 0.4], nk + 1.3, 2.4 * s, 23);
+  // o coque, atrás do pescoço, na nuca: só um pedaço aparece dos dois lados do pescoço (largo demais virava gola)
+  bunMass(k, [cx, y - 0.4], nk + 1.5, 2.3 * s, 23);
 }
 
 const lowBunFront = (k: HairKit) => void sleekCap(k, { lift: 0.7, side: 0.45, hl: -7.5, to: [0, 6], part: 0, lines: 6 });

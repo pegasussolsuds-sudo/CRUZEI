@@ -202,8 +202,15 @@ export function applyItem(cfg: AvatarConfig, slot: AvatarSlot, id: string): Avat
     const poses = petPosesOf(id) as string[];
     if (poses.length && !poses.includes(next.petPose)) next.petPose = poses[0];
   }
+  // capa da bandeira × capa/manto por cima: uma escondia a outra (sobrava um filete de arco-íris em volta da capa) — vale
+  // a última escolhida
+  if (slot === 'pride' && id === 'cape' && (next.outer === 'cape' || next.outer === 'mantle')) next.outer = 'none';
+  if (slot === 'outer' && (id === 'cape' || id === 'mantle') && next.pride === 'cape') next.pride = 'none';
   return next;
 }
+
+/** pet da miniatura das animações que pedem pet quando a pessoa não tem nenhum (senão o tile fica igual a "Nenhuma") */
+const PREVIEW_PET = 'cat_orange';
 
 /** abas que a miniatura mostra no busto (o resto é corpo inteiro) */
 const BUST_TABS: ReadonlySet<string> = new Set([
@@ -248,6 +255,11 @@ export function tilePreviewConfig(cfg: AvatarConfig, slot: AvatarSlot, id: strin
   const def = slot === 'emote' ? emoteDef(id) : null;
   if (slot !== 'vehicle' && slot !== 'vehicleColor') out.vehicle = 'none';
   if (slot !== 'pet' && !def?.needsPet) out.pet = 'none';
+  if (def?.needsPet && (!out.pet || out.pet === 'none')) {
+    out.pet = PREVIEW_PET;
+    const poses = petPosesOf(PREVIEW_PET) as string[];
+    if (poses.length && !poses.includes(out.petPose)) out.petPose = poses[0];
+  }
   if (slot !== 'aura' && slot !== 'auraColor' && slot !== 'auraLevel') out.aura = 'none';
   if (NO_HAT_TABS.has(slot)) {
     out.hat = 'none';

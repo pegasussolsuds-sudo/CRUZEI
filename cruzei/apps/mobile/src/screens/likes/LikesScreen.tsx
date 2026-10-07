@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -30,7 +30,7 @@ import { useMyLocation } from '../../hooks/useMyLocation';
 import { iLiked, inboxKeys, likeStatusOf } from '../../hooks/useInbox';
 import { MatchModal, type MatchInfo } from '../../components/MatchModal';
 import { nearbyCountTitle } from '../../components/map/proximityText';
-import { FadeInView, Pulse, ScaleOnPress } from '../../components/animated';
+import { FadeInView, ScaleOnPress } from '../../components/animated';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { resolveAvatar } from '../../avatar';
 import type { RootStackParamList } from '../../navigation/RootNavigator';
@@ -90,9 +90,12 @@ export function LikesScreen() {
   // progresso 0..1 do card de cima rumo ao limiar — o card de baixo cresce 0.95 → 1 com isso
   const progress = useSharedValue(0);
 
+  // fora da frente o deck (até 300 pessoas com o avatar inteiro) não busca: nem com a posição mudando nem com o
+  // invalidate de ['nearby'] (match, bloqueio, avatar…) — volta pra frente e busca se passou do staleTime
+  const isFocused = useIsFocused();
   const nearbyQuery = useQuery({
     queryKey: ['nearby', 'deck', lat?.toFixed(3), lng?.toFixed(3)],
-    enabled: lat != null && lng != null,
+    enabled: isFocused && lat != null && lng != null,
     // o servidor centra na MINHA presença (lat/lng só entram na chave do cache). deck=1: sem quem eu passei nos
     // últimos 30 dias nem quem já curti, e quem me deu super curtida vem primeiro (mesmo de longe)
     queryFn: async () => {
@@ -726,9 +729,8 @@ function CardBody({ card }: { card: DeckUser }) {
           ) : null}
           {card.isOnline ? (
             <View style={styles.metaChip}>
-              <Pulse maxScale={1.35} minOpacity={0.6} cycleMs={1400}>
-                <View style={styles.onlineDot} />
-              </Pulse>
+              {/* estático: um Pulse em loop aqui deixava a tela parada redesenhando sem parar enquanto o cartão está na frente */}
+              <View style={styles.onlineDot} />
               <Text style={styles.metaText}>online</Text>
             </View>
           ) : null}

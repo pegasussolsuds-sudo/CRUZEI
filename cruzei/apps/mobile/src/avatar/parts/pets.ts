@@ -22,7 +22,7 @@ import type { LayerCtx } from '../ctx';
 import { zero } from '../pose';
 import { mApply, groupMatrix } from '../rig';
 import { applyScene } from '../scene';
-import { lodCtx } from '../shading';
+import { isLite, lodCtx } from '../shading';
 import type { AvatarRig } from '../types';
 
 import { drawBird } from './pets-birds';
@@ -160,6 +160,9 @@ export function cradleHands(ctx: LayerCtx): { L: [number, number]; R: [number, n
 // Posicionamento por pose
 // ---------------------------------------------------------------------------------------------------------------
 
+/** tamanho mínimo (maior lado da caixa, unidades) do bicho flutuando no corpo inteiro pequeno */
+const LITE_FLOAT_MIN = 20;
+
 /** quanto os olhos do bicho no colo ficam acima da mão de cima (a que pousa no peito/costas dele, não na cara) */
 const CRADLE_EYE_CLEAR = 6.5;
 
@@ -212,7 +215,11 @@ function placeFor(ctx: LayerCtx, def: PetDef, pose: PetPoseDraw): Place {
         }
         return { x, y: an.head.cy + 4 - b.cy * s, s, flip: false };
       }
-      return { x: Math.min(anchor[0], 99.5 - right * sc), y: anchor[1] - b.cy * sc, s: sc, flip: false };
+      // corpo inteiro pequeno (mapa, miniatura): bicho miúdo (fantasminha) cresce até LITE_FLOAT_MIN unidades, senão vira
+      // uma bolinha de ~6 px longe da cabeça; a borda de dentro dele chega mais perto do rosto
+      const big = Math.max(-b.top, b.x1 - b.x0);
+      const s = isLite(ctx) ? Math.max(sc, LITE_FLOAT_MIN / big) : sc;
+      return { x: Math.min(anchor[0], 99.5 - right * s), y: anchor[1] - b.cy * s, s, flip: false };
     }
     default: {
       // no chão ao lado do pé direito; no carro (passageiro) sobe pro banco; no tapete/nuvem/disco, em cima dele

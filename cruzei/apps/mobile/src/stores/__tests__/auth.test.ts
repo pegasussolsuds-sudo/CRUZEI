@@ -376,3 +376,35 @@ describe('cadastro: bio, Instagram, interesses e métricas', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
 });
+
+describe('/me repetido não re-renderiza quem lê s.user', () => {
+  const full = () => ({ ...ME, avatarConfig: { body: 'b1', hair: 'afro', aura: 'max' }, photos: [{ id: 'p1', url: 'u' }], likesReceived: 3 });
+
+  it('refreshMe/setUser com o mesmo conteúdo mantêm a referência; o que mudou troca só o que mudou', async () => {
+    useAuthStore.setState({ user: full() as never, isAuthenticated: true });
+    const first = useAuthStore.getState().user;
+    let userChanges = 0;
+    const off = useAuthStore.subscribe((s, prev) => {
+      if (s.user !== prev.user) userChanges += 1;
+    });
+
+    // curtida recebida / match / perfil: o /me volta igual 3 vezes
+    for (let i = 0; i < 3; i++) {
+      apiMock.api.get.mockResolvedValueOnce({ data: full() });
+      await useAuthStore.getState().refreshMe();
+    }
+    useAuthStore.getState().setUser(full() as never);
+    expect(userChanges).toBe(0);
+    expect(useAuthStore.getState().user).toBe(first);
+
+    // mudou o contador: user novo, mas avatar e fotos com a mesma referência (memo do avatar não refaz)
+    apiMock.api.get.mockResolvedValueOnce({ data: { ...full(), likesReceived: 4 } });
+    await useAuthStore.getState().refreshMe();
+    const next = useAuthStore.getState().user as unknown as ReturnType<typeof full>;
+    expect(userChanges).toBe(1);
+    expect(next.likesReceived).toBe(4);
+    expect(next.avatarConfig).toBe((first as unknown as ReturnType<typeof full>).avatarConfig);
+    expect(next.photos).toBe((first as unknown as ReturnType<typeof full>).photos);
+    off();
+  });
+});

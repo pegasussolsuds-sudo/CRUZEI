@@ -27,6 +27,7 @@ import {
   fleck,
   gem,
   herringbone,
+  keepsBlur,
   knitRib,
   metalGrad,
   mix,
@@ -146,7 +147,7 @@ function drawBrim(ctx: LayerCtx, hf: HeadFrame, b: BrimSpec, w: number, t: Tones
   // espessura: a borda da frente vira pra baixo (aresta escura fina) com uma luz logo acima
   const front = brimFront(hf, b);
   ctx.push(taperPath(shift(front, 0, 0.12), [0.1, 0.55, 0.62, 0.55, 0.1]), t.deep, { o: 0.9 * (o.under ?? 1) });
-  if (!hf.lite) ctx.stroke(smoothPath(shift(front, 0.05, -0.32), false), t.lighter, 0.35, { o: 0.4, cp: d, b: 0.15 });
+  if (!hf.lite || hf.pop) ctx.stroke(smoothPath(shift(front, 0.05, -0.32), false), t.lighter, 0.35, { o: hf.pop ? 0.55 : 0.4, cp: d, ...(hf.lite ? {} : { b: 0.15 }) });
   return { d, front };
 }
 
@@ -194,12 +195,13 @@ function cap(ctx: LayerCtx, hf: HeadFrame, back: boolean): void {
   const yb = (u: number) => yC + (yS - yC) * Math.pow(Math.abs(u), 2.4);
   if (back) {
     // aba virada pra trás: aparece por cima da copa, vista por baixo (mais escura)
-    const bill = smoothPath([hf.P(-0.5 * w, topU + 1.6), hf.P(-0.62 * w, topU + 0.2), hf.P(-0.3 * w, topU - 1.15), hf.P(0.3 * w, topU - 1.15), hf.P(0.62 * w, topU + 0.2), hf.P(0.5 * w, topU + 1.6)], true);
-    ctx.push(bill, t.shade, { gf: { t: 'l', x1: 0, y1: hf.Q(0, topU - 1.2)[1], x2: 0, y2: hf.Q(0, topU + 1.2)[1], s: [[0, t.light], [0.25, t.base], [1, t.deep]] } });
+    // (só uma lasca escura acima da copa: alta e clara, lia tampa de panela em cima do boné)
+    const bill = smoothPath([hf.P(-0.5 * w, topU + 1.6), hf.P(-0.6 * w, topU + 0.4), hf.P(-0.3 * w, topU - 0.4), hf.P(0.3 * w, topU - 0.4), hf.P(0.6 * w, topU + 0.4), hf.P(0.5 * w, topU + 1.6)], true);
+    ctx.push(bill, t.deep, { gf: { t: 'l', x1: 0, y1: hf.Q(0, topU - 0.5)[1], x2: 0, y2: hf.Q(0, topU + 0.6)[1], s: [[0, t.shade], [1, t.deep]] } });
     if (!hf.lite) stitch(ctx, hf, [hf.P(-0.5 * w, topU + 0.1), hf.P(-0.28 * w, topU - 0.72), hf.P(0.28 * w, topU - 0.72), hf.P(0.5 * w, topU + 0.1)], t.line, { w: 0.16, o: 0.5 });
   }
   const pts = domeU(hf, { lift: L, extra: 0.5, yC, yS, p: 2.4 });
-  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 2.4), { w: 1.3, dy: 0.55, o: 0.32 });
+  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 2.4), { w: 1.2, dy: 0.6, o: 0.22 });
   const d = shapeVolume(ctx, hf, pts, t, { core: 0.42, sheen: 0.3, sheenAt: [0.32, 0.22], sheenR: [0.2, 0.14] });
   // gomos: costuras que descem do botão até a faixa (sarja de algodão)
   const seam = (u: number): SP[] => [hf.P(u * 0.04, topU + 0.25), hf.P(u * 0.32 * w, topU + 1.9), hf.P(u * 0.5 * w, -7.0), hf.P(u * 0.58 * w, yb(0.58) - 0.05)];
@@ -249,14 +251,14 @@ function cap(ctx: LayerCtx, hf: HeadFrame, back: boolean): void {
     backEdge.push(hf.P(u * w, yb(u) - 0.05));
   }
   const frontEdge: SP[] = [hf.P(-0.96 * w, yb(-0.96) + 0.2, 0.4), hf.P(-0.72 * w, yC + 2.05), hf.P(-0.36 * w, yC + 2.8), hf.P(0, yC + 3.0), hf.P(0.36 * w, yC + 2.8), hf.P(0.72 * w, yC + 2.05), hf.P(0.96 * w, yb(0.96) + 0.2, 0.4)];
-  castShadow(ctx, hf, frontEdge.slice(1, -1), { w: 2.2, dy: 1.15, o: 0.5, b: 0.9 });
+  castShadow(ctx, hf, frontEdge.slice(1, -1), { w: 1.6, dy: 0.85, o: 0.28, b: 0.8 });
   const billPts = [...frontEdge, ...backEdge];
   const bill = smoothPath(billPts, true);
   const bb = boxOf(billPts);
   ctx.push(bill, t.base, { gf: { t: 'r', cx: bb.x + bb.w * 0.42, cy: bb.y + bb.h * 0.9, r: bb.w * 0.58, fx: bb.x + bb.w * 0.36, fy: bb.y + bb.h * 0.85, s: [[0, t.light], [0.5, t.base], [0.85, mix(t.base, t.shade, 0.7)], [1, t.shade]] } });
   // oclusão onde a pala encontra a copa e brilho largo na curvatura
   edgeShade(ctx, hf, backEdge, bill, t.deep, { w: 1.0, o: 0.42, dy: 0.35 });
-  ctx.push(blob(hf.cx - w * 0.3 * hf.s, hf.cy + (yC + 1.55) * hf.s, w * 0.32 * hf.s, 0.55 * hf.s, -0.06), t.lighter, { o: 0.32, cp: bill, ...(hf.lite ? {} : { b: 0.5 }) });
+  ctx.push(blob(hf.cx - w * 0.3 * hf.s, hf.cy + (yC + 1.55) * hf.s, w * 0.32 * hf.s, 0.55 * hf.s, -0.06), t.lighter, { o: hf.pop ? 0.45 : 0.32, cp: bill, ...(hf.lite ? {} : { b: 0.5 }) });
   if (!hf.lite) {
     for (const f of [0.22, 0.4, 0.58]) stitch(ctx, hf, frontEdge.slice(1, -1).map((p, i) => [p[0], p[1] - f * (1.2 + 0.4 * Math.sin((i / 4) * Math.PI))] as SP), t.line, { w: 0.14, o: 0.5, dash: [0.45, 0.35], cp: bill });
   }
@@ -275,7 +277,7 @@ function beanie(ctx: LayerCtx, hf: HeadFrame): void {
   const yS = -0.7;
   const cuffH = 2.75;
   const pts = domeU(hf, { lift: L, extra: 1.4, yC: yC - cuffH + 0.4, yS: yS - cuffH + 0.4, lean: 0.5, p: 2.3 });
-  castShadow(ctx, hf, bandU(hf, w + 0.3, yC, yS, 9, 2.3), { w: 1.4, dy: 0.6, o: 0.34 });
+  castShadow(ctx, hf, bandU(hf, w + 0.3, yC, yS, 9, 2.3), { w: 1.3, dy: 0.65, o: 0.24 });
   const d = shapeVolume(ctx, hf, pts, t, { core: 0.4, sheen: 0.24, rim: 0.22 });
   const topU = SKULL_CY - (SKULL_RY + L + 1.4);
   // colunas de tricô convergindo pro topo
@@ -297,25 +299,34 @@ function beanie(ctx: LayerCtx, hf: HeadFrame): void {
   if (!hf.lite) ctx.push(taperPath([hf.P(-0.5 * w, topU + 2.6), hf.P(0.05 * w, topU + 1.8), hf.P(0.6 * w, topU + 2.4)], [0, 0.9, 0]), t.deep, { o: 0.22, cp: d, b: 0.5 });
 }
 
+/**
+ * bucket de tecido (sarja de algodão): copa BAIXA de lados retos e topo chato, material fosco, aba caída em volta com
+ * fileiras de pesponto — não um chapéu-coco (domo liso e brilhante de aba reta)
+ */
 function bucket(ctx: LayerCtx, hf: HeadFrame): void {
   const t = tones(ctx.col.hat);
   const L = 0.95 + hf.bulk * 0.8;
   const w = hf.Wu + L;
-  const b: BrimSpec = { yB: -4.5, R: w + 3.3, r: 2.4, droop: 1.15, dip: 0.5 };
+  const b: BrimSpec = { yB: -4.5, R: w + 3.0, r: 2.3, droop: 2.0, dip: 0.6 };
   const ring = innerRing(hf, b, w);
   const brim = drawBrim(ctx, hf, b, w, t, { stitchRows: 3 });
-  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 2.0, dy: 1.2, o: 0.36, b: 1.0 });
-  // copa baixa de topo achatado, costura no pé
-  const pts = domeU(hf, { lift: L, extra: -0.6, yC: ring.yC, yS: ring.yS, flat: 0.55, p: 2 });
-  const d = shapeVolume(ctx, hf, pts, t, { core: 0.4, sheen: 0.26 });
-  const topU = SKULL_CY - (SKULL_RY + L - 0.6);
+  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 1.4, dy: 0.75, o: 0.22, b: 0.8 });
+  // copa: lados quase retos (taper 0,9) e topo chato (round baixo); cobre o crânio + cabelo achatado
+  const topU = SKULL_CY - (SKULL_RY + L - 0.2);
+  const pts = crownPts(hf, ring, w, { top: topU, taper: 0.9, round: 0.3 });
+  const d = shapeVolume(ctx, hf, pts, t, { core: 0.32, sheen: 0.12, rim: 0.12, sheenAt: [0.34, 0.3], sheenR: [0.2, 0.2] });
+  // pespontos: anéis na copa e no pé (no 'lite' um traço contínuo fino, que ainda lê como costura)
+  const crownSeam = bandU(hf, w * 0.97, ring.yC - 0.6, ring.yS - 0.6, 11, 2).reverse();
+  const topSeam = bandU(hf, w * 0.86, topU + 1.6 + (ring.yC - ring.yS) * 0.35, topU + 1.6, 11, 2).reverse();
   if (!hf.lite) {
-    stitch(ctx, hf, bandU(hf, w * 0.98, ring.yC - 0.55, ring.yS - 0.55, 11, 2).reverse(), t.line, { w: 0.15, o: 0.5, cp: d });
-    stitch(ctx, hf, arcU(hf, 0, topU + 1.8, w * 0.7, 1.0, 172, 8, 11), t.line, { w: 0.15, o: 0.45, cp: d });
+    stitch(ctx, hf, crownSeam, t.line, { w: 0.15, o: 0.5, cp: d });
+    stitch(ctx, hf, topSeam, t.line, { w: 0.15, o: 0.45, cp: d });
     fleck(ctx, hf, d, boxOf(pts), t.deep, { n: 50, r: 0.24, seed: 5, op: 0.16, dash: true });
+    // dobra do pano na lateral da copa
+    ctx.push(taperPath([hf.P(0.55 * w, topU + 1.4), hf.P(0.66 * w, -6.4), hf.P(0.62 * w, ring.yS + 0.4)], [0, 0.8, 0]), t.deep, { o: 0.3, cp: d, b: 0.4 });
+  } else {
+    ctx.stroke(smoothPath(crownSeam, false) + smoothPath(topSeam, false), t.pale ? t.shade : t.lighter, 0.22, { o: 0.35, cp: d });
   }
-  // dobra do pano na lateral da copa
-  if (!hf.lite) ctx.push(taperPath([hf.P(0.55 * w, topU + 2.4), hf.P(0.68 * w, -6.4), hf.P(0.62 * w, ring.yS + 0.4)], [0, 0.8, 0]), t.deep, { o: 0.3, cp: d, b: 0.4 });
   edgeShade(ctx, hf, ring.pts, d, t.deep, { w: 0.9, o: 0.3, dy: -0.3 });
 }
 
@@ -324,7 +335,7 @@ function headband(ctx: LayerCtx, hf: HeadFrame): void {
   const w = hf.Wu + hf.bulk + 0.45;
   const hi = bandU(hf, w, -7.0, -5.3, 11, 2.2).reverse();
   const lo = bandU(hf, w + 0.1, -4.55, -2.9, 11, 2.2);
-  castShadow(ctx, hf, lo.slice().reverse(), { w: 1.1, dy: 0.45, o: 0.32 });
+  castShadow(ctx, hf, lo.slice().reverse(), { w: 1.1, dy: 0.5, o: 0.26, cp: hf.near });
   const pts = [...hi, ...lo];
   const d = smoothPath(pts, true);
   const bb = boxOf(pts);
@@ -338,8 +349,10 @@ function headband(ctx: LayerCtx, hf: HeadFrame): void {
     fleck(ctx, hf, d, bb, t.lighter, { n: 90, r: 0.13, seed: 9, op: 0.35 });
     fleck(ctx, hf, d, bb, t.deep, { n: 70, r: 0.12, seed: 21, op: 0.3 });
   }
-  ctx.push(taperPath(shift(hi, 0.1, 0.5), [0, 0.8, 0.8, 0]), t.lighter, { o: 0.3, cp: d, ...(hf.lite ? {} : { b: 0.3 }) });
+  ctx.push(taperPath(shift(hi, 0.1, 0.5), [0, 0.8, 0.8, 0]), hf.pop ? mix(t.sheen, '#C8D2F0', 0.25) : t.lighter, { o: hf.pop ? 0.55 : 0.3, cp: d, ...(hf.lite ? {} : { b: 0.3 }) });
   edgeShade(ctx, hf, lo.slice().reverse(), d, t.deep, { w: 0.9, o: 0.35, dy: -0.25 });
+  // faixa escura no cabelo escuro: aresta clara embaixo também (senão a faixa some no black power)
+  if (hf.pop) ctx.stroke(smoothPath(shift(lo, 0, -0.3), false), mix(t.sheen, '#C8D2F0', 0.25), 0.32, { o: 0.45, cp: d });
   // borda lateral (a faixa contorna a cabeça): escurece onde vira
   ctx.push(blob(hf.cx + w * 0.92 * hf.s, hf.cy - 4.4 * hf.s, 1.0 * hf.s, 1.9 * hf.s), t.deep, { o: 0.35, cp: d, ...(hf.lite ? {} : { b: 0.5 }) });
 }
@@ -378,9 +391,11 @@ function crownDent(ctx: LayerCtx, hf: HeadFrame, d: string, t: Tones, w: number,
     if (!hf.lite) ctx.push(taperPath([hf.P(-0.55, top + dent + 0.2), hf.P(-0.75, top + (yS - top) * 0.3)], [0.8 * hf.s, 0]), t.lighter, { o: 0.28, cp: d, b: 0.35 });
   }
   if (pinch > 0) {
-    for (const g of [-1, 1]) {
-      ctx.push(blob(hf.cx + g * w * 0.5 * hf.s, hf.cy + (top + (yS - top) * 0.36) * hf.s, w * 0.17 * hf.s, (yS - top) * 0.2 * hf.s, g * 0.25), g > 0 ? t.deep : t.shade, { o: g > 0 ? 0.42 : 0.3, cp: d, ...(hf.lite ? {} : { b: 0.5 }) });
-    }
+    // covas laterais do feltro: vinco alto e estreito, inclinado pra dentro no alto (nada de disco: lia bolinha/mancha)
+    const h = yS - top;
+    let dk = '';
+    for (const g of [-1, 1]) dk += taperPath([hf.P(g * w * 0.36, top + h * 0.16), hf.P(g * w * 0.47, top + h * 0.38), hf.P(g * w * 0.53, top + h * 0.64)], [0, 0.75 * hf.s * Math.min(1, pinch), 0]);
+    ctx.push(dk, t.deep, { o: t.pale ? 0.16 : 0.22, cp: d, ...(keepsBlur(ctx) ? { b: 0.45 } : {}) });
   }
 }
 
@@ -399,9 +414,10 @@ function brimmedHat(
   const k = fitTop(hf.Q(0, c.top)[1], hf.Q(0, ring.yS)[1], 0.8);
   const top = ring.yS + (c.top - ring.yS) * k;
   const brim = drawBrim(ctx, hf, b, w, t, { weave: o.weave, stitchRows: o.stitchRows });
-  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 2.2, dy: 1.3, o: 0.38, b: 1.0 });
+  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 1.5, dy: 0.8, o: 0.22, b: 0.8 });
   const pts = crownPts(hf, ring, w, { ...c, top });
-  const d = shapeVolume(ctx, hf, pts, t, { core: 0.38, sheen: o.sheen ?? 0.28, sheenAt: [0.3, 0.35], sheenR: [0.16, 0.26] });
+  // brilho no alto da copa, entre o vinco do topo e a cova da esquerda (em cima da cova ele fazia um anel claro)
+  const d = shapeVolume(ctx, hf, pts, t, { core: 0.38, sheen: o.sheen ?? 0.28, ...(c.pinch ? { sheenAt: [0.38, 0.2], sheenR: [0.13, 0.14] } : { sheenAt: [0.3, 0.35], sheenR: [0.16, 0.26] }) });
   crownDent(ctx, hf, d, t, w, top, ring.yS, c.dent ?? 0, c.pinch ?? 0);
   if (o.weave) {
     const rows: SP[][] = [];
@@ -476,13 +492,14 @@ function witch(ctx: LayerCtx, hf: HeadFrame): void {
   const b: BrimSpec = { yB: -5.3, R: w + 6.2, r: 2.3, dip: 0.55, wave: 0.32, waveN: 5 };
   const ring = innerRing(hf, b, w);
   const brim = drawBrim(ctx, hf, b, w, t, {});
-  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 2.2, dy: 1.3, o: 0.4, b: 1.0 });
+  castShadow(ctx, hf, brim.front.slice(2, -2), { w: 1.5, dy: 0.8, o: 0.22, b: 0.8 });
   // cone com a ponta dobrada pra direita (cabe no viewBox: comprime se precisar)
   const yS = ring.yS;
   const tip: SP = hf.P(5.6, -18.8);
   const k = fitTop(Math.min(tip[1], hf.Q(0, -19.6)[1]), hf.Q(0, yS)[1], 0.9);
   const cone: SP[] = [
     hf.P(-w * 0.94, yS, 0),
+    hf.P(-w * 0.84, yS - 1.8),
     hf.P(-w * 0.7, yS - 3.6),
     hf.P(-w * 0.38, yS - 8.0),
     hf.P(-w * 0.1, yS - 11.6),
@@ -497,7 +514,21 @@ function witch(ctx: LayerCtx, hf: HeadFrame): void {
     hf.P(w * 0.94, yS, 0),
     ...bandU(hf, w * 0.94, ring.yC, yS, 7, 2).slice(1, -1),
   ];
-  const pts = squash(cone, hf.Q(0, yS)[1], k);
+  // a base do cone é mais estreita que o crânio + cabelo achatado: o cabelo atravessava dos dois lados acima da aba
+  // (dois "chifres"). Cada ponto da lateral sai pelo menos até a elipse do crânio com o volume do cabelo, já na altura
+  // final (depois do squash), e o cone afina a partir daí
+  const ry = SKULL_RY + hf.bulk + 1.0;
+  const rx = hf.Wu + hf.bulk + 1.3;
+  const yBase = hf.Q(0, yS)[1];
+  const pts = squash(cone, yBase, k).map((p, i) => {
+    if (i === 0 || i === 7 || i >= 13) return p;
+    const yu = (p[1] - hf.cy) / hf.s;
+    const e = 1 - ((yu - SKULL_CY) / ry) ** 2;
+    if (e <= 0) return p;
+    const need = rx * Math.sqrt(e) * hf.s;
+    const dx = p[0] - hf.cx;
+    return Math.abs(dx) >= need ? p : ([hf.cx + Math.sign(dx || (i < 7 ? -1 : 1)) * need, p[1]] as SP);
+  });
   const d = shapeVolume(ctx, hf, pts, t, { core: 0.42, sheen: 0.26, sheenAt: [0.3, 0.45], sheenR: [0.14, 0.25] });
   // dobras do feltro no cone e na quebra da ponta
   if (!hf.lite) {
@@ -519,9 +550,10 @@ function flatcap(ctx: LayerCtx, hf: HeadFrame): void {
   const w = hf.Wu + L;
   const yC = -4.2;
   const yS = -2.4;
-  // corpo: copa baixa de topo chato, um pouco mais larga que a cabeça (lã encorpada)
-  const pts = domeU(hf, { lift: L + 0.3, extra: -1.8, yC, yS, flat: 0.8, p: 2.3 });
-  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 2.3), { w: 1.3, dy: 0.55, o: 0.3 });
+  // corpo: copa baixa de topo chato, um pouco mais larga que a cabeça (lã encorpada). Alta o bastante pra cobrir o
+  // cabelo achatado do modo 'cap' (com −1,8 o topo do cabelo aparecia acima da boina e ela lia viseira)
+  const pts = domeU(hf, { lift: L + 0.3, extra: -0.6, yC, yS, flat: 0.8, p: 2.3 });
+  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 2.3), { w: 1.2, dy: 0.6, o: 0.22 });
   const d = shapeVolume(ctx, hf, pts, t, { core: 0.4, sheen: 0.16 });
   herringbone(ctx, hf, d, boxOf(pts), t, 0.8, 0.16);
   // painel de cima puxado pra frente por cima da aba: pega a luz de cima, borda arredondada que projeta sombra
@@ -540,7 +572,7 @@ function flatcap(ctx: LayerCtx, hf: HeadFrame): void {
   // aba curta e rígida: só a borda aparece embaixo do painel
   const frontEdge: SP[] = [hf.P(-0.8 * w, -3.4, 0.4), hf.P(-0.45 * w, -2.75), hf.P(0, -2.5), hf.P(0.45 * w, -2.75), hf.P(0.8 * w, -3.4, 0.4)];
   const backEdge: SP[] = [hf.P(0.66 * w, -3.75), hf.P(0, -3.35), hf.P(-0.66 * w, -3.75)];
-  castShadow(ctx, hf, frontEdge.slice(1, -1), { w: 1.8, dy: 0.95, o: 0.45 });
+  castShadow(ctx, hf, frontEdge.slice(1, -1), { w: 1.4, dy: 0.75, o: 0.26 });
   const bpts = [...frontEdge, ...backEdge];
   const bill = smoothPath(bpts, true);
   ctx.push(bill, t.shade, { gf: bandGradient(boxOf(bpts), t, 1) });
@@ -554,7 +586,7 @@ function beret(ctx: LayerCtx, hf: HeadFrame): void {
   const w = hf.Wu + L;
   // borda justa inclinada: mais alta à esquerda, desce até perto da orelha direita
   const lo: SP[] = [hf.P(w * 0.98, -2.2, 0), hf.P(w * 0.6, -4.6), hf.P(0, -6.0), hf.P(-w * 0.6, -6.9), hf.P(-w * 0.97, -6.6, 0)];
-  castShadow(ctx, hf, lo, { w: 1.2, dy: 0.5, o: 0.3 });
+  castShadow(ctx, hf, lo, { w: 1.2, dy: 0.6, o: 0.24 });
   // disco macio que transborda pro lado direito
   const topU = SKULL_CY - (SKULL_RY + L);
   const disc: SP[] = [
@@ -809,12 +841,15 @@ function catEars(ctx: LayerCtx, hf: HeadFrame): void {
   const yC = -10.2 - hf.hairLift * 0.55;
   const w = hf.Wu * 0.92 + hf.bulk * 0.7;
   const yS = yC + 3.6;
-  // arco fino (tiara) de plástico
-  const band = bandU(hf, w, yC, yS, 11, 2).reverse();
+  // arco fino (tiara) de plástico: só entre as orelhas, terminando embaixo delas (simétrico; o arco inteiro descia pelo
+  // black power de um lado e sumia no escuro do outro — lia risco no cabelo), gradiente vertical (igual dos dois lados)
+  const k0 = 0.62;
+  const band = bandU(hf, w * k0, yC, yC + (yS - yC) * k0 * k0, 9, 2).reverse();
   const bt = [...shift(band, 0, -0.5 * hf.s), ...band.slice().reverse()];
   const bandC = t.dark ? '#2A2A34' : t.shade;
   const btn = tones(bandC);
-  ctx.push(smoothPath(bt, true), bandC, { gf: bandGradient(boxOf(bt), btn, 1.4) });
+  const bb = boxOf(bt);
+  ctx.push(smoothPath(bt, true), bandC, { gf: { t: 'l', x1: 0, y1: bb.y, x2: 0, y2: bb.y + bb.h, s: [[0, btn.lighter], [0.5, btn.base], [1, btn.shade]] } });
   for (const g of [-1, 1] as const) {
     const bx = g * w * 0.5;
     const by = yC + (yS - yC) * 0.25 - 0.2;
@@ -877,7 +912,7 @@ function turban(ctx: LayerCtx, hf: HeadFrame): void {
   const yC = -4.9;
   const yS = -1.0;
   const pts = domeU(hf, { lift: L, extra: 1.9, yC, yS, flat: 0.25, p: 1.6 });
-  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 1.6), { w: 1.4, dy: 0.55, o: 0.34 });
+  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 1.6), { w: 1.3, dy: 0.65, o: 0.26 });
   const d = shapeVolume(ctx, hf, pts, t, { core: 0.42, sheen: 0.24 });
   const topU = SKULL_CY - (SKULL_RY + L + 1.9);
   // voltas do tecido: faixas diagonais que cruzam na frente formando um "V" com nó torcido no centro
@@ -915,7 +950,7 @@ function durag(ctx: LayerCtx, hf: HeadFrame): void {
   const yC = -5.6;
   const yS = -0.6;
   const pts = domeU(hf, { lift: L, extra: 0.25, yC, yS, p: 1.9 });
-  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 1.9), { w: 1.0, dy: 0.45, o: 0.3 });
+  castShadow(ctx, hf, bandU(hf, w, yC, yS, 9, 1.9), { w: 1.0, dy: 0.5, o: 0.24 });
   const bx = boxOf(pts);
   const d = smoothPath(pts, true);
   // cetim: contraste alto, brilhos longos que acompanham a curva
@@ -1136,7 +1171,7 @@ export const HAT_TOP: Record<string, (bulk: number) => { top: number; side: numb
   cap: (b) => ({ top: 1.35 + 0.8 * b, side: 0.85 + 0.8 * b }),
   cap_back: (b) => ({ top: 1.35 + 0.8 * b, side: 0.85 + 0.8 * b }),
   beanie: (b) => ({ top: 2.5 + 0.85 * b, side: 1.4 + 0.85 * b }),
-  flatcap: (b) => ({ top: Math.max(0.2, -0.5 + 0.75 * b), side: 1.3 + 0.75 * b }),
+  flatcap: (b) => ({ top: 0.7 + 0.75 * b, side: 1.3 + 0.75 * b }),
   durag: (b) => ({ top: 0.7 + 0.45 * b, side: 0.45 + 0.45 * b }),
   turban: (b) => ({ top: 3.5 + 0.45 * b, side: 1.6 + 0.45 * b }),
   hijab: (b) => ({ top: 1.0 + 0.3 * b, side: 1.3 + 0.3 * b }),

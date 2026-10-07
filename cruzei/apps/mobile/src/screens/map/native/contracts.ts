@@ -61,10 +61,12 @@ export interface Dim {
 
 /**
  * fator de densidade dos bitmaps (o <Images> recebe scale: IMG_SCALE). O mapa nativo desenha na densidade real da tela
- * (a WebView limitava o DPR a 2): bitmap a 2x num aparelho de ~2,6 sairia ampliado e borrado. Arredonda pra 2 / 2,5 / 3
- * (todos os tamanhos lógicos viram pixels inteiros) e limita a 3 pela memória de textura.
+ * (a WebView limitava o DPR a 2): bitmap a 2x num aparelho de ~2,6 sairia ampliado e borrado. Arredonda pra 2 / 2,5
+ * (todos os tamanhos lógicos viram pixels inteiros) e limita a 2,5 pela memória de textura e pelo raster: a figura fica a
+ * ~0,8x do tamanho lógico no z16, então 2,5 já sobra num painel de 3x+ (e é 31% menos pixel por imagem que 3x). O S23
+ * (2,625) segue em 2,5.
  */
-export const IMG_SCALE = Math.min(3, Math.max(2, Math.round(PixelRatio.get() * 2) / 2));
+export const IMG_SCALE = Math.min(2.5, Math.max(2, Math.round(PixelRatio.get() * 2) / 2));
 
 // tamanhos lógicos (mapbox-html.ts:324)
 export const IMG = {
@@ -157,6 +159,8 @@ export interface FigureOpts {
    * além de 45°).
    */
   usesArms?: boolean | number;
+  /** silhueta colorida (def null): cor da roupa no corpo e tom de pele na cabeça, em vez do manequim cinza */
+  tint?: { body: string; skin: string };
 }
 
 export interface MapDraw {

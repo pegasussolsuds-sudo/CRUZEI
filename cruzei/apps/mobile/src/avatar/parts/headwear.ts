@@ -12,7 +12,9 @@
 //   headwear-acc.ts      os 11 acessórios (+ 'none'); fone e headset passam por cima do chapéu (overHat)
 //
 // Etapas do orquestrador (layers.ts):
-//   22 headAccessory (brinco, flor…)  ·  23 glasses  ·  24 hat  ·  24b overHat (fone/headset por cima do chapéu)
+//   21a earAccessory (brinco, argola, ear cuff, aparelho: chamado pelo cabelo, POR BAIXO da frente dele)
+//   22 headAccessory (flor, borboletas, coroa de flores, piercing)  ·  23 glasses  ·  24 hat
+//   24b overHat (fone/headset por cima do chapéu; borboletas pousadas no chapéu)
 // Grupo: 'head' em tudo (o caimento do hijab sobre os ombros vai no grupo 'body').
 // Convivência com o cabelo: hat-modes.ts.
 
@@ -33,8 +35,34 @@ export const HEADWEAR_IDS = {
   accessory: [...new Set([...Object.keys(ACCESSORIES), ...Object.keys(OVER_HAT)])],
 } as const;
 
-/** 22. acessórios de cabeça e orelha que ficam por baixo dos óculos e do chapéu */
+/**
+ * acessórios de ORELHA (brincos, argolas, pérolas, ear cuff, aparelho auditivo): saem POR BAIXO do cabelo da frente —
+ * o cabelo (parts/hair.ts hairFront) chama earAccessory antes de desenhar a frente. Com cabelo longo cobrindo a orelha,
+ * eles ficavam boiando por cima do cabelo, sem orelha embaixo.
+ */
+const EAR_ACC = new Set(['earrings', 'hoops', 'pearl_earrings', 'ear_cuff', 'hearing_aid']);
+/** montagens (pela lista de camadas, uma por buildAvatarLayers) em que o acessório de orelha já saiu pelo cabelo */
+const earDone = new WeakSet<object>();
+
+/** 21a (chamado pelo cabelo, antes da frente dele): acessório de orelha, uma vez só por montagem */
+export function earAccessory(ctx: LayerCtx): void {
+  if (!EAR_ACC.has(ctx.cfg.accessory) || earDone.has(ctx.layers)) return;
+  const fn = ACCESSORIES[ctx.cfg.accessory];
+  if (!fn) return;
+  earDone.add(ctx.layers);
+  const prev = ctx.g;
+  const c = lodCtx(ctx);
+  c.group('head');
+  fn(c, headFrame(c));
+  ctx.group(prev);
+}
+
+/**
+ * 22. acessórios de cabeça que ficam por cima do cabelo e por baixo dos óculos e do chapéu. O de orelha já saiu por
+ * baixo do cabelo (earAccessory); se a etapa do cabelo não rodou (etapa isolada), sai aqui.
+ */
 export function headAccessory(ctx: LayerCtx): void {
+  if (EAR_ACC.has(ctx.cfg.accessory)) return earAccessory(ctx);
   ctx = lodCtx(ctx);
   const fn = ACCESSORIES[ctx.cfg.accessory];
   if (!fn) return;
@@ -53,7 +81,8 @@ export function glasses(ctx: LayerCtx): void {
 
 /** 24. chapéu */
 export function hat(ctx: LayerCtx): void {
-  ctx = lodCtx(ctx);
+  // busto leve: só a sombra da aba e o vinco da copa pedem desfoque (castShadow/crownDent); o resto já sai sem no 'lite'
+  ctx = lodCtx(ctx, { bustBlur: true });
   const fn = HATS[ctx.cfg.hat];
   if (!fn) return;
   ctx.group('head');

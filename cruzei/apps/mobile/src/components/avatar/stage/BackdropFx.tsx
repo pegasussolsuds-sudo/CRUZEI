@@ -1,13 +1,14 @@
 // Fundo do palco (elementos Skia dentro do Canvas do AvatarStage). Dono: efeitos.
 //
 // Os 15 fundos moram em fx-backdrops.ts. Cada um tem três partes: a de trás e a da frente são paradas e ficam gravadas
-// UMA vez (SkPicture no JS, por fundo e tamanho); só a do meio (nuvens, estrelas, confete, holofotes…) é regravada por
-// quadro na thread de UI, lendo o relógio `t`. Nada de re-render por quadro.
+// UMA vez (SkPicture no JS, por fundo e tamanho); só a do meio (nuvens, estrelas, confete, holofotes…) é regravada na
+// thread de UI quando o relógio `t` anda (o palco só o avança nas janelas vivas, a FX_FPS). Nada de re-render por quadro.
 //
 // Contrato:
 //   - backdrop = id do slot `backdrop` ('none' = nada); flag = bandeira da config (fundo 'pride');
 //   - box = canvas inteiro {w,h}; radius = raio dos cantos (busto: metade do lado = círculo);
-//   - t = relógio (s); still = movimento reduzido/pausado: quadro parado escolhido por fundo. Sem Math.random por quadro.
+//   - t = s desde o começo da janela viva (desenha spec.still + t: sem salto ao começar); still = parado: quadro
+//     escolhido por fundo. Sem Math.random por quadro.
 
 import { Group, Picture, Skia, type SkPicture } from '@shopify/react-native-skia';
 import React, { useMemo } from 'react';
@@ -46,7 +47,7 @@ export function BackdropFx({ backdrop, flag, box, radius, t, still }: BackdropFx
     if (!spec) return null;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, w, h));
-    drawBackdropStage(skiaPen(canvas, shapes, false), spec, { w, h }, radius, still ? spec.still : t.value, 1);
+    drawBackdropStage(skiaPen(canvas, shapes, false), spec, { w, h }, radius, still ? spec.still : spec.still + t.value, 1);
     return rec.finishRecordingAsPicture();
   }, [spec, still, w, h, radius]);
   if (!spec || !fixed) return null;

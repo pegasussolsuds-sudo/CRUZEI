@@ -107,7 +107,9 @@ export function capOutline(k: HairKit, o: CapOpts): { pts: SP[]; d: string; edge
  */
 export function softHairline(k: HairKit, edge: readonly SP[], clip: string, o: { temple?: number; mid?: number; hairs?: boolean } = {}): void {
   const { ctx, t, lite } = k;
-  if (edge.length < 3) return;
+  // no 'lite' (sem desfoque) a faixa virava um tracejado claro serrilhado na testa (loiro), um "anel de boina" no black
+  // power e riscos cinza nas têmporas (coque baixo): sai, junto com uma camada
+  if (lite || edge.length < 3) return;
   const n = edge.length;
   const tmp = o.temple ?? 1;
   const mid = o.mid ?? 0.12;
@@ -115,8 +117,9 @@ export function softHairline(k: HairKit, edge: readonly SP[], clip: string, o: {
     const u = Math.abs(i / (n - 1) - 0.5) * 2;
     return (mid + (tmp - mid) * Math.pow(u, 1.4)) * 1.15 * k.s;
   });
-  ctx.push(taperPath(edge, ws, { n: Math.min(14, n * 2) }), mix(ctx.col.skin, t.base, 0.25), { o: lite ? 0.35 : 0.55, ...(lite ? {} : { b: 0.35 }), cp: clip });
-  if (lite || o.hairs === false) return;
+  // pele com a cor da RAIZ (não da base/luz): no loiro a base clara dava uma borda branca
+  ctx.push(taperPath(edge, ws, { n: Math.min(14, n * 2) }), mix(ctx.col.skin, t.root, 0.25), { o: 0.55, b: 0.35, cp: clip });
+  if (o.hairs === false) return;
   // fios curtos saindo da borda pra dentro da pele (crescimento pra baixo e pra fora)
   const r = rnd(23);
   let d = '';

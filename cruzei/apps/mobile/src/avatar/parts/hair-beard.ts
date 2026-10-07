@@ -11,9 +11,10 @@
 //   - grisalho: fios escuros e claros misturados (saltPepper do kit).
 
 import { smoothPath, taperPath, type SP } from '../anatomy';
-import { lum, mix } from '../shading';
+import { keepsBlur, lum, mix } from '../shading';
 import type { Pt } from '../types';
 
+import { mouthCorners } from './face';
 import { rnd, saltPepper, shaved, type HairKit } from './hair-kit';
 
 type U = [number, number];
@@ -139,21 +140,49 @@ function fullBeardPts(k: HairKit, o: BeardDef): SP[] {
   return [[0, f.noseY + 0.85], ...R, ...mirrorSP(R).reverse().slice(1)];
 }
 
-/** bigode (cabeça unitária): `thick` altura, `wide` sobra além do canto da boca, `droop` pontas descendo, `curl` guidão */
-function staches(k: HairKit, o: { thick: number; wide: number; droop: number; top?: number }): SP[] {
+/** cantos da boca da expressão (cabeça unitária): o bigode desenhado depois da boca contorna o sorriso */
+interface MouthCorners {
+  L: U;
+  R: U;
+}
+
+/**
+ * bigode (cabeça unitária): `thick` altura, `wide` sobra além do canto da boca, `droop` pontas descendo. Com os cantos
+ * da boca (`m`), a borda de baixo passa por CIMA de cada canto e a ponta cai do lado de FORA — o bigode vem depois da
+ * boca e nunca cobre o canto do sorriso nem é atravessado pelos lábios.
+ */
+function stacheGeo(k: HairKit, o: { thick: number; wide: number; droop: number; top?: number }, m?: MouthCorners): { pts: SP[]; tip: { R: U; L: U }; bottom: { R: U[]; L: U[] } } {
   const f = faceFrame(k);
   const y0 = f.my - f.up * 0.75; // borda de baixo no meio (sobre o lábio)
   const yt = Math.max(f.noseY + 0.55, y0 - o.thick) - (o.top ?? 0);
-  const half: SP[] = [
-    [0.35, y0 - 0.1],
-    [f.mw * 0.55, y0 + 0.12],
-    [f.mw + o.wide, f.my + o.droop, 0.6],
-    [f.mw + o.wide * 0.6, f.my + o.droop - 0.7],
-    [f.mw * 0.7, yt + 0.35],
-    [0.4, yt + 0.05],
-  ];
+  const side = (g: 1 | -1): { half: SP[]; tip: U; bottom: U[] } => {
+    const c = m ? (g > 0 ? m.R : m.L) : null;
+    const cx = c ? Math.max(f.mw * 0.8, g * c[0]) : f.mw;
+    const cy = c ? c[1] : f.my;
+    const lift = Math.max(0, f.my - cy);
+    const tipX = Math.max(f.mw + o.wide, cx + 0.45 + o.wide * 0.5);
+    const tipY = f.my + o.droop - lift * 0.45;
+    const midY = y0 + 0.12 - lift * 0.4;
+    const bottom: U[] = [[0, y0], [f.mw * 0.55, midY], [cx + 0.15, cy - 0.3], [tipX, tipY]];
+    const half: SP[] = [
+      [0.35, y0 - 0.1],
+      [f.mw * 0.55, midY],
+      [cx + 0.15, cy - 0.3],
+      [tipX, tipY, 0.6],
+      [tipX - o.wide * 0.4 - 0.15, tipY - 0.75],
+      [f.mw * 0.7, yt + 0.35],
+      [0.4, yt + 0.05],
+    ];
+    return { half, tip: [tipX, tipY], bottom };
+  };
+  const R = side(1);
+  const L = side(-1);
   // começa no meio de baixo, faz o lado direito, passa pelo meio de cima e volta pelo esquerdo
-  return [[0, y0 + 0.05], ...half, [0, yt + 0.25], ...mirrorSP(half).reverse()];
+  return {
+    pts: [[0, y0 + 0.05], ...R.half, [0, yt + 0.25], ...mirrorSP(L.half).reverse()],
+    tip: { R: R.tip, L: [-L.tip[0], L.tip[1]] },
+    bottom: { R: R.bottom, L: mirror(L.bottom) },
+  };
 }
 
 /** pinta uma massa de barba: base, volume, borda translúcida, fios, tufinhos na borda de baixo e grisalho */
@@ -181,9 +210,12 @@ function paintBeard(
   const y1 = Math.max(...ys);
   // sombra de contato da barba na pele (abaixo da borda e no pescoço)
   if (!lite) ctx.push(smoothPath(pts.map((p) => [p[0] + 0.15, p[1] + 0.55] as SP)), '#0A0408', { o: 0.22, b: 0.6 });
-  // massa: mais clara na bochecha, densa embaixo
+  // massa: mais clara na bochecha, densa embaixo. Busto leve (sem fios nem tufinhos): borda macia pelo desfoque da
+  // própria massa — sem isso cavanhaque e Van Dyke viravam retângulo/triângulo chapados na miniatura
+  const soft = lite && keepsBlur(ctx);
   ctx.push(d, t.base, {
     gf: { t: 'l', x1: 0, y1: y0, x2: 0, y2: y1, s: [[0, mix(t.base, t.lock, 0.12)], [0.45, t.base], [1, mix(t.base, t.root, 0.55)]] },
+    ...(soft ? { b: o.flow === 'out' ? 0.14 : 0.22 } : {}),
   });
   // volume: lado da sombra (direita da tela) e o queixo pegando luz do lado esquerdo
   if (!lite) {
@@ -238,7 +270,8 @@ function paintBeard(
     const r = rnd((o.seed ?? 51) + 9);
     const fr = o.fringe.map((p) => H(p[0], p[1]));
     let tf = '';
-    const n = lite ? 0 : Math.round(fr.length * 2.2);
+    // no 'lite' 3 tufinhos maiores quebram a borda de baixo (sem eles, contorno liso de adesivo)
+    const n = lite ? 3 : Math.round(fr.length * 2.2);
     for (let i = 0; i < n; i++) {
       const u = (i + 0.5) / n;
       const fpos = u * (fr.length - 1);
@@ -246,8 +279,8 @@ function paintBeard(
       const b = Math.min(fr.length - 1, a + 1);
       const p: Pt = [fr[a][0] + (fr[b][0] - fr[a][0]) * (fpos - a), fr[a][1] + (fr[b][1] - fr[a][1]) * (fpos - a)];
       const g = Math.sign(p[0] - k.cx) || 1;
-      const L = (0.7 + r() * 0.6) * s;
-      const w = (0.55 + r() * 0.3) * s;
+      const L = (0.7 + r() * 0.6) * s * (lite ? 1.4 : 1);
+      const w = (0.55 + r() * 0.3) * s * (lite ? 1.3 : 1);
       tf += taperPath([[p[0], p[1] - L * 0.6], [p[0] - g * 0.12, p[1] + L * 0.1], [p[0] - g * L * 0.18, p[1] + L * 0.5]], [w, w * 0.7, 0], { n: 5 });
     }
     if (tf) ctx.push(tf, mix(t.base, t.root, 0.45));
@@ -293,7 +326,7 @@ function fullBeard(k: HairKit, o: BeardDef, extra: { seed: number; len?: number;
 function softEdge(k: HairKit, ptsU: readonly U[], clip: string): void {
   const { ctx, t, lite, H, s } = k;
   const sp = ptsU.map((p) => H(p[0], p[1]));
-  ctx.push(taperPath(sp, (u) => (0.25 + Math.sin(Math.PI * u) * 0.35) * s), mix(ctx.col.skin, t.base, 0.4), { o: lite ? 0.25 : 0.45, ...(lite ? {} : { b: 0.3 }), cp: clip });
+  ctx.push(taperPath(sp, (u) => (0.25 + Math.sin(Math.PI * u) * 0.35) * s), mix(ctx.col.skin, t.base, 0.4), { o: lite ? 0.3 : 0.45, ...(keepsBlur(ctx) ? { b: 0.3 } : {}), cp: clip });
   if (lite) return;
   const r = rnd(ptsU.length * 7 + Math.round(ptsU[0][0] * 10));
   let hs = '';
@@ -323,27 +356,33 @@ function stacheShade(k: HairKit, clip: string): void {
   ctx.push(d, t.deep, { o: 0.42, b: 0.3, cp: clip });
 }
 
-function stacheOnly(k: HairKit, o: { thick: number; wide: number; droop: number; top?: number; seed: number; gloss?: number }): string {
-  const pts = staches(k, o);
-  const d = paintBeard(k, pts, { flow: 'out', seed: o.seed, len: 0.8, density: 1.25, gloss: o.gloss });
+function stacheOnly(k: HairKit, o: { thick: number; wide: number; droop: number; top?: number; seed: number; gloss?: number }, m?: MouthCorners): { d: string; tip: { R: U; L: U } } {
+  const g = stacheGeo(k, o, m);
+  const d = paintBeard(k, g.pts, { flow: 'out', seed: o.seed, len: 0.8, density: 1.25, gloss: o.gloss });
   stacheShade(k, d);
-  // borda de baixo rendada sobre o lábio (tufinhos curtos)
+  // borda de baixo rendada sobre o lábio (tufinhos curtos ao longo da borda de baixo)
   if (!k.lite) {
-    const f = faceFrame(k);
     const { ctx, t, H, s } = k;
     const r = rnd(o.seed + 2);
     let tf = '';
-    for (let i = 0; i < 9; i++) {
-      const u = (i + 0.5) / 9;
-      const x = (u * 2 - 1) * (f.mw + o.wide * 0.4);
-      const y = f.my - f.up * 0.75 + Math.pow(Math.abs(x) / (f.mw + o.wide), 2) * (o.droop + f.up * 0.75) + 0.05;
-      const g = Math.sign(x) || 1;
-      const L = (0.5 + r() * 0.3) * s;
-      tf += taperPath([H(x, y - 0.5), H(x + g * 0.1, y), H(x + g * 0.25, y + L / s * 0.45)], [0.5 * s, 0.35 * s, 0], { n: 5 });
+    // só no trecho sobre o lábio (do meio até o canto): na descida da ponta os tufinhos viravam fios soltos pendurados
+    for (const line of [g.bottom.R, g.bottom.L]) {
+      const pts = line.slice(0, 3).map((p) => H(p[0], p[1]));
+      for (let i = 0; i < 4; i++) {
+        const u = (i + 0.5) / 4;
+        const fpos = u * (pts.length - 1);
+        const a = Math.floor(fpos);
+        const b = Math.min(pts.length - 1, a + 1);
+        const x = pts[a][0] + (pts[b][0] - pts[a][0]) * (fpos - a);
+        const y = pts[a][1] + (pts[b][1] - pts[a][1]) * (fpos - a) + 0.05 * s;
+        const sg = Math.sign(x - k.cx) || 1;
+        const L = (0.5 + r() * 0.3) * s;
+        tf += taperPath([[x, y - 0.5 * s], [x + sg * 0.1 * s, y], [x + sg * 0.25 * s, y + L * 0.45]], [0.5 * s, 0.35 * s, 0], { n: 5 });
+      }
     }
     ctx.push(tf, mix(t.base, t.root, 0.3));
   }
-  return d;
+  return { d, tip: g.tip };
 }
 
 /** barba do queixo (cavanhaque e Van Dyke): do canto da boca (ou só embaixo do lábio) até abaixo do queixo */
@@ -380,14 +419,15 @@ function sideburnsOnly(k: HairKit): void {
   const { Tm, earTop, earY } = k;
   const shape = (g: 1 | -1): SP[] => {
     // costeleta larga (na frente da orelha) que desce rente ao contorno até perto do ângulo da mandíbula
+    // termina na altura do lóbulo, afinando numa ponta (não barra reta de ponta quadrada até a boca)
     const pts: SP[] = [
       [Tm - 1.05, earTop + 0.35, 0],
       [Tm - 0.05, earTop + 0.2, 0],
       [Tm + 0.05, earY + 0.6],
-      [Tm - 0.2, k.earBot + 0.9],
-      [Tm - 0.75, k.earBot + 1.7, 0.5],
-      [Tm - 1.9, k.earBot + 1.0, 0.5],
-      [Tm - 1.5, earY + 0.6],
+      [Tm - 0.2, k.earBot - 0.3],
+      [Tm - 0.8, k.earBot + 0.6, 0],
+      [Tm - 1.45, k.earBot - 0.5],
+      [Tm - 1.45, earY + 0.6],
     ];
     return g > 0 ? pts : mirrorSP(pts).reverse();
   };
@@ -409,7 +449,13 @@ function stubble(k: HairKit): void {
   void ctx;
   // a linha da bochecha some em degradê (pele por cima, recortada)
   const soft = cheekSoft(k, 0.2);
-  for (const side of [soft.R, soft.L]) ctx.push(taperPath(side.map((p) => H(p[0], p[1])), (u) => (0.8 + Math.sin(Math.PI * u) * 1.2) * s), ctx.col.skin, { o: lite ? 0.35 : 0.55, ...(lite ? {} : { b: 0.5 }), cp: d });
+  for (const side of [soft.R, soft.L]) ctx.push(taperPath(side.map((p) => H(p[0], p[1])), (u) => (0.8 + Math.sin(Math.PI * u) * 1.2) * s), ctx.col.skin, { o: lite ? 0.35 : 0.55, ...(keepsBlur(ctx) ? { b: 0.5 } : {}), cp: d });
+}
+
+/** cantos da boca da expressão (cabeça unitária) — o bigode passa por cima deles e cai por fora */
+function corners(k: HairKit): MouthCorners {
+  const c = mouthCorners(k.ctx);
+  return { L: k.U(c.CL) as U, R: k.U(c.CR) as U };
 }
 
 export const BEARDS: Record<string, (k: HairKit) => void> = {
@@ -428,10 +474,11 @@ export const BEARDS: Record<string, (k: HairKit) => void> = {
     stacheOnly(k, { thick: 1.3, wide: 0.9, droop: -0.35, seed: 65, gloss: 1.2 });
     chinPatch(k, { wide: 0.1, drop: 2.6, point: 0.85, connect: false, seed: 67 });
   },
-  mustache: (k) => void stacheOnly(k, { thick: 1.3, wide: 0.45, droop: 0.35, seed: 41 }),
+  // só bigode: contorna os cantos da boca desta expressão (a boca vem depois e não atravessa as pontas)
+  mustache: (k) => void stacheOnly(k, { thick: 1.3, wide: 0.45, droop: 0.35, seed: 41 }, corners(k)),
   // bigode grosso: alto (chega no nariz), largo, cobre o lábio de cima
-  chevron: (k) => void stacheOnly(k, { thick: 2.1, wide: 0.75, droop: 0.75, top: 0.2, seed: 43 }),
-  handlebar: (k) => handlebar(k),
+  chevron: (k) => void stacheOnly(k, { thick: 2.1, wide: 0.75, droop: 0.75, top: 0.2, seed: 43 }, corners(k)),
+  handlebar: (k) => handlebar(k, corners(k)),
   sideburns: sideburnsOnly,
 };
 
@@ -457,19 +504,21 @@ function longBeard(k: HairKit): void {
   stacheOnly(k, { thick: 1.5, wide: 0.9, droop: 1.6, seed: 59 });
 }
 
-function handlebar(k: HairKit): void {
-  const f = faceFrame(k);
+function handlebar(k: HairKit, m?: MouthCorners): void {
   const { ctx, t, H, s, lite } = k;
-  const d = stacheOnly(k, { thick: 1.35, wide: 0.6, droop: 0.15, seed: 45, gloss: 1.4 });
-  void d;
-  // pontas enceradas que sobem em espiral aberta (afinam, brilham)
+  const { tip } = stacheOnly(k, { thick: 1.35, wide: 0.6, droop: 0.15, seed: 45, gloss: 1.4 }, m);
+  // pontas enceradas que sobem em espiral aberta (afinam, brilham), saindo da ponta do bigode (fora do canto da boca)
   let cu = '';
   let hl = '';
-  for (const g of [1, -1]) {
-    const sp: SP[] = [H(g * (f.mw + 0.1), f.my - 0.35), H(g * (f.mw + 1.3), f.my - 0.2), H(g * (f.mw + 2.2), f.my - 1.0), H(g * (f.mw + 2.0), f.my - 2.0), H(g * (f.mw + 1.4), f.my - 2.1)];
+  for (const g of [1, -1] as const) {
+    const [tx, ty] = g > 0 ? tip.R : tip.L;
+    const x0 = Math.abs(tx) - 0.5;
+    const y0 = ty - 0.5;
+    const sp: SP[] = [H(g * x0, y0), H(g * (x0 + 1.2), y0 + 0.15), H(g * (x0 + 2.1), y0 - 0.65), H(g * (x0 + 1.9), y0 - 1.65), H(g * (x0 + 1.3), y0 - 1.75)];
     cu += taperPath(sp, [1.0 * s, 0.75 * s, 0.5 * s, 0.32 * s, 0.05], { n: 10 });
     hl += taperPath(sp.slice(0, 4).map((p) => [p[0], p[1] - 0.18] as SP), [0, 0.22 * s, 0.14 * s, 0], { n: 8 });
   }
-  ctx.push(cu, t.base, { gf: { t: 'l', x1: 0, y1: H(0, f.my - 2.2)[1], x2: 0, y2: H(0, f.my)[1], s: [[0, mix(t.base, t.lock, 0.3)], [1, mix(t.base, t.root, 0.3)]] } });
+  const yTop = Math.min(tip.R[1], tip.L[1]);
+  ctx.push(cu, t.base, { gf: { t: 'l', x1: 0, y1: H(0, yTop - 2.3)[1], x2: 0, y2: H(0, yTop)[1], s: [[0, mix(t.base, t.lock, 0.3)], [1, mix(t.base, t.root, 0.3)]] } });
   if (!lite) ctx.push(hl, t.sheen, { o: 0.55 });
 }

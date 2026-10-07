@@ -38,7 +38,7 @@ import {
 } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { ellipse } from '../geometry';
-import { blob, cylGradient, isLite, lodCtx, lum, mix, rimLit, skinTones, type SkinTones } from '../shading';
+import { blob, cylGradient, isLite, isTiny, lodCtx, lum, mix, rimLit, skinTones, type SkinTones } from '../shading';
 import type { AvatarGroup } from '../types';
 
 import * as clothesMod from './clothes';
@@ -196,16 +196,20 @@ export function upperArms(ctx: LayerCtx): void {
   const { an } = ctx;
   // a oclusão do braço só existe ONDE o braço encosta no tronco: recortada no tronco (com a folga mínima de roupa), assim
   // o desfoque nunca cai no fundo entre o braço dobrado e o corpo
-  const torsoClip = torsoPath(an, { ease: 0.35, drape: 0.5 });
+  // figura minúscula (mapa): só a pele com o gradiente de cilindro — luz do deltoide, sombra do bíceps e oclusão no
+  // tronco têm menos de 1 px ali
+  const tiny = isTiny(ctx);
+  const torsoClip = tiny ? '' : torsoPath(an, { ease: 0.35, drape: 0.5 });
   for (const s of SIDES) {
     // oclusão do braço no tronco (fica no tronco: não gira com o braço)
     const m = limbWidthAt(an, 'upperArm', s, 0.4);
     const sg = s === 'L' ? 1 : -1;
-    ctx.withGroup('body', () => ctx.push(blob(m.at[0] + sg * (m.r + 0.5), m.at[1] + 1, 1.2, 6, 0), '#1A0A10', { o: 0.16, b: 1.1, cp: torsoClip }));
+    if (!tiny) ctx.withGroup('body', () => ctx.push(blob(m.at[0] + sg * (m.r + 0.5), m.at[1] + 1, 1.2, 6, 0), '#1A0A10', { o: 0.16, b: 1.1, cp: torsoClip }));
     ctx.withGroup(grp('arm', s), () => {
       // com manga curta a copa do ombro fica embaixo do tecido: a pele começa um pouco abaixo (não aparece por cima)
       const d = upperArmPath(an, s, sk === 'short' ? { from: 0.16, ease: liteEase(ctx) } : { ease: liteEase(ctx) });
       skinLimb(ctx, 'arm', s, d);
+      if (tiny) return;
       // deltoide: luz arredondada no ombro; bíceps/tríceps: sombra suave do lado da sombra
       const sh = s === 'L' ? an.joints.shoulderL : an.joints.shoulderR;
       const mu = an.spec.muscle;
@@ -233,6 +237,8 @@ export function forearms(ctx: LayerCtx): void {
     ctx.withGroup(grp('fore', s), () => {
       const d = forearmPath(an, s, { ease: liteEase(ctx) });
       skinLimb(ctx, 'arm', s, d);
+      // 'lite' (mapa e busto: no busto o antebraço fica fora do recorte em repouso): só a pele
+      if (isLite(ctx)) return;
       // dobra do cotovelo (vinco curto do lado de dentro) e o osso do cotovelo do lado de fora
       const el = s === 'L' ? an.joints.elbowL : an.joints.elbowR;
       const sg = s === 'L' ? 1 : -1;
@@ -268,6 +274,12 @@ export function hands(ctx: LayerCtx): void {
       const thumbFill = { gf: { t: 'r' as const, cx: h.palm[0] - 1.0, cy: h.palm[1] - 0.6, r: 5.5 * hs, s: [[0, t.lighter], [0.5, t.light], [1, t.base]] as const } };
       if (tucked) ctx.push(h.thumb, t.base, { ...thumbFill, o: 0.85 });
       ctx.push(h.hand, t.base, { gf: cylGradient(ax.a, ax.b, ax.wl, ax.wr, limbTone(t)) });
+      // 'lite': no mapa a mão tem ~3×4 px e no busto ela fica fora do recorte em repouso — dorso e polegar bastam (luz,
+      // pontas, sulcos e sombras não aparecem)
+      if (lite) {
+        if (!tucked) ctx.push(h.thumb, t.base, thumbFill);
+        return;
+      }
       // volume: dorso pega luz no meio; pontas dos dedos dobram pra dentro (mais escuras e quentes)
       ctx.push(blob(h.palm[0] - 0.4, h.palm[1] - 0.6, 2.1 * hs, 2.6 * hs), t.lighter, { o: 0.22, b: 0.7, cp: h.hand });
       // pele escura: a sombra das pontas fica mais leve (senão dedos e sombra viram um borrão) e os dedos se separam pela
@@ -355,7 +367,7 @@ function neckPts(ctx: LayerCtx, bottomY: number | null): SP[] {
 
 /** 16. pescoço (corpo) + orelhas e cabeça base (cabeça) */
 export function neckAndHead(ctx: LayerCtx): void {
-  ctx = lodCtx(ctx);
+  ctx = lodCtx(ctx, { bustBlur: true });
   const t = tonesOf(ctx);
   const { an } = ctx;
   const { cx } = an;
@@ -373,17 +385,19 @@ export function neckAndHead(ctx: LayerCtx): void {
   // sombra que a cabeça projeta no pescoço: o próprio contorno da cabeça deslocado pra baixo e recortado no pescoço (a
   // cabeça, desenhada por cima, esconde o resto) — faixa FORTE colada na mandíbula e no queixo, sumindo em ~2,5 unidades,
   // mais longa do lado da sombra. É o que separa a cabeça do pescoço (nada de "polegar")
+  // figura minúscula (mapa): pescoço com a sombra forte do queixo só; músculos, fúrcula, papada e dobras somem (< 1 px)
+  const tiny = isTiny(ctx);
   {
     const hp = headPts(an);
     const sh = (dx: number, dy: number) => smoothPath(hp.map((p) => [p[0] + dx, p[1] + dy] as SP), true);
     ctx.push(sh(0.3, 1.0), '#2A0E0A', { o: t.dark ? 0.55 : 0.5, b: 0.3, cp: neck });
-    ctx.push(sh(0.7, 2.7), '#2A0E0A', { o: t.dark ? 0.3 : 0.24, b: 0.9, cp: neck });
+    if (!tiny) ctx.push(sh(0.7, 2.7), '#2A0E0A', { o: t.dark ? 0.3 : 0.24, b: 0.9, cp: neck });
   }
   // idade: papada como sombra MACIA logo abaixo da linha da mandíbula (o rosto não alarga)
-  if (an.feat.age > 0) {
+  if (an.feat.age > 0 && !tiny) {
     ctx.push(blob(cx + 0.3, ha.chin[1] + 1.5, f.jaw * 0.62, 1.3), t.deep, { o: 0.1 + an.feat.age * 0.08, b: 0.7, cp: neck });
   }
-  if (cover == null) {
+  if (cover == null && !tiny) {
     // esternocleidomastoideo: dois músculos que descem de trás das orelhas até a fúrcula em V — luz no da esquerda, sombra
     // no vão entre eles embaixo e no lado de fora do da direita; clavículas com luz em cima
     const top = ha.jawL[1] + 0.4;
@@ -430,7 +444,7 @@ export function neckAndHead(ctx: LayerCtx): void {
     const ey = ha.earL[1];
     ctx.push(ears, t.base, { gf: { t: 'l', x1: cx, y1: ey - 3.2, x2: cx, y2: ey + 3.6, s: [[0, t.light], [0.55, t.base], [1, t.shade]] } });
     // calor sob a pele (orelha é fina: a luz passa avermelhada) e sombra da cabeça na raiz (fica atrás da bochecha)
-    ctx.push(ears, t.blush, { o: t.dark ? 0.16 : 0.22, b: 0.5, cp: ears });
+    if (!tiny) ctx.push(ears, t.blush, { o: t.dark ? 0.16 : 0.22, b: 0.5, cp: ears });
     ctx.push(eL.inner + eR.inner + blob(ha.earL[0] + 1.0, ey + 0.2, 0.8, 2.8) + blob(ha.earR[0] - 1.0, ey + 0.2, 0.8, 2.8), t.deep, { o: 0.45, b: 0.25, cp: ears });
     if (!lite) ctx.push(eL.rim + eR.rim, t.lighter, { o: 0.42 });
   }
@@ -448,13 +462,14 @@ export function neckAndHead(ctx: LayerCtx): void {
   const vdark = lum(t.base) < 0.045;
   ctx.push(head + shifted(-2.4, -0.35), t.form, { r: 'evenodd', o: vdark ? 0.5 : t.dark ? 0.7 : 0.62, b: 0.36, cp: head });
   // borda do lado da LUZ: quase nada na pele clara (senão vira contorno de adesivo); um pouco mais na escura (volume)
-  ctx.push(head + shifted(1.0, -0.2), t.form, { r: 'evenodd', o: vdark ? 0.12 : t.dark ? 0.2 : 0.06, b: 0.55, cp: head });
+  // (na figura minúscula, com 0,06–0,2 de opacidade numa faixa de 1 unidade, é um véu invisível: sai)
+  if (!tiny) ctx.push(head + shifted(1.0, -0.2), t.form, { r: 'evenodd', o: vdark ? 0.12 : t.dark ? 0.2 : 0.06, b: 0.55, cp: head });
   // plano de baixo da mandíbula: faixa curta; no rosto de mandíbula macia (redondo) fica bem mais leve na quina
   const js = f.jawSharp;
   ctx.push(head + shifted(0.3, -1.3 - js * 0.5), t.deep, { r: 'evenodd', o: (t.dark ? 0.34 : 0.26) * (0.75 + js * 0.3), b: 0.45, cp: head });
   const Y = (d: number) => cy + d;
   // sombra da maçã do lado da sombra: entra embaixo do osso (bochecha encovada sutil); mais leve na mandíbula macia
-  ctx.push(
+  if (!tiny) ctx.push(
     smoothPath([
       [cx + f.cheek - 1.0, Y(f.cheekY + 0.6)],
       [cx + f.cheek - 2.9, Y(f.cheekY + 2.4)],
@@ -475,7 +490,7 @@ export function neckAndHead(ctx: LayerCtx): void {
     ctx.stroke(smoothPath(right, false), deepSkin ? mix(t.base, '#C07A62', 0.55) : '#A8BCFF', 1.1, { o: deepSkin ? 0.16 : 0.08, b: 0.55, cp: head });
   }
   // brilho do crânio/testa (careca e testa aparecem bonitas)
-  ctx.push(blob(cx - 2.6, cy - 8.4, 4.4, 2.4, -0.25), t.fantasy ?? '#FFFFFF', { o: vdark ? 0.2 : t.dark ? 0.15 : 0.11, b: 1.3, cp: head });
+  if (!tiny) ctx.push(blob(cx - 2.6, cy - 8.4, 4.4, 2.4, -0.25), t.fantasy ?? '#FFFFFF', { o: vdark ? 0.2 : t.dark ? 0.15 : 0.11, b: 1.3, cp: head });
 }
 
 // ---------------------------------------------------------------------------------------------------------------

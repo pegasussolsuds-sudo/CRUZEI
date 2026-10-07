@@ -50,6 +50,8 @@
 //   --renderer svg|map|stage|all   quem desenha: svg (padrão; = <CruzeiAvatar/> via sharp), map (o raster do mapa de
 //                          verdade: images/draw.ts mapDraw.figure, Skia/CanvasKit de CPU), stage (as SkPictures do palco
 //                          animado: stage/assets.ts + matrizes do rig) ou all (as três, uma linha por renderer)
+//   --tier <plano>         (renderer map) anel do plano: free (padrão) | premium | premium_plus
+//   --aura                 (renderer map) poça de luz na cor da aura da config, como o motor faz
 //   --out <arq.png>        saída (padrão ./avatar-sheet.png)
 
 import * as fs from 'fs';
@@ -99,6 +101,10 @@ interface Args {
   /** nível de detalhe leve (lista/miniatura ≤ 100 px) no renderer svg */
   lite: boolean;
   micro?: boolean;
+  /** renderer map: plano do anel (free | premium | premium_plus) */
+  tier?: string;
+  /** renderer map: poça de luz na cor da aura da config (mapAuraRgb) */
+  mapAura?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -149,6 +155,12 @@ function parseArgs(argv: string[]): Args {
         break;
       case '--label':
         a.label = true;
+        break;
+      case '--tier':
+        a.tier = v();
+        break;
+      case '--aura':
+        a.mapAura = true;
         break;
       case '--lite':
         a.lite = true;
@@ -647,12 +659,13 @@ async function cellPng(cell: Cell, idx: number, a: Args, mode: 'full' | 'bust', 
   if (renderer === 'map') {
     // o raster do mapa de verdade (figura 72x112 proporcional; presença recente = anel lima nos pés)
     const { mapDraw } = require('../src/screens/map/native/images/draw');
-    const { mapAvatarDef } = require('../src/screens/map/native/images/mapAvatar');
+    const { mapAvatarDef, mapAuraRgb } = require('../src/screens/map/native/images/mapAvatar');
+    const look = { ...LOOK, premiumTier: a.tier ?? LOOK.premiumTier, aura: a.mapAura && cfg ? mapAuraRgb(cfg) : '' };
     const dim = { w: Math.round((h * 72) / 112), h };
     const def = cell.layers ? { l: cell.layers, p: cell.rig ?? buildAvatarRig(finalize({}, a.raw)) } : mapAvatarDef(cfg);
     let mp = cell.pose;
     if (mp && cell.fromHang && !cell.layers) mp = fromHang(mp, cfg, def.p);
-    return fit(mapDraw.figure(def, LOOK, dim, mp, false, cell.usesArms != null ? { usesArms: cell.usesArms ? 1 : 0 } : undefined));
+    return fit(mapDraw.figure(def, look, dim, mp, false, cell.usesArms != null ? { usesArms: cell.usesArms ? 1 : 0 } : undefined));
   }
   // palco: SkPictures por corrida (stage/assets.ts) + matriz base + matriz do grupo, como o AvatarStage faz na thread de UI
   const { stageAssets } = require('../src/components/avatar/stage/assets');

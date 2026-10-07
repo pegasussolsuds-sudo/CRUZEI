@@ -3,11 +3,17 @@
 //
 // Como funciona (sem re-render por quadro):
 //   - no JS, uma vez por visual (stageAssets): camadas da config + expressões/objeto alternativos da animação,
-//     gravadas em SkPictures por corrida (grupo + papel), com cache por avatarKey;
-//   - na thread de UI: um relógio (useFrameCallback, só ligado quando algo anima) → pose (animação + respiração +
-//     cena) → uma matriz por grupo do esqueleto (número fixo de hooks, mesma matemática do avatar/rig.ts) →
-//     <Group matrix> de cada corrida. Troca de expressão/objeto = corrida alternativa entra, a outra sai (a matriz
-//     de quem não aparece manda o desenho pra fora do canvas: sem saveLayer e sem re-render);
+//     gravadas em SkPictures por corrida (grupo + papel), com cache por avatarKey; logo depois (fora do render) cada
+//     corrida vira um sprite (stageSprites: imagem de CPU na escala da tela). Por quadro só se desenham imagens com
+//     matriz — tocar as SkPictures por quadro refazia ~250–350 paths (metade com desfoque) na thread de UI;
+//   - na thread de UI: um relógio (useFrameCallback) → pose (animação + respiração + cena) → uma matriz por grupo do
+//     esqueleto (número fixo de hooks, mesma matemática do avatar/rig.ts) → <Group matrix> de cada corrida. Troca de
+//     expressão/objeto = corrida alternativa entra, a outra sai (a matriz de quem não aparece manda o desenho pra
+//     fora do canvas: sem saveLayer e sem re-render);
+//   - o relógio SÓ roda quando há o que animar: animação tocando, respiração pedida (idle, padrão desligado) ou a
+//     janela curta da aura/fundo (FX_SHOW_MS depois de trocar a aura/fundo com fxPreview, só o editor; ou enquanto a
+//     animação toca). Parado, o canvas não redesenha nada. Aura e fundo regravam no máximo a FX_FPS (30) e só nessas
+//     janelas; fora delas, o quadro parado escolhido a dedo (gravado uma vez);
 //   - movimento reduzido: sem respiração, a animação mostra o quadro keyK parado, auras paradas (nada anima sozinho);
 //   - animações que mexem os braços partem do braço SOLTO da pessoa (restArmDelta da anatomia, somado com o mesmo peso
 //     da entrada/saída) e trocam a mão pela aberta quando pedem (emoteHands).
@@ -18,9 +24,9 @@
 
 import type { AvatarConfig } from '@cruzei/shared-types';
 import { avatarPronounsLabel } from '@cruzei/shared-utils';
-import { Canvas, Group, Picture } from '@shopify/react-native-skia';
-import React, { memo, useCallback, useEffect, useMemo, useRef } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Canvas, FilterMode, Group, Image as SkiaImage, MipmapMode, Picture } from '@shopify/react-native-skia';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PixelRatio, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { runOnJS, useDerivedValue, useFrameCallback, useReducedMotion, useSharedValue, type FrameInfo, type SharedValue } from 'react-native-reanimated';
 
 import { bustBoxFor, keyOf } from '../../../avatar';
@@ -38,9 +44,9 @@ import { BackdropFx } from './BackdropFx';
 import { EmoteFx } from './EmoteFx';
 import { PronounTag } from './PronounTag';
 import { computeAnchors, type AnchorSpec, type StageAnchors } from './anchors';
-import { stageAssets, type StageRun } from './assets';
+import { holdStage, peekStageSprites, stageAssets, stageSprites, type StageAssets, type StageRun, type StageSprite } from './assets';
 import { auraFigure } from './fx-auras';
-import { stageLayout } from './layout';
+import { snapToGrid, stageLayout } from './layout';
 import { roleVisible } from './stageLayers';
 
 export interface AvatarStageProps {
@@ -58,8 +64,13 @@ export interface AvatarStageProps {
   replayToken?: number;
   /** a animação (sem loop) chegou ao fim */
   onEmoteEnd?: () => void;
-  /** respiração parada (padrão true) */
+  /** respiração parada (padrão false: parado, o palco não redesenha nada) */
   idle?: boolean;
+  /**
+   * trocar aura/fundo abre a janela viva (FX_SHOW_MS) pra mostrar o efeito — só o editor pede. Fora dele a config muda
+   * por fora (folha do mapa trocando de pessoa, /me chegando no Perfil) e isso não pode animar sozinho
+   */
+  fxPreview?: boolean;
   /** desenha o fundo da config (slot `backdrop`) */
   showBackdrop?: boolean;
   /** mostra a placa de pronomes (slot `pronouns`) */
@@ -82,9 +93,19 @@ const OFF = mToSkia([1, 0, 0, 1, -100000, -100000]);
 /** entrada/saída suave da animação (s) e emenda do loop (fração do ciclo) */
 const FADE_S = 0.2;
 const SEAM = 0.08;
+/** aura/fundo animam por esta janela depois de trocar a aura ou o fundo (editor), depois voltam ao quadro parado */
+export const FX_SHOW_MS = 4000;
+/** quadros por segundo da aura/fundo vivos (a gravação da SkPicture é o que custa) */
+export const FX_FPS = 30;
+/** amostragem bilinear dos sprites (girando/escalando na animação); sem mipmap (o sprite já vem na escala da tela) */
+const LINEAR = { filter: FilterMode?.Linear ?? 1, mipmap: MipmapMode?.None ?? 0 };
 
-function useGroupMatrix(g: AvatarGroup, rig: AvatarRig, pose: SharedValue<Pose>): SharedValue<number[]> {
-  return useDerivedValue(() => mToSkia(groupMatrix(g, rig, pose.value)), [g, rig]);
+/**
+ * matriz do grupo pra pose do quadro. `grid` = px da tela por unidade do viewBox: matriz só de translação (parado,
+ * sentado na cena) cai num pixel inteiro, então o sprite parado sai nítido (sem borrão de amostragem bilinear)
+ */
+function useGroupMatrix(g: AvatarGroup, rig: AvatarRig, pose: SharedValue<Pose>, grid: number): SharedValue<number[]> {
+  return useDerivedValue(() => mToSkia(snapToGrid(groupMatrix(g, rig, pose.value), grid)), [g, rig, grid]);
 }
 
 function StaticRun({ run, mat }: { run: StageRun; mat: SharedValue<number[]> }) {
@@ -95,12 +116,36 @@ function StaticRun({ run, mat }: { run: StageRun; mat: SharedValue<number[]> }) 
   );
 }
 
-function SwapRun({ run, mat, swap }: { run: StageRun; mat: SharedValue<number[]>; swap: SharedValue<{ face: number; prop: boolean; hands: boolean }> }) {
+type Swap = SharedValue<{ face: number; prop: boolean; hands: boolean }>;
+
+function SwapRun({ run, mat, swap }: { run: StageRun; mat: SharedValue<number[]>; swap: Swap }) {
   const role = run.role;
   const m = useDerivedValue(() => (roleVisible(role, swap.value.face, swap.value.prop, swap.value.hands) ? mat.value : OFF), [role, mat]);
   return (
     <Group matrix={m}>
       <Picture picture={run.picture} />
+    </Group>
+  );
+}
+
+function SpriteImage({ sp }: { sp: StageSprite }) {
+  return <SkiaImage image={sp.img} x={sp.x} y={sp.y} width={sp.w} height={sp.h} fit="fill" sampling={LINEAR} />;
+}
+
+function StaticSprite({ sp, mat }: { sp: StageSprite; mat: SharedValue<number[]> }) {
+  return (
+    <Group matrix={mat}>
+      <SpriteImage sp={sp} />
+    </Group>
+  );
+}
+
+function SwapSprite({ sp, mat, swap }: { sp: StageSprite; mat: SharedValue<number[]>; swap: Swap }) {
+  const role = sp.role;
+  const m = useDerivedValue(() => (roleVisible(role, swap.value.face, swap.value.prop, swap.value.hands) ? mat.value : OFF), [role, mat]);
+  return (
+    <Group matrix={m}>
+      <SpriteImage sp={sp} />
     </Group>
   );
 }
@@ -115,7 +160,8 @@ function AvatarStageInner(props: AvatarStageProps) {
     loop,
     replayToken = 0,
     onEmoteEnd,
-    idle = true,
+    idle = false,
+    fxPreview = false,
     showBackdrop = false,
     showPronouns = false,
     groundShadow,
@@ -131,11 +177,31 @@ function AvatarStageInner(props: AvatarStageProps) {
   const def = useMemo(() => emoteDef(emote), [emote]);
   const shadow = groundShadow ?? mode === 'full';
   const key = keyOf(config);
+  // montado segura o cache do palco; o último a sair solta os sprites depois de STAGE_IDLE_MS
+  useEffect(() => holdStage(), []);
   // key resume a config (o objeto pode mudar de identidade sem mudar o visual)
   const assets = useMemo(() => stageAssets(config, mode, shadow, def), [key, mode, shadow, def]); // eslint-disable-line react-hooks/exhaustive-deps
   const full = useMemo(() => fillConfig(config), [key]); // eslint-disable-line react-hooks/exhaustive-deps
   const bustVb = useMemo(() => (mode === 'bust' ? bustBoxFor(full) : undefined), [full, mode]);
   const layout = useMemo(() => stageLayout(mode, size, bustVb), [mode, size, bustVb]);
+  const pr = PixelRatio.get() || 1;
+  // origem do viewBox num pixel inteiro da tela: o sprite parado cai pixel a pixel (sem borrão de amostragem)
+  const base = useMemo(() => {
+    const b = layout.base.slice();
+    b[2] = Math.round(b[2] * pr) / pr;
+    b[5] = Math.round(b[5] * pr) / pr;
+    return b;
+  }, [layout, pr]);
+  const spriteScale = layout.s * pr;
+  // sprites: os do cache entram já; senão rasteriza logo depois do render (até lá o canvas toca as SkPictures)
+  const [spriteState, setSpriteState] = useState<{ a: StageAssets; s: number; list: StageSprite[] | null } | null>(null);
+  const peeked = peekStageSprites(assets, spriteScale);
+  const sprites = peeked !== undefined ? peeked : spriteState && spriteState.a === assets && spriteState.s === spriteScale ? spriteState.list : null;
+  useEffect(() => {
+    if (peekStageSprites(assets, spriteScale) !== undefined) return;
+    const id = setTimeout(() => setSpriteState({ a: assets, s: spriteScale, list: stageSprites(assets, spriteScale) }), 0);
+    return () => clearTimeout(id);
+  }, [assets, spriteScale]);
   const figure = useMemo(() => auraFigure(full, mode), [full, mode]);
   const colors = useMemo(() => resolveColors(full), [full]);
   const flag = useMemo(() => flagOf(full.prideFlag), [full]);
@@ -164,10 +230,42 @@ function AvatarStageInner(props: AvatarStageProps) {
   const hasProp = assets.hasProp;
   const hasHands = assets.hasHands;
   const auraOn = !!full.aura && full.aura !== 'none';
+  const backdropOn = showBackdrop && !!full.backdrop && full.backdrop !== 'none';
   const still = reduce || paused;
+
+  // ---------------- janela da aura/fundo vivos ----------------
+  // trocou a aura/intensidade/cor ou o fundo com fxPreview (editor): anima FX_SHOW_MS e volta ao quadro parado. Na
+  // montagem não, e sem fxPreview nunca.
+  const fxKey = `${full.aura}|${full.auraLevel}|${colors.aura ?? ''}|${backdropOn ? full.backdrop : ''}`;
+  const fxKeyRef = useRef(fxKey);
+  const [fxShow, setFxShow] = useState(false);
+  const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (fxKeyRef.current === fxKey) return;
+    fxKeyRef.current = fxKey;
+    if (!fxPreview || still || (!auraOn && !backdropOn)) return;
+    setFxShow(true);
+    if (showTimer.current) clearTimeout(showTimer.current);
+    showTimer.current = setTimeout(() => {
+      showTimer.current = null;
+      setFxShow(false);
+    }, FX_SHOW_MS);
+  }, [fxKey, fxPreview, still, auraOn, backdropOn]);
+  useEffect(
+    () => () => {
+      if (showTimer.current) clearTimeout(showTimer.current);
+    },
+    [],
+  );
+  const emoteOn = !!def && playing;
+  const fxLive = !still && (auraOn || backdropOn) && (fxShow || emoteOn);
 
   // ---------------- relógio (thread de UI) ----------------
   const clock = useSharedValue(0);
+  /** relógio da aura/fundo (s desde o começo da janela viva, em degraus de 1/FX_FPS); 0 = quadro parado */
+  const fxT = useSharedValue(0);
+  const fxAcc = useSharedValue(0);
+  const fxLiveSV = useSharedValue(false);
   const te = useSharedValue(-1);
   const emPlaying = useSharedValue(false);
   const loopSV = useSharedValue(loopOn);
@@ -180,6 +278,13 @@ function AvatarStageInner(props: AvatarStageProps) {
     loopSV.value = loopOn;
     durSV.value = dur;
   }, [loopOn, dur, loopSV, durSV]);
+  useEffect(() => {
+    fxLiveSV.value = fxLive;
+    if (!fxLive) {
+      fxAcc.value = 0;
+      fxT.value = 0;
+    }
+  }, [fxLive, fxLiveSV, fxAcc, fxT]);
   // animação nova ou replay: volta pro início
   useEffect(() => {
     te.value = def ? 0 : -1;
@@ -206,6 +311,11 @@ function AvatarStageInner(props: AvatarStageProps) {
       const prev = info.timeSincePreviousFrame;
       const dt = prev == null ? 0 : Math.min(0.05, prev / 1000);
       clock.value += dt;
+      if (fxLiveSV.value) {
+        fxAcc.value += dt;
+        const q = Math.floor(fxAcc.value * FX_FPS) / FX_FPS;
+        if (q !== fxT.value) fxT.value = q;
+      }
       if (emPlaying.value && te.value >= 0) {
         const D = durSV.value;
         let n = te.value + dt;
@@ -218,10 +328,10 @@ function AvatarStageInner(props: AvatarStageProps) {
         if (progress) progress.value = loopSV.value ? (n % D) / D : Math.min(1, n / D);
       }
     },
-    [clock, te, emPlaying, loopSV, durSV, fireEnd, progress],
+    [clock, te, emPlaying, loopSV, durSV, fireEnd, progress, fxLiveSV, fxAcc, fxT],
   );
   const fc = useFrameCallback(frame, false);
-  const shouldRun = !paused && !reduce && ((!!def && playing) || idle || auraOn);
+  const shouldRun = !paused && !reduce && (emoteOn || idle || fxLive);
   // (o próprio useFrameCallback desregistra o relógio ao desmontar)
   useEffect(() => {
     fc.setActive(shouldRun);
@@ -279,24 +389,23 @@ function AvatarStageInner(props: AvatarStageProps) {
 
   // uma matriz por grupo (número fixo de hooks)
   const mats: Record<AvatarGroup, SharedValue<number[]>> = {
-    shadow: useGroupMatrix('shadow', rig, pose),
-    body: useGroupMatrix('body', rig, pose),
-    head: useGroupMatrix('head', rig, pose),
-    armL: useGroupMatrix('armL', rig, pose),
-    armR: useGroupMatrix('armR', rig, pose),
-    foreL: useGroupMatrix('foreL', rig, pose),
-    foreR: useGroupMatrix('foreR', rig, pose),
-    legL: useGroupMatrix('legL', rig, pose),
-    legR: useGroupMatrix('legR', rig, pose),
-    shinL: useGroupMatrix('shinL', rig, pose),
-    shinR: useGroupMatrix('shinR', rig, pose),
-    mount: useGroupMatrix('mount', rig, pose),
-    pet: useGroupMatrix('pet', rig, pose),
+    shadow: useGroupMatrix('shadow', rig, pose, spriteScale),
+    body: useGroupMatrix('body', rig, pose, spriteScale),
+    head: useGroupMatrix('head', rig, pose, spriteScale),
+    armL: useGroupMatrix('armL', rig, pose, spriteScale),
+    armR: useGroupMatrix('armR', rig, pose, spriteScale),
+    foreL: useGroupMatrix('foreL', rig, pose, spriteScale),
+    foreR: useGroupMatrix('foreR', rig, pose, spriteScale),
+    legL: useGroupMatrix('legL', rig, pose, spriteScale),
+    legR: useGroupMatrix('legR', rig, pose, spriteScale),
+    shinL: useGroupMatrix('shinL', rig, pose, spriteScale),
+    shinR: useGroupMatrix('shinR', rig, pose, spriteScale),
+    mount: useGroupMatrix('mount', rig, pose, spriteScale),
+    pet: useGroupMatrix('pet', rig, pose, spriteScale),
   };
 
   // âncoras dos efeitos (só recalcula por quadro se a animação tem partículas)
   const hasFx = !!def?.fx?.length;
-  const base = layout.base;
   const staticAnchors = useMemo(() => computeAnchors(rig, zero(), anchorSpec, base), [rig, anchorSpec, base]);
   const anchors = useDerivedValue<StageAnchors>(() => (hasFx ? computeAnchors(rig, pose.value, anchorSpec, base) : staticAnchors), [hasFx, rig, anchorSpec, base, staticAnchors]);
 
@@ -314,13 +423,15 @@ function AvatarStageInner(props: AvatarStageProps) {
       {...(decorative ? { accessible: false, importantForAccessibility: 'no-hide-descendants' as const } : { accessible: true, accessibilityRole: 'image' as const, accessibilityLabel: label })}
     >
       <Canvas style={{ width: layout.w, height: layout.h }} pointerEvents="none">
-        {showBackdrop ? <BackdropFx backdrop={full.backdrop} flag={flag} box={box} radius={mode === 'bust' ? layout.w / 2 : 24} t={clock} still={still} /> : null}
-        <AuraFx aura={full.aura} tint={colors.aura} level={(full.auraLevel as AuraLevel) || 'medium'} flag={flag} box={box} body={layout.body} t={clock} still={still} layer="back" figure={figure} bust={mode === 'bust'} bustVb={bustVb} />
+        {showBackdrop ? <BackdropFx backdrop={full.backdrop} flag={flag} box={box} radius={mode === 'bust' ? layout.w / 2 : 24} t={fxT} still={!fxLive} /> : null}
+        <AuraFx aura={full.aura} tint={colors.aura} level={(full.auraLevel as AuraLevel) || 'medium'} flag={flag} box={box} body={layout.body} t={fxT} still={!fxLive} layer="back" figure={figure} bust={mode === 'bust'} bustVb={bustVb} />
         <Group matrix={base}>
           {/* key com grupo e papel: se a lista desloca (config nova), a corrida remonta com a matriz do grupo certo */}
-          {assets.runs.map((run, i) => (run.role === 'n' ? <StaticRun key={`${run.g}|n|${i}`} run={run} mat={mats[run.g]} /> : <SwapRun key={`${run.g}|${run.role}|${i}`} run={run} mat={mats[run.g]} swap={swap} />))}
+          {sprites
+            ? sprites.map((sp, i) => (sp.role === 'n' ? <StaticSprite key={`${sp.g}|n|${i}`} sp={sp} mat={mats[sp.g]} /> : <SwapSprite key={`${sp.g}|${sp.role}|${i}`} sp={sp} mat={mats[sp.g]} swap={swap} />))
+            : assets.runs.map((run, i) => (run.role === 'n' ? <StaticRun key={`${run.g}|n|${i}`} run={run} mat={mats[run.g]} /> : <SwapRun key={`${run.g}|${run.role}|${i}`} run={run} mat={mats[run.g]} swap={swap} />))}
         </Group>
-        <AuraFx aura={full.aura} tint={colors.aura} level={(full.auraLevel as AuraLevel) || 'medium'} flag={flag} box={box} body={layout.body} t={clock} still={still} layer="front" figure={figure} bust={mode === 'bust'} bustVb={bustVb} />
+        <AuraFx aura={full.aura} tint={colors.aura} level={(full.auraLevel as AuraLevel) || 'medium'} flag={flag} box={box} body={layout.body} t={fxT} still={!fxLive} layer="front" figure={figure} bust={mode === 'bust'} bustVb={bustVb} />
         <EmoteFx def={def} t={te} anchors={anchors} still={still} />
       </Canvas>
       {pron ? (

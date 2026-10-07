@@ -44,6 +44,8 @@ describe('SignatureAvatar', () => {
       r = create(<SignatureAvatar config={cfgOf({ emote: 'dance_samba' })} size={144} autoplay autoplayDelay={300} label="Avatar de Ana" />);
     });
     expect(stageProps(r).emote).toBe('dance_samba');
+    // dança (loop: true no registro) toca um ciclo só: em loop o palco animava pra sempre na folha do mapa e no Match
+    expect(stageProps(r).loop).toBe(false);
     expect(stageProps(r).playing).toBe(false);
     act(() => {
       jest.advanceTimersByTime(320);

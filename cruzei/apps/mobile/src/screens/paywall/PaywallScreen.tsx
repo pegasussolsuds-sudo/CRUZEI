@@ -20,6 +20,7 @@ import Animated, {
   interpolateColor,
   useAnimatedStyle,
   useDerivedValue,
+  useReducedMotion,
   useSharedValue,
   withDelay,
   withRepeat,
@@ -82,14 +83,21 @@ const CROWN_SVG =
   'M12 66 L8 26 L32 46 L50 12 L68 46 L92 26 L88 66 Z ' + // corpo com 3 pontas
   'M12 72 H88 V84 H12 Z'; // base
 
+/** voltas da luz na coroa e idas do brilho da borda: com fim (loop eterno = tela parada redesenhando sem parar) */
+const SWEEP_TURNS = 3;
+const SHIMMER_REPS = 4;
+
 function CrownSweep() {
   const angle = useSharedValue(0);
   const crownPath = useMemo(() => Skia.Path.MakeFromSVGString(CROWN_SVG), []);
+  const reduce = useReducedMotion();
 
   useEffect(() => {
-    angle.value = withRepeat(withTiming(Math.PI * 2, { duration: 2600, easing: Easing.linear }), -1, false);
+    if (reduce) return;
+    // 0 e 2π são o mesmo desenho: termina onde começou
+    angle.value = withRepeat(withTiming(Math.PI * 2, { duration: 2600, easing: Easing.linear }), SWEEP_TURNS, false);
     return () => cancelAnimation(angle);
-  }, [angle]);
+  }, [angle, reduce]);
 
   const c = CROWN_SIZE / 2;
   const sweepTransform = useDerivedValue(() => [{ rotate: angle.value }]);
@@ -279,10 +287,13 @@ interface ActiveBadgeProps {
 
 function ActiveBadge({ status, onCancel, cancelling }: ActiveBadgeProps) {
   const shimmer = useSharedValue(0);
+  const reduce = useReducedMotion();
   useEffect(() => {
-    shimmer.value = withRepeat(withTiming(1, { duration: 2400, easing: Easing.inOut(Easing.sin) }), -1, true);
+    if (reduce) return;
+    // número par de idas: volta pro dourado e para
+    shimmer.value = withRepeat(withTiming(1, { duration: 2400, easing: Easing.inOut(Easing.sin) }), SHIMMER_REPS, true);
     return () => cancelAnimation(shimmer);
-  }, [shimmer]);
+  }, [shimmer, reduce]);
 
   const borderStyle = useAnimatedStyle(() => ({
     borderColor: interpolateColor(shimmer.value, [0, 1], [colors.accent, colors.primary]),

@@ -101,7 +101,8 @@ const kiss: EmoteDef = {
     { kind: 'kiss', from: 'mouth', start: 0.46, end: 0.62, rate: 6 },
     { kind: 'hearts', from: 'handL', start: 0.5, end: 0.76, rate: 5 },
   ],
-  keyK: 0.6,
+  // mão na boca com o biquinho (0,6 = mão aberta no alto, a miniatura saía igual à do acenar)
+  keyK: 0.36,
 };
 
 const heart: EmoteDef = {
@@ -131,7 +132,8 @@ const victory: EmoteDef = {
     { kind: 'confetti', from: 'above', start: 0.34, end: 0.66, rate: 12 },
     { kind: 'stars', from: 'above', start: 0.34, end: 0.6, rate: 4 },
   ],
-  keyK: 0.5,
+  // punhos fechados na altura da cabeça, rindo ("é nóis!"): os dois braços no alto (0,5) eram iguais ao pulo/estrelas/fogos
+  keyK: 0.82,
 };
 
 const bow: EmoteDef = {
@@ -190,7 +192,8 @@ const jump: EmoteDef = {
     { kind: 'confetti', from: 'above', start: 0.38, end: 0.6, rate: 12 },
     { kind: 'sparkles', from: 'feet', start: 0.64, end: 0.76, rate: 12 },
   ],
-  keyK: 0.46,
+  // agachado com os braços pra trás, pegando impulso (o rig não tira os pés do chão: o alto do pulo, 0,46, era a vitória)
+  keyK: 0.2,
 };
 
 const spin: EmoteDef = {
@@ -381,7 +384,8 @@ const fireworks: EmoteDef = {
     { kind: 'fireworks', from: 'above', start: 0.18, end: 0.8, rate: 2.4 },
     { kind: 'flash', from: 'above', start: 0.24, end: 0.78, rate: 1.2 },
   ],
-  keyK: 0.56,
+  // apontando pro céu com cara de surpresa (0,56 = os dois braços no alto, igual à chuva de estrelas)
+  keyK: 0.26,
 };
 
 export const GESTURES: EmoteRegistry = {

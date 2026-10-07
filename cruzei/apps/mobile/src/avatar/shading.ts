@@ -28,9 +28,28 @@ export function isLite(ctx: LayerCtx): boolean {
  * contexto de nível de detalhe: no 'lite' (≤ ~100 px) o desfoque some (desfoque < 1 unidade nem aparece nesse tamanho e
  * custa caro: MaskFilter no Skia, halo extra no SVG das listas) e a camada perde ~20% de opacidade pra não endurecer.
  * Use no começo de cada função de parte: `ctx = lodCtx(ctx)`. Fora do 'lite' devolve o próprio ctx.
+ *
+ * `bustBlur`: no BUSTO leve (miniatura de lista: 56 dp ≈ 3,7 px por unidade no aparelho) o desfoque é o que faz o volume
+ * do rosto — sem ele as sombras recortadas viram placas de borda dura ("rosto facetado"). Só as partes do rosto pedem
+ * (face, cabeça base); no mapa (~1 px por unidade) o desfoque continua saindo.
  */
-export function lodCtx(ctx: LayerCtx): LayerCtx {
-  if (!isLite(ctx)) return ctx;
+/**
+ * figura MINÚSCULA: o 'lite' de corpo inteiro (mapa ~48 px, ~1 px por unidade; corpo inteiro pequeno das listas). O busto
+ * leve (miniatura de 56 dp ≈ 3,7 px por unidade) não é minúsculo. Aqui as partes cortam o que tem menos de ~1 px (véus de
+ * opacidade baixa, rebatidas, vincos, brilhos miúdos, sombras entre camadas de mecha): menos camadas pro raster do mapa
+ * com 1.000 pessoas, sem diferença visível nesse tamanho.
+ */
+export function isTiny(ctx: LayerCtx): boolean {
+  return isLite(ctx) && ctx.opts.mode !== 'bust';
+}
+
+/** o desfoque sobrevive neste nível? (completo, ou o busto leve das listas — lá ele é o volume; ver lodCtx) */
+export function keepsBlur(ctx: LayerCtx): boolean {
+  return !isLite(ctx) || ctx.opts.mode === 'bust';
+}
+
+export function lodCtx(ctx: LayerCtx, o: { bustBlur?: boolean } = {}): LayerCtx {
+  if (!isLite(ctx) || (o.bustBlur && ctx.opts.mode === 'bust')) return ctx;
   const strip = (e?: Partial<AvatarLayer>): Partial<AvatarLayer> | undefined => {
     if (!e || e.b == null || e.b >= 1.2) return e;
     const { b: _b, ...rest } = e;

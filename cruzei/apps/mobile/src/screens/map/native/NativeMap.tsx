@@ -49,6 +49,22 @@ interface Props {
 const INITIAL_VIEW: InitialViewState = { center: INITIAL_CAMERA.center, zoom: INITIAL_CAMERA.zoom, pitch: INITIAL_CAMERA.pitch, bearing: INITIAL_CAMERA.bearing };
 /** teto de fps do render nativo por tier (o painel do aparelho pode ser de 120 Hz) */
 const MAX_FPS: Record<PerfTier, number> = { high: 60, mid: 60, low: 45 };
+/**
+ * Memória de GL e nativa dos tiles (patch do MLRN, MapLibre Android 13.6.1). Medido no S23 sob carga: GL ~550 MB e nativo
+ * ~590 MB. Contas (modelo do tile cover do MapLibre em scratchpad/r3/tiles.js, tela de 360×760 dp):
+ * - prefetchZoomDelta 1 (padrão 4): o pré-carregamento monta tiles 4 zooms abaixo da câmera (no z16: um z12 do
+ *   OpenMapTiles, 16× a área de um z14, e z14 dos prédios extras) só pra ter o que mostrar se faltar o da vez. O app vive do
+ *   z16 ao z19 e o OpenFreeMap para no z14: com 1, o OpenMapTiles não pré-carrega nada e os prédios, 1 nível (z15);
+ * - tileCacheEnabled false: o cache guardava, por fonte, até 9 tiles fora da tela COM os buffers montados (27 no relevo,
+ *   tiles de 256 px), entre eles o mesmo z14 em cada zoom inteiro por onde a câmera passou (cada um com o 3D dos prédios
+ *   de 2,2 km × 2,2 km). Voltar a um zoom/lugar já visto refaz o layout nos workers do MapLibre (fora da thread de UI) e,
+ *   enquanto isso, o tile do zoom vizinho que estava na tela segue desenhado;
+ * - LOD do horizonte (tileLod*): fica no padrão (desligado no Android, que para em 60°). No modelo, nesta tela ele não tira
+ *   nenhum tile da tela entre z15 e z19, e na visão de cidade (z14–15, pitch ≥ 45°) rebaixava a faixa do fundo pra z13/z12:
+ *   prédios e rótulos lá longe sumiam e voltavam ao cruzar 45°. O patch ainda aceita as chaves.
+ * Se o voo do pino (flyTo de 1,7 s) mostrar áreas vazias no aparelho, o próximo passo é prefetchZoomDelta 2, não o padrão.
+ */
+const TILE_TUNING = { prefetchZoomDelta: 1, tileCacheEnabled: false };
 
 // tile cancelado ao mover o mapa é normal; o MLRN só rebaixa a variante "Canceled" e a do OkHttp ("stream was reset:
 // CANCEL") virava aviso na tela de dev. true = tratado, não loga
@@ -132,8 +148,6 @@ const MapTree = memo(function MapTree({ engine, mapStyle }: { engine: MapEngine;
   const onStyle = useCallback(() => engine.onStyleLoaded(), [engine]);
   const onLoaded = useCallback(() => engine.onMapLoaded(), [engine]);
   const onError = useCallback(() => engine.onLoadError(), [engine]);
-  // o MLRN Android despacha o evento de quadro sempre (com ou sem handler): o motor ignora fora da amostra de fps
-  const onFrame = useCallback(() => engine.onRenderFrame(), [engine]);
   const onPress = useCallback(
     (e: NativeSyntheticEvent<PressEvent> | NativeSyntheticEvent<PressEventWithFeatures>) => {
       // point em dp, relativo ao mapa
@@ -166,7 +180,9 @@ const MapTree = memo(function MapTree({ engine, mapStyle }: { engine: MapEngine;
       onDidFinishLoadingStyle={onStyle}
       onDidFinishLoadingMap={onLoaded}
       onDidFailLoadingMap={onError}
-      onDidFinishRenderingFrameFully={onFrame}
+      // sem handler de quadro: o patch do MLRN só manda os eventos de quadro pro JS quando alguém ouve. O fps é contado no
+      // nativo com a câmera andando e chega no onRegionDidChange (renderFps)
+      tileTuning={TILE_TUNING}
     >
       {/* pitch: o MapLibre Android já limita a 60° (não há maxPitch no MLRN); o motor nunca pede mais que isso */}
       <Camera ref={camRef} initialViewState={INITIAL_VIEW} minZoom={10} maxZoom={22} />

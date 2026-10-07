@@ -68,6 +68,10 @@ function AvatarItemTileInner({ config, slot, item, category, equipped, locked, m
   const next = tilePreviewConfig(config, slot, item.id);
   const previewKey = keyOf(next);
   const preview = useMemo(() => next, [previewKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // pose e mãos da animação calculadas uma vez por visual (não a cada render da grade)
+  const isEmote = slot === 'emote';
+  const tilePose = useMemo(() => (isEmote ? emoteStillPose(item.id, preview) : pose), [isEmote, item.id, preview, pose]);
+  const tileHands = useMemo(() => (isEmote ? emoteHands(item.id) : null), [isEmote, item.id]);
 
   const rarity: AvatarRarity = item.rarity ?? 'common';
   const badge = locked ? badgeTierOf(item.tier) : null;
@@ -102,8 +106,8 @@ function AvatarItemTileInner({ config, slot, item, category, equipped, locked, m
             config={preview}
             mode={mode === 'bust' ? 'bust' : 'full'}
             size={mode === 'bust' ? BUST_SIZE : mode === 'upper' ? UPPER_SIZE : FULL_SIZE}
-            pose={slot === 'emote' ? emoteStillPose(item.id, preview) : pose}
-            hands={slot === 'emote' ? emoteHands(item.id) : null}
+            pose={tilePose}
+            hands={tileHands}
             showBackdrop={showBackdrop}
             backgroundColor={mode === 'bust' ? BUST_BG : undefined}
             decorative

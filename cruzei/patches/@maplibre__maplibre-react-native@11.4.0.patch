@@ -1,8 +1,24 @@
 diff --git a/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt b/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
-index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37ff6b29d0 100644
+index cedb8bf4f01414c9642ec376ed41b2119acd9deb..73f1fe9fadbe23e1d59f9b5b4d89d30cfc0510ab 100644
 --- a/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
 +++ b/android/src/main/java/org/maplibre/reactnative/components/images/MLRNImages.kt
-@@ -16,6 +16,7 @@ import org.maplibre.reactnative.components.AbstractMapFeature
+@@ -2,6 +2,8 @@ package org.maplibre.reactnative.components.images
+ 
+ import android.content.Context
+ import android.graphics.Bitmap
++import android.os.Handler
++import android.os.Looper
+ import androidx.core.content.res.ResourcesCompat
+ import com.facebook.react.bridge.Arguments
+ import com.facebook.react.bridge.ReactContext
+@@ -10,22 +12,32 @@ import com.facebook.react.uimanager.UIManagerHelper
+ import com.facebook.react.uimanager.events.Event
+ import com.facebook.react.uimanager.events.EventDispatcher
+ import org.maplibre.android.maps.MapLibreMap
++import org.maplibre.android.maps.Style
+ import org.maplibre.android.utils.BitmapUtils
+ import org.maplibre.reactnative.R
+ import org.maplibre.reactnative.components.AbstractMapFeature
  import org.maplibre.reactnative.components.mapview.MLRNMapView
  import org.maplibre.reactnative.utils.DownloadMapImageTask
  import org.maplibre.reactnative.utils.ImageEntry
@@ -10,11 +26,17 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
  
  class MLRNImages(
      context: Context,
-@@ -25,7 +26,11 @@ class MLRNImages(
+ ) : AbstractMapFeature(context) {
+     companion object {
+         private var imagePlaceholder: Bitmap? = null
++        private val MAIN = Handler(Looper.getMainLooper())
      }
  
++    // Metch: nomes que este componente pôs (ou está pondo) no estilo `currentStyle`. Substitui o style.getImage, que
++    // copiava o bitmap inteiro do nativo pra um Bitmap Java na main thread só pra saber se o nome existia
      private val currentImages = mutableSetOf<String>()
 -    private val images = mutableMapOf<String, ImageEntry>()
++    private var currentStyle: Style? = null
 +
 +    // Metch: images e map também são lidos na thread de download (shouldApplyImage); só a main thread escreve
 +    private val images: MutableMap<String, ImageEntry> = ConcurrentHashMap()
@@ -23,9 +45,11 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
      private var map: MapLibreMap? = null
  
      init {
-@@ -48,20 +53,45 @@ class MLRNImages(
+@@ -47,21 +59,47 @@ class MLRNImages(
+         imagesList: List<Map.Entry<String, ImageEntry>>,
          context: Context,
      ) {
++        map?.style?.let { syncStyle(it) }
          val newImages = mutableMapOf<String, ImageEntry>()
 +        val changedImages = mutableMapOf<String, ImageEntry>()
 +        val keys = HashSet<String>()
@@ -71,7 +95,11 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
          }
      }
  
-@@ -73,8 +103,10 @@ class MLRNImages(
+@@ -70,11 +108,14 @@ class MLRNImages(
+         map = null
+         images.clear()
+         currentImages.clear()
++        currentStyle = null
      }
  
      private fun removeImages(mapView: MLRNMapView) {
@@ -83,7 +111,24 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
                  style.removeImage(imageName)
              }
          }
-@@ -112,11 +144,41 @@ class MLRNImages(
+@@ -100,33 +141,87 @@ class MLRNImages(
+         if (imagesToProcess.isEmpty()) return
+ 
+         val style = mapInstance.style ?: return
++        syncStyle(style)
+         val remoteImages = mutableListOf<Map.Entry<String, ImageEntry>>()
+ 
+         for ((imageName, entry) in imagesToProcess) {
+-            if (hasImage(imageName, mapInstance)) continue
++            if (currentImages.contains(imageName)) continue
+ 
+-            style.addImage(imageName, imagePlaceholder!!)
++            // Metch: arquivo local chega em milissegundos: sem o placeholder 1x1 (nome registrado duas vezes, a segunda
++            // com outro tamanho). O motor só aponta a feature depois da espera de assentamento
++            if (!isLocal(entry)) style.addImage(imageName, imagePlaceholder!!)
+             remoteImages.add(java.util.AbstractMap.SimpleEntry(imageName, entry))
+             currentImages.add(imageName)
+         }
  
          // Download remote images asynchronously
          if (remoteImages.isNotEmpty()) {
@@ -91,9 +136,9 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
 -            task.execute(*remoteImages.toTypedArray())
 +            val task = DownloadMapImageTask(context, mapInstance, null, shouldApplyImage)
 +            task.executeOnExecutor(DownloadMapImageTask.EXECUTOR, *remoteImages.toTypedArray())
-         }
-     }
- 
++        }
++    }
++
 +    // Metch: troca de imagem já no estilo: sem placeholder (a antiga fica até a nova chegar), addImage com o mesmo nome substitui
 +    private fun downloadImages(
 +        imagesToDownload: Map<String, ImageEntry>,
@@ -105,18 +150,36 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
 +        val remoteImages = mutableListOf<Map.Entry<String, ImageEntry>>()
 +        for ((imageName, entry) in imagesToDownload) {
 +            remoteImages.add(java.util.AbstractMap.SimpleEntry(imageName, entry))
-+        }
+         }
 +
 +        val task = DownloadMapImageTask(context, mapInstance, null, shouldApplyImage)
 +        task.executeOnExecutor(DownloadMapImageTask.EXECUTOR, *remoteImages.toTypedArray())
-+    }
-+
+     }
+ 
 +    // Metch: download atrasado só entra se a chave ainda pede essa mesma imagem e o componente segue no mapa
 +    // (roda na thread de download antes do fetch e na main thread antes do addImage)
 +    private val shouldApplyImage =
-+        DownloadMapImageTask.ShouldApply { name, entry ->
-+            val current = images[name]
-+            map != null && current != null && isSameImage(current, entry)
++        object : DownloadMapImageTask.ShouldApply {
++            override fun shouldApply(
++                name: String,
++                entry: ImageEntry,
++            ): Boolean {
++                val current = images[name]
++                return map != null && current != null && isSameImage(current, entry)
++            }
++
++            // Metch: falhou (Fresco sem memória, arquivo truncado): o nome sai de currentImages e o próximo aviso de imagem
++            // faltando pede de novo (sem isso a figura ficava invisível até a vaga trocar de arquivo). O placeholder que o
++            // addMissingImageToStyle põe segura o aviso seguinte: no máximo uma nova tentativa por falha, sem laço
++            override fun onFailed(
++                name: String,
++                entry: ImageEntry,
++            ) {
++                MAIN.post {
++                    val current = images[name]
++                    if (current != null && isSameImage(current, entry)) currentImages.remove(name)
++                }
++            }
 +        }
 +
 +    private fun isSameImage(
@@ -127,8 +190,12 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
      fun addMissingImageToStyle(
          id: String,
          mapInstance: MapLibreMap,
-@@ -125,8 +187,8 @@ class MLRNImages(
+     ): Boolean {
+         val entry = images[id] ?: return false
          val style = mapInstance.style ?: return false
++        syncStyle(style)
++        // Metch: já pedida (arquivo local sem placeholder ainda baixando): o download em voo põe a imagem no estilo
++        if (currentImages.contains(id)) return true
  
          style.addImage(id, imagePlaceholder!!)
 -        val task = DownloadMapImageTask(context, mapInstance, null)
@@ -138,6 +205,29 @@ index cedb8bf4f01414c9642ec376ed41b2119acd9deb..d519cd27a41cff8e5c64e6e564b09b37
  
          currentImages.add(id)
          return true
+@@ -161,12 +256,16 @@ class MLRNImages(
+         eventDispatcher?.dispatchEvent(OnImageMissingEvent(writableMap))
+     }
+ 
+-    private fun hasImage(
+-        imageId: String,
+-        mapInstance: MapLibreMap,
+-    ): Boolean {
+-        val style = mapInstance.style
++    // Metch: estilo novo (recarregado) não tem nenhuma das imagens: a lista recomeça
++    private fun syncStyle(style: Style) {
++        if (currentStyle !== style) {
++            currentStyle = style
++            currentImages.clear()
++        }
++    }
+ 
+-        return style?.getImage(imageId) != null
++    private fun isLocal(entry: ImageEntry): Boolean {
++        val uri = entry.uri ?: return false
++        return uri.startsWith("file://") || uri.startsWith("/")
+     }
+ }
 diff --git a/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt b/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt
 index 0c6baf8d4930cd29aac76f61d04038cf937f75d2..894e4095029e8c22ae63e4bd2dc7c6f7acc72685 100644
 --- a/android/src/main/java/org/maplibre/reactnative/components/layer/MLRNLayer.kt
@@ -163,6 +253,174 @@ index 0c6baf8d4930cd29aac76f61d04038cf937f75d2..894e4095029e8c22ae63e4bd2dc7c6f7
      }
  
      private val style: Style?
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapView.kt b/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapView.kt
+index b088909a48c4265219e4e95c529f6c0a63ae7e11..70d21aea2e3472b995c4ef1b03a78ae8c5822e41 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapView.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapView.kt
+@@ -139,6 +139,21 @@ open class MLRNMapView(
+     private var insets: ReadableArray? = null
+     private var preferredFramesPerSecond: Int? = null
+ 
++    // Metch: cache de tiles, prefetch e LOD do horizonte (prop tileTuning), aplicados quando o mapa fica pronto
++    private var tileTuning: ReadableMap? = null
++
++    // Metch: eventos de quadro (onWillStartRenderingFrame/onDidFinishRenderingFrame*) só com handler no JS: sem isso
++    // eram 2 eventos por quadro (até 120/s) atravessando para a thread JS mesmo sem ninguém ouvindo
++    var frameEventsEnabled = true
++
++    // Metch: fps do render com a câmera andando, contado aqui (intervalo entre quadros da GL) e mandado no
++    // onRegionDidChange como renderFps. O onCameraMove vem de cada lote de toque da thread de UI, não de cada quadro
++    // desenhado: medido no JS ele dava o ritmo do dedo (60 em qualquer aparelho)
++    private var cameraMoving = false
++    private var lastMoveFrameNs = 0L
++    private val moveFrameMs = FloatArray(600)
++    private var moveFrameCount = 0
++
+     private var scrollEnabled: Boolean? = null
+     private var touchZoomEnabled: Boolean? = null
+     private var doubleTapZoomEnabled: Boolean? = null
+@@ -514,16 +529,19 @@ open class MLRNMapView(
+         }
+ 
+         updatePreferredFramesPerSecond()
++        applyTileTuning()
+         updateInsets()
+         updateUISettings()
+         updateScaleBar()
+ 
+         mapLibreMap.addOnCameraMoveStartedListener { reason ->
++            cameraMoving = true
+             cameraChangeTracker.setReason(reason)
+             handleMapChangedEvent("onRegionWillChange", true)
+         }
+ 
+         mapLibreMap.addOnCameraMoveListener {
++            cameraMoving = true
+             handleMapChangedEvent("onRegionIsChanging", true)
+         }
+ 
+@@ -543,7 +561,7 @@ open class MLRNMapView(
+             },
+         )
+ 
+-        mapLibreMap.addOnCameraIdleListener { sendRegionDidChangeEvent() }
++        mapLibreMap.addOnCameraIdleListener { sendRegionDidChangeEvent(takeRenderFps()) }
+     }
+ 
+     fun reflow() {
+@@ -766,7 +784,7 @@ open class MLRNMapView(
+ 
+     override fun onWillStartRenderingFrame() {
+         markerViewManager?.updateMarkers()
+-        handleMapChangedEvent("onWillStartRenderingFrame")
++        if (frameEventsEnabled) handleMapChangedEvent("onWillStartRenderingFrame")
+     }
+ 
+     override fun onDidFinishRenderingFrame(
+@@ -774,6 +792,8 @@ open class MLRNMapView(
+         frameEncodingTime: Double,
+         frameRenderingTime: Double,
+     ) {
++        if (cameraMoving) countMoveFrame()
++        if (!frameEventsEnabled) return
+         if (fully) {
+             handleMapChangedEvent("onDidFinishRenderingFrameFully")
+         } else {
+@@ -1359,6 +1379,26 @@ open class MLRNMapView(
+         setMaximumFps(preferredFramesPerSecond!!)
+     }
+ 
++    fun setReactTileTuning(value: ReadableMap?) {
++        tileTuning = value
++        applyTileTuning()
++    }
++
++    // Metch: chave ausente fica no padrão do MapLibre (prefetch 4, cache ligado, LOD só acima de 60°, que no Android,
++    // com o pitch limitado a 60°, nunca acontece). O limiar vem em graus
++    private fun applyTileTuning() {
++        val map = mapLibreMap ?: return
++        val t = tileTuning ?: return
++        if (t.hasKey("prefetchZoomDelta")) map.setPrefetchZoomDelta(t.getInt("prefetchZoomDelta").coerceIn(0, 255))
++        if (t.hasKey("tileCacheEnabled")) map.setTileCacheEnabled(t.getBoolean("tileCacheEnabled"))
++        if (t.hasKey("tileLodMinRadius")) map.setTileLodMinRadius(t.getDouble("tileLodMinRadius").coerceAtLeast(1.0))
++        if (t.hasKey("tileLodScale")) map.setTileLodScale(t.getDouble("tileLodScale").coerceAtLeast(0.1))
++        if (t.hasKey("tileLodPitchThreshold")) {
++            map.setTileLodPitchThreshold(Math.toRadians(t.getDouble("tileLodPitchThreshold").coerceIn(0.0, 180.0)))
++        }
++        if (t.hasKey("tileLodZoomShift")) map.setTileLodZoomShift(t.getDouble("tileLodZoomShift"))
++    }
++
+     val contentInset: DoubleArray
+         get() {
+             if (insets == null) {
+@@ -1556,11 +1596,38 @@ open class MLRNMapView(
+         return null
+     }
+ 
+-    fun sendRegionDidChangeEvent() {
+-        handleMapChangedEvent("onRegionDidChange", true)
++    // Metch: renderFps = amostra do movimento que acabou (só a câmera ociosa manda; o MLRNCamera chama sem)
++    fun sendRegionDidChangeEvent(renderFps: Double? = null) {
++        val viewState = makeViewState(null)
++        if (renderFps != null) viewState.putDouble("renderFps", renderFps)
++        eventDispatcher?.dispatchEvent(MapChangeEvent(surfaceId, id, "onRegionDidChange", viewState))
+         cameraChangeTracker.setReason(CameraChangeTracker.EMPTY)
+     }
+ 
++    // Metch: um quadro desenhado com a câmera andando (callbacks do MapLibre na main thread; o índice é lido uma vez,
++    // então nem uma chamada fora dela passa do fim do vetor)
++    private fun countMoveFrame() {
++        val now = System.nanoTime()
++        val i = moveFrameCount
++        if (lastMoveFrameNs != 0L && i < moveFrameMs.size) {
++            moveFrameMs[i] = (now - lastMoveFrameNs) / 1_000_000f
++            moveFrameCount = i + 1
++        }
++        lastMoveFrameNs = now
++    }
++
++    // Metch: mediana do intervalo entre quadros do movimento que acabou e zera a amostra. < 4 ms = quadros entregues
++    // juntos na main thread; >= 250 ms = câmera parada no meio do gesto (dedo parado). null com menos de 20 intervalos
++    private fun takeRenderFps(): Double? {
++        val n = moveFrameCount.coerceAtMost(moveFrameMs.size)
++        val samples = moveFrameMs.copyOf(n).filter { it >= 4f && it < 250f }.sorted()
++        moveFrameCount = 0
++        lastMoveFrameNs = 0L
++        cameraMoving = false
++        if (samples.size < 20) return null
++        return 1000.0 / samples[samples.size / 2]
++    }
++
+     private fun handleMapChangedEvent(
+         eventName: String,
+         withViewState: Boolean? = null,
+diff --git a/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapViewManager.kt b/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapViewManager.kt
+index 2179f0b9b5373a2eacd4aa6c18342e04e22d6f36..84e26a756fd6218009b54d7810c5122e9615a396 100644
+--- a/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapViewManager.kt
++++ b/android/src/main/java/org/maplibre/reactnative/components/mapview/MLRNMapViewManager.kt
+@@ -111,6 +111,22 @@ open class MLRNMapViewManager(
+         mapView.setReactContentInset(value)
+     }
+ 
++    @ReactProp(name = "frameEvents", defaultBoolean = true)
++    override fun setFrameEvents(
++        mapView: MLRNMapView,
++        value: Boolean,
++    ) {
++        mapView.frameEventsEnabled = value
++    }
++
++    @ReactProp(name = "tileTuning")
++    override fun setTileTuning(
++        mapView: MLRNMapView,
++        value: Dynamic?,
++    ) {
++        mapView.setReactTileTuning(value?.asMap())
++    }
++
+     @ReactProp(name = "preferredFramesPerSecond")
+     override fun setPreferredFramesPerSecond(
+         mapView: MLRNMapView,
 diff --git a/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt b/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt
 index 10caa053b17af412872100c5d405ae1dd681c0fe..cd21f0798bcf268a6bf3948356b3c46dae312f5b 100644
 --- a/android/src/main/java/org/maplibre/reactnative/components/sources/MLRNSource.kt
@@ -443,23 +701,36 @@ index c4365390601bbce477309749aa9610ecfc3785ce..5c9d5a3c5ff448bcf41dda18043f451f
          pauseLocationManager()
      }
 diff --git a/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java b/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
-index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff62a98a458 100644
+index c3fc0627714ac7f031a2a26d8872eb74978bdb97..438b61f38c04e95500e85ea2263b1b32e315f403 100644
 --- a/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
 +++ b/android/src/main/java/org/maplibre/reactnative/utils/DownloadMapImageTask.java
-@@ -30,22 +30,54 @@ import java.util.AbstractMap;
+@@ -6,6 +6,8 @@ import android.graphics.Bitmap;
+ import android.graphics.BitmapFactory;
+ import android.net.Uri;
+ import android.os.AsyncTask;
++import android.os.Handler;
++import android.os.Looper;
+ import android.util.DisplayMetrics;
+ import android.util.Log;
+ 
+@@ -28,24 +30,65 @@ import java.io.File;
+ import java.lang.ref.WeakReference;
+ import java.util.AbstractMap;
  import java.util.ArrayList;
++import java.util.HashMap;
  import java.util.List;
  import java.util.Map;
++import java.util.concurrent.ConcurrentLinkedQueue;
 +import java.util.concurrent.Executor;
 +import java.util.concurrent.LinkedBlockingQueue;
 +import java.util.concurrent.ThreadPoolExecutor;
 +import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
 +import java.util.concurrent.atomic.AtomicInteger;
  
  import javax.annotation.Nullable;
  
--public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry>, Void, List<Map.Entry<String, DownloadedImage>>> {
-+public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry>, DownloadedImage, List<Map.Entry<String, DownloadedImage>>> {
+ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry>, Void, List<Map.Entry<String, DownloadedImage>>> {
      public static final String LOG_TAG = "DownloadMapImageTask";
  
 +    // Metch: pool próprio com poucas threads. O execute() do AsyncTask é uma fila serial única para o app
@@ -482,6 +753,12 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
 +        return executor;
 +    }
 +
++    // Metch: imagens prontas entram no estilo em LOTE: o que ficar pronto até a main thread rodar vai num addImages só
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++    private final ConcurrentLinkedQueue<DownloadedImage> mReady = new ConcurrentLinkedQueue<>();
++    private final AtomicBoolean mFlushPosted = new AtomicBoolean(false);
++    private final Runnable mFlush = this::flushReady;
++
      private WeakReference<Context> mContext;
      private WeakReference<MapLibreMap> mMap;
      @Nullable
@@ -502,7 +779,7 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
          mCallerContext = this;
      }
  
-@@ -53,6 +85,12 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+@@ -53,6 +96,20 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
          void onAllImagesLoaded();
      }
  
@@ -510,12 +787,20 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
 +    // (antes de buscar/decodificar) e de novo na main thread (antes do addImage): a implementação tem que ser thread-safe
 +    public interface ShouldApply {
 +        boolean shouldApply(String name, ImageEntry entry);
++
++        // Metch: a imagem não entrou no estilo (decodificação falhou, estilo carregando): quem pediu pode pedir de novo.
++        // Chamado na thread do pool ou na main thread
++        default void onFailed(String name, ImageEntry entry) {}
++    }
++
++    private void failed(String name, ImageEntry entry) {
++        if (mShouldApply != null) mShouldApply.onFailed(name, entry);
 +    }
 +
      @SafeVarargs
      @Override
      protected final List<Map.Entry<String, DownloadedImage>> doInBackground(Map.Entry<String, ImageEntry>... objects) {
-@@ -67,6 +105,11 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+@@ -67,6 +124,11 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
          for (Map.Entry<String, ImageEntry> object : objects) {
              ImageEntry imageEntry = object.getValue();
  
@@ -527,7 +812,25 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
              String uri = imageEntry.uri;
  
              if (uri.startsWith("/")) {
-@@ -95,7 +138,7 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+@@ -76,9 +138,14 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+             if (uri.startsWith("http://") || uri.startsWith("https://") ||
+                 uri.startsWith("file://") || uri.startsWith("asset://") || uri.startsWith("data:")) {
+                 ImageSource source = new ImageSource(context, uri);
+-                ImageRequest request = ImageRequestBuilder.newBuilderWithSource(source.getUri())
+-                    .setRotationOptions(RotationOptions.autoRotate())
+-                    .build();
++                ImageRequestBuilder requestBuilder = ImageRequestBuilder.newBuilderWithSource(source.getUri())
++                    .setRotationOptions(RotationOptions.autoRotate());
++                // Metch: arquivo local (figuras e quadros do mapa, cada um com nome próprio) não entra no cache de memória
++                // do Fresco: o bitmap é copiado logo abaixo e nunca é pedido de novo, então o cache só segurava memória nativa
++                if (uri.startsWith("file://")) {
++                    requestBuilder.disableMemoryCache();
++                }
++                ImageRequest request = requestBuilder.build();
+ 
+                 DataSource<CloseableReference<CloseableImage>> dataSource =
+                     Fresco.getImagePipeline().fetchDecodedImage(request, mCallerContext);
+@@ -95,15 +162,18 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
                                  // the fresco reference.
                                  .copy(Bitmap.Config.ARGB_8888, true);
                              bitmap.setDensity((int) ((double) DisplayMetrics.DENSITY_DEFAULT * imageEntry.scale));
@@ -535,8 +838,19 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
 +                            addDownloaded(images, new DownloadedImage(object.getKey(), bitmap, imageEntry));
                          } else {
                              FLog.e(LOG_TAG, "Failed to load bitmap from: " + uri);
++                            failed(object.getKey(), imageEntry);
                          }
-@@ -114,7 +157,7 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+                     } else {
+                         FLog.e(LOG_TAG, "Failed to load bitmap from: " + uri);
++                        failed(object.getKey(), imageEntry);
+                     }
+                 } catch (Throwable e) {
+                     Log.w(LOG_TAG, e.getLocalizedMessage());
++                    failed(object.getKey(), imageEntry);
+                 } finally {
+                     dataSource.close();
+                     if (result != null) {
+@@ -114,9 +184,10 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
                  // Local asset required from JS require('image.png') or import icon from 'image.png' while in release mode
                  Bitmap bitmap = BitmapUtils.getBitmapFromResource(context, uri, getBitmapOptions(metrics, imageEntry.scale));
                  if (bitmap != null) {
@@ -544,46 +858,145 @@ index c3fc0627714ac7f031a2a26d8872eb74978bdb97..4b441e7cc23831451fa9fb0457badff6
 +                    addDownloaded(images, new DownloadedImage(object.getKey(), bitmap, imageEntry));
                  } else {
                      FLog.e(LOG_TAG, "Failed to load bitmap from: " + uri);
++                    failed(object.getKey(), imageEntry);
                  }
-@@ -124,18 +167,31 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
+             }
+         }
+@@ -124,18 +195,48 @@ public class DownloadMapImageTask extends AsyncTask<Map.Entry<String, ImageEntry
          return images;
      }
  
-+    // Metch: cada imagem vai para o estilo assim que fica pronta (não espera as outras da mesma tarefa)
-+    private void addDownloaded(List<Map.Entry<String, DownloadedImage>> images, DownloadedImage downloaded) {
-+        images.add(new AbstractMap.SimpleEntry<>(downloaded.name(), downloaded));
-+        publishProgress(downloaded);
-+    }
-+
-+    // Metch: roda na main thread (handler do AsyncTask); todos os onProgressUpdate chegam antes do onPostExecute
-     @Override
+-    @Override
 -    protected void onPostExecute(List<Map.Entry<String, DownloadedImage>> images) {
-+    protected void onProgressUpdate(DownloadedImage... downloaded) {
-         MapLibreMap map = mMap.get();
+-        MapLibreMap map = mMap.get();
 -        if (map != null && images != null && images.size() > 0) {
 -            Style style = map.getStyle();
 -            if (style != null) {
 -                for (Map.Entry<String, DownloadedImage> image : images) {
 -                    style.addImage(image.getKey(), image.getValue().bitmap(), image.getValue().info().sdf);
 -                }
-+        if (map == null) return;
-+        Style style = map.getStyle();
-+        if (style == null) return;
++    // Metch: cada imagem vai para o estilo assim que fica pronta (não espera as outras da mesma tarefa), juntando na mesma
++    // volta da main thread as que ficarem prontas juntas
++    private void addDownloaded(List<Map.Entry<String, DownloadedImage>> images, DownloadedImage downloaded) {
++        images.add(new AbstractMap.SimpleEntry<>(downloaded.name(), downloaded));
++        mReady.add(downloaded);
++        if (mFlushPosted.compareAndSet(false, true)) MAIN.post(mFlush);
++    }
 +
-+        for (DownloadedImage image : downloaded) {
-+            if (mShouldApply != null && !mShouldApply.shouldApply(image.name(), image.info())) {
-+                continue;
++    // Metch: main thread. Uma chamada nativa por lote (Style.addImages) em vez de uma por imagem: o MapLibre recebe a
++    // rajada (boot, refetch com gente nova) junta e refaz o layout dos tiles uma vez
++    private void flushReady() {
++        mFlushPosted.set(false);
++        HashMap<String, Bitmap> plain = new HashMap<>();
++        HashMap<String, Bitmap> sdf = new HashMap<>();
++        List<Bitmap> done = new ArrayList<>();
++        List<DownloadedImage> applied = new ArrayList<>();
++        DownloadedImage image;
++        while ((image = mReady.poll()) != null) {
++            done.add(image.bitmap());
++            if (mShouldApply == null || mShouldApply.shouldApply(image.name(), image.info())) {
++                (image.info().sdf ? sdf : plain).put(image.name(), image.bitmap());
++                applied.add(image);
              }
-+            style.addImage(image.name(), image.bitmap(), image.info().sdf);
          }
++        MapLibreMap map = mMap.get();
++        Style style = map != null ? map.getStyle() : null;
++        if (style != null && style.isFullyLoaded()) {
++            if (!plain.isEmpty()) style.addImages(plain, false);
++            if (!sdf.isEmpty()) style.addImages(sdf, true);
++        } else {
++            for (DownloadedImage a : applied) failed(a.name(), a.info());
++        }
++        // Metch: o addImages copia os pixels na hora (Style.toImage -> copyPixelsToBuffer) e não guarda o bitmap;
++        // a cópia em Java é liberada já, sem esperar o coletor de lixo (um bitmap por quadro de animação)
++        for (Bitmap bitmap : done) bitmap.recycle();
 +    }
  
 +    @Override
 +    protected void onPostExecute(List<Map.Entry<String, DownloadedImage>> images) {
-+        // Metch: as imagens já entraram no estilo uma a uma no onProgressUpdate
++        // Metch: as imagens já entraram no estilo no flushReady (postado antes, na mesma fila da main thread); o que
++        // sobrar entra aqui, antes do callback
++        flushReady();
          if (mCallback != null) {
              mCallback.onAllImagesLoaded();
          }
+diff --git a/lib/commonjs/components/map/AndroidTextureMapViewNativeComponent.ts b/lib/commonjs/components/map/AndroidTextureMapViewNativeComponent.ts
+index af4549f0889d69db52cbbe200d8f67290ea16692..bcc6b90420d5bb62a25749235d68b37717c51b21 100644
+--- a/lib/commonjs/components/map/AndroidTextureMapViewNativeComponent.ts
++++ b/lib/commonjs/components/map/AndroidTextureMapViewNativeComponent.ts
+@@ -26,6 +26,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -58,6 +68,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
+diff --git a/lib/commonjs/components/map/Map.js b/lib/commonjs/components/map/Map.js
+index 67fcdb21a5121aec93cd16504f55599997e3c659..98b22b32abd557177dcdcfc3d0eed4ab53f5d5bb 100644
+--- a/lib/commonjs/components/map/Map.js
++++ b/lib/commonjs/components/map/Map.js
+@@ -97,7 +97,9 @@ const Map = exports.Map = /*#__PURE__*/(0, _react.memo)(({
+       ref: nativeRef,
+       style: styles.flex1,
+       mapStyle: typeof mapStyle === "object" ? JSON.stringify(mapStyle) : mapStyle,
+-      light: props.light ? (0, _StyleValue.transformStyle)((0, _convertStyleSpec.convertToInternalStyle)(props.light)) : undefined
++      light: props.light ? (0, _StyleValue.transformStyle)((0, _convertStyleSpec.convertToInternalStyle)(props.light)) : undefined,
++      // Metch: o nativo só manda eventos de quadro quando há quem ouça
++      frameEvents: Boolean(props.onWillStartRenderingFrame || props.onDidFinishRenderingFrame || props.onDidFinishRenderingFrameFully)
+     };
+   }, [props]);
+   let map = null;
+diff --git a/lib/commonjs/components/map/MapViewNativeComponent.ts b/lib/commonjs/components/map/MapViewNativeComponent.ts
+index 8d387ef65d38f06ea72f4eb1da3162e8535d2d1c..9005ae24f17ae323e2bae731efd5102ba64cb6cd 100644
+--- a/lib/commonjs/components/map/MapViewNativeComponent.ts
++++ b/lib/commonjs/components/map/MapViewNativeComponent.ts
+@@ -23,6 +23,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -55,6 +65,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
 diff --git a/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js b/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js
 index 15cf3271eacc4a2739c771c0afbf8d9445d0ec21..fef432eeeb24613de89a8be4e150bd352319c7af 100644
 --- a/lib/commonjs/components/sources/geojson-source/GeoJSONSource.js
@@ -664,6 +1077,83 @@ index 9805fd24977b7302fccd576b4cf5f7f2644692cf..89658de044640903973f5a230da9695e
    }));
    return /*#__PURE__*/(0, _jsxRuntime.jsx)(_VectorSourceNativeComponent.default, {
      ref: nativeRef,
+diff --git a/lib/module/components/map/AndroidTextureMapViewNativeComponent.ts b/lib/module/components/map/AndroidTextureMapViewNativeComponent.ts
+index af4549f0889d69db52cbbe200d8f67290ea16692..bcc6b90420d5bb62a25749235d68b37717c51b21 100644
+--- a/lib/module/components/map/AndroidTextureMapViewNativeComponent.ts
++++ b/lib/module/components/map/AndroidTextureMapViewNativeComponent.ts
+@@ -26,6 +26,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -58,6 +68,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
+diff --git a/lib/module/components/map/Map.js b/lib/module/components/map/Map.js
+index ee4ada4a24420b957e96ef881c626f5dea06f2ce..7b336d70beaa17c9048902832194be3bc61c4369 100644
+--- a/lib/module/components/map/Map.js
++++ b/lib/module/components/map/Map.js
+@@ -92,7 +92,9 @@ export const Map = /*#__PURE__*/memo(({
+       ref: nativeRef,
+       style: styles.flex1,
+       mapStyle: typeof mapStyle === "object" ? JSON.stringify(mapStyle) : mapStyle,
+-      light: props.light ? transformStyle(convertToInternalStyle(props.light)) : undefined
++      light: props.light ? transformStyle(convertToInternalStyle(props.light)) : undefined,
++      // Metch: o nativo só manda eventos de quadro quando há quem ouça
++      frameEvents: Boolean(props.onWillStartRenderingFrame || props.onDidFinishRenderingFrame || props.onDidFinishRenderingFrameFully)
+     };
+   }, [props]);
+   let map = null;
+diff --git a/lib/module/components/map/MapViewNativeComponent.ts b/lib/module/components/map/MapViewNativeComponent.ts
+index 8d387ef65d38f06ea72f4eb1da3162e8535d2d1c..9005ae24f17ae323e2bae731efd5102ba64cb6cd 100644
+--- a/lib/module/components/map/MapViewNativeComponent.ts
++++ b/lib/module/components/map/MapViewNativeComponent.ts
+@@ -23,6 +23,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -55,6 +65,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
 diff --git a/lib/module/components/sources/geojson-source/GeoJSONSource.js b/lib/module/components/sources/geojson-source/GeoJSONSource.js
 index abb21d564be478ed34dcba5c6f67f244cd367aa5..4aebce1c6aa7cf8517be13c2be5dfa90a9f2f818 100644
 --- a/lib/module/components/sources/geojson-source/GeoJSONSource.js
@@ -744,6 +1234,30 @@ index 4c37dd518c110c4b0429a92d03618d25d43cb985..59458ca46193ca52559627ebca120c97
    }));
    return /*#__PURE__*/_jsx(VectorSourceNativeComponent, {
      ref: nativeRef,
+diff --git a/lib/typescript/commonjs/components/map/Map.d.ts b/lib/typescript/commonjs/components/map/Map.d.ts
+index 25657578618e1ce75273fc672ece61f347da1cab..62943a4144f93f22bf42b1b04fa7219202d8c5f1 100644
+--- a/lib/typescript/commonjs/components/map/Map.d.ts
++++ b/lib/typescript/commonjs/components/map/Map.d.ts
+@@ -259,6 +259,19 @@ export interface MapProps extends BaseProps, ViewProps {
+      * arbitrary integer values.
+      */
+     preferredFramesPerSecond?: number;
++
++    /**
++     * Metch, só Android: ajustes de tiles do MapLibre. Chave ausente = padrão do MapLibre (prefetch 4, cache ligado, LOD só
++     * acima de 60° de pitch, o que no Android nunca acontece). `tileLodPitchThreshold` em graus.
++     */
++    tileTuning?: {
++      prefetchZoomDelta?: number;
++      tileCacheEnabled?: boolean;
++      tileLodMinRadius?: number;
++      tileLodScale?: number;
++      tileLodPitchThreshold?: number;
++      tileLodZoomShift?: number;
++    };
+     /**
+      * Toggle pan interaction of the map
+      *
 diff --git a/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts b/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts
 index a0c47bff2832115432ca383be637e2655bbae59c..2c48500ef9c200d556a28a1b979d653560cadf14 100644
 --- a/lib/typescript/commonjs/components/sources/geojson-source/GeoJSONSource.d.ts
@@ -1029,6 +1543,30 @@ index 0000000000000000000000000000000000000000..f330689f4ff4469808aa2238d46f0e7d
 +export interface FeatureState {
 +    [key: string]: FeatureStateValue;
 +}
+diff --git a/lib/typescript/module/components/map/Map.d.ts b/lib/typescript/module/components/map/Map.d.ts
+index 25657578618e1ce75273fc672ece61f347da1cab..62943a4144f93f22bf42b1b04fa7219202d8c5f1 100644
+--- a/lib/typescript/module/components/map/Map.d.ts
++++ b/lib/typescript/module/components/map/Map.d.ts
+@@ -259,6 +259,19 @@ export interface MapProps extends BaseProps, ViewProps {
+      * arbitrary integer values.
+      */
+     preferredFramesPerSecond?: number;
++
++    /**
++     * Metch, só Android: ajustes de tiles do MapLibre. Chave ausente = padrão do MapLibre (prefetch 4, cache ligado, LOD só
++     * acima de 60° de pitch, o que no Android nunca acontece). `tileLodPitchThreshold` em graus.
++     */
++    tileTuning?: {
++      prefetchZoomDelta?: number;
++      tileCacheEnabled?: boolean;
++      tileLodMinRadius?: number;
++      tileLodScale?: number;
++      tileLodPitchThreshold?: number;
++      tileLodZoomShift?: number;
++    };
+     /**
+      * Toggle pan interaction of the map
+      *
 diff --git a/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts b/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts
 index a0c47bff2832115432ca383be637e2655bbae59c..2c48500ef9c200d556a28a1b979d653560cadf14 100644
 --- a/lib/typescript/module/components/sources/geojson-source/GeoJSONSource.d.ts
@@ -1314,6 +1852,105 @@ index 0000000000000000000000000000000000000000..f330689f4ff4469808aa2238d46f0e7d
 +export interface FeatureState {
 +    [key: string]: FeatureStateValue;
 +}
+diff --git a/src/components/map/AndroidTextureMapViewNativeComponent.ts b/src/components/map/AndroidTextureMapViewNativeComponent.ts
+index af4549f0889d69db52cbbe200d8f67290ea16692..bcc6b90420d5bb62a25749235d68b37717c51b21 100644
+--- a/src/components/map/AndroidTextureMapViewNativeComponent.ts
++++ b/src/components/map/AndroidTextureMapViewNativeComponent.ts
+@@ -26,6 +26,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -58,6 +68,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
+diff --git a/src/components/map/Map.tsx b/src/components/map/Map.tsx
+index b193cda77510b23b6a7b8cd50c2b66adfe2c92c9..f7e381bb7f39d5b4f9265c27722434d8f0589bd3 100644
+--- a/src/components/map/Map.tsx
++++ b/src/components/map/Map.tsx
+@@ -321,6 +321,19 @@ export interface MapProps extends BaseProps, ViewProps {
+    */
+   preferredFramesPerSecond?: number;
+ 
++  /**
++   * Metch, só Android: ajustes de tiles do MapLibre. Chave ausente = padrão do MapLibre (prefetch 4, cache ligado, LOD só
++   * acima de 60° de pitch, o que no Android nunca acontece). `tileLodPitchThreshold` em graus.
++   */
++  tileTuning?: {
++    prefetchZoomDelta?: number;
++    tileCacheEnabled?: boolean;
++    tileLodMinRadius?: number;
++    tileLodScale?: number;
++    tileLodPitchThreshold?: number;
++    tileLodZoomShift?: number;
++  };
++
+   /**
+    * Toggle pan interaction of the map
+    *
+@@ -671,6 +684,12 @@ export const Map = memo(
+         light: props.light
+           ? transformStyle(convertToInternalStyle(props.light))
+           : undefined,
++        // Metch: o nativo só manda eventos de quadro quando há quem ouça
++        frameEvents: Boolean(
++          props.onWillStartRenderingFrame ||
++            props.onDidFinishRenderingFrame ||
++            props.onDidFinishRenderingFrameFully,
++        ),
+       };
+     }, [props]);
+ 
+diff --git a/src/components/map/MapViewNativeComponent.ts b/src/components/map/MapViewNativeComponent.ts
+index 8d387ef65d38f06ea72f4eb1da3162e8535d2d1c..9005ae24f17ae323e2bae731efd5102ba64cb6cd 100644
+--- a/src/components/map/MapViewNativeComponent.ts
++++ b/src/components/map/MapViewNativeComponent.ts
+@@ -23,6 +23,16 @@ type NativeOrnamentViewPosition = {
+   left?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
+ };
+ 
++// Metch: ajustes de tiles do MapLibre Android (MapProps.tileTuning); o limiar do LOD vem em graus
++type NativeTileTuning = {
++  prefetchZoomDelta?: CodegenTypes.Int32;
++  tileCacheEnabled?: boolean;
++  tileLodMinRadius?: CodegenTypes.Double;
++  tileLodScale?: CodegenTypes.Double;
++  tileLodPitchThreshold?: CodegenTypes.Double;
++  tileLodZoomShift?: CodegenTypes.Double;
++};
++
+ type NativePressEvent = {
+   lngLat: UnsafeMixed<
+     [longitude: CodegenTypes.Double, latitude: CodegenTypes.Double]
+@@ -55,6 +65,9 @@ export interface NativeProps extends ViewProps {
+   light?: UnsafeMixed<LightLayerStyle>;
+   contentInset?: NativeViewPadding;
+   preferredFramesPerSecond?: CodegenTypes.WithDefault<CodegenTypes.Int32, -1>;
++  /** Metch: os eventos de quadro só atravessam pro JS com true (o Map liga quando há handler de quadro) */
++  frameEvents?: CodegenTypes.WithDefault<boolean, true>;
++  tileTuning?: UnsafeMixed<NativeTileTuning>;
+ 
+   dragPan?: CodegenTypes.WithDefault<boolean, true>;
+   touchZoom?: CodegenTypes.WithDefault<boolean, true>;
 diff --git a/src/components/sources/geojson-source/GeoJSONSource.tsx b/src/components/sources/geojson-source/GeoJSONSource.tsx
 index ec7dc32e3c041f6a67ffab3983296bae30868e08..1c923cf80a3ae8346ffcc26188f15d411c2cf516 100644
 --- a/src/components/sources/geojson-source/GeoJSONSource.tsx

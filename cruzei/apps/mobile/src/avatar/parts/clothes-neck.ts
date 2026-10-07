@@ -10,11 +10,15 @@ import type { AvatarConfig } from '@cruzei/shared-types';
 import { headAnchors, smoothPath, taperPath, type Anatomy, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { circle, fmt } from '../geometry';
-import { blob, isLite, lodCtx, mix, speckle, starPath } from '../shading';
+import { blob, isLite, lodCtx, lum, mix, speckle, starPath } from '../shading';
 import type { Pt } from '../types';
 
 import { NONE, rng, sampleOn, skinOf, toneOf, topDef } from './clothes-kit';
+import { outerOpening } from './clothes-outer';
 import { bowTie } from './clothes-tops';
+
+/** partes de cima sem gola onde gravata não cabe (sairia colada por fora: moletom, malha, armadura, traje real…) */
+const NO_TIE_TOPS = new Set(['armor', 'hoodie', 'royal', 'cyber', 'sweater', 'turtleneck']);
 
 /** colares que moravam no slot `accessory` (config antiga sem normalizar) */
 const LEGACY_NECK = ['necklace', 'chain', 'scarf'];
@@ -121,16 +125,22 @@ export function drawNeck(ctx0: LayerCtx): void {
     }
     case 'pearls': {
       const pts = chainCurve(an, an.collarW + 0.4, 3.6, 10);
-      castShadow(ctx, pts, 0.5, 0.25);
+      // em roupa clara a pérola sumia: sombra de contato embaixo de cada uma e contorno acinzentado
+      const pale = lum(ctx.col.top) > 0.7;
+      castShadow(ctx, pts, 0.5, pale ? 0.38 : 0.25);
       const n = lite ? 12 : 19;
       let d = '';
       let hl = '';
+      let sh = '';
       for (let i = 0; i <= n; i++) {
         const p = sampleOn(pts, i / n);
         d += circle(p[0], p[1], 0.48);
         hl += circle(p[0] - 0.15, p[1] - 0.17, 0.15);
+        sh += circle(p[0] + 0.14, p[1] + 0.22, 0.5);
       }
+      if (pale) ctx.push(sh, '#3A3446', { o: 0.35, ...(lite ? {} : { b: 0.15 }) });
       ctx.push(d, '#F4EFE6', { gf: { t: 'l', x1: cx - 5, y1: an.collarY - 3, x2: cx + 5, y2: an.collarY + 4, s: [[0, '#FFFFFF'], [0.6, '#EDE6DA'], [1, '#C9BFB2']] } });
+      if (pale) ctx.stroke(d, '#9A92A0', lite ? 0.16 : 0.12, { o: 0.7 });
       if (!lite) ctx.push(hl, '#FFFFFF', { o: 0.9 });
       break;
     }
@@ -163,13 +173,51 @@ export function drawNeck(ctx0: LayerCtx): void {
       break;
     }
     case 'tie': {
-      // gravata: nó na gola e lâmina até perto da cintura, com listras diagonais discretas e sombra no peito
+      // gravata: nó na gola e lâmina até perto da cintura, com listras diagonais discretas e sombra no peito. Com
+      // sobreposição de frente (colete, blazer, cardigã…) a lâmina desce DENTRO do vão e some onde a frente fecha (o
+      // pescoço é desenhado depois da sobreposição: sem isso ela passava por cima do colete/puffer). Peça sem gola
+      // (moletom, malha, armadura, traje real…) ou fechada até a gola (puffer): só o nó — a lâmina fica por baixo
       const col = '#22396B';
       const t = toneOf(col, 'satin');
       const kTop = topDef(cfg).neck === 'collar' || cfg.top === 'tux' ? an.collarY - 2.2 : an.collarY - 0.9;
+      const op = outerOpening(ctx);
       const knot = smoothPath([[cx - 1.2, kTop, 0.4], [cx + 1.3, kTop, 0.4], [cx + 0.8, kTop + 2.0], [cx - 0.7, kTop + 2.0]]);
-      const yEnd = an.waistY - 1.5;
-      const blade = smoothPath([[cx - 0.75, kTop + 1.8], [cx + 0.85, kTop + 1.8], [cx + 1.9, yEnd - 2.4], [cx + 0.1, yEnd, 0], [cx - 1.7, yEnd - 2.4]]);
+      if (NO_TIE_TOPS.has(cfg.top) || (op && op.gap(kTop + 1.2) < 1.0)) {
+        ctx.push(knot, '#0A0610', { o: 0.3, ...(lite ? {} : { b: 0.4 }) });
+        ctx.push(knot, col, { gf: { t: 'l', x1: cx - 1.2, y1: kTop, x2: cx + 1.2, y2: kTop + 2, s: [[0, t.light], [1, t.shade]] } });
+        break;
+      }
+      let yEnd = an.waistY - 1.5;
+      const y0 = kTop + 1.8;
+      let closed = false;
+      if (op) {
+        for (let y = y0 + 1; y < yEnd; y += 0.4) {
+          if (op.gap(y) < 0.75) {
+            yEnd = Math.max(y0 + 2, y);
+            closed = true;
+            break;
+          }
+        }
+      }
+      // meia-largura da lâmina (abre do nó até perto da ponta), limitada ao vão da frente quando há sobreposição
+      const yTip = closed ? yEnd + 2 : yEnd;
+      const half = (y: number) => {
+        const k = Math.max(0, Math.min(1, (y - y0) / Math.max(0.1, yTip - 2.4 - y0)));
+        const w = 0.8 + 1.0 * k;
+        return op ? Math.max(0.2, Math.min(w, op.gap(y) - 0.15)) : w;
+      };
+      let blade: string;
+      if (closed || op) {
+        const L: SP[] = [];
+        const R: SP[] = [];
+        const n = 8;
+        for (let i = 0; i <= n; i++) {
+          const y = y0 + ((yEnd - y0) * i) / n;
+          L.push([cx - half(y) + 0.05, y]);
+          R.push([cx + half(y) + 0.05, y]);
+        }
+        blade = smoothPath([...L, ...(closed ? [] : [[cx + 0.1, yEnd + 2.2, 0] as SP]), ...R.reverse()]);
+      } else blade = smoothPath([[cx - 0.75, kTop + 1.8], [cx + 0.85, kTop + 1.8], [cx + 1.9, yEnd - 2.4], [cx + 0.1, yEnd, 0], [cx - 1.7, yEnd - 2.4]]);
       ctx.push(blade, '#0A0610', { o: 0.3, ...(lite ? {} : { b: 0.5 }) });
       ctx.push(blade, col, { gf: { t: 'l', x1: cx - 2, y1: 0, x2: cx + 2, y2: 0, s: [[0, t.light], [0.4, t.base], [1, t.shade]] } });
       if (!lite) {
@@ -182,7 +230,8 @@ export function drawNeck(ctx0: LayerCtx): void {
       break;
     }
     case 'bowtie':
-      bowTie(ctx, cx, topDef(cfg).neck === 'collar' || cfg.top === 'tux' ? an.collarY - 1.6 : an.collarY - 0.6, '#16161E');
+      // maior que a do smoking (era um pontinho na grade e 2 px no mapa) e, em roupa escura, com borda clara de cetim
+      bowTie(ctx, cx, topDef(cfg).neck === 'collar' || cfg.top === 'tux' ? an.collarY - 1.6 : an.collarY - 0.6, '#16161E', lite ? 1.9 : 1.6, lum(ctx.col.top) < 0.35 ? '#B8B4C8' : undefined);
       break;
     case 'silk': {
       // lenço de seda amarrado de lado: faixa no pescoço + nó e duas pontas, bolinhas douradas

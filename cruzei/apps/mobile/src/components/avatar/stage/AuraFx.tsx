@@ -1,15 +1,17 @@
 // Aura do palco (elementos Skia dentro do Canvas do AvatarStage). Dono: efeitos.
 //
 // As 22 auras moram em fx-auras.ts (desenho contra a caneta de fx-core). Aqui só a ligação com o palco: uma SkPicture
-// gravada por quadro NA THREAD DE UI (useDerivedValue lendo o relógio `t`), sem re-render do React.
+// gravada NA THREAD DE UI (useDerivedValue lendo o relógio `t`), sem re-render do React. Parada (still), grava uma vez;
+// viva, regrava a cada passo do relógio — o palco só avança `t` nas janelas curtas e a FX_FPS.
 //
 // Contrato:
 //   - aura = id do slot `aura` ('none' = nada); tint = cor escolhida (null = cor original do efeito, 'a_auto');
 //   - level = intensidade: partículas no máximo AURA_PARTICLES[level] (suave 12 / média 20 / intensa 32);
 //   - flag = bandeira da config (aura 'pride' usa as cores dela);
 //   - box = canvas inteiro {w,h} (a aura transborda a caixa do avatar); body = caixa do avatar no canvas;
-//   - t = relógio em segundos (SharedValue, avança na thread de UI); still = movimento reduzido/pausado: quadro parado
-//     escolhido a dedo por aura (AuraSpec.still), nada anima;
+//   - t = segundos desde o começo da janela viva (SharedValue, avança na thread de UI; o desenho parte do quadro parado,
+//     spec.still + t, então começar a animar não dá salto); still = parado: quadro escolhido a dedo por aura
+//     (AuraSpec.still), nada anima;
 //   - layer: 'back' atrás do avatar, 'front' na frente (poucas partículas, sempre longe do rosto);
 //   - figure (opcional): medidas da figura da config (auraFigure) — a aura acompanha a estatura e a cabeça de cada corpo;
 //     sem ela vale o corpo médio. bust (opcional): o palco está no modo busto (padrão: deduz pela caixa quadrada).
@@ -62,7 +64,7 @@ export function AuraFx({ aura, tint, level, flag, box, body, t, still, layer, fi
     if (!spec) return null;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, w, h));
-    drawAura(skiaPen(canvas, shapes, false), spec, frame, still ? spec.still : t.value, front);
+    drawAura(skiaPen(canvas, shapes, false), spec, frame, still ? spec.still : spec.still + t.value, front);
     return rec.finishRecordingAsPicture();
   }, [spec, frame, still, front, w, h]);
   if (!spec) return null;

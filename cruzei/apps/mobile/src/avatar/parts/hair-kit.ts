@@ -12,7 +12,7 @@
 
 import { CROWN_DY, headAnchors, sampleSpline, smoothPath, taperPath, torsoProfile, type Anatomy, type HeadAnchors, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
-import { isLite, lodCtx, lum, mix, saturate } from '../shading';
+import { isLite, isTiny, lodCtx, lum, mix, saturate } from '../shading';
 import type { AvatarGradient, AvatarLayer, Pt } from '../types';
 
 import { hatModeOf, type HatMode } from './hat-modes';
@@ -92,6 +92,28 @@ export function hairTones(c: string): HairTones {
   return out;
 }
 
+/**
+ * tons no 'lite' (miniatura, mapa): cabelo quase preto (preto, castanho-escuro) some no fundo escuro do círculo e do
+ * mapa — medido no S23, o topo do black power (29,29,39) contra o círculo (26,26,46). A base clareia pra um grafite frio
+ * e o brilho fica mais claro e azulado; a silhueta volta a ler sem mudar a cor percebida.
+ */
+const liteCache = new Map<string, HairTones>();
+function liteTones(c: string): HairTones {
+  const t = hairTones(c);
+  if (lum(c) >= 0.03) return t;
+  const hit = liteCache.get(c);
+  if (hit) return hit;
+  // preto neutro clareia pra grafite; castanho-escuro clareia no próprio matiz (quente) — não vira cinza. Metade do
+  // clareado de antes (0,2 azulado): o afro preto ficava empoeirado/grisalho no mapa e nas listas e mais escuro no
+  // Perfil; quem segura a leitura no fundo escuro é o brilho (sheen), que fica
+  const neutral = chroma(c) < 0.06;
+  const base = neutral ? mix(c, '#6A6E7A', 0.1) : mix(c, '#B08A6E', 0.08);
+  const sheen = neutral ? mix(c, '#D4DEFF', 0.42) : mix(c, '#FFE6C4', 0.45);
+  const out: HairTones = { ...t, base, tip: mix(base, '#FFFFFF', 0.08), sheen, lock: mix(base, sheen, 0.4), root: mix(base, '#0A0608', 0.3) };
+  liteCache.set(c, out);
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // referencial
 // ---------------------------------------------------------------------------------------------------------------
@@ -102,6 +124,8 @@ export interface HairKit {
   an: Anatomy;
   ha: HeadAnchors;
   lite: boolean;
+  /** figura minúscula (mapa): sem sombra entre camadas de mecha, microcachos nem sombra no corpo (shading.isTiny) */
+  tiny: boolean;
   t: HairTones;
   /** cabeça unitária → avatar */
   H: (x: number, y: number, sm?: number) => SP;
@@ -155,8 +179,8 @@ function personSeed(ctx: LayerCtx): number {
   return ((h >>> 8) & 0xffff) / 0xffff;
 }
 
-export function makeKit(ctxIn: LayerCtx, color?: string): HairKit {
-  const ctx = lodCtx(ctxIn);
+export function makeKit(ctxIn: LayerCtx, color?: string, o: { bustBlur?: boolean } = {}): HairKit {
+  const ctx = lodCtx(ctxIn, o);
   const an = ctx.an;
   const { cx, cy, s } = an.head;
   const ha = headAnchors(an);
@@ -172,12 +196,14 @@ export function makeKit(ctxIn: LayerCtx, color?: string): HairKit {
   const earK = 0.9 * (1 + age * 0.07);
   const mode = hatModeOf(ctx.cfg.hat);
   const flat = mode === 'cap' || mode === 'brim';
+  const lite = isLite(ctx);
   return {
     ctx,
     an,
     ha,
-    lite: isLite(ctx),
-    t: hairTones(color ?? ctx.col.hair),
+    lite,
+    tiny: isTiny(ctx),
+    t: lite ? liteTones(color ?? ctx.col.hair) : hairTones(color ?? ctx.col.hair),
     H,
     U,
     s,
@@ -379,7 +405,7 @@ export function foreheadShadow(k: HairKit, edge: readonly SP[], o = 0.26, w = 1.
 
 /** sombra do cabelo no pescoço e na roupa (recortada no corpo) */
 export function castOnBody(k: HairKit, d: string, o = 0.28, b = 0.8): void {
-  if (!d) return;
+  if (!d || k.tiny) return;
   k.ctx.push(d, '#0A0408', { o, ...(k.lite ? {} : { b }), cp: bodyClip(k) });
 }
 
@@ -443,7 +469,8 @@ export function paintLocks(k: HairKit, locks: readonly Lock[], o: LockOpts = {})
   for (const z of zs) {
     const list = locks.filter((l) => l.z === z);
     const d = list.map((l) => lockD(l, n, lite ? 1.05 : 1)).join('');
-    if (below) {
+    // (figura minúscula: a sombra deslocada de cada camada virava traço escuro duro — no topete, desenhos de letra)
+    if (below && !k.tiny) {
       const sh = list.map((l) => lockD(l, Math.max(6, n - 3), 1, 0.38, 0.55)).join('');
       ctx.push(sh, t.pale ? t.deep : '#07030A', { o: (o.shadowO ?? 0.34) * (t.pale ? 0.7 : 1), ...(lite ? {} : { b: 0.45 }), cp: below });
     }
@@ -528,9 +555,10 @@ export function ringSheen(
 /** fios soltos (por FORA da massa, sobre o fundo/pele): finos, curvos, seguem a forma — nunca antena */
 export function flyaways(k: HairKit, list: readonly SP[][], o = 0.42, w = 0.22): void {
   if (k.lite || !list.length) return;
-  const d = list.map((sp) => taperPath(sp, [0, w, w * 0.85, 0], { n: 7 })).join('');
-  // no tom do cabelo e mais opaco: fino e translúcido sobre fundo escuro, o fio virava um arame escuro solto
-  k.ctx.push(d, k.t.base, { o: Math.min(1, o * 1.7) });
+  const d = list.map((sp) => taperPath(sp, [w * 0.6, w, w * 0.85, 0], { n: 7 })).join('');
+  // tom do cabelo um passo mais CLARO e quase opaco, com a raiz grossa encostada na massa: translúcido sobre o fundo
+  // escuro o fio do loiro escurecia e lia arranhão/arame solto
+  k.ctx.push(d, mix(k.t.base, k.t.sheen, 0.25), { o: Math.min(0.9, 0.5 + o) });
 }
 
 /** fios escuros/claros misturados (grisalho, sal e pimenta) ao longo de eixos, recortados na massa */
@@ -617,7 +645,7 @@ export function paintRopes(k: HairKit, ropes: readonly Rope[], kind: 'braid' | '
   for (const z of zs) {
     const list = ropes.filter((r) => (r.z ?? 0) === z);
     const d = list.map((r) => taperPath(r.spine, ropeWidths(r), { n: lite ? 8 : 12, round: true })).join('');
-    if (below) ctx.push(list.map((r) => taperPath(shift(r.spine, 0.35, 0.5), ropeWidths(r), { n: 8, round: true })).join(''), '#07030A', { o: o.shadowO ?? 0.34, ...(lite ? {} : { b: 0.4 }), cp: below });
+    if (below && !k.tiny) ctx.push(list.map((r) => taperPath(shift(r.spine, 0.35, 0.5), ropeWidths(r), { n: 8, round: true })).join(''), '#07030A', { o: o.shadowO ?? 0.34, ...(lite ? {} : { b: 0.4 }), cp: below });
     const tone = mix(t.base, t.root, (zMax - z) * 0.18);
     ctx.push(d, tone, { gf: fallGrad(k, y0, y1, tone, { tip: 0.3 }) });
     // gomos: traços (stroke) curtos em vez de formas afiladas — a textura é densa e o path precisa ser leve
@@ -630,16 +658,20 @@ export function paintRopes(k: HairKit, ropes: readonly Rope[], kind: 'braid' | '
     for (const r of list) {
       wSum += r.w;
       const pts = sampleSpline(r.spine, 40);
-      let len = 0;
-      for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      // comprimento acumulado: os gomos são espaçados pelo COMPRIMENTO (pelo índice da amostra, o trecho curto da dobra
+      // no ombro recebia tantos gomos quanto um longo e virava uma faixa clara atravessando a trança)
+      const cum = [0];
+      for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+      const len = cum[cum.length - 1];
       const step = (o.lobe ?? (kind === 'loc' ? 1.5 : kind === 'twist' ? 1.05 : 0.95)) * Math.max(0.7, r.w / 1.6) * (lite ? 1.4 : 1);
       const nSeg = Math.max(2, Math.floor(len / step));
       const at = (u: number): { p: Pt; nx: number; ny: number; tx: number; ty: number } => {
-        const f = Math.max(0, Math.min(pts.length - 1.001, u * (pts.length - 1)));
-        const i = Math.floor(f);
+        const target = Math.max(0, Math.min(1, u)) * len;
+        let i = 0;
+        while (i < pts.length - 2 && cum[i + 1] < target) i++;
         const a = pts[i];
         const b = pts[i + 1];
-        const fr = f - i;
+        const fr = (target - cum[i]) / (cum[i + 1] - cum[i] || 1);
         let tx = b[0] - a[0];
         let ty = b[1] - a[1];
         const L = Math.hypot(tx, ty) || 1;
@@ -808,13 +840,15 @@ export function curlEdge(k: HairKit, pts: readonly SP[], o: { r0?: number; r1?: 
     }
     cs += taperPath(pp, [0, rad * 0.5, rad * 0.55, rad * 0.3, 0], { n: 6 });
     if (!lite && r() < (o.frizz ?? 0.6)) {
-      const L = 0.8 + r() * 0.9;
+      // frizz: começa DENTRO da massa (meia unidade pra dentro) e sai curto — nada de cachinho boiando separado
+      const L = 0.6 + r() * 0.6;
       const a = out + (r() - 0.5) * 0.9;
-      fz += taperPath([[p[0], p[1]], [p[0] + Math.cos(a) * L * 0.5 + 0.2, p[1] + Math.sin(a) * L * 0.5], [p[0] + Math.cos(a + 0.4) * L, p[1] + Math.sin(a + 0.4) * L]], [0.16, 0.13, 0]);
+      const p0: SP = [p[0] - Math.cos(out) * 0.5, p[1] - Math.sin(out) * 0.5];
+      fz += taperPath([p0, [p0[0] + Math.cos(a) * L * 0.5 + 0.2, p0[1] + Math.sin(a) * L * 0.5], [p0[0] + Math.cos(a + 0.4) * L, p0[1] + Math.sin(a + 0.4) * L]], [0.2, 0.14, 0]);
     }
   }
   ctx.push(cs, o.tone ?? t.base, { gf: { t: 'l', x1: 0, y1: k.H(0, k.CR)[1], x2: 0, y2: k.H(0, k.jawY + 4)[1], s: [[0, mix(o.tone ?? t.base, t.lock, 0.35)], [1, mix(o.tone ?? t.base, t.root, 0.4)]] } });
-  if (fz) ctx.push(fz, t.lock, { o: 0.45 });
+  if (fz) ctx.push(fz, o.tone ?? t.base, { o: 0.8 });
 }
 
 // ---------------------------------------------------------------------------------------------------------------

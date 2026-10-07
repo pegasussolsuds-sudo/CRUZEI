@@ -9,13 +9,14 @@
 
 import type { AvatarConfig } from '@cruzei/shared-types';
 
-import { hashUnit, legAxis, limbWidthAt, shinPath, smoothPath, taperPath, thighPath, torsoPath, torsoXAt, type Side, type SP } from '../anatomy';
+import { footBox, hashUnit, legAxis, limbWidthAt, shinPath, smoothPath, taperPath, thighPath, torsoPath, torsoXAt, type Side, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { ellipse } from '../geometry';
-import { blob, creases, cylGradient, isLite, lodCtx, lum, mix, plaid, speckle, starPath, weave } from '../shading';
+import { blob, creases, cylGradient, isLite, lodCtx, lum, mix, speckle, starPath, weave } from '../shading';
 import type { AvatarGradient, AvatarStop, Pt } from '../types';
 
 import { tonesOf } from './body';
+import { outerDef } from './clothes-kit';
 import { SIDES, fabric, legG, lowerKind, outSign, pantsTopY, rng, shinG, threadOf, waistShown, type Tones } from './lower-common';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -55,6 +56,18 @@ const SHORT_STYLES: Record<string, { to: number; ease: number; flare: number }> 
 
 /** a calça vai pra dentro do cano (bota alta) em vez de quebrar a barra por cima do calçado: t da boca do cano na canela */
 export const TALL_BOOTS: Readonly<Record<string, number>> = { combat: 0.6, texan: 0.56, hover: 0.6, skates: 0.78 };
+/**
+ * cano médio (cano alto, bota): a calça reta/justa franze por cima do cano e o colarinho aparece embaixo da barra (senão
+ * o cano some e o item fica igual ao tênis/sapato); a pantalona continua cobrindo o calçado
+ */
+export const MID_BOOTS: Readonly<Record<string, number>> = { hightops: 0.79, boots: 0.8 };
+
+/** t da boca do cano em que a calça entra (franzida por cima), ou undefined (a barra quebra por cima do calçado) */
+export function shaftT(ctx: LayerCtx): number | undefined {
+  const k = lowerKind(ctx.cfg);
+  if (k === 'leggings' || !PANT_STYLES[k]) return undefined;
+  return TALL_BOOTS[ctx.cfg.shoes] ?? (k !== 'wide' ? MID_BOOTS[ctx.cfg.shoes] : undefined);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // helpers
@@ -231,6 +244,7 @@ function trousers(ctx: LayerCtx, kind: string): void {
   const st = PANT_STYLES[kind] ?? PANT_STYLES.jeans;
   const c = ctx.col.bottom;
   const t = matTones(c, st.mat);
+  if (wideOn(ctx, kind)) return wideTrousers(ctx, st, t);
   const E = st.ease + (lite ? 0.2 : 0);
   const Es = E + st.flareT * 0.7;
   for (const s of SIDES) {
@@ -248,6 +262,227 @@ function trousers(ctx: LayerCtx, kind: string): void {
   ctx.withGroup('body', () => pantHip(ctx, kind, st, t, E));
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// pantalona em pé: UM contorno por perna (quadril → barra) e UM gradiente; o joelho só divide o contorno em dois grupos
+// (legX/shinX) com sobreposição e um disco na junta (some em repouso, cobre a fresta ao dobrar). Folga reta da coxa ao
+// joelho e alargamento só abaixo dele; o lado de fora cai em linha reta do quadril à barra (nada de degrau no quadril
+// largo). Os detalhes são os MESMOS traços nas duas metades e na barra por cima do calçado (cada um recortado no seu
+// pedaço), então nenhuma emenda aparece. Sentado ou com bota alta: o desenho antigo (pantThigh/pantShin).
+// ---------------------------------------------------------------------------------------------------------------
+
+/** a pantalona usa o contorno contínuo? */
+const wideOn = (ctx: LayerCtx, kind: string): boolean => kind === 'wide' && !ctx.an.seated && !(ctx.cfg.shoes in TALL_BOOTS);
+
+interface WideGeo {
+  s: Side;
+  E: number;
+  /** ponto da borda ('l'/'r' da tela) em u: 0..1 coxa, 1..2 canela; f = fração da largura (0 = borda esquerda) */
+  at: (u: number, f: number) => Pt;
+  /**
+   * contorno fechado do trecho u0..u1 (u0 = 0 inclui o topo no quadril; u1 = 2 inclui a barra curva); `clampIn` limita
+   * o lado de dentro a esse x (a barra redesenhada por cima do calçado não invade a outra perna)
+   */
+  outline: (u0: number, u1: number, clampIn?: number) => string;
+  /** borda de fora (com a queda reta do quadril) em y */
+  outerX: (y: number) => number;
+  grad: AvatarGradient;
+  knee: Pt;
+  kneeR: number;
+  /** barra: centro, meia-largura de cada lado, altura no meio e queda nas laterais */
+  hem: { c: Pt; wl: number; wr: number; yC: number; drop: number };
+  yHip: number;
+}
+
+function wideGeo(ctx: LayerCtx, s: Side, t: Tones): WideGeo {
+  const { an } = ctx;
+  const E = 1.4 + (isLite(ctx) ? 0.2 : 0);
+  const out: Which = outW(s);
+  const sg = outSign(s);
+  const q0 = limbWidthAt(an, 'thigh', s, 0);
+  const qK = limbWidthAt(an, 'thigh', s, 1);
+  const W0 = { l: q0.l + E, r: q0.r + E };
+  const WK = { l: qK.l + E + 0.6 * (q0.l - qK.l), r: qK.r + E + 0.6 * (q0.r - qK.r) };
+  const WH = { l: WK.l + (out === 'l' ? 3.0 : 1.8), r: WK.r + (out === 'r' ? 3.0 : 1.8) };
+  const half = (u: number, w: Which) => (u <= 1 ? W0[w] + (WK[w] - W0[w]) * u : WK[w] + (WH[w] - WK[w]) * Math.pow(u - 1, 1.5));
+  const axis = (u: number) => (u <= 1 ? limbWidthAt(an, 'thigh', s, u) : limbWidthAt(an, 'shin', s, u - 1));
+  const raw = (u: number, w: Which): Pt => {
+    const q = axis(u);
+    let lx = -q.dir[1];
+    let ly = q.dir[0];
+    if (lx > 0) {
+      lx = -lx;
+      ly = -ly;
+    }
+    const h = half(u, w);
+    const k = w === 'l' ? 1 : -1;
+    return [q.at[0] + lx * h * k, q.at[1] + ly * h * k];
+  };
+  // barra: desce até perto da sola (cobre o pé, só o bico aparece), sobe um pouco no meio (quebra em cima do peito do pé)
+  const ank = limbWidthAt(an, 'shin', s, 1);
+  const yC = an.foot.soleY - 2.2;
+  const drop = 1.6;
+  const kx = (yC + drop - ank.at[1]) / (ank.dir[1] || 1);
+  const hemC: Pt = [ank.at[0] + ank.dir[0] * kx, yC + drop];
+  // o canto de dentro da barra cai menos (as duas pernas se encostam: a ponta de trás não espia embaixo da outra)
+  const dropOf = (w: Which) => (w === out ? drop : drop * 0.4);
+  const cornerOf = (w: Which): Pt => {
+    const p = raw(2, w);
+    const k = (yC + dropOf(w) - ank.at[1]) / (ank.dir[1] || 1);
+    return [p[0] + ank.dir[0] * k, yC + dropOf(w)];
+  };
+  // queda reta do lado de fora: do quadril (largura do tronco com folga) até a quina da barra
+  const yHip = an.hipY - 0.5;
+  const H: Pt = [torsoXAt(an, s, yHip, E), yHip];
+  const C = cornerOf(out);
+  const lineX = (y: number) => H[0] + ((C[0] - H[0]) * (y - H[1])) / (C[1] - H[1] || 1);
+  const edge = (u: number, w: Which): Pt => {
+    const p = raw(u, w);
+    if (w !== out || p[1] <= yHip) return p;
+    const lx = lineX(p[1]);
+    return [sg > 0 ? Math.max(p[0], lx) : Math.min(p[0], lx), p[1]];
+  };
+  const at = (u: number, f: number): Pt => {
+    const a = edge(u, 'l');
+    const b = edge(u, 'r');
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  };
+  const STEP = 0.125;
+  const us = (u0: number, u1: number): number[] => {
+    const r = [u0];
+    for (let u = Math.ceil(u0 / STEP + 1e-6) * STEP; u < u1 - 1e-6; u += STEP) r.push(u);
+    r.push(u1);
+    return r;
+  };
+  const sideL = (u0: number, u1: number, w: Which): SP[] => {
+    const pts = us(u0, u1).map((u) => edge(u, w) as SP);
+    // topo: o lado de fora sai da lateral do quadril (um pouco por dentro do quadril da calça, que fica por cima)
+    if (u0 === 0 && w === out) return [[torsoXAt(an, s, yHip - 2.5, underHemEase(ctx, yHip - 2.5, E - 0.4)), yHip - 2.5, 0], [torsoXAt(an, s, yHip, underHemEase(ctx, yHip, E - 0.3)), yHip], ...pts.filter((p) => p[1] > yHip + 0.6)];
+    return pts;
+  };
+  const hw = { l: WH.l, r: WH.r };
+  const corner = (p: SP): SP => [p[0], p[1], 0];
+  const outline = (u0: number, u1: number, clampIn?: number): string => {
+    const L = sideL(u0, u1, 'l');
+    const R = sideL(u0, u1, 'r').reverse();
+    const inn = out === 'l' ? R : L;
+    if (clampIn != null) for (let i = 0; i < inn.length; i++) inn[i] = [sg < 0 ? Math.min(inn[i][0], clampIn) : Math.max(inn[i][0], clampIn), inn[i][1]];
+    if (u0 > 0) {
+      L[0] = corner(L[0]);
+      R[R.length - 1] = corner(R[R.length - 1]);
+    } else if (out === 'l') {
+      // topo do lado de dentro: sobe até o gancho (fica por baixo do quadril da calça)
+      const p = R[R.length - 1];
+      R.push([p[0], Math.min(p[1], yHip) - 2.5, 0]);
+    } else {
+      const p = L[0];
+      L.unshift([p[0], Math.min(p[1], yHip) - 2.5, 0]);
+    }
+    const mid: SP[] = [];
+    if (u1 >= 2) {
+      const cl = cornerOf('l');
+      const cr = cornerOf('r');
+      mid.push([cl[0], cl[1], 0.5], [hemC[0] - hw.l * 0.7, yC + dropOf('l') * 0.52], [hemC[0] - hw.l * 0.25, yC + 0.12], [hemC[0] + hw.r * 0.25, yC + 0.12], [hemC[0] + hw.r * 0.7, yC + dropOf('r') * 0.52], [cr[0], cr[1], 0.5]);
+      if (clampIn != null) {
+        // corta a barra no x do limite, na altura que a curva tem ali (sem aba pendurada)
+        const yAt = (x: number): number => {
+          for (let i = 1; i < mid.length; i++) {
+            const a = mid[i - 1];
+            const b = mid[i];
+            if ((x - a[0]) * (x - b[0]) <= 0) return a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0] || 1);
+          }
+          return yC + 0.12;
+        };
+        const yc = yAt(clampIn);
+        const keep = mid.filter((p) => (p[0] - clampIn) * sg >= 0);
+        if (sg < 0) mid.splice(0, mid.length, ...keep, [clampIn, yc, 0]);
+        else mid.splice(0, mid.length, [clampIn, yc, 0], ...keep);
+      }
+    } else {
+      L[L.length - 1] = corner(L[L.length - 1]);
+      R[0] = corner(R[0]);
+    }
+    return smoothPath([...L, ...mid, ...R], true);
+  };
+  const outerX = (y: number): number => {
+    const pts = sideL(0, 1.2, out);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (y <= b[1]) return a[0] + ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1] || 1);
+    }
+    return pts[pts.length - 1][0];
+  };
+  return {
+    s,
+    E,
+    at,
+    outline,
+    outerX,
+    grad: legGrad(ctx, s, E + 2.0, legStops(t, 'crepe')),
+    knee: limbWidthAt(an, 'thigh', s, 1).at,
+    kneeR: Math.min(WK.l, WK.r) - 0.2,
+    hem: { c: hemC, wl: hw.l, wr: hw.r, yC, drop },
+    yHip,
+  };
+}
+
+/** detalhes da pantalona (mesmos traços em todo pedaço; cada pedaço recorta no seu contorno `d`) */
+function wideDetails(ctx: LayerCtx, g: WideGeo, t: Tones, d: string, part: 'up' | 'lo'): void {
+  const lite = isLite(ctx);
+  const c = ctx.col.bottom;
+  const path = (u0: number, u1: number, f: (u: number) => number, n: number): SP[] => {
+    const r: SP[] = [];
+    for (let i = 0; i <= n; i++) {
+      const u = u0 + ((u1 - u0) * i) / n;
+      r.push(g.at(u, f(u)));
+    }
+    return r;
+  };
+  if (part === 'up') {
+    // luz larga na frente da coxa (do lado da luz) e a dobra macia que nasce do gancho
+    const m = g.at(0.55, 0.3);
+    const w = Math.abs(g.at(0.55, 1)[0] - g.at(0.55, 0)[0]);
+    ctx.push(blob(m[0], m[1], w * 0.16, 7, 0.04), t.light, { o: 0.3, ...(lite ? {} : { b: 1.4 }), cp: d });
+    if (!lite) {
+      const inner = g.s === 'L' ? 0.82 : 0.18;
+      creases(ctx, [{ spine: path(0.22, 0.6, (u) => inner + (g.s === 'L' ? -1 : 1) * (u - 0.22) * 0.25, 2), w: 0.6 }], c, { o: 0.3, cp: d });
+    }
+  } else {
+    // pregas longas que caem do joelho até a barra (abrem com o alargamento)
+    const fs = lite ? [0.32, 0.7] : [0.26, 0.52, 0.78];
+    creases(ctx, fs.map((f, i) => ({ spine: path(1.18 + i * 0.04, 2, (u) => f + (f - 0.5) * (u - 1.18) * 0.18, 3), w: 0.85 })), c, { o: 0.32, cp: d });
+    // barra: dobra logo acima e a sombra fina da bainha
+    const { c: hc, wl, wr, yC, drop } = g.hem;
+    creases(ctx, [{ spine: [[hc[0] - wl * 0.8, yC - 1.4], [hc[0] + 0.3, yC - 2.0], [hc[0] + wr * 0.85, yC - 1.3]], w: 0.6 }], c, { o: 0.3, cp: d });
+    ctx.push(taperPath([[hc[0] - wl, yC + drop * 0.76], [hc[0] - wl * 0.5, yC + 0.15], [hc[0], yC - 0.1], [hc[0] + wr * 0.5, yC + 0.15], [hc[0] + wr, yC + drop * 0.76]], [0.5, 0.7, 0.75, 0.7, 0.5]), t.deep, { o: 0.35, cp: d });
+  }
+  // vinco passado (frente da perna, quadril → barra) e costura lateral: um traço só pra perna inteira
+  const crease = path(0.12, 1.97, () => 0.47, 10);
+  ctx.stroke(smoothPath(crease, false), t.light, lite ? 0.32 : 0.28, { o: 0.7, cp: d });
+  if (!lite) ctx.stroke(smoothPath(crease.map((p) => [p[0] + 0.34, p[1]] as SP), false), t.shade, 0.3, { o: 0.45, b: 0.15, cp: d });
+  const seamF = g.s === 'L' ? 0.06 : 0.94;
+  ctx.stroke(smoothPath(path(0.1, 1.97, () => seamF, 10), false), t.deep, 0.22, { o: 0.4, cp: d });
+}
+
+function wideTrousers(ctx: LayerCtx, st: PantStyle, t: Tones): void {
+  const c = ctx.col.bottom;
+  for (const s of SIDES) {
+    const g = wideGeo(ctx, s, t);
+    ctx.withGroup(legG(s), () => {
+      ctx.push(ellipse(g.knee[0], g.knee[1], g.kneeR, g.kneeR), c, { gf: g.grad });
+      const up = g.outline(0, 1.1);
+      ctx.push(up, c, { gf: g.grad });
+      wideDetails(ctx, g, t, up, 'up');
+    });
+    ctx.withGroup(shinG(s), () => {
+      const lo = g.outline(0.9, 2);
+      ctx.push(lo, c, { gf: g.grad });
+      wideDetails(ctx, g, t, lo, 'lo');
+    });
+  }
+  ctx.withGroup('body', () => pantHip(ctx, 'wide', st, t, wideGeo(ctx, 'L', t).E));
+}
+
 /** coxa da calça (grupo legX) */
 function pantThigh(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones, E: number, grad: AvatarGradient): void {
   const { an } = ctx;
@@ -263,16 +498,22 @@ function pantThigh(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones
   hipBridge(ctx, s, E, st.flareT, c, grad);
   // lado de dentro (encosta na outra coxa) mais escuro
   const ins = limbWidthAt(an, 'thigh', s, 0.25);
-  ctx.push(blob(ins.at[0] - sg * (s === 'L' ? ins.r : ins.l) * 0.7, ins.at[1] + 2, 1.5, an.seated ? 3 : 6.5), t.deep, { o: st.mat === 'lycra' ? 0.36 : 0.3, b: 1.2, cp: d });
+  if (!lite) ctx.push(blob(ins.at[0] - sg * (s === 'L' ? ins.r : ins.l) * 0.7, ins.at[1] + 2, 1.5, an.seated ? 3 : 6.5), t.deep, { o: st.mat === 'lycra' ? 0.36 : 0.3, b: 1.2, cp: d });
 
   if (!an.seated) {
-    const m = limbWidthAt(an, 'thigh', s, 0.48);
+    const m = limbWidthAt(an, 'thigh', s, 0.46);
     const mw = (s === 'L' ? m.l : m.r) * 0.6;
-    if (st.mat === 'denim') ctx.push(blob(m.at[0] - 0.4, m.at[1], mw, 7.5, 0.04), mix(c, '#E8F0FF', kind === 'ripped' ? 0.42 : 0.3), { o: kind === 'ripped' ? 0.55 : 0.42, b: 1.6, cp: d });
+    // a luz da coxa termina (com o desfoque) ANTES da tampa redonda da canela, que passa por cima perto do joelho —
+    // senão a canela corta a luz num arco ("joelheira")
+    const capTop = kn[1] - (an.spec.knee + E) - 2.2;
+    const ry = (want: number, y: number) => Math.max(3, Math.min(want, capTop - y));
+    const my = m.at[1] - 1.2;
+    // jeans: desbotado claro e largo na frente da coxa (o sinal de denim que se lê na grade de 150 px; a calça é lisa)
+    if (st.mat === 'denim') ctx.push(blob(m.at[0] - 0.4, my, mw * 1.15, ry(7.2, my), 0.04), mix(c, '#E8F0FF', kind === 'ripped' ? 0.46 : 0.38), { o: kind === 'ripped' ? 0.62 : 0.55, b: 1.6, cp: d });
     else if (st.mat === 'lycra') sheen(ctx, 'thigh', s, d, t, 0.1, 0.92, 0.42);
     else if (st.mat === 'metal') metalStreaks(ctx, 'thigh', s, d, t);
-    else if (st.mat === 'knit') ctx.push(blob(m.at[0] - 0.6, m.at[1] - 1, mw * 0.9, 6.5, 0.04), t.light, { o: 0.32, b: 1.6, cp: d });
-    else ctx.push(blob(m.at[0] - 0.7, m.at[1] - 1, mw * 0.7, 7, 0.04), t.light, { o: st.mat === 'crepe' ? 0.34 : 0.26, b: 1.4, cp: d });
+    else if (st.mat === 'knit') ctx.push(blob(m.at[0] - 0.6, my, mw * 0.9, ry(6.5, my), 0.04), t.light, { o: 0.32, b: 1.6, cp: d });
+    else ctx.push(blob(m.at[0] - 0.7, my, mw * 0.7, ry(7, my), 0.04), t.light, { o: st.mat === 'crepe' ? 0.34 : 0.26, b: 1.4, cp: d });
   }
 
   // trama (sarja no jeans; sarja leve na calça e na cargo), só no completo
@@ -295,12 +536,14 @@ function pantThigh(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones
     ctx.push(wh, mix(c, '#E8F0FF', 0.3), { o: 0.4, b: 0.25, cp: d });
   }
   // vinco da alfaiataria (frente da perna, do quadril ao joelho): crista de luz + sombra fina do lado direito
-  if (kind === 'tailored' || kind === 'wide') pressCrease(ctx, 'thigh', s, d, t, an.seated ? 0.35 : 0.0, 1.0);
+  if (kind === 'tailored' || kind === 'wide' || kind === 'pants') pressCrease(ctx, 'thigh', s, d, t, an.seated ? 0.35 : 0.0, 1.0);
   // costura lateral (lado de fora): linha fina e lisa + pesponto cor de linha bem leve
   if (st.mat !== 'lycra' || !lite) {
     const pts: SP[] = [0.06, 0.4, 0.8, 1.0].map((tt) => edgePt(ctx, 'thigh', s, tt, outW(s), E + 0.3 * tt - 0.8));
-    ctx.stroke(smoothPath(pts, false), t.deep, 0.22, { o: st.mat === 'metal' ? 0.25 : 0.4, cp: d });
-    if (!lite && (st.mat === 'denim' || st.mat === 'twill')) ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.32, p[1]] as SP), false), threadOf(c), 0.14, { o: 0.35, cp: d });
+    // lite: no jeans só o pesponto caramelo (a linha escura da costura não se lê nesse tamanho)
+    if (!lite || st.mat !== 'denim') ctx.stroke(smoothPath(pts, false), t.deep, 0.22, { o: st.mat === 'metal' ? 0.25 : 0.4, cp: d });
+    if (st.mat === 'denim') ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.36, p[1]] as SP), false), threadOf(c), lite ? 0.38 : 0.28, { o: lite ? 0.5 : 0.62, cp: d });
+    else if (!lite && st.mat === 'twill') ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.32, p[1]] as SP), false), threadOf(c), 0.14, { o: 0.35, cp: d });
   }
   if (kind === 'cargo') cargoPocket(ctx, s, d, t, E);
   if (kind === 'joggers' && !lite) ctx.stroke(smoothPath([0.04, 0.5, 1].map((tt) => edgePt(ctx, 'thigh', s, tt, outW(s), E - 0.55)), false), t.light, 0.42, { o: 0.4, cp: d });
@@ -332,15 +575,15 @@ function pantShin(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones,
   const sg = outSign(s);
   const endExt = an.seated ? Math.min(st.endExt, 0.6) - 0.8 : st.endExt;
   // bota alta: a perna da calça termina logo abaixo da boca do cano (senão a calça larga espia do lado do cano)
-  const shaft = kind === 'leggings' ? undefined : TALL_BOOTS[ctx.cfg.shoes];
+  const shaft = shaftT(ctx);
   const d = shinPath(an, s, { ease: Es, flare: st.flareS, endExt, to: shaft != null ? shaft + 0.08 : undefined });
   ctx.push(d, c, { gf: grad });
   const a = limbWidthAt(an, 'shin', s, 0);
   const b = limbWidthAt(an, 'shin', s, 1);
   if (an.seated) ctx.push(blob(a.at[0] + 0.3, a.at[1] + 3.0, (s === 'L' ? a.l : a.r) * 1.2, 2.2), t.deep, { o: 0.42, b: 0.9, cp: d });
   else if (st.mat === 'denim') {
-    const wash = mix(c, '#E8F0FF', 0.3);
-    ctx.push(blob(a.at[0] - 0.5, a.at[1] + 1.0, (s === 'L' ? a.l : a.r) * 0.55, 3.2), wash, { o: 0.28, b: 1.2, cp: d });
+    const wash = mix(c, '#E8F0FF', 0.36);
+    ctx.push(blob(a.at[0] - 0.5, a.at[1] + 2.4, (s === 'L' ? a.l : a.r) * 0.72, 3.4), wash, { o: 0.42, b: 1.2, cp: d });
     if (!lite) {
       const kw = (s === 'L' ? a.l : a.r) * 0.7;
       ctx.push(taperPath([[a.at[0] - kw, a.at[1] - 0.6], [a.at[0] - 0.2, a.at[1] - 0.9], [a.at[0] + kw * 0.8, a.at[1] - 0.5]], [0, 0.4, 0]) + taperPath([[a.at[0] - kw * 0.7, a.at[1] + 0.7], [a.at[0] + 0.1, a.at[1] + 0.45], [a.at[0] + kw * 0.9, a.at[1] + 0.8]], [0, 0.34, 0]), wash, { o: 0.35, b: 0.2, cp: d });
@@ -350,7 +593,7 @@ function pantShin(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones,
   if (!lite && (st.mat === 'denim' || st.mat === 'twill')) {
     weave(ctx, d, { x: Math.min(a.at[0], b.at[0]) - 9, y: a.at[1] - 6, w: 18, h: b.at[1] - a.at[1] + 10 }, c, { gap: st.mat === 'denim' ? 0.8 : 0.62, o: st.mat === 'denim' ? 0.05 : 0.035, light: true });
   }
-  if (kind === 'tailored' || kind === 'wide') pressCrease(ctx, 'shin', s, d, t, 0, kind === 'wide' ? 0.97 : 0.9);
+  if (kind === 'tailored' || kind === 'wide' || kind === 'pants') pressCrease(ctx, 'shin', s, d, t, 0, kind === 'wide' ? 0.97 : 0.9);
   // dobras: joelho (perna livre) e a quebra perto da barra; pantalona: pregas longas que caem do joelho
   const free = an.rest.weight != null && an.rest.weight !== s && !an.seated;
   const list: { spine: SP[]; w: number }[] = [];
@@ -369,7 +612,7 @@ function pantShin(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones,
       const w0 = (s === 'L' ? b.l : b.r) + Es - 0.6 + i * 0.3;
       list.push({ spine: [[b.at[0] - w0, y + 0.5 - i * 0.1], [b.at[0] - 0.3 + i * 0.4, y - 0.3], [b.at[0] + w0 * 0.9, y + 0.6]], w: 0.75 });
     }
-  } else if (kind !== 'leggings' && kind !== 'metallic') {
+  } else if (kind !== 'leggings' && kind !== 'metallic' && !lite) {
     list.push({ spine: [[b.at[0] - 2.6, b.at[1] - 2.6], [b.at[0] - 0.4, b.at[1] - 1.9], [b.at[0] + 2.4, b.at[1] - 2.7]], w: 0.7 });
     list.push({ spine: [[b.at[0] - 2.2, b.at[1] - 0.6], [b.at[0] + 0.5, b.at[1] - 0.1], [b.at[0] + 2.8, b.at[1] - 0.8]], w: 0.65 });
   }
@@ -380,8 +623,9 @@ function pantShin(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones,
     const p = edgePt(ctx, 'shin', s, tt, outW(s), Es + st.flareS * tt - 0.8);
     return [p[0], p[1] + tt * 1.6];
   });
-  ctx.stroke(smoothPath(pts, false), t.deep, 0.22, { o: st.mat === 'metal' ? 0.25 : 0.4, cp: d });
-  if (!lite && (st.mat === 'denim' || st.mat === 'twill')) ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.32, p[1]] as SP), false), threadOf(c), 0.14, { o: 0.35, cp: d });
+  if (!lite || st.mat !== 'denim') ctx.stroke(smoothPath(pts, false), t.deep, 0.22, { o: st.mat === 'metal' ? 0.25 : 0.4, cp: d });
+  if (st.mat === 'denim') ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.36, p[1]] as SP), false), threadOf(c), lite ? 0.38 : 0.28, { o: lite ? 0.5 : 0.62, cp: d });
+  else if (!lite && st.mat === 'twill') ctx.stroke(smoothPath(pts.map((p) => [p[0] - sg * 0.32, p[1]] as SP), false), threadOf(c), 0.14, { o: 0.35, cp: d });
   if (kind === 'joggers' && !lite) ctx.stroke(smoothPath([0, 0.5, 0.86].map((tt) => edgePt(ctx, 'shin', s, tt, outW(s), Es - 0.55, -1.0)), false), t.light, 0.42, { o: 0.4, cp: d });
   if (kind === 'ripped' && !an.seated) rip(ctx, 'shin', s, d, 0.1, 0.7, 2.0);
 }
@@ -390,19 +634,42 @@ function pantShin(ctx: LayerCtx, s: Side, kind: string, st: PantStyle, t: Tones,
  * contorno do quadril da calça: o tronco com folga, mas abaixo do quadril a lateral vira pra dentro e encontra a borda
  * de fora da coxa (senão o quadril largo do Curvilíneo/Plus forma um "degrau" de fralda em cima da coxa).
  */
-function hipOutline(ctx: LayerCtx, top: number, E: number, flareT: number): string {
+function hipOutline(ctx: LayerCtx, top: number, E: number, flareT: number, wideOuter?: [(y: number) => number, (y: number) => number]): string {
   const { an } = ctx;
   if (an.seated) return torsoPath(an, { top, ease: E });
+  // por baixo da barra da parte de cima o quadril fica na largura do corpo (a barra arredondada da camiseta não deixa
+  // lasca do cós aparecer do lado, entre a barra e o braço); só abaixo dela ganha a folga da calça
+  // cós à mostra (cropped): o topo do quadril também segue o corpo (o cós por cima dele já abre até a folga)
+  const eAt = (y: number) => (waistShown(ctx.cfg) && y < top + 2.0 ? Math.min(E, 0.25) : underHemEase(ctx, y, E));
+  if (wideOuter) {
+    // pantalona: o quadril termina na altura em que o gradiente dele casa com o das pernas (hipGradFromLegs), e a
+    // lateral encontra a queda reta da perna exatamente ali — a emenda quadril/perna some
+    const yB = an.torsoBottom - 1.2;
+    const yH = an.hipY - 0.5;
+    const tilt = (y: number) => an.tilt.hip * 0.5 * Math.max(0, Math.min(1, (y - an.waistY + 2) / (an.hipY - an.waistY || 1)));
+    const side = (s: Side, ox: (y: number) => number): SP[] => {
+      const y0 = top + (s === 'L' ? -1 : 1) * tilt(top);
+      const pts: SP[] = [[torsoXAt(an, s, y0, eAt(y0)), y0, 0]];
+      for (const k of [0.4, 0.75, 1]) {
+        const y = y0 + (yH - y0) * k;
+        pts.push([torsoXAt(an, s, y, eAt(y)), y]);
+      }
+      pts.push([ox(yB), yB, 0.5]);
+      return pts;
+    };
+    const pc = an.cx + an.pelvis;
+    return smoothPath([...side('L', wideOuter[0]), [pc - 3, yB + 0.4], [pc, yB + 1.4], [pc + 3, yB + 0.4], ...side('R', wideOuter[1]).reverse()], true);
+  }
   // mesma inclinação do quadril que o torsoPts usa nos cortes (cós acompanha a barra da parte de cima)
   const tiltAt = (y: number) => an.tilt.hip * 0.5 * Math.max(0, Math.min(1, (y - an.waistY + 2) / (an.hipY - an.waistY || 1)));
   const yHip = an.hipY - 0.5;
   const side = (s: Side): SP[] => {
     const sg = s === 'L' ? -1 : 1;
     const y0 = top + sg * tiltAt(top);
-    const pts: SP[] = [[torsoXAt(an, s, y0, E), y0, 0]];
+    const pts: SP[] = [[torsoXAt(an, s, y0, eAt(y0)), y0, 0]];
     for (const k of [0.4, 0.75, 1]) {
       const y = y0 + (yHip - y0) * k;
-      pts.push([torsoXAt(an, s, y, E), y]);
+      pts.push([torsoXAt(an, s, y, eAt(y)), y]);
     }
     // abaixo do quadril: a lateral desce pela borda de fora da coxa (com folga), nada de degrau
     for (const tt of [0.16, 0.3]) {
@@ -417,6 +684,15 @@ function hipOutline(ctx: LayerCtx, top: number, E: number, flareT: number): stri
   const mid = (L[L.length - 1][1] + R[R.length - 1][1]) / 2;
   const crotch: SP[] = [[pc - 2.6, Math.min(mid, an.torsoBottom + 0.3)], [pc, an.torsoBottom + 0.9], [pc + 2.6, Math.min(mid, an.torsoBottom + 0.3)]];
   return smoothPath([...L, ...crotch, ...R.reverse()], true);
+}
+
+/**
+ * folga da lateral da calça em y: por baixo da barra da parte de cima fica na largura do corpo (a barra arredondada da
+ * camiseta não deixa lasca do cós/quadril aparecer do lado, entre a barra e o braço); abaixo dela, a folga da calça
+ */
+function underHemEase(ctx: LayerCtx, y: number, E: number): number {
+  if (waistShown(ctx.cfg)) return E;
+  return y < pantsTopY(ctx) + 3.0 ? Math.min(E, 0.1) : E;
 }
 
 /**
@@ -435,7 +711,7 @@ function hipBridge(ctx: LayerCtx, s: Side, E: number, flare: number, fill: strin
   const tHip = Math.max(0, (yHip - hj[1]) / (kn[1] - hj[1] || 1));
   const e0 = edgePt(ctx, 'thigh', s, tHip, outW(s), E, flare);
   if ((hx - e0[0]) * sg < 0.25) return null;
-  const outer: SP[] = [[torsoXAt(an, s, yHip - 2.5, E), yHip - 2.5], [hx, yHip]];
+  const outer: SP[] = [[torsoXAt(an, s, yHip - 2.5, underHemEase(ctx, yHip - 2.5, E)), yHip - 2.5], [torsoXAt(an, s, yHip, underHemEase(ctx, yHip, E)), yHip]];
   const n = 4;
   for (let i = 1; i <= n; i++) {
     const tt = tHip + ((to - tHip) * i) / n;
@@ -459,10 +735,12 @@ function pantHip(ctx: LayerCtx, kind: string, st: PantStyle, t: Tones, E: number
   const lite = isLite(ctx);
   const c = ctx.col.bottom;
   const top = pantsTopY(ctx);
-  const d = hipOutline(ctx, top, E, st.flareT);
-  ctx.push(d, c, { gf: an.seated ? hipGrad(ctx, t, st.mat) : hipGradFromLegs(ctx, E + 0.4, legStops(t, st.mat)) });
+  const wide = wideOn(ctx, kind);
+  const d = wide ? hipOutline(ctx, top, E, 0, [wideGeo(ctx, 'L', t).outerX, wideGeo(ctx, 'R', t).outerX]) : hipOutline(ctx, top, E, st.flareT);
+  ctx.push(d, c, { gf: an.seated ? hipGrad(ctx, t, st.mat) : hipGradFromLegs(ctx, E + (wide ? 2.0 : 0.4), legStops(t, st.mat)) });
   const hipY = an.hipY;
-  const crotch = an.seated ? an.hj + 1.4 : an.torsoBottom;
+  // pantalona: o quadril termina acima do gancho (as pernas contínuas cobrem o resto)
+  const crotch = an.seated ? an.hj + 1.4 : wide ? an.torsoBottom - 1.2 : an.torsoBottom;
   if (st.mat === 'denim' || kind === 'pants' || kind === 'cargo') {
     // bolsos da frente: curva no jeans, diagonal na calça de sarja
     const curve = st.mat === 'denim';
@@ -505,7 +783,7 @@ function pantHip(ctx: LayerCtx, kind: string, st: PantStyle, t: Tones, E: number
     metalHip(ctx, d, t, top, crotch);
   }
   // braguilha (calças de botão) e sombra do gancho
-  if (st.mat !== 'lycra' && st.mat !== 'knit' && st.mat !== 'metal') ctx.stroke(smoothPath([[cx + 0.1, top + 0.8], [cx + 0.1, crotch - 1.2]], false), t.deep, 0.26, { o: 0.5, cp: d });
+  if (!lite && st.mat !== 'lycra' && st.mat !== 'knit' && st.mat !== 'metal') ctx.stroke(smoothPath([[cx + 0.1, top + 0.8], [cx + 0.1, crotch - 1.2]], false), t.deep, 0.26, { o: 0.5, cp: d });
   ctx.push(blob(cx, crotch - 0.4, 2.8, 1.7), t.deep, { o: 0.4, b: 0.8, cp: d });
   if (st.mat === 'knit' && !lite && !an.seated) creases(ctx, [{ spine: [[cx - 3.2, crotch - 3.6], [cx - 0.6, crotch - 1.2], [cx + 0.4, crotch - 0.4]], w: 0.6 }, { spine: [[cx + 3.4, crotch - 3.8], [cx + 0.8, crotch - 1.4], [cx - 0.2, crotch - 0.4]], w: 0.55 }], c, { o: 0.34, cp: d });
   if (waistShown(ctx.cfg)) waistband(ctx, top, st.mat, t, E);
@@ -519,7 +797,10 @@ function waistband(ctx: LayerCtx, y: number, mat: Mat, t: Tones, E: number): voi
   const lite = isLite(ctx);
   const elastic = mat === 'knit' || mat === 'lycra';
   const h = elastic ? 3.0 : 2.3;
-  const band = torsoPath(an, { top: y, bottom: y + h, ease: E + 0.1, hem: 0.2 });
+  // a borda de cima do cós segue a largura do CORPO nessa altura (sai de baixo da barriga à mostra sem "orelhas" nos
+  // cantos no corpo de cintura fina) e só embaixo ganha a folga da calça
+  const tl0 = an.tilt.hip * 0.3;
+  const band = smoothPath([[torsoXAt(an, 'L', y, 0.25), y - tl0, 0.3], [cx, y + 0.1], [torsoXAt(an, 'R', y, 0.25), y + tl0, 0.3], [torsoXAt(an, 'R', y + h, E + 0.1), y + h + tl0, 0.3], [cx, y + h + 0.3], [torsoXAt(an, 'L', y + h, E + 0.1), y + h - tl0, 0.3]], true);
   ctx.push(band, c, { gf: hipGrad(ctx, { ...t, light: mix(t.light, '#FFFFFF', elastic ? 0.1 : 0) }, mat) });
   const tl = an.tilt.hip * 0.3;
   ctx.push(taperPath([[torsoXAt(an, 'L', y + h, 1), y + h + 0.1 - tl], [cx, y + h + 0.3], [torsoXAt(an, 'R', y + h, 1), y + h + 0.1 + tl]], [0.5, 0.6, 0.5]), t.deep, { o: 0.4, b: lite ? 0 : 0.25 });
@@ -560,10 +841,9 @@ function sheen(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string, t: Ton
   ctx.push(taperPath(pts, [0.3, 1.25, 0.4]), mix(t.light, '#FFFFFF', 0.4), { o, b: 0.45, cp: d });
 }
 
-/** metal: dois reflexos duros + vincos de papel laminado com borda brilhante */
 /**
- * laminado metálico na perna: o reflexo NÃO é uma listra reta de cano — vem em gomos que incham na coxa e na
- * panturrilha e quebram nos vincos (meio da coxa, joelho), como o jeans; no tornozelo o tecido empilha em dobras
+ * laminado metálico na perna: o reflexo corre AO LONGO da perna (faixa longa e macia do lado da luz, luz rebatida do
+ * lado da sombra), nunca em barras horizontais que leem como listra; só uma dobra no joelho e duas no tornozelo
  */
 function metalStreaks(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string, t: Tones): void {
   const lite = isLite(ctx);
@@ -573,47 +853,39 @@ function metalStreaks(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string,
     const q = limbWidthAt(an, limb, s, tt);
     return k > 0 ? [q.at[0] - (s === 'L' ? q.l : q.r) * k, q.at[1]] : [q.at[0] - (s === 'L' ? q.r : q.l) * k, q.at[1]];
   };
-  const segs: [number, number, number][] = limb === 'thigh' ? [[0.04, 0.44, 0.46], [0.52, 0.88, 0.4]] : [[0.08, 0.5, 0.42], [0.58, 0.84, 0.36]];
-  let hl = '';
-  let bo = '';
-  for (const [a0, a1, k] of segs) {
-    const m = (a0 + a1) / 2;
-    // o gomo curva pra fora no meio (a perna é mais cheia ali)
-    hl += taperPath([P(a0, k - 0.06), P(m, k + 0.06), P(a1, k - 0.04)], [0.05, 0.75, 0.05]);
-    bo += taperPath([P(a0 + 0.04, -0.62), P(m, -0.68), P(a1 - 0.04, -0.6)], [0.05, 0.45, 0.05]);
-  }
-  ctx.push(hl, '#FFFFFF', { o: lite ? 0.5 : 0.72, b: lite ? 0 : 0.25, cp: d });
+  const t0 = limb === 'thigh' ? 0.02 : 0.0;
+  const t1 = limb === 'thigh' ? 1.0 : 0.94;
+  const ts = [0, 0.25, 0.5, 0.75, 1].map((k) => t0 + (t1 - t0) * k);
+  // o reflexo serpenteia de leve com o volume (mais pra fora na coxa e na panturrilha)
+  const hl = taperPath(ts.map((tt, i) => P(tt, 0.44 + (i % 2 ? 0.06 : 0))), [0.25, 0.7, 0.6, 0.7, 0.3]);
+  ctx.push(hl, '#FFFFFF', { o: lite ? 0.5 : 0.62, ...(lite ? {} : { b: 0.35 }), cp: d });
   if (lite) return;
-  ctx.push(bo, t.bounce, { o: 0.55, b: 0.3, cp: d });
-  // vincos onde o reflexo quebra: diagonais curtas (borda escura embaixo, clara em cima), como os bigodes do jeans
-  const at = limb === 'thigh' ? [0.47, 0.9] : [0.04, 0.54];
+  ctx.push(taperPath(ts.map((tt) => P(tt, 0.5)), [0.6, 1.4, 1.3, 1.4, 0.6]), '#FFFFFF', { o: 0.18, b: 0.9, cp: d });
+  ctx.push(taperPath(ts.map((tt) => P(tt, -0.64)), [0.1, 0.45, 0.4, 0.45, 0.1]), t.bounce, { o: 0.5, b: 0.3, cp: d });
   let dk = '';
   let lt = '';
-  at.forEach((tt, i) => {
-    const q = limbWidthAt(an, limb, s, tt);
-    const w = (q.l + q.r) * 0.42;
-    const x = q.at[0] + (i % 2 ? 0.4 : -0.3);
-    const y = q.at[1];
-    for (const dy of [-0.7, 0.8]) {
-      const sp: SP[] = [[x - w, y + dy + 0.7], [x - w * 0.1, y + dy], [x + w * 0.8, y + dy - 0.8]];
-      dk += taperPath(sp, [0, 0.5, 0]);
-      lt += taperPath(sp.map((p) => [p[0] - 0.15, p[1] - 0.42] as SP), [0, 0.36, 0]);
-    }
-  });
+  const fold = (sp: SP[], wd: number) => {
+    dk += taperPath(sp, [0, wd, 0]);
+    lt += taperPath(sp.map((p) => [p[0] - 0.15, p[1] - 0.42] as SP), [0, wd * 0.7, 0]);
+  };
   if (limb === 'shin') {
-    // tornozelo: três dobras empilhadas, curvas, que acompanham a boca da calça
+    // joelho: uma dobra diagonal só
+    const q = limbWidthAt(an, 'shin', s, 0.05);
+    const w = (q.l + q.r) * 0.4;
+    fold([[q.at[0] - w, q.at[1] + 0.5], [q.at[0] - w * 0.1, q.at[1] - 0.1], [q.at[0] + w * 0.8, q.at[1] - 0.7]], 0.45);
+    // tornozelo: duas dobras curvas que acompanham a boca da calça
     const b = limbWidthAt(an, 'shin', s, 1);
-    for (let i = 0; i < 3; i++) {
-      const y = b.at[1] - 1.0 - i * 1.5;
+    for (let i = 0; i < 2; i++) {
+      const y = b.at[1] - 1.2 - i * 1.6;
       const wl = b.l + 0.6 - i * 0.15;
       const wr = b.r + 0.6 - i * 0.15;
-      const sp: SP[] = [[b.at[0] - wl, y + 0.5], [b.at[0] - wl * 0.2, y - 0.35 + (i % 2) * 0.3], [b.at[0] + wr, y + 0.6]];
-      dk += taperPath(sp, [0, 0.45, 0]);
-      lt += taperPath(sp.map((p) => [p[0], p[1] - 0.45] as SP), [0, 0.32, 0]);
+      fold([[b.at[0] - wl, y + 0.5], [b.at[0] - wl * 0.2, y - 0.35 + i * 0.3], [b.at[0] + wr, y + 0.6]], 0.4);
     }
   }
-  ctx.push(dk, t.deep, { o: 0.5, b: 0.15, cp: d });
-  ctx.push(lt, '#FFFFFF', { o: 0.55, b: 0.12, cp: d });
+  if (dk) {
+    ctx.push(dk, t.deep, { o: 0.38, b: 0.2, cp: d });
+    ctx.push(lt, '#FFFFFF', { o: 0.4, b: 0.15, cp: d });
+  }
 }
 
 function metalHip(ctx: LayerCtx, d: string, t: Tones, top: number, crotch: number): void {
@@ -723,50 +995,54 @@ function seatedLap(ctx: LayerCtx, s: Side, d: string, t: Tones, c: string, hp: P
 }
 
 /**
- * rasgo do jeans: pele à mostra com fios brancos atravessando, borda desfiada clara em cima e embaixo e a sombra que
- * a borda de cima faz na pele. `t` = centro no membro, `wk` = largura relativa, `h` = altura do rasgo.
+ * rasgo do jeans: buraco de borda irregular (largura e altura variam de um rasgo pro outro), pele à mostra com sombra
+ * da borda de cima, fios brancos finos atravessando em curva e fiapos curtos saindo da borda pra dentro — nada de
+ * retângulo de curativo. `t` = centro no membro, `wk` = largura relativa, `h` = altura do rasgo.
  */
-function rip(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string, tc: number, wk: number, h: number): void {
+function rip(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string, tc: number, wk: number, h0: number): void {
   const { an } = ctx;
   const lite = isLite(ctx);
   const sk = tonesOf(ctx);
   const q = limbWidthAt(an, limb, s, tc);
-  const w = ((q.l + q.r) / 2) * wk;
+  const r = rng(Math.floor(hashUnit(`${limb}${s}${an.bodyId}${tc}`) * 1e6));
+  const w = ((q.l + q.r) / 2) * wk * (0.95 + r() * 0.3);
+  const h = h0 * (0.75 + r() * 0.4);
   const cx = q.at[0] + (q.r - q.l) * 0.2 - 0.3;
   const cy = q.at[1];
-  const r = rng(Math.floor(hashUnit(`${limb}${s}${an.bodyId}`) * 1e6));
   const pts: SP[] = [];
-  const n = 10;
+  const n = 14;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
-    const j = 0.82 + r() * 0.3;
-    pts.push([cx + Math.cos(a) * w * j, cy + Math.sin(a) * (h / 2) * (0.75 + r() * 0.35)]);
+    // borda rasgada: raio quebrado e quinas vivas alternadas
+    const j = 0.72 + r() * 0.45;
+    pts.push([cx + Math.cos(a) * w * j, cy + Math.sin(a) * (h / 2) * (0.55 + r() * 0.6), i % 3 === 0 ? 0 : 0.6]);
   }
-  const hole = smoothPath(pts, true, 0.7);
+  const hole = smoothPath(pts, true, 0.6);
   const ax = legAxis(an, s);
   ctx.push(hole, sk.base, { gf: cylGradient(ax.a, ax.b, ax.wl, ax.wr, { light: sk.light, base: sk.base, shade: sk.shade }), cp: d });
-  // sombra da borda de cima na pele
-  ctx.push(taperPath([[cx - w, cy - h * 0.25], [cx, cy - h * 0.38], [cx + w, cy - h * 0.25]], [0.6, 1.1, 0.6]), '#1A0A10', { o: 0.35, b: lite ? 0 : 0.35, cp: hole });
-  // fios atravessando (brancos, levemente curvos)
+  // sombra da borda de cima na pele (segue a borda, não uma faixa reta)
+  const topEdge = pts.filter((p) => p[1] < cy).sort((p, q2) => p[0] - q2[0]);
+  if (topEdge.length > 2) ctx.push(taperPath(topEdge.map((p) => [p[0], p[1] + h * 0.16] as SP), topEdge.map((_, i) => (i === 0 || i === topEdge.length - 1 ? 0.2 : 0.7))), '#1A0A10', { o: 0.4, ...(lite ? {} : { b: 0.3 }), cp: hole });
+  // fios atravessando (brancos, finos, curvos, espessura variável)
   let th = '';
   const rows = lite ? 2 : 4;
   for (let i = 0; i < rows; i++) {
-    const y = cy - h * 0.3 + (h * 0.62 * (i + 0.5)) / rows + (r() - 0.5) * 0.3;
-    th += smoothPath([[cx - w * 1.05, y + (r() - 0.5) * 0.3], [cx, y + 0.25 + r() * 0.2], [cx + w * 1.05, y + (r() - 0.5) * 0.3]], false);
+    const y = cy - h * 0.28 + (h * 0.6 * (i + 0.5)) / rows + (r() - 0.5) * 0.35;
+    th += taperPath([[cx - w * 1.1, y + (r() - 0.5) * 0.4], [cx + (r() - 0.5) * w * 0.4, y + 0.2 + r() * 0.3], [cx + w * 1.1, y + (r() - 0.5) * 0.4]], [0.1, 0.12 + r() * 0.1, 0.1]);
   }
-  ctx.stroke(th, '#F4F1EA', lite ? 0.38 : 0.26, { o: 0.9, cp: smoothPath(pts.map((p) => [cx + (p[0] - cx) * 1.15, cy + (p[1] - cy) * 1.1] as SP), true, 0.7) });
-  // borda desfiada (clara, irregular) em cima e embaixo
+  ctx.push(th, '#F4F1EA', { o: 0.92, cp: smoothPath(pts.map((p) => [cx + (p[0] - cx) * 1.12, cy + (p[1] - cy) * 1.1] as SP), true, 0.6) });
+  // fiapos: tracinhos claros curtos saindo da borda pra dentro do buraco (borda desfiada)
   let fr = '';
-  for (const k of [-1, 1]) {
-    const yy = cy + k * h * 0.42;
-    const sp: SP[] = [];
-    for (let i = 0; i <= 6; i++) {
-      const x = cx - w * 1.05 + (2.1 * w * i) / 6;
-      sp.push([x, yy + (r() - 0.5) * 0.4 - k * (1 - Math.abs(i - 3) / 3) * 0.3]);
-    }
-    fr += taperPath(sp, [0.2, 0.6, 0.45, 0.65, 0.4, 0.55, 0.2]);
+  for (let i = 0; i < n; i++) {
+    if (lite && i % 2) continue;
+    const p = pts[i];
+    const k = 0.18 + r() * 0.22;
+    const tip: SP = [p[0] + (cx - p[0]) * k + (r() - 0.5) * 0.5, p[1] + (cy - p[1]) * k];
+    fr += taperPath([p, tip], [0.16, 0.04]);
   }
   ctx.push(fr, '#EEF2F8', { o: 0.85, cp: d });
+  // borda clara do tecido cortado em volta (fina e quebrada)
+  if (!lite) ctx.stroke(hole, mix('#EEF2F8', ctx.col.bottom, 0.25), 0.2, { o: 0.6, cp: d });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -782,12 +1058,23 @@ function rip(ctx: LayerCtx, limb: 'thigh' | 'shin', s: Side, d: string, tc: numb
 export function pantHemOverShoe(ctx: LayerCtx, s: Side, shoeClip: string): void {
   const kind = lowerKind(ctx.cfg);
   const st = PANT_STYLES[kind];
-  if (!st || kind === 'leggings' || ctx.cfg.shoes in TALL_BOOTS) return;
+  if (!st || kind === 'leggings' || shaftT(ctx) != null) return;
   const { an } = ctx;
   const lite = isLite(ctx);
   const a = s === 'L' ? an.joints.ankleL : an.joints.ankleR;
   const cb = ctx.col.bottom;
   const tb = matTones(cb, st.mat);
+  if (wideOn(ctx, kind)) {
+    // pantalona: o MESMO pedaço de baixo da perna (contorno, gradiente e traços), só do meio da canela pra baixo
+    const g = wideGeo(ctx, s, tb);
+    const { c: hc, wl, wr, yC, drop } = g.hem;
+    ctx.push(taperPath([[hc[0] - wl - 0.6, yC + drop + 0.35], [hc[0], yC + 0.9], [hc[0] + wr + 0.6, yC + drop + 0.35]], [1.0, 1.4, 1.0]), '#0A0610', { o: 0.34, ...(lite ? {} : { b: 0.5 }), cp: shoeClip });
+    const fb = footBox(an, s);
+    const d = g.outline(1.55, 2, s === 'L' ? fb.x + fb.w + 1.0 : fb.x - 1.0);
+    ctx.push(d, cb, { gf: g.grad });
+    wideDetails(ctx, g, tb, d, 'lo');
+    return;
+  }
   const E2 = st.ease + (lite ? 0.2 : 0) + st.flareT * 0.7;
   const grad = legGrad(ctx, s, st.ease + (lite ? 0.2 : 0) + 0.4, legStops(tb, st.mat));
   if (kind === 'joggers') {
@@ -846,7 +1133,7 @@ export function pantHemOverShoe(ctx: LayerCtx, s: Side, shoeClip: string): void 
     const p1: SP = [q.at[0] + (q.r - q.l) * 0.35 - 0.2, yC];
     ctx.stroke(smoothPath([p0, p1], false), tb.light, 0.28, { o: 0.7, cp: hemD });
   }
-  creases(ctx, [{ spine: [[q.at[0] - wl * 0.8, yC - 1.4], [q.at[0] + 0.3, yC - 2.0], [q.at[0] + wr * 0.85, yC - 1.3]], w: wide ? 0.6 : 0.8 }], cb, { o: wide ? 0.3 : 0.4, cp: hemD });
+  if (!lite) creases(ctx, [{ spine: [[q.at[0] - wl * 0.8, yC - 1.4], [q.at[0] + 0.3, yC - 2.0], [q.at[0] + wr * 0.85, yC - 1.3]], w: wide ? 0.6 : 0.8 }], cb, { o: wide ? 0.3 : 0.4, cp: hemD });
   ctx.push(taperPath([[q.at[0] - wl, yC + drop * 0.76], [q.at[0] - wl * 0.5, yC + 0.15], [q.at[0], yC - 0.1], [q.at[0] + wr * 0.5, yC + 0.15], [q.at[0] + wr, yC + drop * 0.76]], [0.5, 0.7, 0.75, 0.7, 0.5]), tb.deep, { o: 0.35, cp: hemD });
   if (!lite && (st.mat === 'denim' || st.mat === 'twill')) {
     ctx.stroke(smoothPath([[q.at[0] - wl + 0.3, yC + 0.3], [q.at[0] - wl * 0.5, yC - 0.35], [q.at[0], yC - 0.6], [q.at[0] + wr * 0.5, yC - 0.35], [q.at[0] + wr - 0.3, yC + 0.3]], false), threadOf(cb), 0.14, { o: 0.45, cp: hemD });
@@ -1030,6 +1317,7 @@ function skirtGeo(ctx: LayerCtx, o: { len: number; flare: number; ease?: number;
     pts.push([xR(hipY, ease + 0.4), hipY]);
     pts.push([xR((top + hipY) / 2, ease + 0.2), (top + hipY) / 2]);
     pts.push([topR[0], topR[1], 0.5]);
+    coatClamp(ctx, pts);
     return { pts, d: smoothPath(pts, true), topL, topR, hemL, hemR, hemY, grad, seated: false };
   }
   // sentado (no espaço do tronco: o colo das pernas está seatDrop mais baixo)
@@ -1063,6 +1351,30 @@ function skirtGeo(ctx: LayerCtx, o: { len: number; flare: number; ease?: number;
   }
   pts.push([hemR[0], hemR[1] - 0.8, 0.6], [outR - 0.3, kR[1] - 1.2], [outR, an.hj + 0.5], [torsoXAt(an, 'R', (top + an.hj) / 2, ease + 0.3), (top + an.hj) / 2], [topR[0], topR[1], 0.5]);
   return { pts, d: smoothPath(pts, true), topL, topR, hemL, hemR, hemY, grad, seated: true };
+}
+
+/**
+ * casaco longo (sobretudo, kimono) por cima da saia: acima da barra do casaco a saia fica dentro das laterais dele (só
+ * aparece no vão da frente) e abaixo dela escapa por igual dos dois lados — nada de saia escapando de um lado só nem de
+ * pontas de tutu saindo como barbatana. Mexe nos pontos do contorno (em pé).
+ */
+function coatClamp(ctx: LayerCtx, pts: SP[]): void {
+  const o = outerDef(ctx.cfg);
+  if (!o || o.hem < 10) return;
+  const { an } = ctx;
+  const e = o.ease * (an.bodyId === 'broad' ? 0.8 : 1);
+  const y0 = an.torsoBottom - 1;
+  const coatHem = Math.max(an.hipY + o.hem, an.waistY + 4);
+  // lateral do casaco: o tronco com a folga dele até o gancho, depois abre em A (~0,1 por unidade, como o extendLong)
+  const side = (s: Side, y: number) => torsoXAt(an, s, Math.min(y, y0), e) + (s === 'L' ? -1 : 1) * Math.max(0, y - y0) * 0.1;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p[1] > coatHem - 0.4) continue;
+    const xl = side('L', p[1]) + 0.7;
+    const xr = side('R', p[1]) - 0.7;
+    const x = Math.max(xl, Math.min(xr, p[0]));
+    if (x !== p[0]) pts[i] = p.length > 2 ? [x, p[1], p[2] as number] : [x, p[1]];
+  }
 }
 
 /** volume comum das saias: sombra do lado de baixo/direita, luz no quadril, sombra entre as pernas e barra */
@@ -1204,16 +1516,7 @@ function kilt(ctx: LayerCtx): void {
   ctx.withGroup('body', () => {
     const g = skirtGeo(ctx, { len: 0.46, flare: 2.2, wave: 0, waves: 6, zig: 0.35, hemCurve: 0.5, ease: 0.9 });
     ctx.push(g.d, c, { gf: g.grad });
-    const box = { x: g.hemL[0] - 4, y: g.topL[1] - 2, w: g.hemR[0] - g.hemL[0] + 8, h: g.hemY - g.topL[1] + 6 };
-    if (lite) {
-      plaid(ctx, g.d, box, c, { cell: 5.2, accent });
-    } else {
-      plaid(ctx, g.d, box, mix(c, band, 0.6), { cell: 4.4, accent });
-      // linha fina extra (o tartã tem duas escalas)
-      let fine = '';
-      for (let x = box.x + 1.6; x < box.x + box.w; x += 4.4) fine += `M${x.toFixed(2)},${box.y.toFixed(2)}v${box.h.toFixed(2)}h0.25v${(-box.h).toFixed(2)}Z`;
-      ctx.push(fine, accent, { o: 0.45, cp: g.d });
-    }
+    tartan(ctx, g, c, band, accent, 0.5);
     // pregas nas laterais (o avental da frente é liso)
     const N = lite ? 3 : 5;
     let pl = '';
@@ -1243,6 +1546,49 @@ function kilt(ctx: LayerCtx): void {
     skirtVolume(ctx, g, t, { folds: 0 });
     if (waistShown(ctx.cfg)) skirtBand(ctx, g, t);
   });
+}
+
+/**
+ * tartã do kilt NO TECIDO: a grade é deformada pela saia — as horizontais acompanham a curva da barra e as verticais
+ * abrem em leque do cós até a barra (a saia é um cone, não um papel quadriculado). Faixas escuras nas duas direções e
+ * fio de destaque (mais apagado em tecido escuro, onde o amarelo vira grade de adesivo).
+ */
+function tartan(ctx: LayerCtx, g: SkirtGeo, c: string, band: string, accent: string, hemCurve: number): void {
+  const lite = isLite(ctx);
+  // ponto da saia: a = 0..1 de um lado ao outro, b = 0..1 do cós à barra (a barra desce no meio como a do contorno)
+  const P = (a: number, b: number): Pt => {
+    const tx = g.topL[0] + (g.topR[0] - g.topL[0]) * a;
+    const ty = g.topL[1] + (g.topR[1] - g.topL[1]) * a;
+    const hx = g.hemL[0] + (g.hemR[0] - g.hemL[0]) * a;
+    const hy = g.hemL[1] + (g.hemR[1] - g.hemL[1]) * a + Math.sin(Math.PI * Math.max(0, Math.min(1, a))) * hemCurve;
+    return [tx + (hx - tx) * b, ty + (hy - ty) * b];
+  };
+  const f = (p: Pt) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`;
+  const strip = (pts0: Pt[], pts1: Pt[]) => `M${pts0.map(f).join('L')}L${pts1.reverse().map(f).join('L')}Z`;
+  const A0 = -0.1;
+  const A1 = 1.1;
+  const nA = Math.max(5, Math.round((g.hemR[0] - g.hemL[0]) / (lite ? 5.4 : 4.6)));
+  const nB = Math.max(3, Math.round((g.hemY - g.topL[1]) / (lite ? 5.4 : 4.6)));
+  const as = (n: number) => Array.from({ length: n + 1 }, (_, i) => A0 + ((A1 - A0) * i) / n);
+  const hRow = (b: number) => as(8).map((a) => P(a, b));
+  const vCol = (a: number) => [P(a, -0.08), P(a, 0.5), P(a, 1.12)];
+  let h = '';
+  let v = '';
+  let fine = '';
+  for (let k = -1; k <= nB; k++) {
+    const b = (k + 0.15) / nB;
+    h += strip(hRow(b), hRow(b + 0.42 / nB));
+    fine += strip(hRow(b + 0.7 / nB), hRow(b + 0.7 / nB + 0.06 / nB));
+  }
+  for (let k = -1; k <= nA + 1; k++) {
+    const a = (k + 0.15) / nA;
+    v += strip(vCol(a), vCol(a + 0.42 / nA));
+    if (!lite) fine += strip(vCol(a + 0.72 / nA), vCol(a + 0.72 / nA + 0.05 / nA));
+  }
+  const dark = lum(c) < 0.18;
+  ctx.push(h, mix(band, '#000000', 0.25), { o: lite ? 0.5 : 0.45, cp: g.d });
+  ctx.push(v, mix(band, '#000000', 0.25), { o: lite ? 0.4 : 0.36, cp: g.d });
+  ctx.push(fine, accent, { o: dark ? 0.32 : 0.55, cp: g.d });
 }
 
 /**

@@ -38,9 +38,16 @@ export interface BdFrame {
   /** unidade de tamanho (largura / 100) */
   u: number;
   bust: boolean;
+  /** cabeça do corpo médio (centro e raio) na caixa: confete e varal ficam longe do rosto, luz de recorte atrás dela */
+  hx: number;
+  hy: number;
+  hr: number;
+  /** raio dos cantos do cartão (moldura e cantoneiras recuam dele) */
+  cr: number;
 }
 
-const STILL: Record<string, number> = { neon_grid: 0.35, aurora: 2.4, stage: 1.6, confetti: 2.2, carnival: 1.4 };
+// praia: nuvens dos lados (no quadro antigo uma nuvem ficava bem atrás do topo da cabeça, como chapéu)
+const STILL: Record<string, number> = { neon_grid: 0.35, aurora: 2.4, stage: 1.6, confetti: 2.2, carnival: 1.4, beach: 222.7 };
 
 /** parâmetros de um fundo (JS, uma vez por visual e tamanho). null = sem fundo. */
 export function backdropSpec(id: string | null | undefined, flag: FlagDef, box: { w: number; h: number }): BackdropSpec | null {
@@ -53,18 +60,27 @@ export function backdropSpec(id: string | null | undefined, flag: FlagDef, box: 
   return { id: bid, still: STILL[bid] ?? 1.2, flag: pieces };
 }
 
-/** caixa do palco (box = canvas): chão e horizonte saem do enquadramento (layout.ts) */
-export function stageBdFrame(box: { w: number; h: number }): BdFrame {
+/** cabeça do corpo médio no viewBox do avatar (anatomia: centro 50, 22.8; raio 10.6) */
+const HEAD = { x: 50, y: 22.8, r: 10.6 };
+/** recorte do busto padrão (AVATAR_BUST_VIEWBOX: o palco não sabe o da pessoa aqui) */
+const BUST_VB = { x: 27.5, y: 1.5, w: 45 };
+
+/** caixa do palco (box = canvas): chão e horizonte saem do enquadramento (layout.ts); radius = cantos do cartão */
+export function stageBdFrame(box: { w: number; h: number }, radius = 24): BdFrame {
   'worklet';
   const bust = Math.abs(box.w - box.h) < 1;
   const g = bust ? box.h * 1.1 : box.h * (STAGE_TOP + (STAGE_INNER * 134.5) / 140);
-  return { w: box.w, h: box.h, g, hz: bust ? box.h * 0.8 : box.h * 0.66, u: box.w / 100, bust };
+  // mesma conta do layout.ts: full = altura × 0.86 / 140 a partir de STAGE_TOP; busto = recorte centrado com margem
+  const s = bust ? (box.w * STAGE_INNER) / BUST_VB.w : (box.h * STAGE_INNER) / 140;
+  const ox = bust ? (box.w * (1 - STAGE_INNER)) / 2 - BUST_VB.x * s : (box.w - 100 * s) / 2;
+  const oy = bust ? (box.h * (1 - STAGE_INNER)) / 2 - BUST_VB.y * s : box.h * STAGE_TOP;
+  return { w: box.w, h: box.h, g, hz: bust ? box.h * 0.8 : box.h * 0.66, u: box.w / 100, bust, hx: ox + HEAD.x * s, hy: oy + HEAD.y * s, hr: HEAD.r * s, cr: radius };
 }
 
-/** caixa no SVG estático: o viewBox inteiro é o avatar (full: pés em 134 de 140) */
-export function svgBdFrame(vb: { w: number; h: number }, bust: boolean): BdFrame {
+/** caixa no SVG estático: o viewBox inteiro é o avatar (full: pés em 134 de 140); x/y = origem do viewBox */
+export function svgBdFrame(vb: { x?: number; y?: number; w: number; h: number }, bust: boolean): BdFrame {
   const g = bust ? vb.h * 1.1 : (vb.h * 134.5) / 140;
-  return { w: vb.w, h: vb.h, g, hz: bust ? vb.h * 0.8 : vb.h * 0.68, u: vb.w / 100, bust };
+  return { w: vb.w, h: vb.h, g, hz: bust ? vb.h * 0.8 : vb.h * 0.68, u: vb.w / 100, bust, hx: HEAD.x - (vb.x ?? 0), hy: HEAD.y - (vb.y ?? 0), hr: HEAD.r, cr: bust ? vb.w / 2 : vb.w * 0.12 };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -73,6 +89,21 @@ export function svgBdFrame(vb: { w: number; h: number }, bust: boolean): BdFrame
 function vgrad(y0: number, y1: number, s: FxStop[]): FxGrad {
   'worklet';
   return { t: 'l', x1: 0, y1: y0, x2: 0, y2: y1, s };
+}
+
+/** 0 em cima do rosto → 1 longe (confete e enfeites do fundo não grudam na bochecha/testa) */
+function faceClear(B: BdFrame, x: number, y: number): number {
+  'worklet';
+  const dx = (x - B.hx) / B.hr;
+  const dy = (y - B.hy) / (B.hr * 1.15);
+  return smooth(1.05, 1.7, Math.sqrt(dx * dx + dy * dy));
+}
+
+/** luz suave atrás da cabeça nos fundos escuros: cabelo escuro não some no azul-marinho/roxo/marrom */
+function headRim(P: Pen, B: BdFrame, c: Rgb, a: number): void {
+  'worklet';
+  // largo (a borda do cabelo cai em ~40% do raio, onde a luz ainda tem força): spot suave atrás da cabeça e dos ombros
+  P.glowOval(B.hx, B.hy, B.hr * 4.4, B.hr * 4, c, a);
 }
 
 function band(P: Pen, B: BdFrame, y0: number, y1: number, s: FxStop[]): void {
@@ -378,6 +409,7 @@ function bdStudio(P: Pen, B: BdFrame, t: number, part: number): void {
       P.path([0, sx, base - 5 * u, 1, sx - 4 * u, base, 0, sx, base - 5 * u, 1, sx + 4 * u, base], { c: 0x4a4a58, w: 0.7 * u });
     }
     vignette(P, B, 0.5, 0x050508);
+    headRim(P, B, 0xdfe4ff, 0.22);
   } else if (part === 1) {
     for (let i = 0; i < 8; i++) {
       const [ph] = life(t, 9 + rnd(i, 1) * 5, rnd(i, 2));
@@ -456,6 +488,8 @@ function bdNightCity(P: Pen, B: BdFrame, t: number, part: number): void {
       P.glowOval(w / 2, B.g, 18 * u, 2.4 * u, 0x000000, 0.4);
     }
     vignette(P, B, 0.4, 0x05030f);
+    // fundo escuro: luz suave atrás da cabeça separa o cabelo escuro do fundo (headRim também nos outros escuros)
+    headRim(P, B, 0x8fa0ff, 0.38);
   } else if (part === 1) {
     for (let i = 0; i < 14; i++) {
       const x = w * rnd(i, 131);
@@ -514,6 +548,7 @@ function bdNeonGrid(P: Pen, B: BdFrame, t: number, part: number): void {
     P.glowOval(sx, hz, w * 0.6, 2.2 * u, 0xff6ad8, 0.8, 1);
     P.rect(-1, hz - 0.2 * u, w + 2, 0.4 * u, { c: 0xffd0f4, a: 0.9 });
     vignette(P, B, 0.35, 0x05010d);
+    headRim(P, B, 0xff7ad9, 0.3);
   }
 }
 
@@ -555,6 +590,7 @@ function bdGalaxy(P: Pen, B: BdFrame, t: number, part: number): void {
     P.path([0, -pr * 1.9, 0, 2, 0, pr * 0.62, pr * 1.9, 0], { c: 0xf2dcff, a: 0.85, w: 1.2 * u });
     P.restore();
     vignette(P, B, 0.45, 0x020210);
+    headRim(P, B, 0x9fa8ff, 0.38);
   } else if (part === 1) {
     for (let i = 0; i < 14; i++) {
       const tw = 0.5 + 0.5 * Math.sin(t * (1.2 + rnd(i, 171) * 2) + i * 2.1);
@@ -654,7 +690,9 @@ function bdConfetti(P: Pen, B: BdFrame, t: number, part: number): void {
       const y = -4 * u + ph * (h + 8 * u);
       const near = rnd(i, 4) < 0.25;
       const s = (near ? 1.6 : 0.9 + 0.5 * rnd(i, 5)) * u;
-      confettiPiece(P, x, y, s, i % 3, C[i % C.length], rnd(i, 6) * 180 + t * 80 * (i % 2 ? 1 : -1), Math.cos(t * (3 + rnd(i, 7) * 3) + i), near ? 0.95 : 0.85);
+      const fc = faceClear(B, x, y);
+      if (fc <= 0.02) continue;
+      confettiPiece(P, x, y, s, i % 3, C[i % C.length], rnd(i, 6) * 180 + t * 80 * (i % 2 ? 1 : -1), Math.cos(t * (3 + rnd(i, 7) * 3) + i), (near ? 0.95 : 0.85) * fc);
     }
   }
 }
@@ -678,17 +716,21 @@ function bdGoldLuxe(P: Pen, B: BdFrame, t: number, part: number): void {
       const a0 = Math.PI + (k / 12) * Math.PI;
       P.path([0, fx + Math.cos(a0) * 11 * u, fy + Math.sin(a0) * 11 * u, 1, fx + Math.cos(a0) * 70 * u, fy + Math.sin(a0) * 70 * u], { g: gold, a: 0.2, w: 0.3 * u });
     }
-    // moldura com cantoneiras
+    // moldura com cantoneiras, acompanhando o canto arredondado do cartão (antes: cantoneira espremida e cortada pelo
+    // raio do canto); a cantoneira vai no meio do arco da moldura
     const m = 4 * u;
-    P.rrect(m, m, w - m * 2, h - m * 2, 2 * u, { g: gold, a: 0.75, w: 0.5 * u });
-    P.rrect(m + 1.4 * u, m + 1.4 * u, w - m * 2 - 2.8 * u, h - m * 2 - 2.8 * u, 1.5 * u, { g: gold, a: 0.4, w: 0.3 * u });
+    const rr = Math.min(Math.min(w, h) / 2 - m, Math.max(2 * u, B.cr - m * 0.7));
+    P.rrect(m, m, w - m * 2, h - m * 2, rr, { g: gold, a: 0.75, w: 0.5 * u });
+    P.rrect(m + 1.4 * u, m + 1.4 * u, w - m * 2 - 2.8 * u, h - m * 2 - 2.8 * u, Math.max(1.5 * u, rr - 1.4 * u), { g: gold, a: 0.4, w: 0.3 * u });
+    const k = rr * (1 - Math.SQRT1_2);
     for (let c = 0; c < 4; c++) {
-      const x = c % 2 ? w - m : m;
-      const y = c < 2 ? m : h - m;
-      P.shape('diamond', x, y, 2.4 * u, 0, { g: gold });
-      P.shape('diamond', x, y, 1.2 * u, 0, { c: 0x1a1208 });
+      const x = c % 2 ? w - m - k : m + k;
+      const y = c < 2 ? m + k : h - m - k;
+      P.shape('diamond', x, y, 2.4 * u, 45, { g: gold });
+      P.shape('diamond', x, y, 1.2 * u, 45, { c: 0x1a1208 });
     }
     vignette(P, B, 0.5, 0x000000);
+    headRim(P, B, 0xffd890, 0.3);
   } else if (part === 1) {
     for (let i = 0; i < 16; i++) {
       const x = w * rnd(i, 221) + Math.sin(t * 0.25 + i) * 4 * u;
@@ -721,34 +763,43 @@ function bdCarnival(P: Pen, B: BdFrame, t: number, part: number): void {
     }
     vignette(P, B, 0.3, 0x14031e);
   } else if (part === 1) {
-    // bandeirinhas em dois varais, balançando
+    // bandeirinhas: varais presos nos cantos de cima, caindo pra fora (antes: dois varais atravessando atrás da cabeça, na
+    // altura dos olhos)
     for (let r = 0; r < 2; r++) {
-      const y0 = h * (0.06 + 0.1 * r);
-      const sag = 6 * u + Math.sin(t * 1.2 + r) * 0.8 * u;
-      const n = 9;
-      const cm: number[] = [];
-      for (let k = 0; k <= n; k++) {
-        const s = k / n;
-        cm.push(k ? 1 : 0, -2 + s * (w + 4), y0 + Math.sin(Math.PI * s) * sag);
-      }
-      P.path(cm, { c: 0xffffff, a: 0.6, w: 0.3 * u });
-      for (let k = 0; k < n; k++) {
-        const s = (k + 0.5) / n;
-        const x = -2 + s * (w + 4);
-        const y = y0 + Math.sin(Math.PI * s) * sag;
-        const sw = Math.sin(t * 2 + k * 1.3 + r) * 6;
-        P.save();
-        P.translate(x, y);
-        P.rotate(sw);
-        P.path([0, -2.6 * u, 0, 1, 2.6 * u, 0, 1, 0, 5 * u, 4], { c: C[(k + r * 3) % C.length] });
-        P.restore();
+      for (let side = 0; side < 2; side++) {
+        const x0 = side ? w + 2 : -2;
+        const reach = (B.bust ? 0.3 : r ? 0.32 : 0.4) * w;
+        const x1 = side ? w - reach : reach;
+        const y0 = h * (r ? 0.02 : 0.11);
+        const y1 = h * (r ? 0.005 : 0.03);
+        const sag = (r ? 4 : 5) * u + Math.sin(t * 1.2 + r + side) * 0.7 * u;
+        const n = 5;
+        const cm: number[] = [];
+        for (let k = 0; k <= n; k++) {
+          const s = k / n;
+          cm.push(k ? 1 : 0, mixN(x0, x1, s), mixN(y0, y1, s) + Math.sin(Math.PI * s) * sag);
+        }
+        P.path(cm, { c: 0xffffff, a: 0.6, w: 0.3 * u });
+        for (let k = 0; k < n; k++) {
+          const s = (k + 0.5) / n;
+          const x = mixN(x0, x1, s);
+          const y = mixN(y0, y1, s) + Math.sin(Math.PI * s) * sag;
+          const sw = Math.sin(t * 2 + k * 1.3 + r + side * 2) * 6;
+          P.save();
+          P.translate(x, y);
+          P.rotate(sw);
+          P.path([0, -2.4 * u, 0, 1, 2.4 * u, 0, 1, 0, 4.6 * u, 4], { c: C[(k + r * 3 + side) % C.length] });
+          P.restore();
+        }
       }
     }
     for (let i = 0; i < 16; i++) {
       const [ph, cyc] = life(t, 6 + rnd(i, 1) * 3, rnd(i, 2));
       const x = w * rnd(i * 5 + cyc, 3) + Math.sin(t + i) * 3 * u;
       const y = h * 0.15 + ph * h * 0.9;
-      confettiPiece(P, x, y, (0.9 + 0.6 * rnd(i, 4)) * u, i % 3 === 2 ? 2 : i % 2, C[i % C.length], rnd(i, 5) * 180 + t * 70, Math.cos(t * 3.5 + i), smooth(0, 0.1, ph) * 0.9);
+      const fc = faceClear(B, x, y);
+      if (fc <= 0.02) continue;
+      confettiPiece(P, x, y, (0.9 + 0.6 * rnd(i, 4)) * u, i % 3 === 2 ? 2 : i % 2, C[i % C.length], rnd(i, 5) * 180 + t * 70, Math.cos(t * 3.5 + i), smooth(0, 0.1, ph) * 0.9 * fc);
     }
   }
 }
@@ -807,6 +858,7 @@ function bdStage(P: Pen, B: BdFrame, t: number, part: number): void {
     for (let k = 0; k < 8; k++) P.oval(w * (k + 0.5) / 8, vh, w / 16 + 0.5, 2.6 * u, { g: vgrad(vh - 2.6 * u, vh + 2.6 * u, [[0, 0xa01838, 1], [1, 0x5a0a20, 1]]) });
     P.rect(-1, vh - 0.6 * u, w + 2, 0.5 * u, { c: 0xffd36a, a: 0.8 });
     vignette(P, B, 0.4, 0x020004);
+    headRim(P, B, 0xfff0d8, 0.3);
   }
 }
 
@@ -853,7 +905,7 @@ export function drawBackdropPart(P: Pen, S: BackdropSpec, B: BdFrame, t: number,
 /** uma parte do fundo do palco, recortada nos cantos arredondados do canvas */
 export function drawBackdropStage(P: Pen, S: BackdropSpec, box: { w: number; h: number }, radius: number, t: number, part: number): void {
   'worklet';
-  const B = stageBdFrame(box);
+  const B = stageBdFrame(box, radius);
   P.save();
   P.clipRRect(0, 0, box.w, box.h, radius);
   drawBackdropPart(P, S, B, t, part);

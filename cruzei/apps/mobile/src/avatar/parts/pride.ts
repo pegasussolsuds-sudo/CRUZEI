@@ -17,6 +17,8 @@
 //   20 pridePaint (head: pintura no rosto)
 // Tudo sai das âncoras da anatomia (bodyAnchors, headAnchors, juntas, contornos): acompanha corpo, rosto e repouso.
 
+import type { AvatarConfig } from '@cruzei/shared-types';
+
 import {
   armAxis,
   bodyAnchors,
@@ -34,7 +36,7 @@ import {
 } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { fmt } from '../geometry';
-import { blob, cylGradient, isLite, lodCtx, mix, skinTones } from '../shading';
+import { blob, cylGradient, isLite, lodCtx, lum, mix, skinTones } from '../shading';
 import type { AvatarGradient, AvatarStop, Pt } from '../types';
 
 import {
@@ -55,6 +57,18 @@ import {
 } from './flags';
 
 const NONE = 'none';
+
+/** borda de dentro do antebraço direito da tela em y (o nó da faixa termina antes dela), ou null */
+function armInnerR(an: Anatomy, y: number): number | null {
+  for (const limb of ['upperArm', 'forearm'] as const) {
+    const a = limbWidthAt(an, limb, 'R', 0);
+    const b = limbWidthAt(an, limb, 'R', 1);
+    if ((y - a.at[1]) * (y - b.at[1]) > 0) continue;
+    const q = limbWidthAt(an, limb, 'R', (y - a.at[1]) / (b.at[1] - a.at[1] || 1));
+    return q.at[0] - q.l;
+  }
+  return null;
+}
 
 /** ids do slot `pride` que este arquivo desenha */
 export const PRIDE_ITEMS = ['pin', 'heart_pin', 'band', 'face_paint', 'sash', 'cape', 'flag'] as const;
@@ -106,6 +120,19 @@ const INK = '#120812';
 /** gradiente linear entre dois pontos com paradas livres */
 function lin(a: Pt, b: Pt, s: readonly AvatarStop[]): AvatarGradient {
   return { t: 'l', x1: a[0], y1: a[1], x2: b[0], y2: b[1], s };
+}
+
+/** listras da bandeira num gradiente linear de paradas duras (uma camada; pra peças minúsculas no 'lite') */
+function stripeGrad(flag: FlagDef, a: Pt, b: Pt): AvatarGradient {
+  const total = flag.stripes.reduce((acc, x) => acc + (x.w ?? 1), 0) || 1;
+  const s: AvatarStop[] = [];
+  let acc = 0;
+  for (const st of flag.stripes) {
+    s.push([acc / total, st.hex]);
+    acc += st.w ?? 1;
+    s.push([Math.min(1, acc / total), st.hex]);
+  }
+  return lin(a, b, s);
 }
 
 /** superfície deslocada (sombra projetada) */
@@ -170,23 +197,30 @@ function lean(s: FlagSurface, lite: boolean): FlagSurface {
  * lugar do pin no peito (lado esquerdo de quem veste = direita da tela), logo abaixo da clavícula: perto da gola, longe
  * da costura da manga (no corpo cheio a manga começa cedo) e no vão entre as mechas da frente do cabelo longo
  */
-export function prideChestSpot(an: Anatomy): Pt {
+export function prideChestSpot(an: Anatomy, cfg?: Pick<AvatarConfig, 'hair'>): Pt {
+  // cabelo longo caindo na frente: a mecha da direita cobria metade do broche — vai pro vão do decote, um pouco abaixo
+  if (cfg && FRONT_FALL_HAIR.has(cfg.hair)) return [an.cx + an.collarW * 0.35 - 1.0, an.collarY + 6.4 + an.tilt.shoulder * 0.5];
   return [an.cx + an.collarW * 0.6 + 1.0, an.collarY + 5.2 + an.tilt.shoulder * 0.5];
 }
+
+/** penteados cujas mechas da frente caem por cima do peito */
+const FRONT_FALL_HAIR = new Set(['long', 'wavy', 'curtain', 'long_curly', 'braids', 'twists', 'dreads']);
 
 // ---------------------------------------------------------------------------------------------------------------
 // 3. costas: capa
 // ---------------------------------------------------------------------------------------------------------------
 
 /** geometria da capa (atrás): curvas de cima (ombros), do meio (cintura) e da barra (ondulada nas dobras) */
-function capeSurface(an: Anatomy): { surf: FlagSurface; folds: FlagFold[] } {
+function capeSurface(an: Anatomy, skirtHalf = 0): { surf: FlagSurface; folds: FlagFold[] } {
   const { cx } = an;
   const wS = an.w.shoulder;
   const sY = an.shoulderY;
   const tl = an.tilt.shoulder * 0.5;
   const hemY = an.seated ? an.hj + 9 : Math.min(124, an.joints.kneeL[1] + 13.5);
   const midY = an.seated ? an.waistY + 2 : an.waistY + 3;
-  const flare = 11.5 + (an.w.hip - 13) * 0.25;
+  // saia longa e larga na frente (vestido de gala, túnica): a capa abre mais que ela e emoldura dos dois lados (senão
+  // sobravam uma tira de listras colada no vestido de um lado e um triângulo do outro)
+  const flare = Math.max(11.5 + (an.w.hip - 13) * 0.25, an.seated ? 0 : skirtHalf + 3.5 - wS);
   // dobras em leque: vales (u, escuro) e cristas; a barra sobe nos vales e desce nas cristas
   const folds: FlagFold[] = [
     { u: 0.045, w: 0.022, k: 0.9, v0: 0.12 },
@@ -235,7 +269,9 @@ export function prideBack(ctx: LayerCtx): void {
   const { an } = ctx;
   const lite = isLite(ctx);
   const flag = flagOf(ctx.cfg.prideFlag);
-  const cape = capeSurface(an);
+  const top = ctx.cfg.top;
+  const skirtHalf = top === 'gown' ? an.w.hip * 1.55 + 5 : top === 'wizard' ? an.w.hip * 1.45 + 4 : 0;
+  const cape = capeSurface(an, skirtHalf);
   const surf = lean(cape.surf, lite);
   const { folds } = cape;
   const outline = drawFlagOn(ctx, flag, surf);
@@ -282,9 +318,11 @@ export function prideBack(ctx: LayerCtx): void {
 function flagPin(ctx: LayerCtx, flag: FlagDef): void {
   const { an } = ctx;
   const lite = isLite(ctx);
-  const [px, py] = prideChestSpot(an);
-  const len = 6.4;
-  const h = 4.3;
+  const [px, py] = prideChestSpot(an, ctx.cfg);
+  // no 'lite' (mapa 72×112, miniaturas) o pin cresce ~45%: com 1–3 px ele sumia
+  const k = lite ? 1.45 : 1;
+  const len = 6.4 * k;
+  const h = 4.3 * k;
   const rot = (-9 * Math.PI) / 180;
   const fly: Pt = [Math.cos(rot), Math.sin(rot)];
   const down: Pt = [-Math.sin(rot), Math.cos(rot)];
@@ -326,8 +364,8 @@ function flagPin(ctx: LayerCtx, flag: FlagDef): void {
 function heartPin(ctx: LayerCtx, flag: FlagDef): void {
   const { an } = ctx;
   const lite = isLite(ctx);
-  const [px, py] = prideChestSpot(an);
-  const r = 2.75;
+  const [px, py] = prideChestSpot(an, ctx.cfg);
+  const r = 2.75 * (lite ? 1.45 : 1);
   const rot = (-12 * Math.PI) / 180;
   const cy = py + 0.2;
   const heart = heartRot(px, cy, r, rot);
@@ -359,7 +397,10 @@ function sash(ctx: LayerCtx, flag: FlagDef): void {
   const ba = bodyAnchors(an);
   const S: Pt = [ba.shoulderL[0] + 1.7, ba.shoulderL[1] - 2.0];
   const xr = torsoXAt(an, 'R', an.hipY - 1.5);
-  const E: Pt = [xr - 4.6, an.hipY - 1.6 - an.tilt.hip * 0.25];
+  // o nó (e as pontas, que abrem ~3 pra direita) termina antes do braço: no corpo largo o braço encosta no quadril e
+  // escondia a roseta
+  const arm = armInnerR(an, an.hipY - 1.6);
+  const E: Pt = [Math.min(xr - 4.6, arm != null ? arm - 4.2 : Infinity), an.hipY - 1.6 - an.tilt.hip * 0.25];
   const d = norm(E[0] - S[0], E[1] - S[1]);
   // a faixa cai um pouco (barriga de tecido) pra baixo-esquerda no meio
   const sag = 1.5 + an.w.belly * 0.3;
@@ -369,9 +410,12 @@ function sash(ctx: LayerCtx, flag: FlagDef): void {
   // tralha (chevron/triângulo) no quadril, perto do nó; listras ao comprido (vermelho do lado do pescoço)
   const surf = lean(bandSurface([S, M, E], W, { mirror: true }), lite);
   const outline = surfacePath(surf);
-  // sombra da faixa na roupa (embaixo-esquerda)
-  ctx.push(surfacePath(shifted(surf, -0.5, 0.95)), INK, { o: 0.32, b: lite ? 0 : 0.8, cp: torso });
+  // sombra da faixa na roupa (embaixo-esquerda); em roupa clara ou metálica (armadura) mais forte e com contorno fino
+  // escuro — a faixa em tons pastel sumia em cima do prateado
+  const onLight = ctx.cfg.top === 'armor' || lum(ctx.col.top) > 0.62;
+  ctx.push(surfacePath(shifted(surf, -0.5, 0.95)), INK, { o: onLight ? 0.5 : 0.32, b: lite ? 0 : 0.8, cp: torso });
   drawFlagOn(ctx, flag, surf, { clip: torso });
+  if (onLight) ctx.stroke(outline, INK, lite ? 0.32 : 0.22, { o: 0.55, cp: torso });
   // cetim: luz no peito, escurece descendo pra barriga; dobras diagonais curtas no meio
   ctx.push(outline, INK, {
     cp: torso,
@@ -446,8 +490,10 @@ function sashKnot(ctx: LayerCtx, flag: FlagDef, E: Pt, d: Pt, W: number, lite: b
     const out = smoothPath(pts, true);
     tailsD += out;
     // sombra da ponta no que está embaixo (roupa/perna): leve, deslocada
-    ctx.push(out, INK, { o: 0.2, b: lite ? 0 : 0.6 });
+    if (!lite) ctx.push(out, INK, { o: 0.2, b: 0.6 });
     drawFlagOn(ctx, flag, s, { clip: out, overlay: false });
+    // no 'lite' a torção da fita (2 gradientes por ponta) não se lê
+    if (lite) continue;
     // a fita torce: clara de um lado, escura do outro; mais escura logo abaixo do nó
     const m0 = s.at(0.5, 0);
     const m1 = s.at(0.5, 1);
@@ -459,7 +505,7 @@ function sashKnot(ctx: LayerCtx, flag: FlagDef, E: Pt, d: Pt, W: number, lite: b
   // nó: rolo de tecido franzido por cima das pontas
   const knot = lean(bandSurface([P(-1.9, -0.6), P(0, 0.05), P(1.8, 0.5)], (u) => (2.5 + 1.1 * Math.sin(Math.PI * u)) * sc), lite);
   const kD = surfacePath(knot);
-  ctx.push(blob(K[0] + 0.4, K[1] + 1.1, 2.4 * sc, 1.4 * sc), INK, { o: 0.35, b: lite ? 0 : 0.6, cp: tailsD });
+  if (!lite) ctx.push(blob(K[0] + 0.4, K[1] + 1.1, 2.4 * sc, 1.4 * sc), INK, { o: 0.35, b: 0.6, cp: tailsD });
   drawFlagOn(ctx, flag, knot, { overlay: false });
   ctx.push(kD, INK, {
     gf: { t: 'r', cx: K[0] - 0.5 * sc, cy: K[1] - 0.6 * sc, r: 3.0 * sc, s: [[0, '#FFFFFF', 0.28], [0.45, '#FFFFFF', 0], [0.8, INK, 0.25], [1, INK, 0.5]] },
@@ -500,15 +546,17 @@ function capeFront(ctx: LayerCtx, flag: FlagDef): void {
         [1, INK, 0.3],
       ]),
     });
-    flagFolds(
-      ctx,
-      s,
-      [
-        { u: side === 'L' ? 0.62 : 0.38, w: 0.06, k: -0.8, slant: sg * 0.06 },
-        { u: side === 'L' ? 0.72 : 0.28, w: 0.05, k: 0.7, slant: sg * 0.06 },
-      ],
-      { clip: torso, o: 0.45, b: lite ? 0 : 0.35 },
-    );
+    if (!lite) {
+      flagFolds(
+        ctx,
+        s,
+        [
+          { u: side === 'L' ? 0.62 : 0.38, w: 0.06, k: -0.8, slant: sg * 0.06 },
+          { u: side === 'L' ? 0.72 : 0.28, w: 0.05, k: 0.7, slant: sg * 0.06 },
+        ],
+        { clip: torso, o: 0.45, b: 0.35 },
+      );
+    }
     if (!lite) ctx.stroke(surfaceLine(s, [[0, side === 'L' ? 0.06 : 0.94], [1, side === 'L' ? 0.06 : 0.94]]), '#FFFFFF', 0.3, { o: 0.3, cp: torso });
   }
   // broche: aro dourado + a bandeira inteira (com chevron/anel) em esmalte
@@ -516,6 +564,11 @@ function capeFront(ctx: LayerCtx, flag: FlagDef): void {
   ctx.push(blob(clasp[0] + 0.3, clasp[1] + 0.6, r + 0.5, r + 0.5), INK, { o: 0.42, b: lite ? 0 : 0.45, cp: torso });
   ctx.push(blob(clasp[0], clasp[1], r + 0.5, r + 0.5), GOLD_LINE, { gf: goldGrad(clasp[0] - r, clasp[1] - r, clasp[0] + r, clasp[1] + r) });
   const disc = blob(clasp[0], clasp[1], r, r);
+  if (lite) {
+    // broche de ~1,5 px: as listras viram UM gradiente de paradas duras (6–9 camadas recortadas → 1)
+    ctx.push(disc, flag.stripes[0]?.hex ?? '#FFFFFF', { gf: stripeGrad(flag, [clasp[0], clasp[1] - r], [clasp[0], clasp[1] + r]) });
+    return;
+  }
   const surf = boxSurface({ x: clasp[0] - r * 1.45, y: clasp[1] - r, w: r * 2.9, h: r * 2 });
   drawFlagOn(ctx, flag, surf, { clip: disc, ...(lite ? {} : { seams: { s: GOLD_LINE, w: 0.12, o: 0.85 } }) });
   ctx.push(disc, INK, { gf: { t: 'r', cx: clasp[0] - r * 0.3, cy: clasp[1] - r * 0.35, r: r * 1.5, s: [[0, '#FFFFFF', 0.25], [0.5, '#FFFFFF', 0], [1, INK, 0.3]] } });
@@ -553,9 +606,11 @@ export function prideWrist(ctx: LayerCtx): void {
   let nL: Pt = [-d[1], d[0]];
   if (nL[0] > 0) nL = [-nL[0], -nL[1]];
   const c = lw.at;
-  const Lp: Pt = [c[0] + nL[0] * (lw.l + 0.38), c[1] + nL[1] * (lw.l + 0.38)];
-  const Rp: Pt = [c[0] - nL[0] * (lw.r + 0.38), c[1] - nL[1] * (lw.r + 0.38)];
-  const H = 2.5;
+  // no 'lite' mais larga e alta (no mapa ela praticamente sumia)
+  const pad = lite ? 0.62 : 0.38;
+  const Lp: Pt = [c[0] + nL[0] * (lw.l + pad), c[1] + nL[1] * (lw.l + pad)];
+  const Rp: Pt = [c[0] - nL[0] * (lw.r + pad), c[1] - nL[1] * (lw.r + pad)];
+  const H = lite ? 3.6 : 2.5;
   const sag = 0.5;
   // ponto da pulseira: s atravessa o pulso (0 = esquerda), t vai do lado do cotovelo (0) ao da mão (1)
   const at = (s: number, t: number): Pt => {
@@ -652,7 +707,8 @@ export function prideHandFlag(ctx: LayerCtx): void {
     fly = [-1, 0.16];
     L = 0;
   }
-  const bot: Pt = [palm[0] - up[0] * 3.2, palm[1] - up[1] * 3.2];
+  // a ponta de baixo da haste sai embaixo do mindinho (antes terminava dentro da mão e a haste parecia encostada)
+  const bot: Pt = [palm[0] - up[0] * (open ? 3.2 : 6.2), palm[1] - up[1] * (open ? 3.2 : 6.2)];
   const top: Pt = [palm[0] + up[0] * len, palm[1] + up[1] * len];
   // pano preso logo abaixo da ponteira, voando pra fora e caindo de leve
   const hoist: Pt = [top[0] - up[0] * 0.7, top[1] - up[1] * 0.7];
@@ -681,11 +737,11 @@ export function prideHandFlag(ctx: LayerCtx): void {
   const tip: Pt = [top[0] + up[0] * 0.45, top[1] + up[1] * 0.45];
   ctx.push(blob(tip[0], tip[1], 0.7, 0.7), GOLD_LINE, { gf: goldBall(tip[0], tip[1], 0.7) });
   // a mão por cima da haste (dedos fechando nela): redesenha a mão com o mesmo volume do corpo
-  handOver(ctx, h, open);
+  handOver(ctx, h, open, up);
 }
 
 /** mão esquerda redesenhada por cima da haste (mesmas formas e gradiente de parts/body.ts) */
-function handOver(ctx: LayerCtx, h: ReturnType<typeof handShapes>, open: boolean): void {
+function handOver(ctx: LayerCtx, h: ReturnType<typeof handShapes>, open: boolean, up: Pt = [0, -1]): void {
   const { an } = ctx;
   const t = skinTones(ctx.col.skin);
   const lite = isLite(ctx);
@@ -708,6 +764,16 @@ function handOver(ctx: LayerCtx, h: ReturnType<typeof handShapes>, open: boolean
     ctx.push(h.nails, mix(t.lighter, '#FFE8E0', 0.4), { o: 0.6 });
   }
   ctx.push(h.web, t.deep, { o: 0.4, b: lite ? 0 : 0.35, cp: h.hand });
+  // pegada: os dedos dobram em volta da haste — vincos atravessando a mão perpendiculares à haste (cada dedo é uma
+  // faixa enrolada nela), sombra da haste saindo de dentro do punho e o polegar fechando por cima
+  const n: Pt = [-up[1], up[0]];
+  let wrap = '';
+  for (const k of [0.25, 0.5, 0.75]) {
+    const c: Pt = [h.palm[0] + (h.tip[0] - h.palm[0]) * k, h.palm[1] + (h.tip[1] - h.palm[1]) * k];
+    const w = 1.9 * hs;
+    wrap += taperPath([[c[0] - n[0] * w, c[1] - n[1] * w], [c[0] - up[0] * 0.25, c[1] - up[1] * 0.25], [c[0] + n[0] * w, c[1] + n[1] * w]], [0, 0.28, 0]);
+  }
+  ctx.push(wrap, t.deep, { o: lite ? 0.4 : 0.5, cp: h.hand });
   ctx.push(h.thumb, INK, { o: 0.22, b: lite ? 0 : 0.4 });
   ctx.push(h.thumb, t.base, { gf: thumbFill });
 }

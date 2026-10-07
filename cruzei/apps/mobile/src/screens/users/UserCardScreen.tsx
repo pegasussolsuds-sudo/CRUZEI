@@ -607,7 +607,7 @@ export function UserCardScreen() {
             </ScaleOnPress>
 
             <View ref={likeBtnRef} collapsable={false}>
-              <Glow color={colors.primary} spread={14} intensity={0.55} shape="circle" cycleMs={2200}>
+              <Glow color={colors.primary} spread={14} intensity={0.55} shape="circle" animated={false}>
                 <ScaleOnPress
                   onPress={() => onLike(false)}
                   pressedScale={0.9}

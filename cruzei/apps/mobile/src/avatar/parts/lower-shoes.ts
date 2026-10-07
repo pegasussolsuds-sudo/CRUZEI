@@ -14,7 +14,7 @@ import { blob, cylGradient, isLite, lodCtx, lum, mix, saturate, starPath } from 
 import type { AvatarGradient, Pt } from '../types';
 
 import { tonesOf } from './body';
-import { pantBlouseOverShaft, pantHemOverShoe } from './lower-bottoms';
+import { MID_BOOTS, pantBlouseOverShaft, pantHemOverShoe, shaftT } from './lower-bottoms';
 import { LONG_PANTS, SIDES, bbox, fabric, leatherTones, lowerKind, shinG, threadOf, type Tones } from './lower-common';
 
 type Proj = (u: number, v: number, h: number) => Pt;
@@ -319,10 +319,13 @@ function sneakerBase(sc: SC, o: SneakerOpts = {}): { body: string; outerAll: str
   const pts = footHull(fr, { ease: E, h0: midH - 0.2 });
   const body = hp(pts);
   ctx.push(body, c, { gf: upperGrad(sc, fr, pts, t, { hi: white ? '#FFFFFF' : t.light, mid: white ? '#F1F2F6' : t.base, lo: white ? '#B9BDCB' : t.deep }) });
-  const heel = hp(footHull(fr, { ease: E + 0.02, v1: 3.0, h1: 3.8 }));
-  ctx.push(heel, white ? '#D8DBE4' : mix(c, '#000000', 0.2), { cp: body, o: 0.95 });
-  const collar = hp(footHull(fr, { ease: E + 0.05, v1: 2.6, h0: fr.top(1.2) - 0.7 }));
-  ctx.push(collar, white ? '#C7CBD7' : mix(c, '#000000', 0.32), { cp: body, o: 0.9 });
+  // no 'lite' (pé de ~5–8 px) contraforte, colarinho, biqueira, lingueta e costura somem: só sola, cabedal e cadarço
+  if (!lite) {
+    const heel = hp(footHull(fr, { ease: E + 0.02, v1: 3.0, h1: 3.8 }));
+    ctx.push(heel, white ? '#D8DBE4' : mix(c, '#000000', 0.2), { cp: body, o: 0.95 });
+    const collar = hp(footHull(fr, { ease: E + 0.05, v1: 2.6, h0: fr.top(1.2) - 0.7 }));
+    ctx.push(collar, white ? '#C7CBD7' : mix(c, '#000000', 0.32), { cp: body, o: 0.9 });
+  }
   if (!lite && !o.noPanel) {
     const side: Pt[] = [];
     for (const v of [2.2, 4.0, 5.8, 7.4]) side.push(P(fr.outer(v) + e + 0.05, v, midH + 0.1 + (v - 2.2) * 0.14));
@@ -330,7 +333,7 @@ function sneakerBase(sc: SC, o: SneakerOpts = {}): { body: string; outerAll: str
   }
   const capPts = footHull(fr, { ease: E + 0.03, v0: 9.0, h0: midH - 0.3 });
   const cap = hp(capPts);
-  ctx.push(cap, white ? '#F6F7FA' : mix(c, '#FFFFFF', 0.06), { cp: body, o: 0.9 });
+  if (!lite) ctx.push(cap, white ? '#F6F7FA' : mix(c, '#FFFFFF', 0.06), { cp: body, o: 0.9 });
   if (!lite) {
     const seamU: Pt[] = [];
     for (let i = 0; i <= 8; i++) {
@@ -347,12 +350,12 @@ function sneakerBase(sc: SC, o: SneakerOpts = {}): { body: string; outerAll: str
   for (const v of vT) tongue.push(P(-0.95, v, fr.top(v) + 0.3 + (v < 1.6 ? 0.5 + up : 0)));
   for (const v of vT.slice().reverse()) tongue.push(P(0.95, v, fr.top(v) + 0.3 + (v < 1.6 ? 0.5 + up : 0)));
   const outerAll = hp(footHull(fr, { ease: E + 0.5 }));
-  ctx.push(hp(tongue), white ? '#E3E5EC' : mix(c, '#000000', 0.12), { cp: up ? undefined : outerAll });
+  if (!lite || up) ctx.push(hp(tongue), white ? '#E3E5EC' : mix(c, '#000000', 0.12), { cp: up ? undefined : outerAll });
   const stay = (g: number): Pt[] => [2.4, 3.8, 5.2, 6.6, 7.6].map((v) => P(g * 1.15, v, fr.top(v) + 0.22));
   if (!lite) ctx.push(taperPath(stay(-1), [0.5, 0.75, 0.75, 0.7, 0]) + taperPath(stay(1), [0.5, 0.75, 0.75, 0.7, 0]), white ? '#CDD1DC' : mix(c, '#000000', 0.25), { o: 0.9 });
   laces(sc, fr, o.laceVs ?? (lite ? [3.3, 5.5] : [2.9, 4.1, 5.3, 6.5]), { color: o.lace ?? (white ? '#FBFBFD' : '#F4F4F8'), eye: white ? '#7E8496' : '#2A2830' });
   // costura da entressola com o cabedal (o cabedal "senta" na sola)
-  {
+  if (!lite) {
     const seam: Pt[] = [];
     const seamO: Pt[] = [];
     for (let i = 0; i <= 10; i++) {
@@ -385,9 +388,13 @@ function sneakers(sc: SC): void {
 function hightops(sc: SC): void {
   const { ctx, lite, c, t } = sc;
   const white = lum(c) > 0.75;
-  const covered = pantsOn(ctx);
+  // calça reta/justa: franze por cima do cano e o colarinho acolchoado aparece embaixo da barra (senão o cano alto sai
+  // igual ao tênis); só a pantalona cobre o calçado todo
+  const tucked = pantsOn(ctx) && shaftT(ctx) != null;
+  const covered = pantsOn(ctx) && !tucked;
+  const T0 = tucked ? MID_BOOTS.hightops + 0.03 : 0.8;
   // o cano abraça o tornozelo (não abre em funil): folga pequena e boca quase do tamanho da canela
-  const sh = shaftPath(sc, 0.8, 0.8, 0.05, 0.45);
+  const sh = shaftPath(sc, T0, 0.8, 0.05, 0.45);
   if (!covered) {
   ctx.push(sh.d, c, { gf: shaftGrad(sc, white ? { ...t, light: '#FFFFFF', base: '#F1F2F6', shade: '#C3C7D3', deep: '#9EA3B4', bounce: '#D6D9E2' } : t, 1.2) });
   // colarinho acolchoado (rolo na boca do cano)
@@ -410,7 +417,8 @@ function hightops(sc: SC): void {
     lace += taperPath([[top.at[0] - 1.2, y - 0.2], [top.at[0], y + 0.15], [top.at[0] + 1.2, y + 0.05]], [0.38, 0.45, 0.38], { round: true });
   }
   if (!covered) ctx.push(lace, white ? '#FBFBFD' : '#F4F4F8', { o: 0.95 });
-  hem(sc, outerAll);
+  if (tucked) pantBlouseOverShaft(ctx, sc.s, MID_BOOTS.hightops);
+  else hem(sc, outerAll);
 }
 
 /** tênis neon (corrida): cabedal de malha, entressola esculpida lima com brilho, aba refletiva no calcanhar */
@@ -447,10 +455,12 @@ function runners(sc: SC): void {
 function boots(sc: SC): void {
   const { ctx, fr, P, lite, c } = sc;
   const t = leatherTones(c);
-  // calça comprida quebra por cima do cano (não aparece cano acima da barra)
-  const covered = pantsOn(ctx);
+  // calça reta/justa: franze por cima do cano e o colarinho aparece embaixo da barra (lê como bota, não sapato baixo);
+  // só a pantalona cobre o calçado
+  const tucked = pantsOn(ctx) && shaftT(ctx) != null;
+  const covered = pantsOn(ctx) && !tucked;
   if (!covered) {
-    const sh = shaftPath(sc, 0.82, 1.0, 0.3, 0.55);
+    const sh = shaftPath(sc, tucked ? MID_BOOTS.boots + 0.03 : 0.82, 1.0, 0.3, 0.55);
     ctx.push(sh.d, c, { gf: shaftGrad(sc, t, 1.3) });
     ctx.push(smoothPath([[sh.topL[0] - 0.25, sh.topL[1] - 0.2], [sh.topC[0], sh.topC[1] - 0.4], [sh.topR[0] + 0.25, sh.topR[1] - 0.2], [sh.topR[0] + 0.1, sh.topR[1] + 1.1], [sh.topC[0], sh.topC[1] + 0.8], [sh.topL[0] - 0.1, sh.topL[1] + 1.1]], true), mix(c, '#000000', 0.3));
   }
@@ -478,7 +488,8 @@ function boots(sc: SC): void {
     ctx.push(hk, '#D4C08A');
   }
   shine(sc, fr, body, { o: 0.32 });
-  hem(sc, hp(footHull(fr, { ease: 1.4 })));
+  if (tucked) pantBlouseOverShaft(ctx, sc.s, MID_BOOTS.boots);
+  else hem(sc, hp(footHull(fr, { ease: 1.4 })));
 }
 
 /** coturno: cano alto até o meio da canela, muitos ilhoses, colarinho acolchoado, alça atrás, sola tratorada grossa */
@@ -530,7 +541,10 @@ function texan(sc: SC): void {
   const { ctx, fr, P, lite, c, s } = sc;
   const { an } = ctx;
   const t = leatherTones(c);
-  const vamp = mix(c, '#2A1408', 0.38);
+  // pé no MESMO matiz do cano, só um tom abaixo (couro do pé mais gasto): nada de cano branco com pantufa cinza nem
+  // cano preto com pé marrom
+  const L = lum(c);
+  const vamp = mix(c, '#000000', L > 0.7 ? 0.1 : L < 0.08 ? 0.0 : 0.16);
   const tv = leatherTones(vamp);
   const T0 = 0.58;
   // cano justo na panturrilha com leve boca de sino e recorte em V descendo no meio da frente (o "scallop" do faroeste)
@@ -693,9 +707,11 @@ function instepU(sc: SC, fr: FootFrame, footClip: string, o: { vT: number; hSide
   const region = smoothPath([...mouth, P(fr.outer(v0) + 0.6, v0 - 0.4, 5.4), P(0, v0 - 1.6, 6.2), P(-fr.inner(v0) - 0.6, v0 - 0.4, 5.4)], true);
   const top = P(0.1, 4.8, fr.top(4.8));
   ctx.push(region, sk.base, { cp: footClip, gf: { t: 'r', cx: top[0] - sc.sg * 0.4, cy: top[1], r: 6 * fr.s, fx: top[0] - sc.sg * 0.6, fy: top[1] - 0.4, s: [[0, sk.lighter], [0.4, sk.light], [0.78, sk.base], [1, sk.shade]] } });
-  // sombra fina da borda do sapato na pele + linha da boca + decote dos dedos
-  if (!lite) ctx.push(taperPath(mouth.map((p) => [p[0], p[1] - 0.35] as SP), [0.2, 0.5, 0.6, 0.6, 0.6, 0.6, 0.6, 0.5, 0.2]), sk.deep, { o: 0.35, b: 0.25, cp: region });
-  ctx.stroke(smoothPath(mouth, false), mix(sc.c, '#000000', 0.45), 0.24, { o: 0.65 });
+  // sombra fina da borda do sapato na pele + linha da boca + decote dos dedos. De frente, a parte de trás da boca
+  // (em volta do calcanhar) fica escondida atrás do tornozelo: só o trecho da frente do U é traçado (sem "laçada")
+  const front = mouth.slice(2, -2);
+  if (!lite) ctx.push(taperPath(front.map((p) => [p[0], p[1] - 0.35] as SP), [0.2, 0.55, 0.6, 0.55, 0.2]), sk.deep, { o: 0.35, b: 0.25, cp: region });
+  ctx.stroke(smoothPath(front, false), mix(sc.c, '#000000', 0.45), 0.24, { o: 0.65 });
   if (!lite) {
     const c = P(-0.25, o.vT - 0.15, fr.top(o.vT) + 0.15);
     ctx.stroke(smoothPath([[c[0] - 0.35, c[1] - 0.55], [c[0], c[1] - 0.05], [c[0] + 0.3, c[1] - 0.5]], false), sk.deep, 0.16, { o: 0.5 });
@@ -713,10 +729,13 @@ function heels(sc: SC): void {
   const gnd = fr.P(0, 0.55, 0);
   ctx.push(taperPath([cup, [gnd[0], gnd[1] + 0.6]], [1.2, 0.4], { round: true }), mix(c, '#000000', 0.45));
   const foot = bareFoot(sc, fh, { toes: false });
-  const pts = footHull(fh, { ease: 0.42, toe: 1.6, wk: 0.92 });
-  const up = hp(pts);
-  ctx.push(up, c, { gf: upperGrad(sc, fh, pts, { ...t, light: mix(c, '#FFFFFF', 0.5) }) });
-  instepU(sc, fh, foot, { vT: 7.1, hSide: 1.7, v0: 2.0 });
+  // escarpim de frente: laterais baixas (o contraforte não sobe atrás do tornozelo) + biqueira fina inteira
+  const pts = footHull(fh, { ease: 0.42, toe: 1.6, wk: 0.92, topH: 1.75 });
+  const boxPts = footHull(fh, { ease: 0.42, toe: 1.6, wk: 0.92, v0: 6.2 });
+  const g = upperGrad(sc, fh, pts, { ...t, light: mix(c, '#FFFFFF', 0.5) });
+  const up = hp(pts) + hp(boxPts);
+  ctx.push(up, c, { gf: g });
+  instepU(sc, fh, foot, { vT: 6.5, hSide: 1.7, v0: 2.0 });
   // verniz: reflexo duro e fino na lateral e no bico (sem "olho" no meio)
   const side: Pt[] = [P(fh.outer(3.6) + 0.3, 3.6, 1.2), P(fh.outer(6) + 0.35, 6, 1.0), P(fh.outer(8.6) + 0.15, 8.6, 0.9)];
   ctx.push(taperPath(side, [0, 0.5, 0]), '#FFFFFF', { o: 0.75 });
@@ -843,54 +862,49 @@ function slides(sc: SC): void {
   hem(sc, hp(footHull(fr, { ease: 0.9 })));
 }
 
-/** plataforma: sola alta no tom do sapato (mais escura, com frisos e borda de luz), boneca de verniz com tira e fivela */
+/**
+ * plataforma: sola alta em camadas (mais clara que o cabedal, com faixa de luz no topo e frisos que marcam as camadas),
+ * boneca de verniz com tira fina e a fivela pequena na LATERAL (nada de dois "olhos" em volta da boca do sapato)
+ */
 function platform(sc: SC): void {
   const { ctx, fr, P, lite, c } = sc;
   const H = 2.5;
   const foot = bareFoot(sc, fr, { toes: false });
   const sp = footHull(fr, { ease: 0.85, h1: H, toe: 0.3 });
   const b = bbox(sp);
-  const soleC = lum(c) < 0.06 ? '#2E2A34' : mix(c, '#1A1018', 0.42);
+  const L = lum(c);
+  // sola: um tom acima do cabedal (preto → grafite, claro → um pouco mais escuro), pra ler como bloco de sola
+  const soleC = L < 0.08 ? '#56505E' : L > 0.7 ? mix(c, '#8A8090', 0.28) : mix(c, '#1A1018', 0.3);
   const sd = hp(sp);
-  ctx.push(sd, soleC, { gf: { t: 'l', x1: 0, y1: b.y, x2: 0, y2: b.y + b.h, s: [[0, mix(soleC, '#FFFFFF', 0.25)], [0.45, soleC], [1, mix(soleC, '#000000', 0.45)]] } });
-  if (!lite) {
-    let ribs = '';
-    for (const h of [0.75, 1.45]) {
-      const r: Pt[] = [];
-      for (let i = 0; i <= 10; i++) {
-        const k = -1 + (2 * i) / 10;
-        const v = 6.2 + (1 - k * k) * 5.4;
-        r.push(P(k * (k < 0 ? fr.inner(v) : fr.outer(v)) * 1.08 + k * 0.7, v, h));
-      }
-      ribs += smoothPath(r, false);
+  ctx.push(sd, soleC, { gf: { t: 'l', x1: 0, y1: b.y, x2: 0, y2: b.y + b.h, s: [[0, mix(soleC, '#FFFFFF', 0.3)], [0.45, soleC], [1, mix(soleC, '#000000', 0.45)]] } });
+  const ring = (h: number, k = 1.08): Pt[] => {
+    const r: Pt[] = [];
+    for (let i = 0; i <= 10; i++) {
+      const kk = -1 + (2 * i) / 10;
+      const v = 6.0 + (1 - kk * kk) * 5.6;
+      r.push(P(kk * (kk < 0 ? fr.inner(v) : fr.outer(v)) * k + kk * 0.7, v, h));
     }
-    ctx.stroke(ribs, mix(soleC, '#000000', 0.35), 0.2, { o: 0.6, cp: sd });
-  }
-  // borda de cima da sola (luz)
-  const lip: Pt[] = [];
-  for (let i = 0; i <= 10; i++) {
-    const k = -1 + (2 * i) / 10;
-    const v = 6.0 + (1 - k * k) * 5.6;
-    lip.push(P(k * (k < 0 ? fr.inner(v) : fr.outer(v)) * 1.08 + k * 0.7, v, H - 0.1));
-  }
-  ctx.stroke(smoothPath(lip, false), mix(soleC, '#FFFFFF', 0.4), 0.3, { o: 0.7, cp: sd });
+    return r;
+  };
+  // frisos das camadas (um no lite) e a faixa de luz no topo da plataforma
+  ctx.stroke(lite ? smoothPath(ring(1.1), false) : smoothPath(ring(0.75), false) + smoothPath(ring(1.45), false), mix(soleC, '#000000', 0.4), 0.22, { o: 0.6, cp: sd });
+  ctx.stroke(smoothPath(ring(H - 0.15), false), mix(soleC, '#FFFFFF', 0.55), lite ? 0.45 : 0.38, { o: 0.85, cp: sd });
   const t = leatherTones(c);
   const pts = footHull(fr, { ease: 0.62, h0: H - 0.2, toe: 0.3 });
   const up = hp(pts);
   const g = upperGrad(sc, fr, pts, { ...t, light: mix(c, '#FFFFFF', 0.45) });
   ctx.push(up, c, { gf: g });
-  instepU(sc, fr, foot, { vT: 7.4, hSide: H + 0.9, v0: 2.6 });
-  // tira de boneca no peito do pé com fivela do lado de fora
-  const sA = P(-fr.inner(4.4) - 0.45, 4.4, H + 0.9);
-  const sM = P(0, 4.6, fr.top(4.6) + 0.3);
-  const sB = P(fr.outer(4.4) + 0.45, 4.4, H + 0.9);
-  if (!lite) ctx.push(taperPath([[sA[0], sA[1] + 0.4], [sM[0], sM[1] + 0.5], [sB[0], sB[1] + 0.4]], [0.8, 0.9, 0.8]), '#000000', { o: 0.3, b: 0.25 });
-  ctx.push(taperPath([sA, sM, sB], [0.9, 1.0, 0.9], { round: true }), c, { gf: g });
-  ctx.push(ellipse(sB[0] - sc.sg * 0.1, sB[1], 0.48, 0.42), '#E2C77A');
-  if (!lite) ctx.push(ellipse(sB[0] - sc.sg * 0.1, sB[1], 0.22, 0.18), mix(c, '#000000', 0.5));
-  // verniz: reflexo fino no bico e na lateral
-  ctx.push(taperPath([P(-0.5, 9.4, H + 1.2), P(0.2, 10.4, H + 0.8), P(0.4, 11.1, H + 0.4)], [0, 0.45, 0]), '#FFFFFF', { o: 0.75 });
-  if (!lite) ctx.push(taperPath([P(fr.outer(5) + 0.4, 5, H + 0.4), P(fr.outer(8) + 0.3, 8, H + 0.3)], [0, 0.4, 0]), '#FFFFFF', { o: 0.5 });
+  instepU(sc, fr, foot, { vT: 7.0, hSide: H + 0.9, v0: 2.6 });
+  // tira de boneca fina no peito do pé; fivela pequena na lateral de fora, embaixo da ponta da tira
+  const sA = P(-fr.inner(4.0) - 0.45, 4.0, H + 0.9);
+  const sM = P(0, 4.2, fr.top(4.2) + 0.3);
+  const sB = P(fr.outer(4.0) + 0.45, 4.0, H + 0.9);
+  if (!lite) ctx.push(taperPath([[sA[0], sA[1] + 0.35], [sM[0], sM[1] + 0.45], [sB[0], sB[1] + 0.35]], [0.6, 0.7, 0.6]), '#000000', { o: 0.28, b: 0.25 });
+  ctx.push(taperPath([sA, sM, sB], [0.62, 0.7, 0.62], { round: true }), c, { gf: g });
+  const bk = P(fr.outer(3.6) + 0.55, 3.6, H + 0.6);
+  ctx.push(ellipse(bk[0], bk[1], 0.34, 0.3), '#D9BE72', { o: 0.9 });
+  // verniz: um reflexo fino só no bico
+  ctx.push(taperPath([P(-0.3, 9.6, H + 1.1), P(0.2, 10.5, H + 0.8), P(0.4, 11.1, H + 0.45)], [0, 0.4, 0]), '#FFFFFF', { o: 0.65 });
   hem(sc, hp(footHull(fr, { ease: 1.0 })));
 }
 

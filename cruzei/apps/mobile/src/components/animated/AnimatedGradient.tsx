@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { StyleSheet, type ViewStyle } from 'react-native';
 import { Canvas, LinearGradient, Rect, vec } from '@shopify/react-native-skia';
-import { Easing, cancelAnimation, useDerivedValue, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
+import { Easing, cancelAnimation, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import { colors } from '@cruzei/ui-mobile';
 
 export interface AnimatedGradientProps {
@@ -12,10 +12,12 @@ export interface AnimatedGradientProps {
   width: number;
   height: number;
   paused?: boolean;
+  /** voltas antes de parar (default 2): parado, o Canvas não redesenha (o giro eterno redesenhava a tela a 60 fps) */
+  cycles?: number;
 }
 
 /**
- * Gradiente linear que gira lentamente (Skia). Use como fundo de botões premium/paywall.
+ * Gradiente linear que gira lentamente (Skia) algumas voltas e para onde começou. Use como fundo de botões premium/paywall.
  * Ex.: <AnimatedGradient width={w} height={56} colorsList={[colors.accent, colors.secondary]} />
  */
 export function AnimatedGradient({
@@ -25,17 +27,20 @@ export function AnimatedGradient({
   width,
   height,
   paused = false,
+  cycles = 2,
 }: AnimatedGradientProps) {
   const t = useSharedValue(0);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
-    if (paused) {
+    if (paused || reduceMotion) {
       cancelAnimation(t);
       return;
     }
-    t.value = withRepeat(withTiming(1, { duration: cycleMs, easing: Easing.linear }), -1, false);
+    // cada volta vai de 0 a 1 (1 = 0 na rotação): termina no mesmo desenho
+    t.value = withRepeat(withTiming(1, { duration: cycleMs, easing: Easing.linear }), Math.max(1, Math.round(cycles)), false);
     return () => cancelAnimation(t);
-  }, [cycleMs, paused, t]);
+  }, [cycleMs, paused, reduceMotion, cycles, t]);
 
   const cx = width / 2;
   const cy = height / 2;

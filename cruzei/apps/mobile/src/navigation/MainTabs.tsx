@@ -24,6 +24,12 @@ export type MainTabParamList = {
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
+// Abas fora da tela congeladas (freezeOnBlur, react-native-screens): com o mapa aberto, mensagem chegando, /me novo,
+// posição mudando ou plano atualizando não re-renderizam Curtidas, Mensagens (com o chat aberto dentro), Premium e
+// Perfil escondidos — elas desenham uma vez, com o estado final, quando voltam pra frente. O congelamento espera um
+// render depois de sair da frente, então quem pausa com useIsFocused (palco do avatar, polling) ainda vê o false.
+// O mapa não congela: ele é a aba principal e o motor nativo conversa com a tela por eventos.
+
 export function MainTabs() {
   // iPhone com home indicator: soma o inset (no Android sem edge-to-edge é 0 → mesmo layout de antes)
   const insets = useSafeAreaInsets();
@@ -55,23 +61,25 @@ export function MainTabs() {
       })}
     >
       <Tab.Screen name="Map" component={MapScreen} options={{ tabBarLabel: 'Mapa' }} />
-      <Tab.Screen name="Likes" component={LikesScreen} options={{ tabBarLabel: 'Curtidas' }} />
+      <Tab.Screen name="Likes" component={LikesScreen} options={{ tabBarLabel: 'Curtidas', freezeOnBlur: true }} />
       <Tab.Screen
         name="Inbox"
         component={InboxStack}
         options={{
           tabBarLabel: 'Mensagens',
+          freezeOnBlur: true,
           tabBarBadge: badge > 0 ? (badge > 99 ? '99+' : badge) : undefined,
           tabBarBadgeStyle: { backgroundColor: colors.primary, color: colors.black, fontWeight: '800' },
           tabBarAccessibilityLabel: badge > 0 ? `Mensagens, ${badge} novas` : 'Mensagens',
         }}
       />
-      <Tab.Screen name="Paywall" component={PaywallScreen} options={{ tabBarLabel: 'Premium' }} />
+      <Tab.Screen name="Paywall" component={PaywallScreen} options={{ tabBarLabel: 'Premium', freezeOnBlur: true }} />
       <Tab.Screen
         name="Profile"
         component={ProfileStack}
         options={{
           tabBarLabel: 'Perfil',
+          freezeOnBlur: true,
           tabBarBadge: unreadNotices > 0 ? '' : undefined,
           tabBarBadgeStyle: styles.dot,
           tabBarAccessibilityLabel: unreadNotices > 0 ? `Perfil, ${unreadNotices} ${unreadNotices === 1 ? 'aviso novo' : 'avisos novos'}` : 'Perfil',

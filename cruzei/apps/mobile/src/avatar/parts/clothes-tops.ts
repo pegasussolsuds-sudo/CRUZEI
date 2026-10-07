@@ -4,7 +4,7 @@
 
 import type { AvatarConfig } from '@cruzei/shared-types';
 
-import { headAnchors, smoothPath, taperPath, torsoPath, torsoXAt, type Anatomy, type Side, type SP } from '../anatomy';
+import { armAxis, headAnchors, smoothPath, taperPath, torsoPath, torsoXAt, type Anatomy, type Side, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { LIME, fmt, luminance, shade } from '../geometry';
 import { blob, creases, isLite, lodCtx, lum, metal, mix, plaid, speckle, starPath, stripes } from '../shading';
@@ -275,13 +275,17 @@ function skirt(ctx: LayerCtx, top: number, hemY: number, flare: number, c: strin
     const u = i / (waves * 2);
     hem.push([wr + (wl - wr) * u, hemY + (i % 2 ? 0.55 : -0.25) + Math.sin(u * Math.PI) * 0.8 + (r() - 0.5) * 0.3]);
   }
+  // as quinas da barra são as próprias pontas da onda, em canto macio (um ponto extra no mesmo x logo acima fazia o
+  // spline passar do ponto: risquinho/espeto de 3–5 px pra fora em cada quina)
+  hem[0] = [hem[0][0], hem[0][1], 0.35];
+  hem[hem.length - 1] = [hem[hem.length - 1][0], hem[hem.length - 1][1], 0.35];
   const pts: SP[] = [
     [xw('L', top, 0.3), top - tl, 0.5],
     [xw('R', top, 0.3), top + tl, 0.5],
     [xw('R', hipY, 1.2) + flare * 0.15, hipY + tl],
-    [wr, hemY - 1.0],
+    [(xw('R', hipY, 1.2) + flare * 0.15) * 0.35 + wr * 0.65, hipY + (hemY - hipY) * 0.6],
     ...hem,
-    [wl, hemY - 1.0],
+    [(xw('L', hipY, 1.2) - flare * 0.15) * 0.35 + wl * 0.65, hipY + (hemY - hipY) * 0.6],
     [xw('L', hipY, 1.2) - flare * 0.15, hipY - tl],
   ];
   const d = smoothPath(pts);
@@ -411,15 +415,20 @@ export function topSleeveChain(ctx: LayerCtx, s: Side): SP[] {
   return shoulderChain(ctx.an, topCut(ctx).pts, s, easeOf(ctx, d), ctx.cfg.top === 'oversized' ? 1.8 : 0);
 }
 
-/** faixa iridescente (holográfico): ciano → violeta → magenta → lima, discreta, recortada */
+/**
+ * reflexo iridescente (holográfico) da manga: o MESMO gradiente do ombro ao punho (eixo do braço inteiro) e a faixa mais
+ * larga que a manga, então braço e antebraço continuam um no outro (antes: dois retângulos de borda dura por manga, com
+ * um vão no cotovelo, que pareciam adesivos)
+ */
 function holoSheen(ctx: LayerCtx, clip: string, a: Pt, b: Pt, w: number): void {
-  const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-  const nx = -(b[1] - a[1]) / L;
-  const ny = (b[0] - a[0]) / L;
-  const m = lerp2(a, b, 0.5);
-  ctx.push(taperPath([a, m, b], [w * 0.9, w * 1.1, w * 0.9]), '#9B7BFF', {
-    gf: { t: 'l', x1: m[0] - nx * w, y1: m[1] - ny * w - 6, x2: m[0] + nx * w, y2: m[1] + ny * w + 6, s: [[0, '#5EF2FF'], [0.35, '#B08BFF'], [0.65, '#FF6AD5'], [1, '#C8FF7A']] },
-    o: 0.38,
+  const s: Side = a[0] < ctx.an.cx ? 'L' : 'R';
+  const ax = armAxis(ctx.an, s);
+  const L = Math.hypot(ax.b[0] - ax.a[0], ax.b[1] - ax.a[1]) || 1;
+  const ux = (ax.b[0] - ax.a[0]) / L;
+  const uy = (ax.b[1] - ax.a[1]) / L;
+  ctx.push(taperPath([a, lerp2(a, b, 0.5), b], [w * 1.6, w * 1.7, w * 1.6], { round: true }), '#9B7BFF', {
+    gf: { t: 'l', x1: ax.a[0] - ux * 2, y1: ax.a[1] - uy * 2, x2: ax.b[0] + ux * 2, y2: ax.b[1] + uy * 2, s: [[0, '#5EF2FF'], [0.35, '#B08BFF'], [0.65, '#FF6AD5'], [1, '#C8FF7A']] },
+    o: 0.3,
     cp: clip,
   });
 }
@@ -855,7 +864,8 @@ function armorPlates(ctx: LayerCtx, cut: Cut): void {
     ctx.push(rv, trim, { o: 0.95 });
   }
   // a cor da peça aparece no saiote de tecido por baixo das placas (barra)
-  ctx.push(smoothPath([[cx - ch - 1, cut.hemY - 1.6], [cx + ch + 1, cut.hemY - 1.6], [cx + ch + 1, cut.hemY + 2], [cx - ch - 1, cut.hemY + 2]]), mix(cut.color, '#7A1E2C', lum(cut.color) > 0.6 ? 0.6 : 0.1), { o: 0.9, cp: cut.d });
+  // (cor clara: couro neutro escuro — misturar com vinho dava um rosa sujo que lia como camiseta por baixo)
+  ctx.push(smoothPath([[cx - ch - 1, cut.hemY - 1.6], [cx + ch + 1, cut.hemY - 1.6], [cx + ch + 1, cut.hemY + 2], [cx - ch - 1, cut.hemY + 2]]), lum(cut.color) > 0.6 ? '#5E5246' : mix(cut.color, '#000000', 0.2), { o: 0.9, cp: cut.d });
 }
 
 /** cava das peças sem manga: borda debruada e sombra sobre a pele do ombro */
@@ -1057,16 +1067,24 @@ function neckFree(cfg: AvatarConfig): boolean {
   return !cfg.neck || cfg.neck === NONE;
 }
 
-/** gravata-borboleta (também usada pelo item de pescoço) */
-export function bowTie(ctx: LayerCtx, x: number, y: number, color: string): void {
+/**
+ * gravata-borboleta (também usada pelo item de pescoço): `k` = escala; `rim` = borda clara fina + brilho de cetim (lê
+ * em cima de roupa escura)
+ */
+export function bowTie(ctx: LayerCtx, x: number, y: number, color: string, k = 1, rim?: string): void {
   const lite = isLite(ctx);
   const t = toneOf(color, 'satin');
-  const wing = (g: number) => smoothPath([[x + g * 0.6, y - 0.5], [x + g * 2.8, y - 1.5], [x + g * 3.4, y - 0.2], [x + g * 2.9, y + 1.3], [x + g * 0.6, y + 0.6]]);
+  const P = (dx: number, dy: number): SP => [x + dx * k, y + dy * k];
+  const wing = (g: number) => smoothPath([P(g * 0.6, -0.5), P(g * 2.8, -1.5), P(g * 3.4, -0.2), P(g * 2.9, 1.3), P(g * 0.6, 0.6)]);
   ctx.push(wing(-1) + wing(1), '#0A0610', { o: 0.3, ...(lite ? {} : { b: 0.35 }) });
-  ctx.push(wing(-1), color, { gf: { t: 'l', x1: x - 3.4, y1: y - 1.5, x2: x, y2: y + 1.3, s: [[0, t.light], [0.5, t.base], [1, t.shade]] } });
-  ctx.push(wing(1), color, { gf: { t: 'l', x1: x + 3.4, y1: y - 1.5, x2: x, y2: y + 1.3, s: [[0, t.base], [0.6, t.shade], [1, t.deep]] } });
-  ctx.push(smoothPath([[x - 0.75, y - 0.7], [x + 0.75, y - 0.7], [x + 0.6, y + 0.8], [x - 0.6, y + 0.8]]), color, { gf: { t: 'l', x1: x - 0.8, y1: y, x2: x + 0.8, y2: y, s: [[0, t.light], [1, t.shade]] } });
-  if (!lite) ctx.stroke(smoothPath([[x - 2.6, y - 0.7], [x - 1.4, y - 0.1]], false) + smoothPath([[x + 2.6, y - 0.7], [x + 1.4, y - 0.1]], false), t.deep, 0.2, { o: 0.5 });
+  ctx.push(wing(-1), color, { gf: { t: 'l', x1: x - 3.4 * k, y1: y - 1.5 * k, x2: x, y2: y + 1.3 * k, s: [[0, t.light], [0.5, t.base], [1, t.shade]] } });
+  ctx.push(wing(1), color, { gf: { t: 'l', x1: x + 3.4 * k, y1: y - 1.5 * k, x2: x, y2: y + 1.3 * k, s: [[0, t.base], [0.6, t.shade], [1, t.deep]] } });
+  if (rim) {
+    ctx.stroke(wing(-1) + wing(1), rim, lite ? 0.3 : 0.2, { o: 0.75 });
+    ctx.push(taperPath([P(-2.9, -0.9), P(-1.8, -0.75), P(-0.9, -0.3)], [0, 0.45 * k, 0]), '#FFFFFF', { o: 0.45 });
+  }
+  ctx.push(smoothPath([P(-0.75, -0.7), P(0.75, -0.7), P(0.6, 0.8), P(-0.6, 0.8)]), color, { gf: { t: 'l', x1: x - 0.8 * k, y1: y, x2: x + 0.8 * k, y2: y, s: [[0, t.light], [1, t.shade]] } });
+  if (!lite) ctx.stroke(smoothPath([P(-2.6, -0.7), P(-1.4, -0.1)], false) + smoothPath([P(2.6, -0.7), P(1.4, -0.1)], false), t.deep, 0.2, { o: 0.5 });
 }
 
 // ===============================================================================================================

@@ -11,10 +11,17 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { IMG_SCALE, type MapImageRef } from '../contracts';
+import { monoNow } from '../../../../services/frameBatch';
 
 /** pasta dentro do cache do app (o sistema pode limpar quando faltar espaço); mude o sufixo se o nome mudar */
 const DIR_NAME = 'mapimg-v1';
 const DEFAULT_BUDGET_MS = 8;
+/**
+ * um desenho é indivisível (figura ~15–25 ms no aparelho): a fatia que passou do orçamento devolve a thread JS por até
+ * isto antes da próxima, pra o React, os toques e o motor rodarem entre um desenho e outro. Numa rajada (primeira abertura,
+ * refetch com gente nova) a thread JS fica ~25% livre em vez de colada no raster, sem atrasar muito as figuras
+ */
+const MAX_REST_MS = 8;
 /** limites da pasta: passou disso, a limpeza apaga os mais antigos até ~75% (pra não limpar de novo logo) */
 const MAX_FILES = 4000;
 const MAX_BYTES = 80 * 1024 * 1024;
@@ -25,6 +32,20 @@ const CLEANUP_DELAY_MS = 5000;
 const LOW_PRIORITY = 1e9;
 /** chave cujo render/escrita falhou resolve null na hora por um tempo: o motor repede a cada quadro */
 const FAIL_RETRY_MS = 5000;
+/**
+ * chaves prontas guardadas em memória (LRU). Cada quadro de animação é uma chave nova: sem teto o mapa crescia a sessão
+ * inteira. A que sai continua no disco e volta na próxima consulta (o get confere a listagem em memória: um hash da chave).
+ * Cada entrada é a chave (~150–250 caracteres) + o caminho: 2500 eram ~1 MB de heap; 1200 cobrem com folga os quadros das
+ * figuras que animam ao mesmo tempo (até 9 × ~14 quadros por passada × 2 lados)
+ */
+const MAX_REFS = 1200;
+/** a cada tantas escritas, confere de novo os limites da pasta (os quadros de animação enchem o disco numa sessão longa) */
+const TRIM_EVERY_WRITES = 1000;
+/**
+ * sem desenhar nada por tanto tempo (fila vazia), quem pediu (onIdle) solta os caches que só servem pra desenhar: paths do
+ * Skia, camadas montadas dos avatares. Com o mapa parado e os quadros da passada já no disco não há o que desenhar
+ */
+export const IDLE_RELEASE_MS = 20_000;
 
 /** estatística simples pro log de __DEV__ */
 export interface ImageStoreStats {
@@ -80,6 +101,8 @@ function warn(msg: string, e?: unknown): void {
   // eslint-disable-next-line no-console
   console.warn('[mapimg] ' + msg + detail);
 }
+
+const noRender = (): Uint8Array | null => null;
 
 function hex8(h: number): string {
   return (h >>> 0).toString(16).padStart(8, '0');
@@ -149,10 +172,21 @@ export class ImageStore {
   private dirPath = '';
   /** nomes .png na pasta (listagem inicial + o que escrevemos); null = listagem falhou, pergunta arquivo a arquivo */
   private onDisk: Set<string> | null = null;
-  /** nomes entregues nesta sessão: a limpeza nunca apaga (o mapa relê o arquivo se recarregar o estilo) */
-  private readonly live = new Set<string>();
+  /** nomes registrados enquanto uma limpeza roda (ela não apaga); null = nenhuma limpeza em curso */
+  private guard: Set<string> | null = null;
   /** chave -> quando falhou (render null/erro ou escrita) */
   private readonly failedAt = new Map<string, number>();
+  /** quem ainda usa caminhos que podem ter saído do LRU (o motor: imagens no <Images> e estáticas guardadas) */
+  private readonly keepers = new Set<() => Iterable<string>>();
+  /**
+   * tamanho estimado da pasta: dir.size (uma vez) ou 0 se abriu vazia, + o que escrevemos; a contagem por arquivo da
+   * limpeza corrige. null = ainda não medido. Evita o dir.size (nativo síncrono, soma até 4000 arquivos) a cada
+   * TRIM_EVERY_WRITES escritas na thread JS, a mesma que rasteriza as figuras
+   */
+  private diskBytes: number | null = null;
+  private readonly idlers = new Set<() => void>();
+  private lastRenderAt = 0;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   private renders = 0;
   private renderMs = 0;
@@ -169,7 +203,13 @@ export class ImageStore {
    */
   get(key: string): MapImageRef | undefined {
     const ready = this.refs.get(key);
-    if (ready || this.disk !== 'open' || !this.onDisk || this.pending.has(key)) return ready;
+    if (ready) {
+      // renova a posição no LRU (o Map guarda a ordem de inserção)
+      this.refs.delete(key);
+      this.refs.set(key, ready);
+      return ready;
+    }
+    if (this.disk !== 'open' || !this.onDisk || this.pending.has(key)) return ready;
     const name = mapImageFileName(key);
     return this.onDisk.has(name) ? this.register(key, name, IMG_SCALE, true) : undefined;
   }
@@ -201,7 +241,8 @@ export class ImageStore {
       }
       const failed = this.failedAt.get(key);
       if (failed !== undefined) {
-        if (Date.now() - failed < FAIL_RETRY_MS) return Promise.resolve(null);
+        // (monotônico: com o Date, o relógio do aparelho voltando 1 h travava a chave por 1 h — figura presa na silhueta)
+        if (monoNow() - failed < FAIL_RETRY_MS) return Promise.resolve(null);
         this.failedAt.delete(key);
       }
       // o primeiro pedido abre e lista a pasta (uma chamada nativa); daí em diante a checagem é em memória
@@ -248,9 +289,53 @@ export class ImageStore {
     const job = this.pending.get(key);
     if (!job) return;
     this.pending.delete(key);
+    // o job fica no array da fila até o agendador passar por ele: solta já o desenho (que segura a definição do avatar)
+    job.render = noRender;
     job.resolve(null);
     // só sobrou pedido cancelado na fila: descarta de uma vez
     if (this.pending.size === 0) this.queue.length = 0;
+  }
+
+  /**
+   * a limpeza nunca apaga os caminhos que `fn` devolver (absolutos, como em MapImageRef.path). O LRU das chaves só se
+   * renova no get: a figura parada que o motor guarda (e reusa sem get) saía dele e o PNG sumia no meio da sessão — a
+   * volta da animação pra estática (ou o estilo recarregando) pedia um arquivo que não existia mais e a figura
+   * congelava no último quadro. Devolve quem desliga.
+   */
+  keep(fn: () => Iterable<string>): () => void {
+    this.keepers.add(fn);
+    return () => {
+      this.keepers.delete(fn);
+    };
+  }
+
+  /** `fn` roda quando a fila passa IDLE_RELEASE_MS sem desenhar nada (cada desenho rearma); devolve quem desliga */
+  onIdle(fn: () => void): () => void {
+    this.idlers.add(fn);
+    return () => {
+      this.idlers.delete(fn);
+    };
+  }
+
+  private armIdle(): void {
+    this.lastRenderAt = monoNow();
+    if (this.idleTimer !== null || !this.idlers.size) return;
+    const check = (): void => {
+      const left = IDLE_RELEASE_MS - (monoNow() - this.lastRenderAt);
+      if (left > 0 || this.pending.size > 0) {
+        this.idleTimer = setTimeout(check, Math.max(1000, left));
+        return;
+      }
+      this.idleTimer = null;
+      for (const fn of this.idlers) {
+        try {
+          fn();
+        } catch (e) {
+          warn('idle', e);
+        }
+      }
+    };
+    this.idleTimer = setTimeout(check, IDLE_RELEASE_MS);
   }
 
   /** orçamento (ms) de cada fatia do agendador; um render sempre roda inteiro, mesmo se passar */
@@ -284,15 +369,16 @@ export class ImageStore {
 
   // ---- agendador ----
 
-  private schedule(): void {
+  private schedule(delay = 0): void {
     if (this.timer !== null) return;
-    this.timer = setTimeout(this.pump, 0);
+    this.timer = setTimeout(this.pump, delay);
   }
 
   private readonly pump = (): void => {
     this.timer = null;
     this.slices++;
-    const deadline = now() + this.budgetMs;
+    const start = now();
+    const deadline = start + this.budgetMs;
     while (this.queue.length > 0) {
       if (this.dirty) {
         this.queue.sort((a, b) => b.priority - a.priority || b.seq - a.seq);
@@ -304,7 +390,10 @@ export class ImageStore {
       this.run(job);
       if (now() >= deadline) break;
     }
-    if (this.queue.length > 0) this.schedule();
+    if (this.queue.length > 0) {
+      const used = now() - start;
+      this.schedule(used > this.budgetMs ? Math.min(MAX_REST_MS, used) : 0);
+    }
   };
 
   private run(job: Job): void {
@@ -321,7 +410,7 @@ export class ImageStore {
     }
     if (!ref && this.disk === 'open') {
       if (this.failedAt.size > 2000) this.failedAt.clear(); // só uma trava contra repetição, não histórico
-      this.failedAt.set(job.key, Date.now());
+      this.failedAt.set(job.key, monoNow());
     }
     job.resolve(ref);
   }
@@ -338,6 +427,7 @@ export class ImageStore {
     }
     const t1 = now();
     this.renders++;
+    this.armIdle();
     this.renderMs += t1 - t0;
     if (t1 - t0 > this.maxRenderMs) this.maxRenderMs = t1 - t0;
     if (!bytes || bytes.length === 0) {
@@ -353,14 +443,29 @@ export class ImageStore {
     }
     this.writes++;
     this.writeMs += now() - t1;
-    return this.register(job.key, job.name, job.scale, false);
+    if (this.diskBytes !== null) this.diskBytes += bytes.length;
+    const ref = this.register(job.key, job.name, job.scale, false);
+    if (this.writes % TRIM_EVERY_WRITES === 0 && this.onDisk) {
+      const names = Array.from(this.onDisk);
+      setTimeout(() => this.cleanup(names), 0);
+    }
+    return ref;
   }
 
   private register(key: string, name: string, scale: number, fromDisk: boolean): MapImageRef {
     const ref: MapImageRef = { path: this.dirPath + name, scale };
+    this.refs.delete(key);
     this.refs.set(key, ref);
-    this.live.add(name);
+    if (this.refs.size > MAX_REFS) {
+      // solta o décimo mais antigo de uma vez (não a cada registro)
+      let n = Math.ceil(MAX_REFS / 10);
+      for (const k of this.refs.keys()) {
+        if (n-- <= 0) break;
+        this.refs.delete(k);
+      }
+    }
     if (this.onDisk) this.onDisk.add(name);
+    this.guard?.add(name);
     if (fromDisk) this.diskHits++;
     return ref;
   }
@@ -401,6 +506,7 @@ export class ImageStore {
       this.dir = dir;
       this.dirPath = toPath(dir.uri).replace(/\/+$/, '') + '/';
       this.onDisk = names ? new Set(names.filter(isPng)) : null;
+      this.diskBytes = names && names.length === 0 ? 0 : null;
       this.disk = 'open';
       if (names && names.length > 0) {
         const found = names;
@@ -415,24 +521,48 @@ export class ImageStore {
   }
 
   /**
-   * Limpeza (uma vez por sessão, em segundo plano): apaga .tmp que sobraram de queda no meio da escrita e, se a
-   * pasta passou de MAX_FILES ou MAX_BYTES, os PNGs mais antigos (data de modificação) até ~75% do limite.
-   * Nunca apaga o que já foi entregue nesta sessão.
+   * nomes que a limpeza não apaga: os das chaves em memória (o que o mapa usou por último) e os que quem usa segura
+   * (keep: o que está registrado no <Images>, que o nativo relê se o estilo recarregar, e as estáticas guardadas)
+   */
+  private liveNames(): Set<string> {
+    const out = new Set<string>();
+    const add = (p: string) => out.add(p.slice(p.lastIndexOf('/') + 1));
+    for (const r of this.refs.values()) add(r.path);
+    for (const fn of this.keepers) {
+      try {
+        for (const p of fn()) add(p);
+      } catch (e) {
+        warn('keep', e);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Limpeza (em segundo plano, 5 s depois de abrir e de novo a cada TRIM_EVERY_WRITES escritas): apaga .tmp que
+   * sobraram de queda no meio da escrita e, se a pasta passou de MAX_FILES ou MAX_BYTES, os PNGs mais antigos (data de
+   * modificação) até ~75% do limite. Nunca apaga o que está nas chaves em memória nem o que alguém segura (keep).
    */
   private cleanup(names: string[]): void {
     const dir = this.dir;
-    if (!dir) return;
+    if (!dir || this.guard) return; // uma de cada vez
+    this.guard = new Set();
     try {
       const tmps = names.filter((n) => n.endsWith('.tmp'));
       const pngs = names.filter(isPng);
       let over = pngs.length > MAX_FILES;
       if (!over) {
-        // uma chamada nativa que soma a pasta inteira; roda uma vez só
-        const size = dir.size;
-        over = typeof size === 'number' && size > MAX_BYTES;
+        // dir.size = uma chamada nativa síncrona que soma a pasta inteira: só quando ainda não há estimativa (em geral a
+        // limpeza da abertura); as do meio da sessão usam a conta em memória
+        if (this.diskBytes === null) {
+          const size = dir.size;
+          this.diskBytes = typeof size === 'number' ? size : null;
+        }
+        over = this.diskBytes !== null && this.diskBytes > MAX_BYTES;
       }
       if (!over) {
         if (tmps.length > 0) this.deleteSliced(dir, tmps);
+        else this.guard = null;
         return;
       }
       const stats: FileStat[] = [];
@@ -453,27 +583,31 @@ export class ImageStore {
           let bytes = 0;
           for (const s of stats) bytes += s.size;
           const victims = tmps.slice();
+          const live = this.liveNames();
           for (const s of stats) {
             if (files <= MAX_FILES * TRIM_TO && bytes <= MAX_BYTES * TRIM_TO) break;
-            if (this.live.has(s.name)) continue;
+            if (live.has(s.name)) continue;
             victims.push(s.name);
             files--;
             bytes -= s.size;
           }
+          this.diskBytes = bytes;
           this.deleteSliced(dir, victims);
         },
       );
     } catch (e) {
+      this.guard = null;
       warn('limpeza', e);
     }
   }
 
   private deleteSliced(dir: Directory, names: string[]): void {
     let removed = 0;
+    const live = this.liveNames();
     this.sliced(
       names,
       (name) => {
-        if (this.live.has(name)) return; // entregue depois da seleção: fica
+        if (live.has(name) || this.guard?.has(name)) return; // usado depois da seleção: fica
         try {
           new File(dir, name).delete();
           removed++;
@@ -483,6 +617,7 @@ export class ImageStore {
         if (this.onDisk) this.onDisk.delete(name);
       },
       () => {
+        this.guard = null;
         if (__DEV__ && removed > 0) {
           // eslint-disable-next-line no-console
           console.info('[mapimg] limpeza apagou ' + removed + ' arquivo(s)');

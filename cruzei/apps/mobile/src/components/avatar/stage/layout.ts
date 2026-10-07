@@ -8,6 +8,7 @@
 // A aura e o fundo podem desenhar no canvas inteiro (transbordam a caixa do avatar).
 
 import { AVATAR_BUST_VIEWBOX, AVATAR_VIEWBOX } from '../../../avatar/layers';
+import type { Mat } from '../../../avatar/rig';
 
 export const STAGE_INNER = 0.86;
 export const STAGE_TOP = 0.09;
@@ -53,4 +54,14 @@ export function stageLayout(mode: 'full' | 'bust', size: number, bustVb: StageBo
   const ox = (w - vb.w * s) / 2;
   const oy = h * STAGE_TOP;
   return { w, h, s, ox, oy, body: { x: ox, y: oy, w: vb.w * s, h: vb.h * s }, base: [s, 0, ox, 0, s, oy, 0, 0, 1] };
+}
+
+/**
+ * matriz 2x3 do grupo (avatar/rig.ts) com a translação no grid de pixels quando ela é só translação. `grid` = px da tela
+ * por unidade do viewBox. Parado (ou sentado na cena) o sprite cai num pixel inteiro e sai nítido; girando, não mexe.
+ */
+export function snapToGrid(m: Mat, grid: number): Mat {
+  'worklet';
+  if (m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 && grid > 0) return [1, 0, 0, 1, Math.round(m[4] * grid) / grid, Math.round(m[5] * grid) / grid];
+  return m;
 }

@@ -272,14 +272,17 @@ export function contact(ctx: LayerCtx, cx: number, cy: number, rx: number, ry: n
 
 /**
  * tubo metálico/pintado (traço com volume): sombra larga, corpo e um fio de luz deslocado pra cima-esquerda.
- * `d` aberto. Em lite, só corpo + luz.
+ * `d` aberto. Em lite (mapa, ~0,75 px por unidade) o fio de luz só entra se tiver ≥ 0,5 unidade (tubo de 1,9+); o fino
+ * vira sub-pixel e só custava uma camada por tubo.
  */
 export function tube(ctx: LayerCtx, d: string, w: number, base: string, o: { hi?: string; lo?: string; cp?: string; shine?: number } = {}): void {
   const lo = o.lo ?? shade(base, -0.45);
   const hi = o.hi ?? mix(base, '#FFFFFF', 0.55);
   ctx.stroke(d, lo, w, { cp: o.cp });
   ctx.stroke(d, base, w * 0.72, { cp: o.cp });
-  if (w >= 0.5) ctx.stroke(d, hi, Math.max(0.22, w * 0.26), { o: o.shine ?? 0.75, cp: o.cp, ...(isLite(ctx) ? {} : {}) });
+  const hw = Math.max(0.22, w * 0.26);
+  if (w < 0.5 || (isLite(ctx) && hw < 0.5)) return;
+  ctx.stroke(d, hi, hw, { o: o.shine ?? 0.75, cp: o.cp });
 }
 
 /** desloca um path aberto de pontos (pra fio de luz em tubo curvo) */

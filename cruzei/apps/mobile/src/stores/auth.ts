@@ -1,3 +1,4 @@
+import { replaceEqualDeep } from '@tanstack/react-query';
 import { AppState } from 'react-native';
 import { create } from 'zustand';
 import type { AccountClaim, Gender, LoginResponse, Orientation, PhoneReleaseReason, ShowMe, User } from '@cruzei/shared-types';
@@ -11,6 +12,15 @@ import type {
   AccountDeletionResponse,
   AccountDeletionRestored,
 } from '@cruzei/shared-types';
+
+/**
+ * /me igual ao que já está no store devolve o MESMO objeto (e as partes que não mudaram mantêm a referência): quem lê
+ * `s.user` (mapa, navegação, chat…) não re-renderiza a cada /me repetido — curtida recebida, match e o perfil buscam o
+ * /me de novo a toda hora.
+ */
+function sameIfEqual(prev: User | null, next: User): User {
+  return replaceEqualDeep(prev, next) as User;
+}
 
 function statusOf(err: unknown): number | undefined {
   return (err as { response?: { status?: number } })?.response?.status;
@@ -274,7 +284,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       const me = await api.get('/me');
       // deslogou enquanto o /me voava: descarta
       if (gen !== sessionGen) return;
-      set({ user: me.data });
+      set({ user: sameIfEqual(get().user, me.data) });
     },
 
     ensureMe() {
@@ -306,7 +316,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     },
 
     setUser(user) {
-      set({ user });
+      set({ user: sameIfEqual(get().user, user) });
     },
 
     async logout() {

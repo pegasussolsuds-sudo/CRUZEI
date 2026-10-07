@@ -11,13 +11,14 @@
 // Tudo sai das âncoras da anatomia (bodyAnchors, torsoXAt, larguras do tronco): acompanha os 6 corpos e a pose sentada
 // (o grupo do tronco desce junto).
 
-import { bodyAnchors, handShapes, sampleSpline, smoothPath, taperPath, torsoPath, torsoXAt, type Anatomy, type Side, type SP } from '../anatomy';
+import { bodyAnchors, handShapes, limbWidthAt, sampleSpline, smoothPath, taperPath, torsoPath, torsoXAt, type Anatomy, type Side, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { ellipse } from '../geometry';
 import { blob, cylGradient, isLite, lodCtx, mix } from '../shading';
 import type { AvatarGradient, Pt } from '../types';
 
 import { tonesOf } from './body';
+import { outerDef, topDef } from './clothes-kit';
 import { SIDES, fabric, leatherTones, threadOf } from './lower-common';
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -158,6 +159,25 @@ function torsoOcclusion(ctx: LayerCtx, clip: string, o = 0.5): void {
 /** recorte do tronco pra sombras de contato */
 const torsoClip = (an: Anatomy): string => torsoPath(an, { ease: 0.7 });
 
+/**
+ * borda de DENTRO do braço (pele + manga) em y, ou null se o braço não passa nessa altura: o que fica na frente do
+ * tronco mas atrás do braço (cinto da pochete) termina aqui em vez de passar por cima do antebraço
+ */
+function armInnerX(ctx: LayerCtx, s: Side, y: number): number | null {
+  const { an, cfg } = ctx;
+  const o = outerDef(cfg);
+  const e = o && o.sl !== 'none' ? o.sEase : (topDef(cfg).sEase ?? 0.4);
+  for (const limb of ['upperArm', 'forearm'] as const) {
+    const a = limbWidthAt(an, limb, s, 0);
+    const b = limbWidthAt(an, limb, s, 1);
+    if ((y - a.at[1]) * (y - b.at[1]) > 0) continue;
+    const t = (y - a.at[1]) / (b.at[1] - a.at[1] || 1);
+    const q = limbWidthAt(an, limb, s, t);
+    return s === 'L' ? q.at[0] + q.r + e + 0.2 : q.at[0] - q.l - e - 0.2;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // entradas
 // ---------------------------------------------------------------------------------------------------------------
@@ -224,9 +244,12 @@ function backpackBack(ctx: LayerCtx): void {
   const t = fabric(PACK);
   const top = an.collarY - 4.4;
   const wTop = w.chest - 3;
-  const wMid = w.chest + 0.6;
+  // o corpo fica dentro da silhueta do tronco (só o topo aparece acima dos ombros): nada de mancha escura solta no vão
+  // entre o braço e a cintura nem bloco saindo do lado do braço
   const yBot = an.hipY - 1.5;
-  const wBot = Math.max(w.waist + 3.4, w.chest - 0.2);
+  const inside = (y: number) => Math.min(torsoXAt(an, 'R', y, -0.6) - cx, cx - torsoXAt(an, 'L', y, -0.6));
+  const wMid = Math.min(w.chest + 0.6, inside(an.armpitY + 1.5));
+  const wBot = Math.min(Math.max(w.waist + 3.4, w.chest - 0.2), inside(yBot - 5), inside(yBot));
   const half: SP[] = [
     [cx - wTop * 0.45, top - 0.5],
     [cx - wTop * 0.92, top + 1.2],
@@ -241,20 +264,6 @@ function backpackBack(ctx: LayerCtx): void {
   // tampa de cima (painel mais claro com o zíper em arco) e base mais escura
   ctx.push(blob(cx, top + 2.8, wTop * 1.05, 3.4), t.light, { o: 0.35, b: lite ? 0 : 1.0, cp: d });
   ctx.push(blob(cx, yBot, wBot * 1.05, 3.5), t.deep, { o: 0.4, b: lite ? 0 : 1.2, cp: d });
-  // bolsos laterais (bojo saindo da silhueta embaixo, com elástico na boca)
-  for (const s of SIDES) {
-    const g = gOf(s);
-    const px = cx + g * (wBot + 0.2);
-    const pk = smoothPath([[px - g * 2.6, yBot - 9.5], [px + g * 1.1, yBot - 8.8], [px + g * 1.5, yBot - 4], [px + g * 0.6, yBot - 0.6], [px - g * 2.4, yBot - 0.4]], true);
-    ctx.push(pk, mix(PACK, '#000000', 0.12), { gf: { t: 'l', x1: px - 3, y1: 0, x2: px + 2, y2: 0, s: [[0, t.base], [1, s === 'L' ? t.light : t.deep]] } });
-    if (!lite) {
-      // malha do bolso e elástico
-      let mesh = '';
-      for (let i = 0; i < 4; i++) mesh += `M${(px - g * 2.4).toFixed(2)},${(yBot - 7.8 + i * 1.8).toFixed(2)}l${(g * 3.8).toFixed(2)},1.2`;
-      ctx.stroke(mesh, '#000000', 0.16, { o: 0.35, cp: pk });
-      ctx.stroke(smoothPath([[px - g * 2.5, yBot - 9.1], [px + g * 1.2, yBot - 8.5]], false), mix(PACK, '#FFFFFF', 0.25), 0.4, { o: 0.7 });
-    }
-  }
   // zíper em arco no topo + puxadores pendurados
   if (!lite) {
     const z: SP[] = [];
@@ -385,10 +394,7 @@ function crossbody(ctx: LayerCtx): void {
   const sL = shoulderPt(an, 'L', 0.55);
   const mid: Pt = [(sL[0] + ringL[0]) / 2 + 0.6, (sL[1] + ringL[1]) / 2 + 0.6];
   strap(ctx, [[sL[0] - 0.3, sL[1] - 1.4], sL, mid, ringL], { w: 1.05, color: mix(C, '#000000', 0.1), shadow: clip, stitch: true });
-  // a ponta da direita volta pra trás pela lateral
-  const yR = b.y0 - 2.4;
-  const xR = torsoXAt(an, 'R', yR) + 1.2;
-  strap(ctx, [ringR, [(ringR[0] + xR) / 2 + 0.2, (ringR[1] + yR) / 2 - 0.2], [xR, yR]], { w: 1.05, color: mix(C, '#000000', 0.22), cp: clip });
+  // a alça termina na argola da direita (antes ela seguia até a lateral e virava um toco por cima do antebraço)
   leatherBag(ctx, b, C, { clasp: 'turn' });
   let rings = '';
   for (const r of [ringL, ringR]) rings += ellipse(r[0], r[1] + 0.15, 0.55, 0.45);
@@ -402,7 +408,11 @@ function crossbody(ctx: LayerCtx): void {
 const CANVAS = '#E6DCC4';
 
 function toteBox(an: Anatomy): { x0: number; x1: number; y0: number; y1: number } {
-  const x0 = torsoXAt(an, 'R', an.waistY) - 4.2;
+  // pende pelo lado de FORA do braço/quadril (no corpo de cintura fina o braço fica bem pra fora da cintura: presa na
+  // cintura, a bolsa sumia inteira atrás do braço); ~4 unidades ficam atrás do antebraço
+  const fa = limbWidthAt(an, 'forearm', 'R', 0.75);
+  const armOut = fa.at[0] + fa.r;
+  const x0 = Math.max(torsoXAt(an, 'R', an.waistY) - 4.2, torsoXAt(an, 'R', an.hipY) - 3.5, armOut - 4.2);
   return { x0, x1: x0 + clamp(13 + an.w.hip * 0.1, 13, 16), y0: an.waistY - 4, y1: an.hipY + 7.5 };
 }
 
@@ -454,10 +464,11 @@ function toteFront(ctx: LayerCtx): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// clutch (envelope acetinado champanhe com fecho de pedra; na mão esquerda, ou na correntinha se a mão está ocupada)
+// clutch (envelope acetinado caramelo com fecho de pedra; na mão esquerda, ou na correntinha se a mão está ocupada)
 // ---------------------------------------------------------------------------------------------------------------
 
-const CLUTCH = '#1E1B24';
+/** caramelo acetinado: lê em cima de calça preta e blazer escuro (o preto sumia) e do vestido branco (o creme sumia) */
+const CLUTCH = '#C4915A';
 
 /** a mão esquerda pode segurar a clutch? */
 export function clutchHandFree(ctx: LayerCtx): boolean {
@@ -487,37 +498,44 @@ export function drawClutchInHand(ctx: LayerCtx): void {
     const L = Math.hypot(ux, uy) || 1;
     ux /= L;
     uy /= L;
-    // eixo comprido da clutch = perpendicular aos dedos
-    let ax = -uy;
-    let ay = ux;
-    if (ax < 0) {
-      ax = -ax;
-      ay = -ay;
+    // eixo comprido QUASE PARALELO aos dedos (girado ~16 graus pra fora): a bolsa fica na mão, atrás dos dedos, sai um
+    // pouco dos dois lados da mão e passa da ponta dos dedos — a mão abraça a bolsa (antes: bloco atravessado no pulso)
+    const th = -0.28;
+    const ax = ux * Math.cos(th) - uy * Math.sin(th);
+    const ay = ux * Math.sin(th) + uy * Math.cos(th);
+    let nx = -ay;
+    let ny = ax;
+    if (nx < 0) {
+      nx = -nx;
+      ny = -ny;
     }
-    const c: Pt = [h.palm[0] + ux * 1.2, h.palm[1] + uy * 1.2];
-    const hl = 5.2;
-    const hh = 2.3;
-    const P = (a: number, b: number, s?: number): SP => (s == null ? [c[0] + ax * a + ux * b, c[1] + ay * a + uy * b] : [c[0] + ax * a + ux * b, c[1] + ay * a + uy * b, s]);
-    // corpo de cetim preto (um pouco mais largo embaixo), brilho acetinado na diagonal
-    const body = smoothPath([P(-hl + 0.3, -hh, 0.4), P(hl - 0.3, -hh, 0.4), P(hl + 0.3, hh * 0.3), P(hl - 0.4, hh, 0.6), P(-hl + 0.4, hh, 0.6), P(-hl - 0.3, hh * 0.3)], true);
-    ctx.push(body, CLUTCH, { gf: { t: 'l', x1: c[0] - ax * hl, y1: c[1] - ay * hl - hh, x2: c[0] + ax * hl, y2: c[1] + ay * hl + hh, s: [[0, '#4A4454'], [0.3, '#2C2834'], [0.65, CLUTCH], [1, '#0C0A10']] } });
+    // centro um pouco pro lado de fora da mão (a bolsa aparece além do dorso) e abaixo da palma
+    const c: Pt = [h.palm[0] + ux * 3.0 - nx * 0.7, h.palm[1] + uy * 3.0 - ny * 0.7];
+    const hl = 4.5;
+    const hh = 3.0;
+    const P = (a: number, b: number, s?: number): SP => (s == null ? [c[0] + ax * a + nx * b, c[1] + ay * a + ny * b] : [c[0] + ax * a + nx * b, c[1] + ay * a + ny * b, s]);
+    const lt = { light: '#EED3A8', base: CLUTCH, shade: '#93673A', deep: '#5A3C20' };
+    // envelope de cetim caramelo: retângulo macio, brilho acetinado na diagonal e borda escura fina
+    const body = smoothPath([P(-hl, -hh + 0.4, 0.5), P(-hl + 0.4, -hh, 0.5), P(hl - 0.4, -hh - 0.1, 0.5), P(hl, -hh + 0.4, 0.5), P(hl, hh - 0.4, 0.5), P(hl - 0.4, hh + 0.1, 0.5), P(-hl + 0.4, hh, 0.5), P(-hl, hh - 0.4, 0.5)], true);
+    const g0 = P(0, -hh);
+    const g1 = P(0, hh);
+    ctx.push(body, CLUTCH, { gf: { t: 'l', x1: g0[0], y1: g0[1], x2: g1[0], y2: g1[1], s: [[0, lt.light], [0.35, lt.base], [0.78, lt.shade], [1, lt.deep]] } });
+    if (!lite) ctx.push(taperPath([P(hl * 0.7, -hh * 0.6), P(0, -hh * 0.15), P(-hl * 0.6, hh * 0.45)], [0.3, 1.2, 0.3]), '#FFFFFF', { o: 0.35, b: 0.4, cp: body });
+    ctx.stroke(body, lt.deep, lite ? 0.3 : 0.2, { o: 0.7 });
+    // moldura dourada no topo (lado do pulso) com o fecho de beijinho
+    const frame = taperPath([P(-hl + 0.2, -hh + 0.2), P(-hl - 0.15, 0), P(-hl + 0.2, hh - 0.2)], [0.45, 0.6, 0.45], { round: true });
+    ctx.push(frame, '#E2BE5E', { gf: metalGrad(c[0] - hl, c[1] - hl, hl * 2, hl * 2, 'gold') });
     if (!lite) {
-      ctx.push(taperPath([P(-hl * 0.65, hh * 0.7), P(-hl * 0.15, -hh * 0.1), P(hl * 0.3, -hh * 0.75)], [0.4, 1.3, 0.3]), '#B9B2CC', { o: 0.32, b: 0.4, cp: body });
-      ctx.push(taperPath([P(-hl + 0.6, hh - 0.5), P(0, hh - 0.25), P(hl - 0.6, hh - 0.5)], [0.3, 0.9, 0.3]), '#000000', { o: 0.4, b: 0.3, cp: body });
+      const k1 = P(-hl - 0.55, -0.45);
+      const k2 = P(-hl - 0.55, 0.45);
+      ctx.push(ellipse(k1[0], k1[1], 0.4, 0.4) + ellipse(k2[0], k2[1], 0.4, 0.4), '#E2BE5E', { gf: metalGrad(k1[0] - 1, k1[1] - 1, 2, 2, 'gold') });
     }
-    // fecho de beijinho: moldura dourada no topo + duas bolinhas no meio
-    const frame = taperPath([P(-hl + 0.2, -hh + 0.25), P(0, -hh - 0.15), P(hl - 0.2, -hh + 0.25)], [0.5, 0.62, 0.5], { round: true });
-    ctx.push(frame, '#E2BE5E', { gf: metalGrad(c[0] - hl, c[1] - hh - 1, hl * 2, 2, 'gold') });
-    const k1 = P(-0.5, -hh - 0.6);
-    const k2 = P(0.5, -hh - 0.6);
-    ctx.push(ellipse(k1[0], k1[1], 0.42, 0.42) + ellipse(k2[0], k2[1], 0.42, 0.42), '#E2BE5E', { gf: metalGrad(c[0] - 1, k1[1] - 0.5, 2, 1, 'gold') });
-    if (!lite) ctx.push(ellipse(k1[0] - 0.12, k1[1] - 0.14, 0.13, 0.13) + ellipse(k2[0] - 0.12, k2[1] - 0.14, 0.13, 0.13), '#FFFFFF', { o: 0.85 });
-    // a mão por cima (dedos fechando na clutch)
+    // a mão por cima (dedos fechando na bolsa) e a sombra dela no cetim
     const t = tonesOf(ctx);
     const hs = an.spec.hand;
-    ctx.push(h.hand, '#140A0C', { o: 0.25, b: lite ? 0 : 0.45, cp: body });
+    ctx.push(h.hand, '#140A0C', { o: 0.28, ...(lite ? {} : { b: 0.45 }), cp: body });
     ctx.push(h.hand, t.base, { gf: cylGradient([h.palm[0] - ux * 4, h.palm[1] - uy * 4], h.tip, 2.4 * hs, 2.4 * hs, { light: t.light, base: t.base, shade: t.shade }) });
-    ctx.push(blob(h.tip[0], h.tip[1], 2.6 * hs, 1.4 * hs), mix(t.shade, t.blush, 0.25), { o: 0.4, b: lite ? 0 : 0.6, cp: h.hand });
+    ctx.push(blob(h.tip[0], h.tip[1], 2.6 * hs, 1.4 * hs), mix(t.shade, t.blush, 0.25), { o: 0.4, ...(lite ? {} : { b: 0.6 }), cp: h.hand });
     ctx.push(h.grooves.join(''), t.deep, { o: lite ? 0.45 : 0.6 });
     if (!lite) ctx.push(h.nails, mix(t.lighter, '#FFE8E0', 0.4), { o: 0.6 });
   });
@@ -553,10 +571,20 @@ function fanny(ctx: LayerCtx): void {
   const h = 5.4;
   const xc = cx + 0.9;
   const tilt = an.tilt.hip * 0.25;
-  // cinto
-  const bl: Pt = [torsoXAt(an, 'L', y - 1.4) - 0.2, y - 1.2 - tilt];
-  const br: Pt = [torsoXAt(an, 'R', y - 1.4) + 0.2, y - 1.2 + tilt];
-  strap(ctx, [bl, [cx, y - 0.6], br], { w: 1.0, color: '#1A1C22', shadow: clip, cp: clip });
+  // cinto: contorna a cintura e SOME atrás dos braços — termina na borda de dentro do antebraço/manga (antes passava
+  // por cima dos dois antebraços e das mangas de jaqueta e puffer), largura constante, sem ponta afinando em espeto
+  const yb = y - 1.2;
+  const endX = (s: Side): number => {
+    const tx = torsoXAt(an, s, y - 1.4) + (s === 'L' ? -0.2 : 0.2);
+    const ax = armInnerX(ctx, s, yb);
+    if (ax == null) return tx;
+    return s === 'L' ? Math.max(tx, ax) : Math.min(tx, ax);
+  };
+  const bl: Pt = [endX('L'), yb - tilt];
+  const br: Pt = [endX('R'), yb + tilt];
+  const beltSpine: SP[] = [bl, [(bl[0] + cx) / 2, y - 0.85 - tilt * 0.5], [cx, y - 0.6], [(br[0] + cx) / 2, y - 0.85 + tilt * 0.5], br];
+  ctx.push(taperPath(beltSpine.map((p) => [p[0] + 0.3, p[1] + 0.6] as SP), [1.1, 1.2, 1.2, 1.2, 1.1]), '#0A0610', { o: 0.32, ...(lite ? {} : { b: 0.6 }), cp: clip });
+  ctx.push(taperPath(beltSpine, [1.0, 1.0, 1.0, 1.0, 1.0]), '#1A1C22', { gf: acrossGrad(beltSpine, 0.5, [[0, '#4A4E5A'], [0.4, '#1A1C22'], [0.85, '#0E0F14'], [1, '#050608']]) });
   buckle(ctx, [xc - w / 2 - 1.9, y - 1.0 - tilt * 0.5], 1.7, 1.15, 0.05);
   // corpo em meia-lua
   const pts: SP[] = [[xc - w / 2, y - h * 0.48 - tilt, 0.5], [xc + w / 2, y - h * 0.5 + tilt, 0.5], [xc + w / 2 + 0.5, y + h * 0.05], [xc + w * 0.3, y + h * 0.56], [xc - w * 0.3, y + h * 0.58], [xc - w / 2 - 0.5, y + h * 0.05]];
@@ -950,39 +978,36 @@ function jetpackBack(ctx: LayerCtx): void {
   const { an } = ctx;
   const lite = isLite(ctx);
   const { cx } = an;
-  // tanques altos: a tampa e a faixa lima aparecem acima dos ombros; bocais na cintura, chama saindo em diagonal
+  // tanques altos atrás das costas: a tampa e a faixa lima aparecem acima dos ombros; o corpo dos tanques fica dentro
+  // da silhueta (nada de bloco solto entre o braço e a cintura). Bocais e chamas ficam atrás do tronco, junto da coluna,
+  // com brilho curto (antes as chamas saíam na altura das mãos e pareciam tochas)
   const yT = an.shoulderY - 10;
   const yB = an.waistY - 1;
   const r = 3.3;
-  const plate = smoothPath(sym(cx, [[cx - 4, yT + 4], [cx - an.w.chest + 2, yT + 5.5], [cx - an.w.chest + 2, yB - 1], [cx - 4, yB + 1]]), true, 0.6);
+  const plate = smoothPath(sym(cx, [[cx - 4, yT + 4], [cx - an.w.chest + 3, yT + 5.5], [cx - an.w.chest + 3, yB - 1], [cx - 4, yB + 1]]), true, 0.6);
   ctx.push(plate, '#3A404E', { gf: metalGrad(cx - an.w.chest, yT, an.w.chest * 2, yB - yT, 'silver') });
   for (const s of SIDES) {
     const g = gOf(s);
-    const x = cx + g * (an.w.chest + 0.2);
-    const fy = yB + 3.6;
-    // chama: halo laranja, núcleo creme e brilho ciano, abrindo pra fora
-    // a ponta da chama sai da silhueta mesmo no quadril largo (senão o fogo fica todo escondido atrás do corpo)
-    const tipX = g < 0 ? Math.min(x - 4.4, torsoXAt(an, s, fy + 17, 6.5)) : Math.max(x + 4.4, torsoXAt(an, s, fy + 17, 6.5));
-    const f0: Pt = [x, fy - 0.4];
-    const f2: Pt = [tipX, fy + 17];
-    const f1: Pt = [x + (tipX - x) * 0.5, fy + 8];
-    if (!lite) ctx.push(blob(f1[0] + g * 0.4, fy + 8, 4.0, 9.5, -g * 0.24), '#00E5FF', { o: 0.2, b: 2.2 });
-    ctx.push(taperPath([f0, f1, f2], [3.0, 2.3, 0]), '#FF8A2A', { o: 0.8, b: lite ? 0 : 1.2 });
-    ctx.push(taperPath([f0, [x + (tipX - x) * 0.28, fy + 5], [x + (tipX - x) * 0.55, fy + 10]], [1.7, 1.1, 0]), '#FFF2C0', { o: 0.95, b: lite ? 0 : 0.35 });
-    // bocal (cone cromado)
-    const noz = smoothPath([[x - 1.8, yB - 0.5, 0.4], [x + 1.8, yB - 0.5, 0.4], [x + 2.4, fy, 0.3], [x - 2.4, fy, 0.3]], true, 0.4);
-    ctx.push(noz, '#2A2E38', { gf: metalGrad(x - 2.4, yB, 4.8, 4, 'chrome') });
-    if (!lite) ctx.push(ellipse(x, fy - 0.1, 2.2, 0.55), '#FFB060', { o: 0.85 });
+    const x = cx + g * Math.min(an.w.chest - r - 0.6, Math.abs(torsoXAt(an, s, an.armpitY + 2, -0.4) - cx) - r);
+    const fy = yB + 3.2;
+    const fx = cx + g * 3.4;
+    // chama curta saindo do bocal pra baixo (atrás do quadril: só o brilho escapa)
+    if (!lite) ctx.push(blob(fx, fy + 5, 2.6, 5.5), '#00E5FF', { o: 0.16, b: 1.6 });
+    ctx.push(taperPath([[fx, fy - 0.4], [fx, fy + 4], [fx + g * 0.3, fy + 8]], [2.2, 1.6, 0]), '#FF8A2A', { o: 0.8, ...(lite ? {} : { b: 1.0 }) });
+    ctx.push(taperPath([[fx, fy - 0.4], [fx, fy + 2.6], [fx, fy + 5]], [1.2, 0.8, 0]), '#FFF2C0', { o: 0.95, ...(lite ? {} : { b: 0.3 }) });
+    // bocal (cone cromado) embaixo da placa, junto da coluna
+    const noz = smoothPath([[fx - 1.4, yB - 0.5, 0.4], [fx + 1.4, yB - 0.5, 0.4], [fx + 1.9, fy, 0.3], [fx - 1.9, fy, 0.3]], true, 0.4);
+    ctx.push(noz, '#2A2E38', { gf: metalGrad(fx - 2, yB, 4, 4, 'chrome') });
     // tanque: cápsula com tampa redonda, metal escovado
     const tank = smoothPath([[x - r, yT + r], [x - r * 0.7, yT + 0.6], [x, yT - 0.4], [x + r * 0.7, yT + 0.6], [x + r, yT + r], [x + r, yB, 0.5], [x - r, yB, 0.5]], true);
     ctx.push(tank, '#A6AEBC', { gf: { t: 'l', x1: x - r, y1: 0, x2: x + r, y2: 0, s: [[0, '#6A7282'], [0.18, '#F2F5FA'], [0.4, '#B7BFCC'], [0.75, '#6E7686'], [1, '#3E4452']] } });
     // faixa lima perto da tampa (aparece acima do ombro) e anel escuro
     const by = yT + 4.6;
-    ctx.push(smoothPath([[x - r, by - 0.75], [x, by - 0.35], [x + r, by - 0.75], [x + r, by + 0.75], [x, by + 1.15], [x - r, by + 0.75]], true, 0.6), '#7FFF00', { o: 0.95, cp: tank });
+    const bandD = smoothPath([[x - r, by - 0.75], [x, by - 0.35], [x + r, by - 0.75], [x + r, by + 0.75], [x, by + 1.15], [x - r, by + 0.75]], true, 0.6);
+    ctx.push(bandD, '#7FFF00', { o: 0.95, cp: tank });
     if (!lite) {
-      ctx.push(smoothPath([[x - r, by - 0.75], [x, by - 0.35], [x + r, by - 0.75], [x + r, by + 0.75], [x, by + 1.15], [x - r, by + 0.75]], true, 0.6), '#7FFF00', { o: 0.35, b: 0.8 });
-      ctx.stroke(smoothPath([[x - r, yT + 2.4], [x, yT + 2.8], [x + r, yT + 2.4]], false) + smoothPath([[x - r, yB - 1.6], [x, yB - 1.2], [x + r, yB - 1.6]], false), '#2A2E38', 0.3, { o: 0.7, cp: tank });
-      ctx.push(ellipse(x - r * 0.55, by + 2.2, 0.28, 0.28) + ellipse(x + r * 0.55, by + 2.2, 0.28, 0.28), '#2A2E38', { o: 0.7 });
+      ctx.push(bandD, '#7FFF00', { o: 0.35, b: 0.8 });
+      ctx.stroke(smoothPath([[x - r, yT + 2.4], [x, yT + 2.8], [x + r, yT + 2.4]], false), '#2A2E38', 0.3, { o: 0.7, cp: tank });
       ctx.push(blob(x - r * 0.4, yT + 1.4, 0.9, 1.3), '#FFFFFF', { o: 0.65, b: 0.3, cp: tank });
     }
     torsoOcclusion(ctx, tank, 0.4);

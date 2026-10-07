@@ -9,10 +9,10 @@
 
 import { CROWN_DY, faceDims, hairLiftOf, headAnchors, headPath, headPts, sampleSpline, smoothPath, taperPath, type HeadAnchors, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
-import { blob, isLite, lum, mix } from '../shading';
+import { blob, isLite, keepsBlur, lum, mix } from '../shading';
 import type { AvatarGradient, AvatarLayer, AvatarStop, Pt } from '../types';
 
-export { blob, isLite, lum, mix, smoothPath, taperPath, type SP };
+export { blob, isLite, keepsBlur, lum, mix, smoothPath, taperPath, type SP };
 
 /** centro (y) da elipse do crânio e o raio vertical dela (cabeça unitária) */
 export const SKULL_CY = -4.4;
@@ -89,6 +89,11 @@ export interface HeadFrame {
   head: string;
   /** cabeça + cabelo rente (recorte das sombras de contato: nada vaza pro fundo) */
   near: string;
+  /**
+   * chapéu escuro sobre cabelo escuro (preto/marinho sobre preto/castanho-escuro): sem ajuda, chapéu e cabelo viram uma
+   * mancha só na miniatura — a copa ganha luz de recorte no topo e nas laterais e o brilho fica mais forte
+   */
+  pop: boolean;
   /** x do contorno da cabeça à direita (avatar) numa altura y (avatar) */
   headX(y: number): number;
 }
@@ -98,7 +103,8 @@ const frameCache = new WeakMap<object, HeadFrame>();
 export function headFrame(ctx: LayerCtx): HeadFrame {
   const key = ctx.an as unknown as object;
   const hit = frameCache.get(key);
-  if (hit && hit.lite === isLite(ctx) && hit.bulk === hairBulk(ctx.cfg.hair)) return hit;
+  const pop = lum(ctx.col.hat) < 0.04 && lum(ctx.col.hair) < 0.05;
+  if (hit && hit.lite === isLite(ctx) && hit.bulk === hairBulk(ctx.cfg.hair) && hit.pop === pop) return hit;
   const an = ctx.an;
   const { cx, cy, s } = an.head;
   const fd = faceDims(an);
@@ -133,6 +139,7 @@ export function headFrame(ctx: LayerCtx): HeadFrame {
     lite: isLite(ctx),
     head: ha.headPath,
     near: headPath(an, (0.6 + bulk) * s),
+    pop,
     headX,
   };
   frameCache.set(key, hf);
@@ -345,23 +352,30 @@ export function shapeVolume(
   if (sh > 0) {
     const at = o.sheenAt ?? [0.32, 0.3];
     const rr = o.sheenR ?? [0.22, 0.16];
-    ctx.push(blob(b.x + b.w * at[0], b.y + b.h * at[1], b.w * rr[0], b.h * rr[1], -0.3), t.lighter, { o: sh * (t.dark ? 1.1 : 1), cp: d, ...(hf.lite ? {} : { b: Math.max(0.4, b.w * 0.07) }) });
+    ctx.push(blob(b.x + b.w * at[0], b.y + b.h * at[1], b.w * rr[0], b.h * rr[1], -0.3), t.lighter, { o: Math.min(0.6, sh * (t.dark ? 1.1 : 1) * (hf.pop ? 1.35 : 1)), cp: d, ...(hf.lite ? {} : { b: Math.max(0.4, b.w * 0.07) }) });
   }
   const rim = o.rim ?? 0.3;
-  if (rim > 0 && !hf.lite) {
+  if (rim > 0 && hf.pop) {
+    // chapéu escuro sobre cabelo escuro: luz de recorte no topo e nas DUAS laterais (contorno deslocado pra dentro dos
+    // dois lados, um path só), também no 'lite' — é o que separa a silhueta do chapéu da do cabelo
+    const moved = smoothPath(shift(pts, 0.42, 0.38), true) + smoothPath(shift(pts, -0.42, 0.38), true);
+    ctx.stroke(moved, mix(t.sheen, '#C8D2F0', 0.25), hf.lite ? 0.42 : 0.5, { o: hf.lite ? 0.5 : 0.42, cp: d, ...(hf.lite ? {} : { b: 0.2 }) });
+  } else if (rim > 0 && !hf.lite) {
     const moved = smoothPath(shift(pts, 0.55, 0.45), true);
     ctx.stroke(moved, t.sheen, 0.9, { o: rim, b: 0.35, cp: d });
   }
   return d;
 }
 
-/** sombra que a peça projeta na cabeça/cabelo logo abaixo de uma borda (recortada: nunca vaza pro fundo) */
+/**
+ * sombra que a peça projeta logo abaixo de uma borda: faixa estreita e fraca que some nas pontas (sem corte seco),
+ * recortada na CABEÇA (testa/têmporas e o cabelo por cima delas) — o cabelo longo ao lado do rosto não recebe a faixa,
+ * senão ela vira um bloco cinza com ponta dura. A sobrancelha continua aparecendo. Desfocada no completo e no busto leve.
+ */
 export function castShadow(ctx: LayerCtx, hf: HeadFrame, edge: readonly SP[], o: { w?: number; dy?: number; o?: number; b?: number; cp?: string } = {}): void {
-  const w = o.w ?? 1.6;
-  const dy = o.dy ?? 0.8;
-  const n = edge.length;
-  const ws = edge.map((_, i) => (i === 0 || i === n - 1 ? w * 0.35 : w));
-  ctx.push(taperPath(shift(edge, 0.25, dy), ws), '#120A10', { o: o.o ?? 0.3, cp: o.cp ?? hf.near, ...(hf.lite ? {} : { b: o.b ?? 0.8 }) });
+  const w = o.w ?? 1.4;
+  const dy = o.dy ?? 0.75;
+  ctx.push(taperPath(shift(edge, 0.25, dy), (u) => w * Math.min(1, Math.sin(Math.PI * u) * 1.7)), '#120A10', { o: o.o ?? 0.22, cp: o.cp ?? hf.head, ...(keepsBlur(ctx) ? { b: o.b ?? 0.7 } : {}) });
 }
 
 /** oclusão dentro da peça ao longo de uma borda (faixa escura macia recortada na peça) */

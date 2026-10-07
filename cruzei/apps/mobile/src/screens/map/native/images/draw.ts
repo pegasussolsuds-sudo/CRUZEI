@@ -241,31 +241,42 @@ function drawEmoji(canvas: SkCanvas, text: string, cx: number, cy: number, size:
 // ---------------------------------------------------------------------------------------------------------------
 // Camadas vetoriais do avatar (Path2D(l.d) → SkPath com cache)
 // ---------------------------------------------------------------------------------------------------------------
-const PATH_CACHE_MAX = 6000;
-const pathCache = new Map<string, SkPath | null>(); // null = 'd' inválido (não tenta de novo)
+/**
+ * teto do cache de paths em BYTES estimados: a string 'd' fica no heap do JS (a chave) e o SkPath na memória nativa (~9 B
+ * por ponto). Era por contagem (6000): com avatares pesados, ~4 MB de strings + ~3,6 MB nativos (node, 300 pessoas). O
+ * conjunto que trabalha de verdade é o das figuras animando (até 9 visuais × ~250 camadas ≈ 3 MB)
+ */
+const PATH_CACHE_BYTES = 4 * 1024 * 1024;
+const PATH_OVERHEAD = 96;
+const pathCache = new Map<string, { p: SkPath | null; b: number }>(); // p null = 'd' inválido (não tenta de novo)
+let pathBytes = 0;
 
-function evictPaths(): void {
-  // evicção simples: solta o quarto mais antigo (o Map guarda a ordem de uso, ver layerPath)
-  let n = Math.ceil(PATH_CACHE_MAX / 4);
-  for (const [key, path] of pathCache) {
-    if (n-- <= 0) break;
-    pathCache.delete(key);
-    if (path) disposeAll([path]);
-  }
-}
 function layerPath(d: string, evenOdd: boolean): SkPath | null {
   const key = (evenOdd ? 'e|' : 'n|') + d;
   const hit = pathCache.get(key);
   if (hit !== undefined) {
     pathCache.delete(key); // renova a posição (LRU)
     pathCache.set(key, hit);
-    return hit;
+    return hit.p;
   }
   // entrada própria no cache com a regra evenodd (a de nonzero fica intacta)
   const path = parseLayerPath(d, evenOdd);
-  if (pathCache.size >= PATH_CACHE_MAX) evictPaths();
-  pathCache.set(key, path);
+  const b = PATH_OVERHEAD + key.length + (path ? path.countPoints() * 9 : 0);
+  pathCache.set(key, { p: path, b });
+  pathBytes += b;
+  // solta os mais antigos até caber (o Map guarda a ordem de uso); o que acabou de entrar fica
+  for (const [k, e] of pathCache) {
+    if (pathBytes <= PATH_CACHE_BYTES || k === key) break;
+    pathCache.delete(k);
+    pathBytes -= e.b;
+    if (e.p) disposeAll([e.p]);
+  }
   return path;
+}
+
+/** entradas e bytes estimados do cache de paths (testes e diagnóstico) */
+export function drawCacheStats(): { paths: number; bytes: number; colors: number } {
+  return { paths: pathCache.size, bytes: pathBytes, colors: colorCache.size };
 }
 
 /** escala MAP_HEAD_SCALE em volta do pivô da cabeça (base do pescoço): M ∘ T(p) S(k) T(-p) */
@@ -355,17 +366,27 @@ function silhouetteShape(): NonNullable<typeof silhouette> {
   return silhouette;
 }
 
-/** silhueta neutra enquanto a definição do avatar não chegou ou fora do teto de figuras (mapbox-html.ts:375) */
-function drawSilhouette(c: SkCanvas, x: number, y: number, scale: number): void {
+/** '#rrggbb' clareado (k > 0) ou escurecido (k < 0) */
+function shade(hex: string, k: number): string {
+  const n = parseInt(hex.slice(1, 7), 16);
+  const ch = (v: number) => Math.round(k >= 0 ? v + (255 - v) * k : v * (1 + k));
+  return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+}
+
+/**
+ * silhueta enquanto a definição do avatar não chegou ou fora do teto de figuras (mapbox-html.ts:375). Com `tint`: o corpo
+ * na cor da roupa da pessoa e a cabeça no tom de pele (lê como "alguém de casaco vermelho", não como boneco quebrado)
+ */
+function drawSilhouette(c: SkCanvas, x: number, y: number, scale: number, tint?: { body: string; skin: string }): void {
   const sh = silhouetteShape();
   c.save();
   c.translate(x, y);
   c.scale(scale, scale);
   const shadow = layerPath(sh.shadow, false);
   if (shadow) c.drawPath(shadow, fillPaint('rgba(0,0,0,0.25)'));
-  // luz de cima: manequim cinza-lavanda com um degradê discreto (lê como gente, não como bloco)
+  // luz de cima: degradê discreto (lê como gente, não como bloco); sem cor, manequim cinza-lavanda
   const body = fillPaint();
-  body.setShader(linear(0, 10, 0, 134, '#A3A3B2', '#73737F'));
+  body.setShader(tint ? linear(0, 10, 0, 134, shade(tint.body, 0.18), shade(tint.body, -0.28)) : linear(0, 10, 0, 134, '#A3A3B2', '#73737F'));
   for (const d of sh.body) {
     const p = layerPath(d, false);
     if (p) c.drawPath(p, body);
@@ -374,9 +395,14 @@ function drawSilhouette(c: SkCanvas, x: number, y: number, scale: number): void 
   if (head) {
     const k = MAP_HEAD_SCALE;
     const [px, py] = sh.head0;
+    let headPaint = body;
+    if (tint) {
+      headPaint = fillPaint();
+      headPaint.setShader(linear(0, 4, 0, 40, shade(tint.skin, 0.12), shade(tint.skin, -0.18)));
+    }
     c.save();
     c.concat([k, 0, px - k * px, 0, k, py - k * py, 0, 0, 1]);
-    c.drawPath(head, body);
+    c.drawPath(head, headPaint);
     c.restore();
   }
   c.restore();
@@ -410,13 +436,14 @@ function drawFigure(c: SkCanvas, def: AvatarDef | null, look: FigureLook, dim: D
     g.setShader(radial(cx, footY - 2, 3, w * 0.5, rgba(aura, 0.65), rgba(aura, 0)));
     c.drawOval(oval(cx, footY - 2, w * 0.5, w * 0.24), g);
   }
-  if (def && def.l) drawAvatar(c, def.l, def.p ?? null, pose, x, y, scale, mirror, opts?.usesArms);
-  else drawSilhouette(c, x, y, scale);
-  // anel de presença: lima se recente (≤ 15 min), senão dourado
+  // anel de presença no CHÃO, antes do avatar: lima se recente (≤ 15 min), senão dourado. Por cima, cortava canelas,
+  // rodas, pranchas e o pet no chão.
   c.drawOval(oval(cx, footY - 3, w * 0.36, w * 0.13), strokePaint(look.recent ? '#7FFF00' : '#FFD700', 2));
   if (look.premiumTier === 'premium' || look.premiumTier === 'premium_plus') {
     c.drawOval(oval(cx, footY - 3, w * 0.43, w * 0.16), strokePaint('#FF1493', 1.5));
   }
+  if (def && def.l) drawAvatar(c, def.l, def.p ?? null, pose, x, y, scale, mirror, opts?.usesArms);
+  else drawSilhouette(c, x, y, scale, opts?.tint);
   if (look.verified) {
     const bx = x + 76 * scale;
     const by = y + 18 * scale;
@@ -631,9 +658,10 @@ export function avatarPng(layers: AvatarLayer[], rig: AvatarRig, pose: Pose | nu
   });
 }
 
-/** solta o cache de paths das camadas (ex.: aviso de memória baixa do sistema) */
+/** solta o cache de paths das camadas e o de cores (fila de imagens ociosa, fora do mapa, memória baixa do sistema) */
 export function clearDrawCaches(): void {
-  for (const path of pathCache.values()) if (path) disposeAll([path]);
+  for (const e of pathCache.values()) if (e.p) disposeAll([e.p]);
   pathCache.clear();
+  pathBytes = 0;
   colorCache.clear();
 }

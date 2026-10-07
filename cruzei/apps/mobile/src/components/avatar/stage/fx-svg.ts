@@ -199,8 +199,10 @@ export function svgPen(shapes: Record<string, number[]>, lite = true): Pen & { m
       for (let i = 0; i < n; i++) {
         const mid = start + step * (i + 0.5);
         const col = sampleCycle(colors, (mid - rot) / 360);
-        // passo um pouco maior que o arco: sem fresta entre os pedaços
-        emit(arcCmds(cx, cy, rx, ry, start + step * i - 0.6, step + 1.2), { c: col, a, w, cap: 1, b });
+        // opaco: passo um pouco maior que o arco (sem fresta entre os pedaços). Translúcido: emenda exata — sobrepor dobra
+        // a alfa e cada emenda virava um risco transversal (efeito escada na faixa larga do arco-íris)
+        const ov = alphaOf({ a, b }) < 0.98 ? 0 : 0.6;
+        emit(arcCmds(cx, cy, rx, ry, start + step * i - ov, step + ov * 2), { c: col, a, w, cap: 1, b });
       }
     },
     clipRRect: (x, y, w, h, r) => {

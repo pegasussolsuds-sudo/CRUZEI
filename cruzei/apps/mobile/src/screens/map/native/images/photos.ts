@@ -42,7 +42,9 @@ export const PHOTO_THUMB = 48;
 export const PHOTO_THUMB_PX = Math.round(PHOTO_THUMB * IMG_SCALE);
 
 const MAX_INFLIGHT = 4; // downloads simultâneos (conexão lenta não trava o resto)
-const MAX_CACHE = 400; // entradas vivas na sessão (LRU pelas menos usadas)
+// thumbs vivos (LRU pelas menos usadas): cada um é um bitmap de 48 px x IMG_SCALE² (~83 KB a 3x) na memória nativa e só
+// serve pra (re)desenhar a bolha, que fica no disco; 400 eram ~33 MB
+const MAX_CACHE = 120;
 const TIMEOUT_MS = 15000;
 const MAX_TRIES = 3; // falhas de rede/HTTP tentam de novo (45 s, 90 s); depois desiste na sessão
 const RETRY_MS = 45000;

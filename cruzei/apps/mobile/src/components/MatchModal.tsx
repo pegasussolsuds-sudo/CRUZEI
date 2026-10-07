@@ -65,6 +65,9 @@ const TR = {
 /** de quanto longe cada avatar vem (px) */
 const APPROACH = 104;
 
+/** depois da entrada (botões + este tempo), o fundo, os halos e os pulsos param: celebração parada não gasta quadro */
+const SETTLE_AFTER_MS = 3000;
+
 /** palco do avatar dentro do anel (122 de altura → boneco com ~105; a aura transborda um pouco o anel, de propósito) */
 const AVATAR = 122;
 const RING = 124;
@@ -151,6 +154,14 @@ function Celebration({
   // recebido: o confete espera o encontro dos avatares
   const [confetti, setConfetti] = useState(!reduceMotion && !received);
   const t = received ? TR : T;
+  // a festa assenta: fundo vivo, halos e pulsos param (sem movimento reduzido já nascem parados)
+  const [settled, setSettled] = useState(reduceMotion);
+  useEffect(() => {
+    if (settled) return;
+    const id = setTimeout(() => setSettled(true), t.buttons + SETTLE_AFTER_MS);
+    return () => clearTimeout(id);
+  }, [settled, t]);
+  const live = !settled && !reduceMotion;
 
   // flip 3D do card: 180° (de costas) → 0° com spring
   const rotate = useSharedValue(reduceMotion ? 0 : 180);
@@ -203,7 +214,7 @@ function Celebration({
   return (
     <View style={styles.root} accessibilityViewIsModal>
       {/* fundo vivo magenta/lima + véu escuro pra dar contraste ao card */}
-      <BlobBackground palette={[colors.secondary, colors.primary, colors.secondary]} intensity={0.85} speed={1.6} />
+      <BlobBackground palette={[colors.secondary, colors.primary, colors.secondary]} intensity={0.85} speed={1.6} paused={!live} />
       <View style={styles.veil} pointerEvents="none" />
 
       <View style={styles.center}>
@@ -233,7 +244,7 @@ function Celebration({
 
             <View style={styles.avatars}>
               <SlideInView from="left" distance={avatarDistance} delay={avatarDelay} springPreset="bouncy">
-                <Glow color={colors.primary} spread={14} intensity={0.85} cycleMs={1800}>
+                <Glow color={colors.primary} spread={14} intensity={0.85} cycleMs={1800} animated={live}>
                   <AvatarRing config={myAvatar} ring={colors.primary} label="Seu avatar" playAt={avatarDelay + 650} />
                 </Glow>
               </SlideInView>
@@ -247,8 +258,8 @@ function Celebration({
                   </>
                 ) : null}
                 <FadeInView delay={heartDelay} fromScale={received ? 0.1 : 0.3} durationMs={260}>
-                  <Glow color={colors.secondary} spread={20} intensity={1} cycleMs={1200}>
-                    <Pulse maxScale={1.14} cycleMs={1000} active={!reduceMotion}>
+                  <Glow color={colors.secondary} spread={20} intensity={1} cycleMs={1200} animated={live}>
+                    <Pulse maxScale={1.14} cycleMs={1000} active={live}>
                       <View style={styles.heart} accessible={false}>
                         <Ionicons name="heart" size={30} color={colors.white} />
                       </View>
@@ -258,9 +269,9 @@ function Celebration({
               </View>
 
               <SlideInView from="right" distance={avatarDistance} delay={avatarDelay} springPreset="bouncy">
-                <Glow color={colors.secondary} spread={14} intensity={0.85} cycleMs={1800}>
+                <Glow color={colors.secondary} spread={14} intensity={0.85} cycleMs={1800} animated={live}>
                   {/* recebido: o anel da pessoa pulsa (foi ela que fechou o match) */}
-                  <Pulse maxScale={1.05} cycleMs={1400} active={received && !reduceMotion}>
+                  <Pulse maxScale={1.05} cycleMs={1400} active={received && live}>
                     <AvatarRing config={theirAvatar} ring={colors.secondary} label={`Avatar de ${match.name}`} playAt={avatarDelay + 800} />
                   </Pulse>
                 </Glow>
@@ -275,7 +286,7 @@ function Celebration({
             </SlideInView>
 
             <FadeInView delay={t.buttons} fromY={16} style={styles.actions}>
-              <Glow color={colors.primary} spread={14} intensity={0.6} shape="pill" cycleMs={2000} style={styles.stretch}>
+              <Glow color={colors.primary} spread={14} intensity={0.6} shape="pill" cycleMs={2000} animated={live} style={styles.stretch}>
                 <ScaleOnPress
                   onPress={onOpenChat}
                   glowColor={colors.primary}

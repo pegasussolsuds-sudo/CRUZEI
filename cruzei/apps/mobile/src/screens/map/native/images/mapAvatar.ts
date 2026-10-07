@@ -12,6 +12,7 @@ import type { AvatarConfig } from '@cruzei/shared-types';
 import { DEFAULT_AVATAR, avatarAuraTint, normalizeAvatarConfig } from '@cruzei/shared-utils';
 
 import { buildAvatarLayers, buildAvatarRig, layersWithTag, type BuildOptions } from '../../../../avatar';
+import { MemCache } from '../../../../services/memCache';
 import { buildAnatomy, restArmDelta } from '../../../../avatar/anatomy';
 import { fillConfig } from '../../../../avatar/ctx';
 import { emoteDef, emoteFaceAt } from '../../../../avatar/emotes';
@@ -26,38 +27,65 @@ import type { AvatarDef } from '../contracts';
 /** montagem das camadas do mapa: sombra no chão + nível de detalhe leve */
 export const MAP_BUILD: BuildOptions = { groundShadow: true, lod: 'lite' };
 
-/** quantas montagens de camadas ficam na memória (cada uma tem ~200 KB; as figuras animadas são no máximo 10) */
-export const MAP_LAYERS_LRU = 40;
-const built = new Map<AvatarConfig, AvatarLayer[]>();
+/**
+ * quantas montagens de camadas ficam na memória. Só servem pra rasterizar: a figura parada vira PNG uma vez e os quadros
+ * de animação saem das que animam ao mesmo tempo (eu, selecionado, match + ANIM_CAP 6/4/2 = até 9). Eram 40: no node, 40
+ * visuais pesados seguravam ~54 MB de heap; cada uma tem ~200–350 KB de strings de path
+ */
+export const MAP_LAYERS_LRU = 12;
+/** bytes por camada além das strings de path (objeto, cores, gradiente): mesma conta do CruzeiAvatar.layersBytes */
+const LAYER_OVERHEAD = 512;
+const built = new MemCache<AvatarLayer[]>('map.layers', 6 * 1024 * 1024, MAP_LAYERS_LRU);
+/** id curto por objeto (config ou definição): o LRU guarda string e o objeto some junto com quem o usa */
+const cfgIds = new WeakMap<object, string>();
+let cfgSeq = 0;
+function idOf(o: object): string {
+  let id = cfgIds.get(o);
+  if (!id) cfgIds.set(o, (id = 'c' + cfgSeq++));
+  return id;
+}
+function layersBytes(layers: AvatarLayer[]): number {
+  let b = 0;
+  for (const l of layers) b += LAYER_OVERHEAD + l.d.length + (l.cp ? l.cp.length : 0);
+  return b;
+}
 
 /** camadas do mapa de uma config, com LRU (a montagem custa ~4–10 ms no Hermes) */
 function mapLayersOf(cfg: AvatarConfig): AvatarLayer[] {
-  let l = built.get(cfg);
-  if (l) {
-    built.delete(cfg);
-  } else {
-    l = buildAvatarLayers(cfg, MAP_BUILD);
-    if (built.size >= MAP_LAYERS_LRU) {
-      const old = built.keys().next().value;
-      if (old !== undefined) built.delete(old);
-    }
-  }
-  built.set(cfg, l);
-  return l;
+  const id = idOf(cfg);
+  const hit = built.get(id);
+  if (hit) return hit;
+  const l = buildAvatarLayers(cfg, MAP_BUILD);
+  return built.set(id, l, layersBytes(l));
+}
+
+/** solta as camadas montadas e as da assinatura (o motor chama quando a fila de imagens fica ociosa) */
+export function clearMapAvatarCaches(): void {
+  built.clear();
+  sigCache.clear();
 }
 
 /**
- * definição de um visual pro motor do mapa. As camadas (`l`) são montadas sob demanda, na primeira leitura: o motor só
- * lê quando precisa rasterizar (o PNG não está no cache em disco), dentro da fila de imagens, que já vai por prioridade
- * (quem está perto primeiro). Definir 300 pessoas de uma vez custa só o rig (~0,05 ms cada).
+ * definição de um visual pro motor do mapa. Camadas (`l`), rig (`p`) e animação assinatura (`e`) saem sob demanda, na
+ * primeira leitura: o motor só lê quando a pessoa tem figura própria e precisa rasterizar (o PNG não está no cache em
+ * disco) ou animar. Definir as 300 pessoas do /nearby de uma vez não monta nada (antes: o rig de todas, ~10 ms no V8 e
+ * várias vezes isso no Hermes, num bloco só na thread JS da primeira abertura); só as ~60 com figura pagam.
  */
 export function mapAvatarDef(cfg: AvatarConfig): AvatarDef {
+  let rig: AvatarDef['p'] | undefined;
+  let sig: string | null | undefined;
   return {
     get l() {
       return mapLayersOf(cfg);
     },
-    p: buildAvatarRig(cfg),
-    e: signatureEmote(cfg),
+    get p() {
+      if (rig === undefined) rig = buildAvatarRig(cfg);
+      return rig;
+    },
+    get e() {
+      if (sig === undefined) sig = signatureEmote(cfg);
+      return sig;
+    },
     c: cfg,
   };
 }
@@ -84,11 +112,17 @@ export interface SigAssets {
   layersAt(k: number): AvatarLayer[];
 }
 
-const sigCache = new WeakMap<AvatarDef, SigAssets | null>();
+/**
+ * montagens da animação assinatura (expressões e objeto trocados): toca uma de cada vez (toque, avatar salvo), então
+ * bastam poucas. Era um WeakMap por definição: ficava viva enquanto a pessoa estivesse no mapa (até 300)
+ */
+const sigCache = new MemCache<{ s: SigAssets | null }>('map.sig', Infinity, 4);
 
 /** animação assinatura de um visual (null = nenhuma registrada) */
 export function sigAssets(d: AvatarDef): SigAssets | null {
-  if (sigCache.has(d)) return sigCache.get(d) ?? null;
+  const sigId = idOf(d);
+  const cached = sigCache.get(sigId);
+  if (cached) return cached.s;
   const def = emoteDef(d.e ?? null);
   let out: SigAssets | null = null;
   if (def && d.c) {
@@ -126,7 +160,7 @@ export function sigAssets(d: AvatarDef): SigAssets | null {
   } else if (def) {
     out = { def, layersAt: () => d.l };
   }
-  sigCache.set(d, out);
+  sigCache.set(sigId, { s: out }, 1);
   return out;
 }
 

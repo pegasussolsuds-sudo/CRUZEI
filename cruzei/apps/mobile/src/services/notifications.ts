@@ -39,6 +39,8 @@ export const CHANNELS = {
 const pushSupported = Platform.OS === 'android';
 
 function log(msg: string, err?: unknown): void {
+  // só em desenvolvimento: no APK cada console.* vira escrita no logcat (e breadcrumb do Sentry)
+  if (!__DEV__) return;
   // eslint-disable-next-line no-console
   console.info(`[push] ${msg}`, err instanceof Error ? err.message : (err ?? ''));
 }

@@ -1,4 +1,4 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 import BottomSheet, { BottomSheetFlatList, BottomSheetFooter, type BottomSheetFooterProps } from '@gorhom/bottom-sheet';
@@ -101,7 +101,7 @@ const FILTERS: { key: SheetFilter; label: string }[] = [
   { key: 'near', label: 'Perto' },
 ];
 
-export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
+export const MapBottomSheet = memo(forwardRef<MapBottomSheetHandle, MapBottomSheetProps>(function MapBottomSheet(
   { users, bandById, hiddenCount = 0, invisibleTotal = 0, radiusM, isFree, isLoading, isOffline = false, failKind = 'network', updatedAt = 0, isRetrying = false, onRetry, containerHeight, onPeekHeight, poiFilter, poiFilterIds, onClearPoiFilter, groupFilter, onClearGroupFilter, onChange, animatedPosition, onSelect, onLike, onSuperLike, onPass },
   ref,
 ) {
@@ -168,12 +168,14 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
       ? `${filtered.length} ${filtered.length === 1 ? 'pessoa' : 'pessoas'} no ${poiFilter.name}`
       : `${nearbyCountTitle(counts.inRadius, counts.boosted, radiusLabel(radiusM))}${hiddenCount > 0 ? ` · +${hiddenCount} por perto` : ''}${invisibleText}`;
 
+  // estável entre /nearby: a faixa vem da própria pessoa (a mesma que o bandById, montado da resposta), então linha com o
+  // mesmo objeto (o react-query preserva quem não mudou) não re-renderiza
   const renderItem = useCallback(
     // sem animação de entrada por linha: com multidão em volta a lista troca dezenas de linhas a cada atualização
     ({ item }: { item: NearbyUser }) => (
-      <PersonRow user={item} band={bandById.get(item.id) ?? item.proximityBand ?? null} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
+      <PersonRow user={item} band={item.proximityBand ?? null} onPress={onSelect} onLike={onLike} onSuperLike={onSuperLike} onPass={onPass} />
     ),
-    [bandById, onSelect, onLike, onSuperLike, onPass],
+    [onSelect, onLike, onSuperLike, onPass],
   );
 
   const goPremium = useCallback(() => nav.navigate('Paywall'), [nav]);
@@ -325,7 +327,7 @@ export const MapBottomSheet = forwardRef<MapBottomSheetHandle, MapBottomSheetPro
       />
     </BottomSheet>
   );
-});
+}));
 
 const styles = StyleSheet.create({
   sheet: { ...shadows.strong },

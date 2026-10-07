@@ -95,7 +95,9 @@ export function ProfileScreen() {
   const isFocused = useIsFocused();
   const qc = useQueryClient();
   const insets = useSafeAreaInsets();
-  const { logout, setUser } = useAuthStore();
+  // seletores: ler o store inteiro re-renderizava o Perfil a cada mudança de qualquer campo
+  const logout = useAuthStore((s) => s.logout);
+  const setUser = useAuthStore((s) => s.setUser);
   const { isAnonymous, anonymousUntil, askToggle: toggleAnonymous } = useVisibility();
   // invisível grátis: "Invisível até 14h32" (janela de 24 h; dá pra religar quando quiser)
   const anonUntil = anonymousUntilLabel(anonymousUntil);
@@ -282,7 +284,7 @@ export function ProfileScreen() {
         <View style={styles.header}>
           <Animated.View style={avatarStyle}>
             <ScaleOnPress onPress={goEdit} pressedScale={0.97} accessibilityRole="imagebutton" accessibilityLabel="Sua foto principal. Toque pra editar o perfil">
-              <Glow color={colors.primary} spread={16} intensity={0.55} cycleMs={2400} shape="circle">
+              <Glow color={colors.primary} spread={16} intensity={0.55} shape="circle" animated={false}>
                 <CompletenessRing percent={completeness}>
                   {mainPhoto ? (
                     <Image source={{ uri: mainPhoto.url }} style={styles.avatar} />
@@ -361,7 +363,7 @@ export function ProfileScreen() {
 
         {/* Ações rápidas */}
         <FadeInView delay={460} fromY={16} style={styles.actionsRow}>
-          <Glow color={colors.primary} spread={10} intensity={0.45} shape="pill" cycleMs={2200} style={{ flex: 1 }}>
+          <Glow color={colors.primary} spread={10} intensity={0.45} shape="pill" animated={false} style={{ flex: 1 }}>
             <ScaleOnPress onPress={goBoost} style={[styles.actionBtn, styles.actionBoost]} accessibilityRole="button" accessibilityLabel="Ativar boost">
               <Ionicons name="flash" size={18} color={colors.primary} />
               <Text style={styles.actionBoostText}>Boost ⚡</Text>
@@ -384,8 +386,9 @@ export function ProfileScreen() {
             accessibilityLabel="Seu avatar. Toque pra personalizar"
           >
             <View style={styles.avatarStage}>
-              <Glow color={colors.primary} spread={22} intensity={0.35} shape="circle" cycleMs={3000}>
-                {/* vivo: respira, mostra fundo e pronomes; tocar no boneco toca a animação (o resto do card personaliza) */}
+              <Glow color={colors.primary} spread={22} intensity={0.35} shape="circle" animated={false}>
+                {/* parado (nada anima sozinho: perfil parado = 0 quadros); mostra fundo e pronomes; tocar no boneco toca a
+                    animação (o resto do card personaliza) */}
                 <SignatureAvatar config={cruzeiAvatar} size={CRUZEI_AVATAR} groundShadow paused={!isFocused} label={`Seu avatar ${BRAND.name}`} />
               </Glow>
             </View>

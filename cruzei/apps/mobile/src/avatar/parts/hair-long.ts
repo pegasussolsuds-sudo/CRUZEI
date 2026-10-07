@@ -221,10 +221,14 @@ function faceEdge(k: HairKit, g: 1 | -1, px: number, fringe = 0): SP[] {
   const big = (px < 0 ? g > 0 : g < 0) ? 1 : 0;
   // o lado maior desce mais sobre a testa (a franja varrida pro lado)
   const dip = big ? 0.25 + fringe : 0;
+  // o ponto do meio fica entre a risca e o da testa (no lado menor, com a risca deslocada, os dois ficavam quase na mesma
+  // x e a borda descia num degrau em ângulo reto — sem os fiozinhos da franja, no 'lite', o canto aparecia)
+  const x1 = px + g * 0.45;
+  const x3 = g * (4.5 + big * 0.2);
   return [
-    H(px + g * 0.45, -7.45 + dip * 0.2),
-    H(px + g * (2.6 + big * 0.4), -7.05 + dip * 0.6),
-    H(g * (4.5 + big * 0.2), -6.15 + dip * 0.8),
+    H(x1, -7.45 + dip * 0.2),
+    H(x1 + (x3 - x1) * 0.55, -7.05 + dip * 0.6),
+    H(x3, -6.15 + dip * 0.8),
     H(g * (Tm - 1.45), -4.75 + dip * 0.5),
     H(g * (Tm - 0.4), -2.75),
     H(g * (Tm + 0.12), -0.9),
@@ -382,8 +386,9 @@ export function fallFront(k: HairKit, o: FallOpts & { fringe?: number; wisps?: b
     // na dobra do ombro: a faixa segue a linha do trapézio (a mecha vira pra luz onde pousa)
     const sh = (x: number) => shoulderTop(an, x < k.cx ? -1 : 1, x) - 1.1;
     ringSheen(k, locks.map((l) => ({ spine: l.spine, w: Math.max(...l.w) })), sh, { len: 0.1, wk: 0.26, o: t.pale ? 0.5 : 0.62, seed: 9, pair: true });
-    // logo abaixo da dobra a mecha vira pra baixo e escurece (quebra a "cortina" reta)
-    ringSheen(k, locks.map((l) => ({ spine: l.spine, w: Math.max(...l.w) })), (x) => sh(x) + 2.6, { len: 0.06, wk: 0.7, side: 0, o: 0.3, seed: 4, color: t.deep });
+    // logo abaixo da dobra a mecha vira pra baixo e escurece (quebra a "cortina" reta); no 'lite' sem desfoque isso
+    // virava manchas escuras soltas no cabelo, na altura do peito
+    if (!lite) ringSheen(k, locks.map((l) => ({ spine: l.spine, w: Math.max(...l.w) })), (x) => sh(x) + 2.6, { len: 0.06, wk: 0.7, side: 0, o: 0.3, seed: 4, color: t.deep });
   } else {
     ringSheen(k, locks.map((l) => ({ spine: l.spine, w: Math.max(...l.w) })), () => H(0, 2.2)[1], { len: 0.09, o: t.pale ? 0.42 : 0.55, seed: 9 });
   }

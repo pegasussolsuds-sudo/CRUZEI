@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, AppState, StyleSheet, Text, View } from 'react-native';
+import { AppState, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Sentry from '@sentry/react-native';
 import { Button, colors, spacing, typography } from '@cruzei/ui-mobile';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { ReanimatedLogLevel, configureReanimatedLogger } from 'react-native-reanimated';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, notifyManager } from '@tanstack/react-query';
 
 import { RootNavigator } from './navigation/RootNavigator';
 import { useAuthStore } from './stores/auth';
@@ -14,6 +14,10 @@ import { useBootStore } from './stores/boot';
 import { useMapPerfStore } from './stores/mapPerf';
 import { useLocationStore } from './stores/location';
 import { connectSocket, disconnectSocket, ensureSocketAlive, getSocket } from './services/socket';
+import { bindRealtime, onNotificationNew as notificationArrived } from './services/realtime';
+import { nextFrame } from './services/frameBatch';
+import { clearMemCaches } from './services/memCache';
+import { clearDrawCaches } from './screens/map/native/images/draw';
 import { setAccountBlockedHandler } from './services/api';
 import { asAccountBlocked, useAccountBlockStore } from './stores/accountBlock';
 import { useAppFonts } from './theme/fonts';
@@ -22,10 +26,6 @@ import { sentryEnabled, setSentryTag, setSentryUser } from './services/sentry';
 import { cleanupLegacyMapbox } from './services/legacyMapboxCleanup';
 import { linkInstallToUser, trackAppOpen, trackOnboardingPhase, trackOnboardingRoute } from './services/analytics';
 import { navigationRef } from './navigation/navigationRef';
-import { applyConversationNew, applyMessageNew, applyPromoted, applyRead, applyRemoved, inboxKeys } from './hooks/useInbox';
-import { applyNotificationNew, notificationKeys, toAppNotification } from './hooks/useNotifications';
-import { applySupportMessage, supportKeys } from './hooks/useSupport';
-import { showNotificationNotice } from './stores/inAppNotice';
 import { usePushRouteStore } from './stores/pushRoute';
 import { useMatchCelebrationStore } from './stores/matchCelebration';
 import {
@@ -53,16 +53,29 @@ setAccountBlockedHandler((data) => {
   return Boolean(b);
 });
 
+// avisos do React Query às telas: tudo o que muda dentro de um quadro (buscas terminando, eventos do socket) chega às
+// telas numa tarefa só, no próximo quadro — uma passada de render por quadro em vez de uma por mudança (frameBatch.ts)
+notifyManager.setScheduler((cb) => nextFrame(cb));
+
 export const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 30_000, retry: 1 },
+    // sem o socket o que importa já tem polling próprio; montar uma tela de novo dentro de 1 min não busca outra vez
+    queries: { staleTime: 60_000, retry: 1 },
   },
 });
+// pessoas e lugares em volta: cada célula (andar, arrastar o mapa, o deck a cada ~110 m) guarda uma resposta grande
+// (até 300 pessoas com o avatar inteiro). Fora da tela não vale 5 min de memória: 1 min e sai
+queryClient.setQueryDefaults(['nearby'], { gcTime: 60_000 });
+// Mensagens, avisos e suporte chegam pelo socket (services/realtime.ts acerta o cache) e a reconexão invalida tudo:
+// com o socket de pé, abrir de novo o chat ou a central dentro de 5 min não busca outra vez; sem socket, 30 s
+const socketFedStaleTime = () => (getSocket()?.connected ? 5 * 60_000 : 30_000);
+for (const key of [['inbox'], ['conversation'], ['messages'], ['notifications'], ['support']]) {
+  queryClient.setQueryDefaults(key, { staleTime: socketFedStaleTime });
+}
 
 /** notificação nova com o app aberto (socket ou push em primeiro plano): central atualizada + aviso rápido */
 function onNotificationNew(n: AppNotification): void {
-  applyNotificationNew(queryClient, n);
-  showNotificationNotice(n);
+  notificationArrived(queryClient, n);
 }
 
 /**
@@ -87,7 +100,11 @@ listenNotificationTaps((route, notificationId) => usePushRouteStore.getState().s
 export function App() {
   const hydrate = useAuthStore((s) => s.hydrate);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const user = useAuthStore((s) => s.user);
+  // só o que o App usa do perfil (seletores finos): /me novo com outro contador/foto não re-renderiza o app inteiro
+  const userId = useAuthStore((s) => s.user?.id);
+  const hasUser = useAuthStore((s) => s.user != null);
+  /** modo do servidor (null = /me sem settings ou ainda sem /me) */
+  const serverAnonymous = useAuthStore((s) => (s.user?.settings ? s.user.settings.visibilityMode === 'anonymous' : null));
   const setAnonymous = useLocationStore((s) => s.setAnonymous);
   const fontsReady = useAppFonts();
   const isLoading = useAuthStore((s) => s.isLoading);
@@ -120,8 +137,8 @@ export function App() {
     return () => clearTimeout(id);
   }, [mapReady]);
   useEffect(() => {
-    setSentryUser(user?.id ?? null);
-  }, [user?.id]);
+    setSentryUser(userId ?? null);
+  }, [userId]);
 
   // métricas próprias: app_open 1x por dia (depois de hidratar a sessão, pra ir com a conta) e a cada volta pro app
   // (virou o dia com o app aberto); logou/cadastrou → os eventos anônimos desta instalação passam a ser da conta
@@ -134,8 +151,8 @@ export function App() {
     return () => sub.remove();
   }, [isLoading]);
   useEffect(() => {
-    if (user?.id) void linkInstallToUser(user.id);
-  }, [user?.id]);
+    if (userId) void linkInstallToUser(userId);
+  }, [userId]);
   // funil do cadastro: boas-vindas/telefone/código pela rota; avatar/fotos/primeiro mapa pela fase do cadastro
   useEffect(() => {
     const onRoute = () => {
@@ -156,14 +173,14 @@ export function App() {
 
   // Espelha o modo anônimo do servidor no store local
   useEffect(() => {
-    if (user?.settings) setAnonymous(user.settings.visibilityMode === 'anonymous');
-  }, [user?.settings, setAnonymous]);
+    if (serverAnonymous != null) setAnonymous(serverAnonymous);
+  }, [serverAnonymous, setAnonymous]);
 
   // logado sem o /me (servidor fora no boot): o padrão local "anônimo" não pode travar Mensagens/curtidas nem dizer
   // "oculto do mapa" — o erro seguro é mostrar visível até o /me chegar (o efeito acima corrige na hora)
   useEffect(() => {
-    if (isAuthenticated && !user) setAnonymous(false);
-  }, [isAuthenticated, user, setAnonymous]);
+    if (isAuthenticated && !hasUser) setAnonymous(false);
+  }, [isAuthenticated, hasUser, setAnonymous]);
 
   // Socket global: mantém listas sincronizadas mesmo fora da tela de chat
   useEffect(() => {
@@ -177,91 +194,7 @@ export function App() {
     (async () => {
       const socket = await connectSocket();
       if (!socket || !active) return;
-      // (re)conectou: o que chegou enquanto o socket estava fora não virou evento — atualiza Mensagens uma vez
-      socket.on('connect', () => {
-        queryClient.invalidateQueries({ queryKey: inboxKeys.all });
-        queryClient.invalidateQueries({ queryKey: ['conversation'] });
-        queryClient.invalidateQueries({ queryKey: ['messages'] });
-        queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-        queryClient.invalidateQueries({ queryKey: supportKeys.all });
-        // o que falhou com o servidor fora (pessoas no mapa, bairro, curtidas…) busca de novo agora, sem esperar o
-        // próximo ciclo — só as que estão em erro, com até 2 s de atraso pra não voltar todo mundo no mesmo segundo
-        setTimeout(
-          () => queryClient.invalidateQueries({ predicate: (q) => q.state.status === 'error' }),
-          Math.random() * 2_000,
-        );
-        // boot sem rede deixou a sessão sem perfil: o servidor voltou, busca o /me agora
-        void useAuthStore.getState().ensureMe();
-      });
-      // central de avisos: aviso novo entra na lista e aparece no topo (o push em primeiro plano cai no mesmo lugar)
-      socket.on('notification:new', (p) => {
-        const n = toAppNotification(p?.notification);
-        if (!n) return;
-        onNotificationNew(n);
-        // Premium dado/tirado pelo painel: o /me novo tira (ou põe) os convites e libera o que é do plano na hora
-        if (n.type === 'premium_granted') {
-          queryClient.invalidateQueries({ queryKey: ['me'] });
-          useAuthStore.getState().refreshMe().catch(() => {});
-        }
-      });
-      // Premium dado/tirado com o "avisar a pessoa" desligado não gera aviso: o sinal silencioso atualiza o /me igual
-      socket.on('account:changed', (p) => {
-        queryClient.invalidateQueries({ queryKey: ['me'] });
-        useAuthStore.getState().refreshMe().catch(() => {});
-        // invisível grátis acabou / Premium venceu: o mapa, as conversas (invisível grátis não conversa) e a Paywall mudam
-        if (p?.reason === 'visibility' || p?.reason === 'premium_expired') {
-          queryClient.invalidateQueries({ queryKey: ['nearby'] });
-          queryClient.invalidateQueries({ queryKey: inboxKeys.all });
-          queryClient.invalidateQueries({ queryKey: ['conversation'] });
-          queryClient.invalidateQueries({ queryKey: ['messages'] });
-          queryClient.invalidateQueries({ queryKey: ['premium-status'] });
-          queryClient.invalidateQueries({ queryKey: ['plans'] });
-        }
-      });
-      // lugar entrou/saiu do mapa: busca de novo sem esperar o refetch de 45 s — com atraso aleatório de até 3 s pra
-      // os apps abertos não baterem todos no mesmo segundo
-      socket.on('pois:changed', () => {
-        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['nearby', 'pois'] }), Math.random() * 3_000);
-      });
-      // suporte ao vivo: a conversa com a equipe fica certa mesmo com o chat fechado (contador da Ajuda)
-      socket.on('support:message', (p) => {
-        if (p?.message && p.threadId) applySupportMessage(queryClient, p);
-      });
-      // Mensagens: o evento traz o estado do servidor (unread, pasta, promoção); o cache só troca a conversa de lugar
-      socket.on('message:new', (p) => applyMessageNew(queryClient, p));
-      socket.on('conversation:new', (p) => applyConversationNew(queryClient, p));
-      socket.on('conversation:promoted', (p) => applyPromoted(queryClient, p));
-      socket.on('message:read', (p) => applyRead(queryClient, p, useAuthStore.getState().user?.id));
-      // bloqueio, arquivamento ou moderação: a conversa some da lista na hora (o chat aberto fecha sozinho)
-      socket.on('conversation:removed', ({ conversationId }) => applyRemoved(queryClient, conversationId));
-      // curtida recebida: só o contador do perfil. O payload pode vir sem fromUserId (quem não é Premium+ não vê quem
-      // curtiu), então aqui nada depende de quem foi
-      socket.on('like_received', () => {
-        queryClient.invalidateQueries({ queryKey: ['me'] });
-      });
-      // match fechado por quem eu curti: a comemoração entra na fila (o host mostra com a tela livre)
-      socket.on('match:new', (p) => {
-        useMatchCelebrationStore.getState().enqueue(p);
-        queryClient.invalidateQueries({ queryKey: inboxKeys.all });
-        queryClient.invalidateQueries({ queryKey: ['me'] });
-      });
-      // match que aconteceu com o app fechado (ou sem push): pendentes no servidor, a cada (re)conexão e agora
-      socket.on('connect', () => void useMatchCelebrationStore.getState().syncPending());
-      void useMatchCelebrationStore.getState().syncPending();
-      socket.on('account_blocked', (data) => {
-        const b = asAccountBlocked(data);
-        if (b) useAccountBlockStore.getState().setBlocked(b);
-      });
-      socket.on('account_notice', ({ message }) => {
-        Alert.alert('Aviso da moderação', message);
-      });
-      socket.on('photo_moderated', ({ status, reason }) => {
-        queryClient.invalidateQueries({ queryKey: ['me'] });
-        useAuthStore.getState().refreshMe().catch(() => undefined);
-        if (status === 'rejected') {
-          Alert.alert('Foto recusada', `${reason ?? 'Uma foto sua não segue as regras do Metch'}. Ela não aparece pra ninguém; dá pra trocar no seu perfil.`);
-        }
-      });
+      bindRealtime(socket, queryClient);
     })();
     return () => {
       active = false;
@@ -289,8 +222,19 @@ export function App() {
       if (s === 'active') ensureSocketAlive();
       // e se o /me nunca veio (abriu sem rede), tenta de novo — o retry do store pausa em segundo plano
       if (s === 'active') void useAuthStore.getState().ensureMe();
+      // no fundo os caches de desenho (camadas, efeitos, palco) saem: quem está montado guarda o que já desenhou
+      if (s === 'background') clearMemCaches();
     });
-    return () => sub.remove();
+    // aviso de memória baixa (só o iOS emite; no Android o RN entrega ao Hermes e o app indo pro fundo faz o resto)
+    const low = AppState.addEventListener('memoryWarning', () => {
+      clearMemCaches();
+      clearDrawCaches();
+      queryClient.removeQueries({ type: 'inactive' });
+    });
+    return () => {
+      sub.remove();
+      low.remove();
+    };
   }, []);
 
   // enquanto as fontes carregam, fundo escuro (mesma cor da splash) em vez de tela branca

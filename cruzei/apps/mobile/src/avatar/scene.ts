@@ -54,7 +54,19 @@ export interface AvatarScene extends AvatarSceneInfo {
   seatDrop?: number;
   /** pet no colo, de pé no chão: deslocamento [dx, dy] do colo até o chão ao lado (animação que usa os braços solta o bicho) */
   petDrop?: readonly number[] | null;
+  /**
+   * peça longa e rígida (túnica, vestido, sobretudo, kimono), sem veículo: fração do giro das pernas que a animação e a
+   * caminhada usam (a roupa não acompanha a perna; com o giro inteiro a coxa sai pela lateral da barra). Ausente = 1.
+   */
+  legK?: number;
 }
+
+/**
+ * giro das pernas permitido por peça longa (LONG_TOPS: slot top; LONG_OUTERS: slot outer). Medido na folha com a calça
+ * larga, a perna mais grossa: com isso a coxa erguida do shuffle/passinho/giro fica dentro da barra.
+ */
+const LONG_TOPS: Record<string, number> = { wizard: 0.35 };
+const LONG_OUTERS: Record<string, number> = { trench: 0.35 };
 
 /**
  * braços do colo (relativos ao repouso): o esquerdo vem por baixo do bicho, antebraço quase na horizontal (apoio); o
@@ -223,7 +235,11 @@ export function resolveScene(cfg: Pick<AvatarConfig, 'vehicle' | 'pet' | 'petPos
     }
   }
   s.petAttach = s.petPose === 'arms' || s.petPose === 'shoulder' ? 'body' : 'root';
-  if (!mount) return s;
+  if (!mount) {
+    const lk = Math.min(LONG_TOPS[cfg.top ?? ''] ?? 1, LONG_OUTERS[cfg.outer ?? ''] ?? 1);
+    if (lk < 1) s.legK = lk;
+    return s;
+  }
 
   // pose-base própria do veículo (subida, pernas, equilíbrio, balanço) e mãos no volante/guidão desta pessoa
   const vr = vehicleRig(vehicle);
@@ -288,8 +304,18 @@ export function applyScene(pose: Pose, scene: AvatarScene | null | undefined, t:
   const usesArms = !!(opts && opts.usesArms);
   const hasHands = scene.hands !== 'free' && !usesArms;
   const drop = usesArms && scene.hands === 'cradle' && !!scene.petDrop && scene.petDrop.length === 2;
-  if (!scene.mount && !hasHands && !scene.seated && !drop) return pose;
+  const lk = !scene.mount && scene.legK != null && scene.legK < 1 ? scene.legK : 1;
+  if (!scene.mount && !hasHands && !scene.seated && !drop && lk === 1) return pose;
   const p = clonePose(pose);
+  if (lk < 1) {
+    // peça longa: a perna inteira (coxa, canela e escorço) gira só uma parte, por baixo da barra
+    p.legL.r *= lk;
+    p.legR.r *= lk;
+    if (p.shinL) p.shinL.r *= lk;
+    if (p.shinR) p.shinR.r *= lk;
+    if (p.legL.sy !== undefined) p.legL.sy = 1 + (p.legL.sy - 1) * lk;
+    if (p.legR.sy !== undefined) p.legR.sy = 1 + (p.legR.sy - 1) * lk;
+  }
   if (scene.mount) {
     // com veículo as pernas seguem o veículo (a caminhada do mapa não balança a perna de quem está montado)
     const lg = scene.legs;

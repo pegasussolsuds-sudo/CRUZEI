@@ -368,12 +368,13 @@ export const HELD_THINGS: Record<string, HeldDef> = {
   book: { draw: book, rot: -4 },
   camera: { draw: camera },
   // cabeça além das pontas dos dedos: no repouso o microfone pende de cabeça pra baixo; erguido até a boca, aponta pra ela
-  mic: { draw: mic, rot: 160, dy: 2.5 },
+  mic: { draw: mic, rot: 160, dy: 2.5, liteK: 1.5 },
   tambourine: { draw: tambourine, rot: 150 },
-  fan: { draw: fan, rot: -12 },
+  fan: { draw: fan, rot: -12, liteK: 1.35 },
   heart_sign: { draw: heartSign, rot: -6 },
-  balloon: { draw: balloon, rot: 12 },
-  guitar: { draw: guitar, rot: 4 },
+  // objetos grandes já leem no mapa (o balão é alto: cresce pouco pra não sair do quadro)
+  balloon: { draw: balloon, rot: 12, liteK: 1.05 },
+  guitar: { draw: guitar, rot: 4, liteK: 1.15 },
   trophy: { draw: trophy, dy: -1.2 },
 };
 

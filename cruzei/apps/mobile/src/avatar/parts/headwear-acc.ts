@@ -111,7 +111,8 @@ function earCuff(ctx: LayerCtx, hf: HeadFrame): void {
 function noseRing(ctx: LayerCtx, hf: HeadFrame): void {
   const { nose, noseW } = hf.ha;
   const s = hf.s;
-  const r = 0.42 * s;
+  // miniatura: argola maior e brilho mais forte (com 0,42 ela tinha ~2 px e o tile ficava igual a "Nenhum")
+  const r = (hf.lite ? 0.6 : 0.42) * s;
   const cx = nose[0] + noseW * 0.86;
   const cy = nose[1] + 0.32 * s;
   // começa dentro da narina (em cima, escondido), dá a volta por fora e por baixo
@@ -120,10 +121,10 @@ function noseRing(ctx: LayerCtx, hf: HeadFrame): void {
   const p0: Pt2 = [cx + Math.cos(a0) * r, cy + Math.sin(a0) * r];
   const p1: Pt2 = [cx + Math.cos(a1) * r, cy + Math.sin(a1) * r];
   const d = `M${fx(p0[0])},${fx(p0[1])}A${fx(r)},${fx(r)} 0 1,0 ${fx(p1[0])},${fx(p1[1])}`;
-  const w = (hf.lite ? 0.28 : 0.18) * s;
+  const w = (hf.lite ? 0.34 : 0.18) * s;
   if (!hf.lite) ctx.stroke(d, SHADOW, w, { o: 0.2, b: 0.2, cp: hf.head });
   ctx.stroke(d, '#C9CFDA', w, { gs: metalGrad({ x: cx - r, y: cy - r, w: 2 * r, h: 2 * r }, SILVER_STOPS) });
-  ctx.push(dot(cx - r * 0.55, cy + r * 0.7, w * 0.42), '#FFFFFF', { o: 0.95 });
+  ctx.push(dot(cx - r * 0.55, cy + r * 0.7, w * (hf.lite ? 0.6 : 0.42)), '#FFFFFF', { o: 0.95 });
 }
 
 /** aparelho auditivo atrás da orelha (as duas), com o tubinho transparente até a concha */
@@ -327,20 +328,44 @@ function butterfly(ctx: LayerCtx, hf: HeadFrame, x: number, y: number, sz: numbe
   }
 }
 
+/** chapéu que cobre o alto da cabeça (boné, aba, pano, hijab): coroa de flores e borboletas do cabelo ficariam por baixo */
+function hatCovers(hat: string): boolean {
+  const m = hatModeOf(hat);
+  return m === 'cap' || m === 'brim' || m === 'wrap' || m === 'full';
+}
+
 function butterflies(ctx: LayerCtx, hf: HeadFrame): void {
+  // com chapéu elas pousam NO chapéu (etapa 24b, butterfliesOnHat); aqui, embaixo, sobravam só pontinhos soltos
+  if (hatCovers(ctx.cfg.hat)) return;
   const s = hf.s;
   const top = SKULL_CY - SKULL_RY;
   const clampY = (p: Pt2, sz: number): Pt2 => [p[0], Math.max(1.5 + sz * 1.3, p[1])];
   const b1 = clampY(hf.Q(hf.Wu * 0.5 + 0.3, top + 1.4 - hf.hairLift * 0.85), 1.25 * s);
   const b2 = clampY(hf.Q(-(hf.Wu + hf.bulk * 0.8) + 0.4, -5.6), 0.95 * s);
-  const b3 = clampY(hf.Q(hf.Wu + 2.2 + hf.bulk * 0.5, top - 0.6 - hf.hairLift * 0.5), 0.72 * s);
-  butterfly(ctx, hf, b3[0], b3[1], 0.72 * s, 0.6, BFLY[2]);
+  // a pequena voando longe da cabeça: na miniatura era um cisco solto (2–3 px) — só no completo, e mais perto do cabelo
+  if (!hf.lite) {
+    const b3 = clampY(hf.Q(hf.Wu + 1.2 + hf.bulk * 0.5, top + 0.4 - hf.hairLift * 0.5), 0.8 * s);
+    butterfly(ctx, hf, b3[0], b3[1], 0.8 * s, 0.6, BFLY[2]);
+  }
   butterfly(ctx, hf, b2[0], b2[1], 0.95 * s, -0.55, BFLY[1]);
   butterfly(ctx, hf, b1[0], b1[1], 1.25 * s, 0.35, BFLY[0]);
 }
 
+/** 24b: com chapéu, duas borboletas pousadas — uma na lateral da copa (perto da fita), outra no cabelo do outro lado */
+function butterfliesOnHat(ctx: LayerCtx, hf: HeadFrame): void {
+  if (!hatCovers(ctx.cfg.hat)) return;
+  const s = hf.s;
+  const wide = hatModeOf(ctx.cfg.hat) === 'brim';
+  const a = hf.Q(hf.Wu * 0.62, wide ? -7.4 : -8.2);
+  const b = hf.Q(-(hf.Wu + hf.bulk * 0.6) - 0.2, wide ? -2.6 : -3.4);
+  butterfly(ctx, hf, b[0], b[1], 0.95 * s, -0.55, BFLY[1]);
+  butterfly(ctx, hf, a[0], a[1], 1.2 * s, 0.35, BFLY[0]);
+}
+
 /** coroa de flores: rosas, margaridas e florzinhas lilás sobre um ramo de folhas */
 function flowerCrown(ctx: LayerCtx, hf: HeadFrame): void {
+  // por baixo de boné/aba/pano sobravam só duas florzinhas nas pontas da aba (sujeira): sem coroa com esses chapéus
+  if (hatCovers(ctx.cfg.hat)) return;
   const s = hf.s;
   const w = hf.Wu + hf.bulk * 0.85 + 0.55;
   const yC = -7.6 - Math.min(hf.hairLift, 3) * 0.35;
@@ -514,11 +539,14 @@ function cups(ctx: LayerCtx, hf: HeadFrame, style: PhoneStyle): void {
     ctx.push(cd, '#3C3F4A', { gf: { t: 'l', x1: b.x, y1: b.y, x2: b.x, y2: b.y + b.h, s: [[0, '#5C6070'], [0.5, '#3A3D48'], [1, '#22242C']] }, cp: d });
     ctx.stroke(smoothPath([[cx0, c.y - c.hh * 0.8], [cx0 + sd * 0.15 * s, c.y], [cx0, c.y + c.hh * 0.8]], false), '#0E0F14', 0.2 * s, { o: 0.7, cp: d });
     if (!hf.lite) ctx.push(blob(c.x - c.hw * 0.25, c.y - c.hh * 0.5, c.hw * 0.35, c.hh * 0.22, -0.3), '#FFFFFF', { o: 0.22, cp: d, b: 0.3 });
-    // detalhe: anel de luz no lado de fora (lima no fone, ciano/magenta no headset)
-    const ring = smoothPath(
-      shell.filter((p) => (p[0] - c.x) * sd > c.hw * 0.3).map((p) => [c.x + (p[0] - c.x) * 0.8, c.y + (p[1] - c.y) * 0.82] as SP),
-      false,
-    );
+    // detalhe: anel de luz FECHADO no meio da concha (lima no fone, ciano/magenta no headset) — o arco aberto do lado
+    // de fora, com o friso da almofada dentro, lia as letras "C" e "G"
+    const rc: SP[] = [];
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      rc.push([c.x + sd * c.hw * 0.26 + Math.cos(a) * c.hw * 0.4, c.y + Math.sin(a) * c.hh * 0.5]);
+    }
+    const ring = smoothPath(rc, true);
     if (style === 'headset') neon(ctx, hf, ring, sd > 0 ? '#00E5FF' : '#FF1493', 0.22 * s, { glow: 0.9 });
     else ctx.stroke(ring, '#7FFF00', (hf.lite ? 0.3 : 0.2) * s, { o: 0.9 });
   }
@@ -569,4 +597,5 @@ export const ACCESSORIES: Record<string, AccFn> = {
 export const OVER_HAT: Record<string, AccFn> = {
   headphones: phonesOver('phones'),
   headset: phonesOver('headset'),
+  butterflies: butterfliesOnHat,
 };

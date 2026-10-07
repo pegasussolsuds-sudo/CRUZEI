@@ -130,6 +130,8 @@ function pushOut(u: number, g: number, side: number): number[] {
  */
 export function reachArm(u: number, f: number): number[] {
   'worklet';
+  // caso comum (dentro do alcance dos dois lados): as três passadas devolveriam (u, f); um array só por quadro
+  if (excess(u, f, 0) <= 0 && excess(u, f, 1) <= 0) return [u, f];
   const a = pushOut(u, f, 0);
   const b = pushOut(a[0], a[1], 1);
   // o empurrão pra baixo (alcance pra cima) pode abrir o braço de novo: mais uma passada pra fora
@@ -217,20 +219,25 @@ export function keyMix(keys: readonly (readonly number[])[], x: number, move: nu
   const b = keys[i];
   const m = clamp(f / Math.max(1e-6, move), 0, 1);
   const e = lagged(m, 0, o);
-  const out: number[] = [];
   if (a.length < 8) {
-    for (let j = 0; j < a.length; j++) out.push(a[j] + (b[j] - a[j]) * e);
-    return out;
+    const short: number[] = [];
+    for (let j = 0; j < a.length; j++) short.push(a[j] + (b[j] - a[j]) * e);
+    return short;
   }
   const lL = b.length >= 14 ? b[12] : lag;
   const lR = b.length >= 14 ? b[13] : lag;
   const eShin = lagged(m, lag, o);
+  // atraso de cada braço: calculado uma vez (antes: lagged() por canal)
+  const wL = lL !== 0 ? lagged(m, Math.abs(lL), o) : e;
+  const wR = lR !== 0 ? lagged(m, Math.abs(lR), o) : e;
+  // 12 canais já alocados de uma vez (sem crescer o array a cada push)
+  const out = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   for (let j = 0; j < 12; j++) {
     let w = e;
     if (j === 5 || j === 7) w = eShin;
-    else if (j === 0 || j === 1) w = (j === 1) === (lL >= 0) ? lagged(m, Math.abs(lL), o) : e;
-    else if (j === 2 || j === 3) w = (j === 3) === (lR >= 0) ? lagged(m, Math.abs(lR), o) : e;
-    out.push(a[j] + (b[j] - a[j]) * w);
+    else if (j === 0 || j === 1) w = (j === 1) === (lL >= 0) ? wL : e;
+    else if (j === 2 || j === 3) w = (j === 3) === (lR >= 0) ? wR : e;
+    out[j] = a[j] + (b[j] - a[j]) * w;
   }
   return out;
 }

@@ -1,6 +1,8 @@
-// Avatar vivo das telas grandes (perfil, prévia no mapa, cartão, match): o palco Skia (<AvatarStage/>) respirando, com o
+// Avatar vivo das telas grandes (perfil, prévia no mapa, cartão, match): o palco Skia (<AvatarStage/>) PARADO, com o
 // fundo e a placa de pronomes quando a pessoa escolheu, e a animação assinatura (signature.ts) tocando uma vez no toque —
-// ou ao abrir, com `autoplay`, se não houver movimento reduzido. Listas e miniaturas continuam no <CruzeiAvatar/>.
+// ou ao abrir, com `autoplay`, se não houver movimento reduzido. Parado, o canvas não redesenha nada (a aura e o fundo
+// mostram o quadro parado e só se mexem enquanto a animação toca). Dança também toca UM ciclo (loop={false}, igual ao
+// mapa): em loop o relógio, a aura e as partículas ficavam vivos pra sempre. Listas e miniaturas: <CruzeiAvatar/>.
 // `paused` congela o palco (tela sem foco): no Moto g54, canvas Skia animando atrás de outra tela já derrubou o HWUI.
 
 import type { AvatarConfig } from '@cruzei/shared-types';
@@ -28,7 +30,7 @@ export interface SignatureAvatarProps {
   /** placa de pronomes (padrão: liga) */
   showPronouns?: boolean;
   groundShadow?: boolean;
-  /** respiração (padrão liga). Desligada, o palco só redesenha quando toca a animação ou tem aura */
+  /** respiração contínua (padrão desligada: tela parada = zero quadros). Ligada, o palco redesenha todo quadro */
   idle?: boolean;
   /** quem é, pro leitor de tela (ex.: "Avatar de Ana"); o botão avisa que o toque anima */
   label: string;
@@ -45,7 +47,7 @@ function SignatureAvatarInner({
   showBackdrop = true,
   showPronouns = true,
   groundShadow,
-  idle = true,
+  idle = false,
   label,
   style,
 }: SignatureAvatarProps) {
@@ -88,6 +90,7 @@ function SignatureAvatarInner({
         mode={mode}
         emote={emote}
         {...player.stageProps}
+        loop={false}
         showBackdrop={showBackdrop}
         showPronouns={showPronouns}
         groundShadow={groundShadow}

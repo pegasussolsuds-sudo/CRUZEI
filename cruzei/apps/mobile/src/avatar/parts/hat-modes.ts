@@ -8,8 +8,8 @@
 //          franja curta pode aparecer na testa (menos gorro), laterais e nuca aparecem
 //   brim   fedora, panamá, palha, vaqueiro, cartola, bruxa: o crânio some sob a copa; laterais e nuca aparecem
 //          abaixo da aba, cabelo longo cai normalmente atrás
-//   wrap   turbante e durag: cobre o cabelo da testa à nuca (o black power fica contido no pano, sem tufo pros lados);
-//          só cabelo solto e longo pode aparecer embaixo, atrás
+//   wrap   turbante e durag: cobre o cabelo inteiro (o black power fica contido no pano, sem tufo pros lados; nem o
+//          cabelo longo aparece atrás — saindo da nuca ele lia duas tiras soltas dos lados do pescoço)
 //   full   hijab: nenhum cabelo aparece (nem de trás); o hijab emoldura o rosto e cobre pescoço e ombros
 
 export type HatMode = 'none' | 'band' | 'crown' | 'cap' | 'brim' | 'wrap' | 'full';
@@ -63,7 +63,7 @@ export function hatHidesAllHair(hatId: string | null | undefined): boolean {
  */
 const HAT_LIFT: Record<string, number> = {
   headband: 0.5,
-  flatcap: 1.0,
+  flatcap: 1.7,
   durag: 1.7,
   bucket: 2.0,
   tiara: 2.2,

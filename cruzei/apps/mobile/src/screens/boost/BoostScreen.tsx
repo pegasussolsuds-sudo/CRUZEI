@@ -33,6 +33,7 @@ import Animated, {
   cancelAnimation,
   useAnimatedStyle,
   useDerivedValue,
+  useReducedMotion,
   useSharedValue,
   withRepeat,
   withSequence,
@@ -146,6 +147,15 @@ const ROCKET_NOZZLE = Skia.Path.MakeFromSVGString('M-14,40 L14,40 L11,50 L-11,50
 const FLAME_OUTER = Skia.Path.MakeFromSVGString('M-13,50 Q0,118 13,50 Z');
 const FLAME_INNER = Skia.Path.MakeFromSVGString('M-6,50 Q0,88 6,50 Z');
 
+/**
+ * Loops "de vitrine" da tela com fim (~8 s) e parados com movimento reduzido: em loop eterno a tela parada redesenhava
+ * sem parar (meta no S23: nada anima contínuo, CPU parado < 15%). Número de idas (withRepeat) de cada um:
+ */
+const BOB_REPS = 4; // 2 flutuadas (1,8 s cada ida) e assenta no meio
+const FLICKER_REPS = 16; // 0,5 s cada
+const FIRE_REPS = 7; // 1,1 s cada
+const CTA_GLOW_REPS = 6; // 3 respirações (1,4 s cada ida), termina apagado
+
 interface RocketHeroProps {
   /** 0 = parado (flutuando); 1 = decolou e saiu da tela */
   launch: SharedValue<number>;
@@ -154,22 +164,27 @@ interface RocketHeroProps {
 
 /**
  * Foguete desenhado em Skia: corpo + bico dourado + aletas magenta + janela,
- * chama que tremula (scaleY) e partículas de fogo/faíscas em loop com blur.
+ * chama que tremula (scaleY) e partículas de fogo/faíscas com blur por ~8 s ao abrir (depois parado).
  * Tudo dirigido por 3 shared values (bob, flicker, fire) — zero setState por frame.
  */
 function RocketHero({ launch, paused }: RocketHeroProps) {
   const bob = useSharedValue(0);
   const flicker = useSharedValue(0);
   const fire = useSharedValue(0);
+  const reduce = useReducedMotion();
 
   useEffect(() => {
-    if (paused) {
+    if (paused || reduce) {
       cancelAnimation(bob);
       cancelAnimation(flicker);
       cancelAnimation(fire);
+      if (reduce) bob.value = 0.5;
       return;
     }
-    bob.value = withRepeat(withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.sin) }), -1, true);
+    bob.value = withSequence(
+      withRepeat(withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.sin) }), BOB_REPS, true),
+      withTiming(0.5, { duration: 900, easing: Easing.inOut(Easing.sin) }),
+    );
     flicker.value = withRepeat(
       withSequence(
         withTiming(1, { duration: 110, easing: Easing.inOut(Easing.quad) }),
@@ -177,16 +192,16 @@ function RocketHero({ launch, paused }: RocketHeroProps) {
         withTiming(0.8, { duration: 90, easing: Easing.inOut(Easing.quad) }),
         withTiming(0, { duration: 160, easing: Easing.inOut(Easing.quad) }),
       ),
-      -1,
+      FLICKER_REPS,
       false,
     );
-    fire.value = withRepeat(withTiming(1, { duration: 1100, easing: Easing.linear }), -1, false);
+    fire.value = withRepeat(withTiming(1, { duration: 1100, easing: Easing.linear }), FIRE_REPS, false);
     return () => {
       cancelAnimation(bob);
       cancelAnimation(flicker);
       cancelAnimation(fire);
     };
-  }, [bob, fire, flicker, paused]);
+  }, [bob, fire, flicker, paused, reduce]);
 
   const cx = ROCKET_W / 2;
   const cy = ROCKET_H / 2 - 24;
@@ -344,15 +359,18 @@ function AvatarOrbit({ uri, initial, size, paused, glowColor = colors.accent }: 
   const box = size + pad * 2;
   const c = box / 2;
   const spin = useSharedValue(0);
+  const reduce = useReducedMotion();
 
   useEffect(() => {
-    if (paused) {
+    if (paused || reduce) {
       cancelAnimation(spin);
       return;
     }
-    spin.value = withRepeat(withTiming(1, { duration: 7000, easing: Easing.linear }), -1, false);
+    // uma volta por foco (0 e 1 são o mesmo desenho: recomeçar não salta), depois os pontos ficam parados
+    spin.value = 0;
+    spin.value = withTiming(1, { duration: 7000, easing: Easing.linear });
     return () => cancelAnimation(spin);
-  }, [paused, spin]);
+  }, [paused, reduce, spin]);
 
   const dots = useMemo(() => {
     const inner = Array.from({ length: ORBIT_INNER }, (_, i) => ({
@@ -491,6 +509,7 @@ export function BoostScreen() {
   const launch = useSharedValue(0);
   const progress = useSharedValue(1);
   const ctaGlow = useSharedValue(0);
+  const reduce = useReducedMotion();
 
   const mainPhoto = user?.photos.find((p) => p.isMain) ?? user?.photos[0] ?? null;
   const avatarUri = mainPhoto?.thumbnailUrl ?? mainPhoto?.url ?? null;
@@ -522,15 +541,16 @@ export function BoostScreen() {
     return () => clearInterval(id);
   }, [active, progress, qc]);
 
-  // CTA "respira" em dourado enquanto não tem boost
+  // CTA "respira" em dourado umas vezes ao abrir (sem boost) e fica apagado
   useEffect(() => {
-    if (isActive || !focused) {
+    if (isActive || !focused || reduce) {
       cancelAnimation(ctaGlow);
+      if (reduce) ctaGlow.value = 0;
       return;
     }
-    ctaGlow.value = withRepeat(withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.sin) }), -1, true);
+    ctaGlow.value = withRepeat(withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.sin) }), CTA_GLOW_REPS, true);
     return () => cancelAnimation(ctaGlow);
-  }, [ctaGlow, focused, isActive]);
+  }, [ctaGlow, focused, isActive, reduce]);
 
   const resolveLocation = useCallback(async (): Promise<{ latitude: number; longitude: number } | null> => {
     try {

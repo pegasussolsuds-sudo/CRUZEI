@@ -22,7 +22,7 @@
 import { faceDims, headAnchors, smoothPath, taperPath, type HeadAnchors, type SP } from '../anatomy';
 import type { LayerCtx } from '../ctx';
 import { ellipse } from '../geometry';
-import { blob, heartPath, isLite, lodCtx, lum, mix, saturate, speckle, starPath, type SkinTones } from '../shading';
+import { blob, heartPath, isLite, isTiny, lodCtx, lum, mix, saturate, speckle, starPath, type SkinTones } from '../shading';
 import type { AvatarLayer, Pt } from '../types';
 
 import { tonesOf } from './body';
@@ -330,8 +330,11 @@ function openEye(ctx: LayerCtx, acc: EyeAcc, ha: HeadAnchors, side: 'L' | 'R', s
   const ou = st.ou * (1 - age * 0.06);
   const g = eyeGeo(c, side, spA, ha.eyeW, ou, st.ol, st.sq, st.flat ?? 0);
   const up = sp.up * ou;
+  // figura minúscula: o olho tem ~5 px — branco, íris, pupila, reflexo (um ponto de luz ainda acende o olho) e a linha
+  // dos cílios; pálpebra, vinco e linha de baixo têm menos de 1 px
+  const tiny = isTiny(ctx);
   // pele da pálpebra de cima (entre os cílios e o vinco) um pouco mais escura e quente: o olho "afunda" na órbita
-  acc.add('lidSkin', taperPath(g.upper.map((p) => [p[0], p[1] - 0.55] as SP), [0.3, 1.4, 1.6, 1.25, 0.3]), mix(t.shade, t.blush, 0.15), { o: 0.4, b: 0.35 });
+  if (!tiny) acc.add('lidSkin', taperPath(g.upper.map((p) => [p[0], p[1] - 0.55] as SP), [0.3, 1.4, 1.6, 1.25, 0.3]), mix(t.shade, t.blush, 0.15), { o: 0.4, b: 0.35 });
   if (mk.shadow) {
     const lid = taperPath([g.upper[1], [g.X(0), g.yO - up - 0.8], g.upper[3]].map((p) => [p[0], p[1] - 0.3] as SP), [0.3, 1.9, 0.3]);
     acc.add('lidMk', lid, mk.shadow, { o: 0.6, b: 0.45 });
@@ -352,8 +355,10 @@ function openEye(ctx: LayerCtx, acc: EyeAcc, ha: HeadAnchors, side: 'L' | 'R', s
   const eye = ctx.col.eye;
   if (st.iris === 'star' || st.iris === 'heart') {
     const fill = st.iris === 'star' ? '#FFC93C' : '#FF3D8B';
-    acc.add(`iris0_${side}`, ellipse(ix, iy, ir * 1.04, ir * 1.04), st.iris === 'star' ? '#2A1A40' : '#5A0A2A', { cp: g.sclera });
-    acc.add(`iris_${side}`, st.iris === 'star' ? starPath(ix, iy + 0.05, ir * 1.15, 5, 0.48) : heartPath(ix, iy + 0.05, ir * 1.0), fill, {
+    // miniatura: a forma cresce ~30% (e o disco escuro atrás, que vira o contorno), senão estrela e coração viram um ponto
+    const zk = lite ? 1.3 : 1;
+    acc.add(`iris0_${side}`, ellipse(ix, iy, ir * 1.04 * zk, ir * 1.04 * zk), st.iris === 'star' ? '#2A1A40' : '#5A0A2A', { cp: g.sclera });
+    acc.add(`iris_${side}`, st.iris === 'star' ? starPath(ix, iy + 0.05, ir * 1.15 * zk, 5, lite ? 0.52 : 0.48) : heartPath(ix, iy + 0.05, ir * 1.0 * zk), fill, {
       cp: g.sclera,
       gf: { t: 'r', cx: ix - 0.3, cy: iy - 0.3, r: ir * 1.3, s: [[0, '#FFFFFF'], [0.35, fill], [1, mix(fill, '#000000', 0.25)]] },
     });
@@ -369,12 +374,12 @@ function openEye(ctx: LayerCtx, acc: EyeAcc, ha: HeadAnchors, side: 'L' | 'R', s
     acc.add('pupil', ellipse(ix, iy, ir * 0.42, ir * 0.42), '#0B0709', { cp: g.sclera });
   }
   // sombra da pálpebra de cima sobre o olho (inclui o alto da íris)
-  acc.add('lidSh', taperPath(g.upper.map((p) => [p[0], p[1] + 0.15] as SP), [0, 0.9, 1.0, 0.8, 0]), '#2A141C', { o: 0.32, b: 0.35, cp: g.sclera });
+  if (!tiny) acc.add('lidSh', taperPath(g.upper.map((p) => [p[0], p[1] + 0.15] as SP), [0, 0.9, 1.0, 0.8, 0]), '#2A141C', { o: 0.32, b: 0.35, cp: g.sclera });
   // reflexos: grande em cima-esquerda, pequeno embaixo-direita (assinatura)
   const hr = 0.25 * ir;
   acc.add('hl', ellipse(ix - ir * 0.36, iy - ir * 0.36, hr, hr * 0.92) + (lite ? '' : ellipse(ix + ir * 0.42, iy + ir * 0.36, hr * 0.42, hr * 0.42)), '#FFFFFF', { o: 0.95, cp: g.sclera });
   // vinco da pálpebra (acima da linha dos cílios): forma afilada, sobe com a abertura
-  if (sp.crease > 0) {
+  if (sp.crease > 0 && !tiny) {
     const cr = sp.crease * (0.7 + st.ou * 0.3) * (1 - age * 0.25);
     const crease: SP[] = [
       [g.X(0.74), g.yI - up * 0.78 - cr * 0.5],
@@ -418,9 +423,9 @@ function openEye(ctx: LayerCtx, acc: EyeAcc, ha: HeadAnchors, side: 'L' | 'R', s
   acc.add('lash', lash, LASH);
   // pálpebra de baixo: borda clara (espessura da pálpebra) + linha dos cílios de baixo leve (some no canto de dentro)
   if (!lite) acc.add('lowRim', taperPath(g.lower.map((p) => [p[0], p[1] + 0.24] as SP), [0.05, 0.3, 0.36, 0.26, 0.05]), t.lighter, { o: 0.45 });
-  acc.add('lowLine', taperPath(g.lower, [0.02, 0.1, 0.2, 0.2, 0.08]), t.line, { o: lite ? 0.75 : 0.62 });
+  if (!tiny) acc.add('lowLine', taperPath(g.lower, [0.02, 0.1, 0.2, 0.2, 0.08]), t.line, { o: lite ? 0.75 : 0.62 });
   // bochecha empurrando (sorriso): vinco suave embaixo do olho
-  if (st.sq > 0.2) acc.add('sq', taperPath([[g.X(-0.8), g.yO + sp.lo * 0.95 + 0.45], [g.X(0), c[1] + sp.lo * 1.05 + 0.45], [g.X(0.6), g.yI + sp.lo * 0.85 + 0.3]], [0, 0.45 * st.sq, 0]), t.form, { o: 0.3, b: 0.2 });
+  if (st.sq > 0.2 && !tiny) acc.add('sq', taperPath([[g.X(-0.8), g.yO + sp.lo * 0.95 + 0.45], [g.X(0), c[1] + sp.lo * 1.05 + 0.45], [g.X(0.6), g.yI + sp.lo * 0.85 + 0.3]], [0, 0.45 * st.sq, 0]), t.form, { o: 0.3, b: 0.2 });
 }
 
 /** olho fechado: 'happy' = arco pra cima (rindo, bochecha empurrando); 'closed' = pálpebra fechada relaxada */
@@ -517,8 +522,12 @@ function brow(ctx: LayerCtx, ha: HeadAnchors, side: 'L' | 'R', sp: BrowSpec, stI
 // boca
 // ---------------------------------------------------------------------------------------------------------------
 
+/** barbas que cobrem o queixo: a sombra embaixo do lábio de baixo (desenhada depois da barba) virava um remendo na barba */
+const CHIN_HAIR = new Set(['beard', 'goatee', 'van_dyke', 'long_beard', 'boxed', 'stubble']);
+
 function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk: Makeup): void {
   const lite = isLite(ctx);
+  const underLip = !CHIN_HAIR.has(ctx.cfg.facialHair) && !isTiny(ctx);
   const k = ha.s;
   const mx = ha.mouth[0] + (st.dx ?? 0) * k;
   const my = ha.mouth[1];
@@ -537,7 +546,7 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
   if (st.k === 'pucker') {
     const px = mx + 0.15;
     const w = 1.45 * k;
-    ctx.push(blob(px + 0.2, my + 1.9, w * 1.05, 0.6), t.deep, { o: 0.32, b: 0.45 });
+    if (underLip) ctx.push(blob(px + 0.2, my + 1.9, w * 1.05, 0.6), t.deep, { o: 0.32, b: 0.45 });
     const upper = smoothPath([[px - w, my + 0.05, 0.6], [px - w * 0.55, my - up * 1.25], [px - 0.25, my - up * 1.35], [px, my - up * 1.15], [px + 0.25, my - up * 1.35], [px + w * 0.55, my - up * 1.25], [px + w, my + 0.05, 0.6], [px + w * 0.4, my + 0.2], [px - w * 0.4, my + 0.2]]);
     const lower = smoothPath([[px - w, my + 0.05, 0.6], [px - w * 0.4, my + 0.25], [px + w * 0.4, my + 0.25], [px + w, my + 0.05, 0.6], [px + w * 0.7, my + lo * 1.25], [px, my + lo * 1.45], [px - w * 0.7, my + lo * 1.25]]);
     ctx.push(upper, lipUp);
@@ -552,7 +561,7 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
   if (st.k === 'o') {
     const h = (st.h ?? 1.6) * k;
     const w = Math.max(1.2 * k, W);
-    ctx.push(blob(mx + 0.25, my + h + 1.1, w * 0.75, 0.55), t.deep, { o: 0.3, b: 0.45 });
+    if (underLip) ctx.push(blob(mx + 0.25, my + h + 1.1, w * 0.75, 0.55), t.deep, { o: 0.3, b: 0.45 });
     ctx.push(ellipse(mx, my + 0.4, w + 0.4, h * 0.62 + 0.8), lipC, { gf: { t: 'l', x1: mx, y1: my - h, x2: mx, y2: my + h, s: [[0, lipUp], [0.5, lipC], [1, mix(lipC, '#000000', 0.1)]] } });
     ctx.push(ellipse(mx, my + 0.45, w * 0.78, h * 0.6), MOUTH_IN, { gf: { t: 'r', cx: mx, cy: my + 0.95, r: h, s: [[0, '#6A2028'], [1, MOUTH_IN]] } });
     ctx.push(ellipse(mx, my + 0.45 - h * 0.5, w * 0.6, h * 0.18), TEETH, { o: 0.85, cp: ellipse(mx, my + 0.45, w * 0.78, h * 0.6) });
@@ -574,7 +583,7 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
       [mx - W * 0.62, my + h * 0.72],
     ]);
     // sombra embaixo do lábio de baixo
-    ctx.push(blob(mx + 0.3, my + h + lo * 0.72 + 0.9, W * 0.5, 0.55), t.deep, { o: 0.32, b: 0.5 });
+    if (underLip) ctx.push(blob(mx + 0.3, my + h + lo * 0.72 + 0.9, W * 0.5, 0.55), t.deep, { o: 0.32, b: 0.5 });
     // lábio de baixo (faixa abaixo da abertura)
     const lowerLip = smoothPath([
       [CL[0], CL[1], 0],
@@ -632,7 +641,7 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
     [CR[0], CR[1], 0],
   ];
   // sombra embaixo do lábio de baixo (sulco do queixo)
-  ctx.push(blob(mx + 0.3, my + lo + 1.25, W * 0.5, 0.55), t.deep, { o: 0.32, b: 0.5 });
+  if (underLip) ctx.push(blob(mx + 0.3, my + lo + 1.25, W * 0.5, 0.55), t.deep, { o: 0.32, b: 0.5 });
   const upper = smoothPath([
     [CL[0], CL[1], 0],
     [mx - W * 0.6, my - up * 0.7 - cl * 0.42],
@@ -653,7 +662,8 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
   ctx.push(upper, lipUp, { gf: { t: 'l', x1: mx, y1: my - up, x2: mx, y2: my + 0.2, s: [[0, mix(lipUp, '#FFFFFF', 0.06)], [1, mix(lipUp, '#000000', 0.14)]] } });
   // pele escura: contraste interno maior (luz no lábio de baixo, comissuras escuras) pra boca ler no busto e no mapa
   const deep = lum(t.base) < 0.15;
-  ctx.push(blob(mx - 0.45, my + lo * 0.5 + 0.2, W * (deep ? 0.32 : 0.26), deep ? 0.22 : 0.18, -0.1), '#FFFFFF', { o: mk.gloss ? 0.55 : mk.lip ? 0.3 : deep ? 0.3 : 0.16, b: mk.gloss ? 0 : 0.12 });
+  const tiny = isTiny(ctx);
+  if (!tiny || mk.gloss) ctx.push(blob(mx - 0.45, my + lo * 0.5 + 0.2, W * (deep ? 0.32 : 0.26), deep ? 0.22 : 0.18, -0.1), '#FFFFFF', { o: mk.gloss ? 0.55 : mk.lip ? 0.3 : deep ? 0.3 : 0.16, b: mk.gloss ? 0 : 0.12 });
   ctx.push(taperPath(seam, lite ? [0.2, 0.42, 0.48, 0.42, 0.2] : [0.08, 0.3, 0.36, 0.3, 0.08], { n: 9 }), lipDark, { o: 0.92 });
   if (deep) ctx.push(ellipse(CL[0] + 0.15, CL[1] + 0.05, 0.32, 0.24) + ellipse(CR[0] - 0.15, CR[1] + 0.05, 0.32, 0.24), lipDark, { o: 0.55, b: lite ? 0 : 0.12 });
   // contorno de luz do lábio de cima (a borda do vermelhão pega luz)
@@ -661,7 +671,30 @@ function mouth(ctx: LayerCtx, ha: HeadAnchors, st: MouthState, t: SkinTones, mk:
   cornerCreases(ctx, CL, CR, st, t);
 }
 
+/**
+ * cantos da boca (avatar) da expressão da config, com a mesma conta da boca acima (largura, canto que sobe, sorriso de
+ * canto, biquinho, boca em "o"). A barba (etapa 18, antes da boca) usa pra o bigode passar POR CIMA dos cantos e cair por
+ * fora deles — senão os lábios, desenhados depois, atravessam as pontas e o bigode sai em 3 pedaços.
+ */
+export function mouthCorners(ctx: LayerCtx): { CL: Pt; CR: Pt } {
+  const lite = isLite(ctx);
+  const ha = headAnchors(ctx.an);
+  const st = ampLite(EXPR[ctx.cfg.face] ?? EXPR.smile, lite ? 1.45 : 1).mouth;
+  const k = ha.s;
+  const mx = ha.mouth[0] + (st.dx ?? 0) * k;
+  const my = ha.mouth[1];
+  const W = ha.mouthW + st.w * k + (lite ? 0.25 : 0);
+  if (st.k === 'pucker') return { CL: [mx + 0.15 - 1.45 * k, my], CR: [mx + 0.15 + 1.45 * k, my] };
+  if (st.k === 'o') {
+    const w = Math.max(1.2 * k, W);
+    return { CL: [mx - w - 0.4, my + 0.4], CR: [mx + w + 0.4, my + 0.4] };
+  }
+  return { CL: [mx - W, my - st.cl * k], CR: [mx + W, my - st.cr * k] };
+}
+
 function cornerCreases(ctx: LayerCtx, CL: Pt, CR: Pt, st: MouthState, t: SkinTones): void {
+  // figura minúscula: vinco do canto e covinha têm < 1 px (só a covinha do sorriso de canto ajuda — e nem ela lê ali)
+  if (isTiny(ctx)) return;
   let d = '';
   if (st.cl > 0.3) d += taperPath([[CL[0] + 0.25, CL[1] + 0.05], [CL[0] - 0.3, CL[1] - 0.2], [CL[0] - 0.45, CL[1] - 0.7]], [0.2, 0.15, 0]);
   if (st.cr > 0.3) d += taperPath([[CR[0] - 0.25, CR[1] + 0.05], [CR[0] + 0.3, CR[1] - 0.2], [CR[0] + 0.45, CR[1] - 0.7]], [0.2, 0.15, 0]);
@@ -748,8 +781,9 @@ function nose(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
       ],
       [0, wk * k, wk * 0.9 * k, 0],
     );
+  const tiny = isTiny(ctx);
   ctx.push(ala(1, 0.5), t.line, { o: 0.5 });
-  ctx.push(ala(-1, 0.32), t.line, { o: 0.3 });
+  if (!tiny) ctx.push(ala(-1, 0.32), t.line, { o: 0.3 });
   if (!lite) ctx.push(blob(cx - w * 0.72, ny - 0.4, w * 0.22, 0.5), t.lighter, { o: 0.3, b: 0.2 });
   // nariz largo: cada asa tem volume próprio — sombra onde ela encontra a bochecha e luz no alto dela
   if (ctx.cfg.nose === 'wide') {
@@ -777,10 +811,12 @@ function nose(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
     t.lipDark,
     { o: Math.min(0.85, 0.5 + sp.nostril * 0.35) },
   );
-  // sombra projetada no lábio de cima (embaixo e à direita da ponta)
-  ctx.push(blob(cx + 0.6, ny + 2.1, w * 0.75, 0.55, 0.1), nf, { o: 0.25, b: 0.5 });
-  // calor e brilho da ponta
-  ctx.push(blob(cx, ny - 0.4, tip * 0.95, tip * 0.75), t.blush, { o: t.dark ? 0.1 : 0.14, b: 0.4 });
+  if (!tiny) {
+    // sombra projetada no lábio de cima (embaixo e à direita da ponta)
+    ctx.push(blob(cx + 0.6, ny + 2.1, w * 0.75, 0.55, 0.1), nf, { o: 0.25, b: 0.5 });
+    // calor da ponta
+    ctx.push(blob(cx, ny - 0.4, tip * 0.95, tip * 0.75), t.blush, { o: t.dark ? 0.1 : 0.14, b: 0.4 });
+  }
   ctx.push(blob(cx - 0.32, ny - 0.6 - up * 0.2, tip * 0.42, tip * 0.32), t.fantasy ?? '#FFFFFF', { o: nf !== t.form ? 0.48 : t.dark ? 0.36 : 0.32, b: 0.22 });
 }
 
@@ -813,19 +849,31 @@ function lines(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
   let shade = '';
   let crest = '';
   let bag = '';
+  // miniatura: vincos ~45% mais grossos e o sulco embaixo do olho, senão Nenhuma/Suaves/Marcadas ficam iguais
+  const lw = lite ? 1.45 : 1;
   for (const sg of [-1, 1]) {
     // sulco nasogeniano: sombra macia e afilada, mais larga no meio; a crista (bochecha) fica por cima e por fora
     const nl: SP[] = [[nx + sg * (ha.noseW + 0.3), ny - 0.6], [nx + sg * (ha.noseW + 1.0), ny + 0.9], [mx + sg * (W + 0.5), my + 0.15], [mx + sg * (W + 0.6), my + 1.1]];
-    shade += taperPath(nl, [0, 0.5 * m * k, 0.36 * m * k, 0]);
-    crest += taperPath(nl.slice(0, 3).map((p) => [p[0] + sg * 0.55, p[1] - 0.25] as SP), [0, 0.55 * m * k, 0]);
+    shade += taperPath(nl, [0, 0.5 * m * k * lw, 0.36 * m * k * lw, 0]);
+    crest += taperPath(nl.slice(0, 3).map((p) => [p[0] + sg * 0.55, p[1] - 0.25] as SP), [0, 0.55 * m * k * lw, 0]);
+    if (lite) {
+      // sulco embaixo do olho (do canto de dentro descendo pra fora), com a crista de luz logo abaixo
+      const ee = sg < 0 ? ha.eyeL : ha.eyeR;
+      const tt: SP[] = [[ee[0] - sg * ha.eyeW * 0.55, ee[1] + ha.eyeW * 0.75], [ee[0] + sg * ha.eyeW * 0.1, ee[1] + ha.eyeW * 1.05], [ee[0] + sg * ha.eyeW * 0.85, ee[1] + ha.eyeW * 0.85]];
+      shade += taperPath(tt, [0, 0.42 * m * k, 0]);
+      crest += taperPath(tt.map((p) => [p[0], p[1] + 0.45] as SP), [0, 0.4 * m * k, 0]);
+    }
     // bolsa embaixo do olho: sombra larga e macia (sem linha)
     const e = sg < 0 ? ha.eyeL : ha.eyeR;
     bag += blob(e[0] + sg * 0.1, e[1] + ha.eyeW * 0.95, ha.eyeW * 0.85, 0.45 * k);
   }
-  // (no 'lite' o desfoque some: o vinco ficaria um risco duro na miniatura — metade da força e sem a bolsa)
-  ctx.push(shade, ash, { o: (kind === 'marked' ? 0.42 : 0.3) * (lite ? 0.55 : 1), b: 0.32 });
-  if (!lite) ctx.push(bag, ash, { o: 0.14 * m, b: 0.5 });
-  if (!lite) {
+  // sulco e bolsa: no busto leve o desfoque fica (lodCtx bustBlur), então saem com força cheia — na pele escura ainda
+  // mais (o tom "ash" quase não destaca dela) e com a crista de luz, senão Nenhuma/Suaves/Marcadas ficavam iguais
+  const dk = t.dark ? 1.35 : 1;
+  ctx.push(shade, ash, { o: Math.min(0.62, (kind === 'marked' ? 0.42 : 0.3) * dk), b: 0.32 });
+  ctx.push(bag, ash, { o: 0.14 * m * dk, b: 0.5 });
+  if (lite) ctx.push(crest, t.dark ? mix(t.lighter, '#FFE2CC', 0.3) : t.lighter, { o: Math.min(0.7, (0.3 * m + 0.08) * (t.dark ? 1.7 : 1)), b: 0.25 });
+  else {
     // testa: 2 linhas curtas que acompanham o arco da sobrancelha (arco leve pra cima no meio), luz fina em cima de cada
     const by = ha.browY;
     for (let i = 0; i < 2; i++) {
@@ -890,7 +938,11 @@ function vitiligo(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
     patch(ha.chin[0] + 1.5, ha.chin[1] - 1.4, 1.5, 3) +
     patch(ha.chin[0] - 0.6, ha.chin[1] - 0.6, 0.6, 7, 8) +
     patch(ha.cheekR[0] + 1.6, ha.cheekR[1] - 1.0, 0.8, 4, 9);
-  ctx.push(d, light, { cp: ha.headPath, o: 0.9, b: 0.12 });
+  // pele muito clara: a mancha clara some na pele quase branca — fica mais branca e fria, com a borda levemente mais
+  // escura (hiperpigmentação de borda, como no vitiligo de verdade), e passa a ler também na s9/s1
+  const pale = lum(t.base) > 0.6;
+  ctx.push(d, pale ? mix(t.base, '#FFF8FB', 0.75) : light, { cp: ha.headPath, o: 0.9, b: 0.12 });
+  if (pale) ctx.stroke(d, mix(t.base, '#B9786A', 0.4), 0.32, { cp: ha.headPath, o: 0.55, b: 0.12 });
 }
 
 function details(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
@@ -918,10 +970,15 @@ function details(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
         starPath(ha.cheekL[0] + 1.0, ha.cheekL[1] - 0.6, 0.35, 4, 0.3) +
         starPath(ha.cheekR[0] + 0.7, ha.cheekR[1] - 1.3, 0.5, 4, 0.3) +
         starPath(ha.eyeR[0] + 2.4, ha.eyeR[1] - 0.6, 0.32, 4, 0.3);
-      ctx.push(blob(ha.cheekL[0], ha.cheekL[1] - 1, 2.2, 1.2) + blob(ha.cheekR[0], ha.cheekR[1] - 1, 2.2, 1.2), '#FFE9A8', { o: 0.22, b: 0.7 });
-      speckle(ctx, { x: ha.cheekL[0] - 2, y: ha.cheekL[1] - 2.4, w: 4, h: 2.2 }, '#FFF4C2', { n: 9, r: [0.08, 0.16], seed: 3, o: 0.9 });
-      speckle(ctx, { x: ha.cheekR[0] - 2, y: ha.cheekR[1] - 2.4, w: 4, h: 2.2 }, '#FFF4C2', { n: 9, r: [0.08, 0.16], seed: 9, o: 0.9 });
-      ctx.push(d, '#FFFFFF', { o: 0.95 });
+      // base do brilho: na pele escura dourada/bronze (bege claro virava mancha de areia); na pele muito clara os
+      // brilhos brancos sumiam — viram dourados
+      const pale = lum(t.base) > 0.6;
+      const glow = t.dark ? mix(t.light, '#D9A040', 0.45) : '#FFE9A8';
+      ctx.push(blob(ha.cheekL[0], ha.cheekL[1] - 1, 2.2, 1.2) + blob(ha.cheekR[0], ha.cheekR[1] - 1, 2.2, 1.2), glow, { o: t.dark ? 0.2 : pale ? 0.3 : 0.22, b: 0.7 });
+      const dots = pale ? '#E9AE2C' : '#FFF4C2';
+      speckle(ctx, { x: ha.cheekL[0] - 2, y: ha.cheekL[1] - 2.4, w: 4, h: 2.2 }, dots, { n: 9, r: [0.08, 0.16], seed: 3, o: 0.9 });
+      speckle(ctx, { x: ha.cheekR[0] - 2, y: ha.cheekR[1] - 2.4, w: 4, h: 2.2 }, dots, { n: 9, r: [0.08, 0.16], seed: 9, o: 0.9 });
+      ctx.push(d, pale ? '#F5C443' : '#FFFFFF', { o: 0.95 });
       break;
     }
     case 'star_cheek': {
@@ -941,7 +998,7 @@ function details(ctx: LayerCtx, ha: HeadAnchors, t: SkinTones): void {
  * por baixo da barba.
  */
 export function faceBase(ctx: LayerCtx): void {
-  ctx = lodCtx(ctx);
+  ctx = lodCtx(ctx, { bustBlur: true });
   ctx.group('head');
   const lite = isLite(ctx);
   const t = tonesOf(ctx);
@@ -949,6 +1006,9 @@ export function faceBase(ctx: LayerCtx): void {
   const head = ha.headPath;
   const f = faceDims(ctx.an);
   const { cx, cy } = ctx.an.head;
+  // figura minúscula (mapa, ~1,3 px por unidade no rosto): fica a estrutura que lê (órbita, lado da sombra, nariz); os
+  // véus de opacidade baixa (calor, têmporas, luz do queixo, rebatidas) e as formas do lado da luz saem
+  const tiny = isTiny(ctx);
   // órbitas: o olho fica numa cavidade — sombra entre a sobrancelha e o olho, mais funda no canto de dentro
   {
     let sock = '';
@@ -958,7 +1018,7 @@ export function faceBase(ctx: LayerCtx): void {
       inner += blob(cx - sg * (Math.abs(e[0] - cx) - ha.eyeW - 0.2), e[1] - 0.5, 0.9, 1.6);
     }
     ctx.push(sock, t.form, { o: 0.5, b: 0.6, cp: head });
-    ctx.push(inner, t.deep, { o: 0.38, b: 0.45 });
+    if (!tiny) ctx.push(inner, t.deep, { o: 0.38, b: 0.45 });
   }
   // arco da sobrancelha: faixa de luz logo acima da sobrancelha (osso) e testa com luz à esquerda
   if (!lite) {
@@ -971,13 +1031,13 @@ export function faceBase(ctx: LayerCtx): void {
     const spec = mix(t.lighter, '#FFD8BE', 0.35);
     ctx.push(blob(ha.cheekboneL[0] - 0.35, ha.cheekboneL[1] - 0.25, 1.45, 0.38, -0.42), spec, { o: 0.22, b: 0.3, cp: head });
     ctx.push(blob(ha.cheekboneR[0] + 0.3, ha.cheekboneR[1] - 0.25, 1.1, 0.3, 0.42), spec, { o: 0.1, b: 0.3, cp: head });
-  } else ctx.push(blob(ha.cheekboneL[0] - 0.2, ha.cheekboneL[1], 2.4, 0.85, -0.35), t.lighter, { o: t.dark ? 0.24 : 0.36, b: 0.5, cp: head });
+  } else if (!tiny) ctx.push(blob(ha.cheekboneL[0] - 0.2, ha.cheekboneL[1], 2.4, 0.85, -0.35), t.lighter, { o: t.dark ? 0.24 : 0.36, b: 0.5, cp: head });
   // (lado da luz bem mais leve e macio: sombra forte dos dois lados vira "entalhe" anguloso na bochecha)
-  ctx.push(taperPath([[cx - f.cheek + 0.6, cy + f.cheekY + 1.2], [cx - f.cheek + 2.2, cy + f.cheekY + 3.2], [cx - f.cheek + 3.8, cy + f.cheekY + 4.2]], [0, 1.2, 0]), t.form, { o: 0.18 + ctx.an.feat.age * 0.08, b: 0.6, cp: head });
+  if (!tiny) ctx.push(taperPath([[cx - f.cheek + 0.6, cy + f.cheekY + 1.2], [cx - f.cheek + 2.2, cy + f.cheekY + 3.2], [cx - f.cheek + 3.8, cy + f.cheekY + 4.2]], [0, 1.2, 0]), t.form, { o: 0.18 + ctx.an.feat.age * 0.08, b: 0.6, cp: head });
   ctx.push(taperPath([[cx + f.cheek - 0.6, cy + f.cheekY + 1.2], [cx + f.cheek - 2.2, cy + f.cheekY + 3.2], [cx + f.cheek - 3.8, cy + f.cheekY + 4.2]], [0, 1.4, 0]), t.form, { o: 0.34 + ctx.an.feat.age * 0.06, b: 0.5, cp: head });
   // plano lateral do rosto (a bochecha vira pra trás): faixa macia ao longo da mandíbula, mais forte à direita
   // (lado da luz bem leve; nenhum dos dois chega ao queixo — senão vira contorno de adesivo / quina de "buldogue")
-  ctx.push(taperPath([[cx - f.cheek + 0.3, cy + f.cheekY + 0.5], [cx - f.jaw + 0.6, cy + f.jawY - 0.6], [cx - f.jaw * 0.55 - f.chinW * 0.45, cy + f.jawY + 1.2]], [0, 1.2, 0]), t.form, { o: t.dark ? 0.2 : 0.12, b: 0.5, cp: head });
+  if (!tiny) ctx.push(taperPath([[cx - f.cheek + 0.3, cy + f.cheekY + 0.5], [cx - f.jaw + 0.6, cy + f.jawY - 0.6], [cx - f.jaw * 0.55 - f.chinW * 0.45, cy + f.jawY + 1.2]], [0, 1.2, 0]), t.form, { o: t.dark ? 0.2 : 0.12, b: 0.5, cp: head });
   ctx.push(taperPath([[cx + f.cheek - 0.3, cy + f.cheekY + 0.5], [cx + f.jaw - 0.6, cy + f.jawY - 0.6], [cx + f.jaw * 0.55 + f.chinW * 0.45, cy + f.jawY + 1.4]], [0, 1.8, 0]), t.form, { o: 0.2 + f.jawSharp * 0.14, b: 0.45, cp: head });
   // embaixo do olho: bolsa sutil (luz) e sulco (sombra) — tira a cara de boneca
   if (!lite) {
@@ -986,9 +1046,9 @@ export function faceBase(ctx: LayerCtx): void {
     ctx.push(d, t.form, { o: 0.18, b: 0.35 });
   }
   // calor natural da pele, alongado sobre a maçã (nada de bolinha de blush); bem leve, mais fraco na pele escura
-  ctx.push(blob(ha.cheekL[0] - 0.3, ha.cheekL[1] - 0.4, 2.6, 1.1, -0.25) + blob(ha.cheekR[0] + 0.3, ha.cheekR[1] - 0.4, 2.6, 1.1, 0.25), t.blush, { o: t.dark ? 0.08 : 0.12, b: 1.0 });
+  if (!tiny) ctx.push(blob(ha.cheekL[0] - 0.3, ha.cheekL[1] - 0.4, 2.6, 1.1, -0.25) + blob(ha.cheekR[0] + 0.3, ha.cheekR[1] - 0.4, 2.6, 1.1, 0.25), t.blush, { o: t.dark ? 0.08 : 0.12, b: 1.0 });
   // têmporas
-  ctx.push(blob(cx - f.temple + 0.6, cy - 2.6, 1.0, 2.6) + blob(cx + f.temple - 0.6, cy - 2.6, 1.0, 2.6), t.shade, { o: 0.2, b: 0.8, cp: head });
+  if (!tiny) ctx.push(blob(cx - f.temple + 0.6, cy - 2.6, 1.0, 2.6) + blob(cx + f.temple - 0.6, cy - 2.6, 1.0, 2.6), t.shade, { o: 0.2, b: 0.8, cp: head });
   // filtro (dois sulcos + luz no meio) e queixo (bola de luz + sombra dos lados)
   const [mx, my] = ha.mouth;
   const ny = ha.nose[1];
@@ -996,11 +1056,13 @@ export function faceBase(ctx: LayerCtx): void {
     ctx.push(taperPath([[mx - 0.55, ny + 1.5], [mx - 0.62, my - ha.lipUp - 0.1]], [0.1, 0.4]) + taperPath([[mx + 0.55, ny + 1.5], [mx + 0.62, my - ha.lipUp - 0.1]], [0.1, 0.45]), deep ? saturate(mix(t.base, '#4A1408', 0.3), 0.3) : t.shade, { o: deep ? 0.42 : 0.3, b: 0.22 });
     ctx.push(blob(mx - 0.1, (ny + my) / 2 + 0.3, 0.4, 0.8), t.lighter, { o: 0.26, b: 0.3 });
   }
-  ctx.push(blob(ha.chin[0] - 0.35, ha.chin[1] - 1.6, f.chinW * 0.55 + 0.6, 0.9), t.lighter, { o: deep ? 0.42 : 0.3, b: 0.5 });
-  // pele escura: especular quente e pequeno na testa (lado da luz) — modela o crânio sem clarear a pele
-  if (deep) ctx.push(blob(cx - 2.4, ha.forehead[1] - 0.6, 2.2, 0.9, -0.2), mix(t.lighter, '#FFE0CC', 0.3), { o: 0.18, b: 0.6, cp: head });
-  ctx.push(blob(ha.chin[0] - f.chinW - 0.5, ha.chin[1] - 1.5, 0.7, 1.1) + blob(ha.chin[0] + f.chinW + 0.6, ha.chin[1] - 1.4, 0.8, 1.2), t.form, { o: 0.22, b: 0.45, cp: head });
-  ctx.push(blob(mx + 0.2, my + ha.lipLo + 1.05, ha.mouthW * 0.42, 0.42), t.form, { o: 0.22, b: 0.35 });
+  if (!tiny) {
+    ctx.push(blob(ha.chin[0] - 0.35, ha.chin[1] - 1.6, f.chinW * 0.55 + 0.6, 0.9), t.lighter, { o: deep ? 0.42 : 0.3, b: 0.5 });
+    // pele escura: especular quente e pequeno na testa (lado da luz) — modela o crânio sem clarear a pele
+    if (deep) ctx.push(blob(cx - 2.4, ha.forehead[1] - 0.6, 2.2, 0.9, -0.2), mix(t.lighter, '#FFE0CC', 0.3), { o: 0.18, b: 0.6, cp: head });
+    ctx.push(blob(ha.chin[0] - f.chinW - 0.5, ha.chin[1] - 1.5, 0.7, 1.1) + blob(ha.chin[0] + f.chinW + 0.6, ha.chin[1] - 1.4, 0.8, 1.2), t.form, { o: 0.22, b: 0.45, cp: head });
+    ctx.push(blob(mx + 0.2, my + ha.lipLo + 1.05, ha.mouthW * 0.42, 0.42), t.form, { o: 0.22, b: 0.35 });
+  }
   // pele escura: luz de borda FRIA e fina do lado da sombra (têmpora → maçã), separa o rosto do fundo e dá volume
   if (deep && !lite) {
     ctx.push(taperPath([[cx + f.temple - 0.25, cy - 4.2], [cx + f.cheek - 0.2, cy + f.cheekY], [cx + f.jaw + 0.1, cy + f.jawY - 2.2]], [0, 0.7, 0]), '#A8BEE8', { o: 0.1, b: 0.35, cp: head });
@@ -1008,7 +1070,7 @@ export function faceBase(ctx: LayerCtx): void {
   // tom de fantasia: brilho iridescente discreto na testa e nas maçãs
   if (t.fantasy) ctx.push(blob(cx - 2.5, cy - 6.5, 3.5, 1.5, -0.2) + blob(ha.cheekboneL[0], ha.cheekboneL[1], 1.6, 0.7), t.fantasy, { o: 0.25, b: 0.8, cp: head });
   nose(ctx, ha, t);
-  lines(ctx, ha, t);
+  if (!tiny) lines(ctx, ha, t);
   details(ctx, ha, t);
 }
 
@@ -1018,7 +1080,7 @@ export function faceBase(ctx: LayerCtx): void {
 
 /** 19. expressão (cfg.face): sobrancelhas, olhos (cfg.eyes, cfg.eyeColor), bochecha, rubor e boca — k:'face' */
 export function expression(ctx: LayerCtx): void {
-  ctx = lodCtx(ctx);
+  ctx = lodCtx(ctx, { bustBlur: true });
   ctx.group('head');
   const prevTag = ctx.k;
   ctx.tag('face');
@@ -1055,7 +1117,8 @@ export function expression(ctx: LayerCtx): void {
   }
   if (ctx.cfg.faceDetail === 'glam') {
     // iluminador nas maçãs
-    ctx.push(blob(ha.cheekboneL[0] - 0.4, ha.cheekboneL[1] - 0.2, 1.7, 0.55, -0.3) + blob(ha.cheekboneR[0] + 0.4, ha.cheekboneR[1] - 0.2, 1.7, 0.55, 0.3), '#FFF4E6', { o: 0.38, b: 0.45 });
+    // pele escura: iluminador dourado/bronze (o bege claro virava dois curativos na miniatura)
+    ctx.push(blob(ha.cheekboneL[0] - 0.4, ha.cheekboneL[1] - 0.2, 1.7, 0.55, -0.3) + blob(ha.cheekboneR[0] + 0.4, ha.cheekboneR[1] - 0.2, 1.7, 0.55, 0.3), t.dark ? mix(t.light, '#E0A850', 0.5) : '#FFF4E6', { o: t.dark ? 0.42 : 0.38, b: 0.45 });
   }
   // olhos (as camadas iguais dos dois olhos saem juntas num path só)
   const acc = eyeAcc();

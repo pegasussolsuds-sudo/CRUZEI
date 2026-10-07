@@ -11,8 +11,7 @@ import type { ConversationSummary, InboxFolder } from '@cruzei/shared-types';
 import { colors, radius, shadows, spacing, typography } from '@cruzei/ui-mobile';
 import type { InboxStackParamList } from '../../navigation/InboxStack';
 import { timeAgo } from '@cruzei/shared-utils';
-import { FadeInView, Pulse } from '../../components/animated';
-import { LiveDot } from '../../components/animated/LiveDot';
+import { FadeInView } from '../../components/animated';
 import { PressScale } from '../../components/animated/PressScale';
 import { CruzeiAvatar } from '../../components/avatar/CruzeiAvatar';
 import { IdentityBubble } from '../../components/identity/IdentityBubble';
@@ -37,8 +36,11 @@ function previewOf(c: ConversationSummary, myId: string | undefined): { text: st
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Linhas SEM Reanimated (PressScale / LiveDot nativos): com conversa chegando a toda hora a lista re-renderiza e remonta
-// linhas o tempo todo — um mapper do Reanimated por linha derrubava o app no Moto g54 (worklets::ShareableArray)
+// Linhas SEM Reanimated (PressScale nativo): com conversa chegando a toda hora a lista re-renderiza e remonta linhas o
+// tempo todo — um mapper do Reanimated por linha derrubava o app no Moto g54 (worklets::ShareableArray).
+// E nada em loop: o ponto de não lida é estático. O LiveDot com halo (Animated.loop infinito) e o Pulse do vazio deixavam
+// a tela de Mensagens PARADA redesenhando sem parar (880 quadros e CPU de 41–44% no S23, contra 0 quadros e 3,5% nas
+// Curtidas); o contador e o nome em negrito já dizem que tem mensagem nova.
 // ───────────────────────────────────────────────────────────────────────────────
 interface RowProps {
   item: ConversationSummary;
@@ -78,9 +80,7 @@ const InboxRow = memo(function InboxRow({ item, myId, onPress, onLongPress }: Ro
           accessibilityLabel={`Avatar de ${item.peer.name}`}
         />
         {hasUnread ? (
-          <View style={styles.dotAnchor} pointerEvents="none">
-            <LiveDot halo size={12} borderColor={colors.white} />
-          </View>
+          <View style={[styles.dotAnchor, styles.unreadDot]} pointerEvents="none" />
         ) : null}
       </View>
 
@@ -378,11 +378,9 @@ export function InboxScreen() {
             ) : folder === 'inbox' ? (
               <View style={styles.empty}>
                 <FadeInView fromScale={0.7} fromY={10}>
-                  <Pulse maxScale={1.08} minOpacity={0.8} cycleMs={2400}>
-                    <View style={styles.emptyIcon}>
-                      <Ionicons name="chatbubbles-outline" size={56} color={colors.secondary} />
-                    </View>
-                  </Pulse>
+                  <View style={styles.emptyIcon}>
+                    <Ionicons name="chatbubbles-outline" size={56} color={colors.secondary} />
+                  </View>
                 </FadeInView>
                 <FadeInView delay={120} fromY={10}>
                   <Text style={styles.emptyTitle}>nenhuma conversa ainda</Text>
@@ -462,7 +460,8 @@ const styles = StyleSheet.create({
     ...shadows.light,
   },
   avatarSlot: { width: AVATAR, height: AVATAR, marginRight: spacing.md },
-  dotAnchor: { position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, alignItems: 'center', justifyContent: 'center' },
+  dotAnchor: { position: 'absolute', right: 2, bottom: 2 },
+  unreadDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.primary, borderWidth: 2, borderColor: colors.white },
 
   rowContent: { flex: 1, minWidth: 0 },
   rowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: spacing.sm },

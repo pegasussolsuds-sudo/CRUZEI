@@ -13,7 +13,6 @@ import { SignatureAvatar } from '../avatar/SignatureAvatar';
 import { PronounTag } from '../avatar/stage';
 import { IdentityBubble } from '../identity/IdentityBubble';
 import { FadeInView } from '../animated/FadeInView';
-import { Pulse } from '../animated/Pulse';
 import { ScaleOnPress } from '../animated/ScaleOnPress';
 import { presenceLabel } from './PersonRow';
 import { previewDistanceText } from './proximityText';
@@ -154,9 +153,10 @@ export const UserPreviewSheet = forwardRef<UserPreviewSheetHandle, UserPreviewSh
                   </View>
                 ) : null}
                 <View style={styles.statusLine}>
-                  <Pulse active={user.isOnline} maxScale={1.25} style={styles.dotWrap}>
+                  {/* ponto parado: por cima do mapa, um pulso infinito mantinha o RenderThread redesenhando sem parar */}
+                  <View style={styles.dotWrap}>
                     <View style={[styles.dot, !user.isOnline && styles.dotOff]} />
-                  </Pulse>
+                  </View>
                   <Text style={styles.status} numberOfLines={1}>
                     {presenceLabel(user)}
                   </Text>

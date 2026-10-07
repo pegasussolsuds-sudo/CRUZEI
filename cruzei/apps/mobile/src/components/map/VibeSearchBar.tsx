@@ -19,15 +19,17 @@ const HINT_MS = 3800;
 
 /**
  * Barra de busca no topo do mapa: abre o overlay "Onde tá a vibe".
- * Vidro escuro com borda lima, sugestão que se reveza e selo ao vivo (🔥 N em alta / ponto pulsando).
+ * Vidro escuro com borda lima, sugestão que se reveza (uma volta) e selo ao vivo (🔥 N em alta / ponto que pulsa e para).
  */
 export function VibeSearchBar({ onPress, hotCount = 0, paused = false }: VibeSearchBarProps) {
-  const [hint, setHint] = useState(0);
+  // as sugestões dão UMA volta e param na primeira (mapa parado não troca nada na tela)
+  const [step, setStep] = useState(0);
+  const hint = step % HINTS.length;
   useEffect(() => {
-    if (paused) return;
-    const id = setInterval(() => setHint((h) => (h + 1) % HINTS.length), HINT_MS);
-    return () => clearInterval(id);
-  }, [paused]);
+    if (paused || step >= HINTS.length) return;
+    const id = setTimeout(() => setStep((n) => n + 1), HINT_MS);
+    return () => clearTimeout(id);
+  }, [paused, step]);
 
   return (
     <ScaleOnPress

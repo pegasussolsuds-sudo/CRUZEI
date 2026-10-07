@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { memo, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, { Easing, interpolateColor, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -78,7 +78,8 @@ const HIDDEN_TEXT: Partial<Record<HiddenReason, string>> = {
   location_mocked: '📍 Localização simulada: desliga o GPS falso pra aparecer',
 };
 
-export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason, onOpenVibe, paused = false, onHeaderHeight }: MapHeaderProps) {
+/** memo: o mapa re-renderiza a cada /nearby e o cabeçalho só precisa quando as props dele mudam */
+export const MapHeader = memo(function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibility, onCenter, boostMinutes, indicators, hiddenReason, onOpenVibe, paused = false, onHeaderHeight }: MapHeaderProps) {
   const placeName = usePlaceName(lat, lng);
   // prazo do invisível grátis (settings.anonymousUntil do /me; null no Premium)
   const anonymousUntil = useAuthStore((s) => s.user?.settings?.anonymousUntil ?? null);
@@ -211,7 +212,7 @@ export function MapHeader({ lat, lng, isAnonymous, togglePending, onToggleVisibi
       ) : null}
     </SafeAreaView>
   );
-}
+});
 
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', top: 0, left: 0, right: 0 },

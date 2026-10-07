@@ -173,7 +173,8 @@ describe('AvatarCustomizerScreen', () => {
     const s = stage(r);
     expect(s.showBackdrop).toBe(true);
     expect(s.showPronouns).toBe(true);
-    expect(s.idle).toBe(true);
+    // parado = zero quadros: a prévia não respira (só anima tocando animação ou na janela curta da aura/fundo)
+    expect(s.idle ?? false).toBe(false);
     act(() => r.unmount());
   });
 
@@ -256,7 +257,7 @@ describe('AvatarCustomizerScreen', () => {
     expect(s.reduceMotion).toBe(true);
     expect(s.playing).toBe(true);
     expect(s.loop).toBe(true);
-    expect(s.idle).toBe(false);
+    expect(s.idle ?? false).toBe(false);
     await press(r, 'Reproduzir animação');
     s = stage(r);
     expect(s.reduceMotion).toBe(false);

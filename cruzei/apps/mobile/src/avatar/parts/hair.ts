@@ -17,8 +17,8 @@
 //   cap / brim       o topo ACHATA (sem volume acima do crânio: o chapéu cobre a calota com folga ≥ 0,6); laterais, nuca e
 //                    cabelo longo aparecem; franja só no 'cap' (menos gorro e durag); coque, crista, puff e trança coroa
 //                    somem; o black power vira volume pras laterais, embaixo do chapéu
-//   wrap (turbante, durag) nada na frente; atrás, só o cabelo solto e longo (liso, ondulado, cortina, cacheado longo) sai da
-//                    nuca numa massa só, que abraça o pescoço e cai sobre os ombros com as pontas afinando; mecha separada
+//   wrap (turbante, durag) nada na frente; atrás, só o cabelo solto e longo (liso, ondulado, cortina, cacheado longo) sai de
+//                    baixo do pano atrás das orelhas e cai por trás da cabeça e dos ombros numa massa só; mecha separada
 //                    (tranças, twists, dreads, nagô), raspado lateral, mullet e presos (rabo, coque) ficam dentro do pano
 //   full (hijab)     nenhum cabelo (a barba continua)
 
@@ -31,6 +31,7 @@ import { LONG_STYLES } from './hair-long-styles';
 import { SHORT_STYLES } from './hair-short';
 import { TEXTURED_STYLES } from './hair-textured';
 import { UPDO_STYLES } from './hair-updo';
+import { earAccessory } from './headwear';
 
 export { hairTones, type HairTones } from './hair-kit';
 
@@ -38,7 +39,7 @@ export { hairTones, type HairTones } from './hair-kit';
 export interface HairStyle {
   back?: (k: HairKit) => void;
   front?: (k: HairKit) => void;
-  /** com turbante: o cabelo solto e longo sai da nuca, atrás (só os lisos/ondulados/cacheados longos) */
+  /** com turbante/durag: o cabelo solto e longo sai de baixo do pano, atrás (só os lisos/ondulados/cacheados longos) */
   belowWrap?: boolean;
 }
 
@@ -51,36 +52,34 @@ export const HAIR_STYLES: Record<string, HairStyle> = {
 };
 
 /**
- * turbante: o cabelo de trás sai da nuca numa massa ÚNICA (recorte orgânico, não um "V" reto que lia gola): estreita
- * embaixo do pano, abraça o pescoço, se abre sobre os ombros e termina em pontas que afinam — o desenho e o tom do
- * próprio penteado aparecem dentro dela
+ * turbante/durag com cabelo solto e longo: o cabelo SAI de baixo do pano atrás das orelhas e cai por trás da cabeça,
+ * do pescoço e dos ombros numa massa só, com o desenho e o tom do próprio penteado. (Começando só na mandíbula, estreito
+ * no pescoço, ele lia duas tiras soltas dos lados do pescoço — alças, não cabelo.)
  */
 function belowWrap(k: HairKit, fn: (k: HairKit) => void): void {
-  const { an } = k;
-  const y0 = k.H(0, k.jawY - 0.4)[1];
+  const { an, H } = k;
   const cx = k.cx;
   const nk = an.w.neck;
   const sY = an.shoulderY;
-  // meia-largura sobre o ombro: acompanha o volume do penteado (o cacheado longo é mais cheio)
-  const wide = nk + (k.ctx.cfg.hair === 'long_curly' ? 6.2 : 4.6);
+  const wide = nk + (k.ctx.cfg.hair === 'long_curly' ? 6.4 : 5.0);
   const side = (g: number): SP[] => [
-    [cx + g * (nk + 0.6), y0 + 0.6],
-    [cx + g * (nk + 1.9), sY - 3.2],
-    [cx + g * (wide - 0.4), sY - 0.6],
+    H(g * (k.Wc + 2.4), -1.4),
+    H(g * (k.Jw + 3.0), k.jawY + 0.6),
+    [cx + g * (wide + 0.2), sY - 0.6],
     // pontas: três mechas que afinam, a de fora mais curta
-    [cx + g * (wide + 0.5), sY + 2.0, 0],
-    [cx + g * (wide - 1.2), sY + 2.4],
-    [cx + g * (wide - 0.8), sY + 4.6, 0],
-    [cx + g * (wide - 2.6), sY + 4.4],
-    [cx + g * (wide - 2.4), sY + 7.0, 0],
-    [cx + g * (nk + 0.4), sY + 6.0],
+    [cx + g * (wide + 0.8), sY + 2.4, 0],
+    [cx + g * (wide - 1.0), sY + 2.8],
+    [cx + g * (wide - 0.6), sY + 5.0, 0],
+    [cx + g * (wide - 2.4), sY + 4.8],
+    [cx + g * (wide - 2.2), sY + 7.4, 0],
+    [cx + g * (nk + 0.4), sY + 6.4],
   ];
-  const cut = smoothPath([[cx, y0 - 0.4], ...side(1), [cx, sY + 9], ...side(-1).reverse()]);
+  const cut = smoothPath([H(0, -3.2), ...side(1), [cx, sY + 9], ...side(-1).reverse()]);
   const base = k.ctx;
   const proxy = Object.create(base) as LayerCtx;
   Object.assign(proxy, {
     push: (d: string, f?: string, extra?: Record<string, unknown>) => (extra && extra.cp ? base.layers[base.layers.length - 1] : base.push(d, f, { ...extra, cp: cut })),
-    stroke: (d: string, s: string, w: number, extra?: Record<string, unknown>) => (extra && extra.cp ? base.layers[base.layers.length - 1] : base.stroke(d, s, w, { ...extra, cp: cut })),
+    stroke: (d: string, st: string, w: number, extra?: Record<string, unknown>) => (extra && extra.cp ? base.layers[base.layers.length - 1] : base.stroke(d, st, w, { ...extra, cp: cut })),
   });
   fn({ ...k, ctx: proxy });
 }
@@ -102,6 +101,8 @@ export function hairBack(ctx: LayerCtx): void {
 /** 21. cabelo da frente (calota, franja, mechas da frente, costeletas), por cima do rosto */
 export function hairFront(ctx: LayerCtx): void {
   ctx.group('head');
+  // 21a. acessório de orelha por baixo do cabelo da frente (cabelo longo cobre a orelha: o brinco não boia por cima)
+  earAccessory(ctx);
   const st = HAIR_STYLES[ctx.cfg.hair];
   if (!st?.front) return;
   const k = makeKit(ctx);
@@ -114,5 +115,6 @@ export function facialHair(ctx: LayerCtx): void {
   ctx.group('head');
   const fn = BEARDS[ctx.cfg.facialHair];
   if (!fn) return;
-  fn(makeKit(ctx));
+  // busto leve: a borda da barba fica macia (desfoque nas camadas de borda); sem isso viravam blocos chapados
+  fn(makeKit(ctx, undefined, { bustBlur: true }));
 }

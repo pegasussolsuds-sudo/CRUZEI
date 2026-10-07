@@ -30,6 +30,15 @@ function sparkler(q: Pen): string {
     }
     q.line(d, '#FFE7A0', 0.14, { o: 0.9 });
     sparkles(q, tips, '#FFFFFF', 0.95);
+  } else {
+    // pequeno (mapa): os raios finos somem; uma explosão de 8 pontas numa camada só lê como estrelinha acesa
+    const burst: SP[] = [];
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const rr = i % 2 ? 1.0 : i % 4 ? 2.4 : 3.2;
+      burst.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]);
+    }
+    q.fill(q.poly(burst), '#FFE7A0', { o: 0.95 });
   }
   q.fill(q.ell(cx, cy, 1.0, 1.0), '#FFFFFF', { gf: q.rg(cx, cy, 1.0, [[0, '#FFFFFF'], [0.6, '#FFF2B0'], [1, '#FFB030']]) });
   return wire;
@@ -86,7 +95,8 @@ function wand(q: Pen): string {
   const cy = -12.8;
   glow(q, 0, cy, 3.4, 3.4, '#FFE27A', 0.45);
   // a estrela fica alinhada com a tela (ponta pra cima, luz de cima-esquerda) qualquer que seja o giro da varinha
-  const s = q.sub(0, cy, 1, -q.rot);
+  // pequeno (mapa): a estrela é o que identifica a varinha; cresce mais que a haste
+  const s = q.sub(0, cy, L ? 1.4 : 1, -q.rot);
   const st = star(s, 0, 0, 2.0);
   const G = tones(GOLD);
   s.fill(st, G.base, { gf: s.lg(-1.7, -1.7, 1.7, 1.7, [[0, '#FFF6C8'], [0.5, G.light], [1, G.shade]]) });
@@ -208,9 +218,10 @@ export const HELD_MAGIC: Record<string, HeldDef> = {
   sparkler: { draw: sparkler, rot: 10 },
   potion: { draw: potion },
   // estrela além das pontas dos dedos, pro lado de fora: no repouso a varinha fica baixada; com o braço erguido aponta pro alto
-  wand: { draw: wand, rot: 152 },
+  // erguida (animação 'magic') a estrela não pode sair do quadro do mapa
+  wand: { draw: wand, rot: 152, liteK: 1.3 },
   crystal_ball: { draw: crystalBall, dy: -0.6 },
   lantern: { draw: lantern },
-  saber: { draw: saber, rot: 26 },
+  saber: { draw: saber, rot: 26, liteK: 1.25 },
   orb: { draw: orb },
 };

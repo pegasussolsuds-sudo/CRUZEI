@@ -17,7 +17,7 @@ import { fallGrad, flyaways, paintLocks, ringSheen, shoulderTop, type HairKit, t
 import { fallBack, fallFront, type FallOpts } from './hair-long';
 import { hatFlattensCrest } from './hat-modes';
 
-type Style = { back?: (k: HairKit) => void; front?: (k: HairKit) => void; belowWrap?: boolean };
+type Style = { back?: (k: HairKit) => void; front?: (k: HairKit) => void };
 
 interface ShortDef {
   cap: (k: HairKit) => CapOpts;
@@ -237,13 +237,54 @@ function quiffTufts(k: HairKit, h: number, smooth: boolean): Tuft[] {
       dark: i % 2 ? 0.1 : 0,
     });
   });
-  // a crista que vira por cima, pegando luz
-  out.push({ a: [-4.4, top + 1.6], m: [-0.4, top - 0.1], b: [4.4, top + 1.2], w: 2.2, z: 3, tips, dark: -0.12 });
+  // a crista que vira por cima (no tom da massa: mais clara, ela lia uma tiara/arame fino em volta do topete; a luz vem
+  // do brilho anelar)
+  out.push({ a: [-4.4, top + 1.6], m: [-0.4, top - 0.1], b: [4.4, top + 1.2], w: 2.2, z: 3, tips, dark: 0.04 });
   return out;
 }
 
 const QUIFF: ShortDef = { cap: () => ({ lift: 1.3, side: 0.35, hl: -7.4 }), tufts: (k) => quiffTufts(k, 2.0, false), sheenY: 0.6 };
-const POMPADOUR: ShortDef = { cap: () => ({ lift: 1.5, side: 0.25, hl: -7.5 }), tufts: (k) => quiffTufts(k, 2.9, true), sheenY: 0.1, gloss: 1.9 };
+
+/**
+ * pompadour (premium): silhueta própria, não um topete mais alto — laterais em DEGRADÊ de máquina (a pele aparece), um
+ * topo estreito e bem mais alto jogado pra trás, mechas lisas e paralelas com sulcos de pente, risca lateral funda e
+ * uma faixa de brilho de pomada marcada (também na miniatura)
+ */
+function pompadourFront(k: HairKit): void {
+  const { ctx, t, H, s, CR, lite } = k;
+  const side = capOutline(k, { lift: 0.12, side: 0.1, hl: -7.5, sideburn: k.earTop + 1.2 });
+  shavedArea(k, side.d, { density: 0.95, fadeY0: H(0, -6)[1], fadeY1: H(0, k.earY)[1] });
+  const top = topPatch(k, k.flat ? 0.2 : 1.3, -6.8, 0.74, 0.74);
+  // base do topo no tom do cabelo (não na raiz): entre as raízes das mechas não sobra serrilhado escuro na testa
+  ctx.push(top, mix(t.base, t.root, 0.35));
+  const h = 4.6;
+  const peak = -12.4 - h; // pico do rolo, na frente e um pouco pro lado da risca
+  const tufts: Tuft[] = [
+    // massa de trás do rolo (silhueta): arco estreito que sobe das têmporas
+    { a: [-5.6, -7.0], m: [-5.0, peak + 1.4], b: [1.6, peak - 0.1], w: 3.6, z: 0, dark: 0.18 },
+    { a: [5.8, -7.2], m: [5.0, peak + 2.2], b: [0.6, peak + 0.3], w: 3.4, z: 0, dark: 0.22 },
+  ];
+  // frente: mechas lisas que sobem da linha do cabelo, passam do pico e voltam pra trás (paralelas, sem pontas rendadas)
+  [-4.2, -2.4, -0.6, 1.2, 3.0, 4.6].forEach((x, i) => {
+    const hh = h * (1 - Math.abs(x + 0.4) / 8);
+    tufts.push({ a: [x * 0.92, -7.6 + x * x * 0.03], m: [x * 1.02 - 0.6, -11.6 - hh * 0.7], b: [x * 0.55 + 2.0, -12.6 - hh], w: 3.2, z: i % 2 ? 1 : 2, tips: 1, round: true, dark: i % 2 ? 0.1 : 0 });
+  });
+  tufts.push({ a: [-3.6, peak + 1.9], m: [-0.6, peak + 0.1], b: [3.6, peak + 1.5], w: 2.0, z: 3, tips: 1, round: true, dark: -0.14 });
+  const all = paintTufts(k, flatten(k, tufts), { under: top, sheenY: -0.4, sheenO: 1.9 });
+  partLine(k, all, -4.0, -7.9, -3.4, -11.6);
+  // pomada: faixa de brilho larga e nítida na curva do rolo (lado da luz) — no 'lite' também, é o que lê "penteado"
+  if (!k.flat) {
+    const band = taperPath([H(-4.6, peak + 3.6), H(-2.6, peak + 1.4), H(0.4, peak + 0.9), H(3.0, peak + 1.9)], [0, 1.0 * s, 0.8 * s, 0]);
+    ctx.push(band, t.sheen, { o: lite ? 0.42 : 0.55, ...(lite ? {} : { b: 0.25 }), cp: all });
+    // sulcos de pente acompanhando o rolo
+    if (!lite) {
+      let g = '';
+      for (const x of [-2.8, -0.4, 2.0]) g += taperPath([H(x - 0.4, -8.4), H(x - 0.9, CR - 1.2), H(x * 0.6 + 1.2, peak + 1.2)], [0, 0.32 * s, 0], { n: 7 });
+      ctx.push(g, t.deep, { o: 0.4, b: 0.15, cp: all });
+    }
+  }
+  softHairline(k, side.edge.slice(3, side.edge.length - 3), side.d, { mid: 0.3, hairs: false });
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // máquina e laterais raspadas
@@ -376,7 +417,7 @@ export const SHORT_STYLES: Record<string, Style> = {
   side: { front: (k) => void shortFront(k, SIDE) },
   classic: { front: (k) => void shortFront(k, CLASSIC) },
   quiff: { front: (k) => void shortFront(k, QUIFF) },
-  pompadour: { front: (k) => void shortFront(k, POMPADOUR) },
+  pompadour: { front: pompadourFront },
   buzz: { front: buzzFront },
   undercut: { front: undercutFront },
   mohawk: { front: mohawkFront },

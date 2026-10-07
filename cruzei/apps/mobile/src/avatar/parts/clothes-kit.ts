@@ -164,7 +164,11 @@ export function toneOf(c: string, mat: Mat): Tone {
     case 'leather':
       return { light: mix(c, '#FFF6EC', L < 0.03 ? 0.2 : L > 0.7 ? 0.55 : 0.26), base: c, shade: mix(c, '#0A0508', L > 0.7 ? 0.2 : L < 0.03 ? 0.4 : 0.34), deep: mix(c, '#030103', L > 0.7 ? 0.38 : 0.58), bounce: mix(c, '#3A2A30', 0.18) };
     case 'velvet':
-      return { light: mix(saturate(c, 0.15), '#FFFFFF', 0.26), base: mix(c, '#000000', 0.1), shade: mix(c, '#05030C', 0.46), deep: mix(c, '#000000', 0.66), bounce: mix(c, '#FFFFFF', 0.14) };
+      // miolo fundo do veludo, mas proporcional à luminância: em cor clara as sombras fixas viravam um colete cinza
+      // chumbo sobre manga branca (o tom do corpo e da manga saem daqui, então os dois casam)
+      return L > 0.7
+        ? { light: '#FFFFFF', base: mix(c, '#000000', 0.03), shade: mix(c, '#2A2438', 0.2), deep: mix(c, '#1A1626', 0.38), bounce: mix(c, '#FFFFFF', 0.3) }
+        : { light: mix(saturate(c, 0.15), '#FFFFFF', 0.26), base: mix(c, '#000000', 0.1), shade: mix(c, '#05030C', 0.46), deep: mix(c, '#000000', 0.66), bounce: mix(c, '#FFFFFF', 0.14) };
     case 'knit':
     case 'rib':
       return { light: mix(c, '#FFFFFF', L > 0.7 ? 0.4 : 0.15), base: c, shade: mix(c, '#0B0816', L > 0.7 ? 0.14 : 0.24), deep: mix(c, '#05030C', L > 0.7 ? 0.3 : 0.46), bounce: mix(c, '#2A2A48', 0.14) };
@@ -430,7 +434,10 @@ export function topCut(ctx: LayerCtx): Cut {
   // corpo cheio: a peça acompanha peito e barriga (cair reto do peito ao quadril vira caixa); cintura marcada: sugere a
   // cintura em vez de cair como tenda
   const curvy = an.w.hip - an.w.waist > 5;
-  const drape = d.drape * (an.spec.belly > 1.5 ? 0.35 : curvy ? 0.35 : 1);
+  // cintura marcada: a peça justa sugere a cintura; a SOLTA (camiseta, malha, veludo, drape alto) cai quase reta do busto
+  // ao quadril — seguir a cintura fina e abrir na barra virava espartilho/peplum com quinas no quadril
+  const loose = d.ease === 'tee' || d.drape >= 0.6;
+  const drape = d.drape * (an.spec.belly > 1.5 ? 0.35 : curvy ? (loose ? 0.68 : 0.35) : 1);
   const raw = torsoPts(an, { bottom: hemY, ease, hem, collar: true, drape, round: d.hem === 'bodice' ? 0.4 : 1.0 });
   const covered = d.hem === 'crop' || d.hem === 'bodice' ? raw : coverHip(an, raw);
   const nk = neckCutOf(an, d);
@@ -602,7 +609,8 @@ export function hemFinish(ctx: LayerCtx, cut: Cut, kind: TopDef['hemBand'], tint
         const a = sampleOn(hem, u);
         rib += `M${fmt(a[0])},${fmt(a[1] - h + 0.4)}v${fmt(h + 0.6)}`;
       }
-      ctx.stroke(rib, t.deep, 0.13, { o: 0.3, cp: band });
+      // recortada no CORPO da peça (não na faixa): numa peça aberta a ribana não atravessa o vão pra camiseta de baixo
+      ctx.stroke(rib, t.deep, 0.13, { o: 0.3, cp: body });
     }
     return;
   }
@@ -874,10 +882,11 @@ export function sleeveUpper(ctx: LayerCtx, s: Side, sp: SleeveSpec): void {
     const ua = an.spec.upperArm;
     // deltoide: luz arredondada no alto do lado de fora; sombra do lado de dentro (bíceps contra o tronco)
     ctx.push(blob(sh[0] + out * ua * 0.4 - 0.3, sh[1] + ua * 0.45, ua * 0.5, ua * 1.25), t.light, { o: (sp.sheen ?? 0) * 0.3 + 0.15, b: 1.0, cp: d });
+    // no 'lite' (≤ ~100 px) a sombra do bíceps e a costura da cava não se leem: saem (2 camadas recortadas por manga)
     const q = limbWidthAt(an, 'upperArm', s, 0.55);
-    ctx.push(blob(q.at[0] - out * (s === 'L' ? q.r : q.l) * 0.7, q.at[1], 1.2, 4.2), t.deep, { o: 0.2, b: 0.9, cp: d });
+    if (!lite) ctx.push(blob(q.at[0] - out * (s === 'L' ? q.r : q.l) * 0.7, q.at[1], 1.2, 4.2), t.deep, { o: 0.2, b: 0.9, cp: d });
     // costura da cava: sombra fina ao longo do lado de dentro do topo (onde a manga encontra o corpo da peça)
-    if (sp.chain && sp.chain.length) {
+    if (!lite && sp.chain && sp.chain.length) {
       const A = sp.chain[0];
       const q0 = limbWidthAt(an, 'upperArm', s, 0.08);
       const q1 = limbWidthAt(an, 'upperArm', s, 0.32);
@@ -1000,7 +1009,7 @@ export function sleeveLower(ctx: LayerCtx, s: Side, sp: SleeveSpec): void {
       creases(ctx, list, c, { o: 0.26, cp: d });
     }
     const q = limbWidthAt(an, 'forearm', s, 0.45);
-    ctx.push(blob(q.at[0] - out * (s === 'L' ? q.r : q.l) * 0.6, q.at[1], 1.0, 3.6), t.deep, { o: 0.18, b: 0.8, cp: d });
+    if (!lite) ctx.push(blob(q.at[0] - out * (s === 'L' ? q.r : q.l) * 0.6, q.at[1], 1.0, 3.6), t.deep, { o: 0.18, b: 0.8, cp: d });
     if (sp.sheen) ctx.push(blob(q.at[0] + out * 0.4 - 0.5, q.at[1] - 1, 0.7, 3.4), t.light, { o: sp.sheen * 0.4, b: 0.6, cp: d });
     const m = sleeveMouth(an, 'forearm', s, fto, e + bell * fto);
     if (sp.len === 'bell' || sp.len === 'wide') {

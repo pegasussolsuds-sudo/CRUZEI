@@ -48,7 +48,10 @@ export function useVisibility() {
     },
   });
 
-  const toggle = useCallback(() => mutation.mutate(!isAnonymous), [mutation, isAnonymous]);
+  // `mutate` é estável (o objeto `mutation` muda a cada render): toggle/askToggle só mudam quando o modo muda, e o mapa
+  // não passa função nova pros filhos a cada render
+  const { mutate } = mutation;
+  const toggle = useCallback(() => mutate(!isAnonymous), [mutate, isAnonymous]);
 
   /** desligar é direto; ligar explica antes o que muda (prazo e mensagens no plano grátis) */
   const askToggle = useCallback(() => {

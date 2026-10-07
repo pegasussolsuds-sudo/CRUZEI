@@ -2267,7 +2267,7 @@ export function silhouettePaths(an: Anatomy): string[] {
  */
 export const HAIR_LIFT: Record<string, number> = {
   bald: 0.3, buzz: 0.6, short: 1.9, side: 1.6, quiff: 4.5, long: 1.9, bob: 1.6, wavy: 2.2, ponytail: 1.8, bun: 9.0, braids: 1.6, curly: 3.8, afro: 6.2, mohawk: 10, dreads: 2.2,
-  receding: 1.2, thinning: 0.8, classic: 2.0, pixie: 1.9, updo: 4.4, low_bun: 1.2, curtain: 1.8, twists: 3.2, cornrows: 0.7, space_buns: 5.0, undercut: 3.0, long_curly: 4.2, afro_puff: 8.5, pompadour: 5.0, mullet: 2.0, side_shave: 2.0, braid_crown: 2.2,
+  receding: 1.2, thinning: 0.8, classic: 2.0, pixie: 1.9, updo: 4.4, low_bun: 1.2, curtain: 1.8, twists: 3.2, cornrows: 0.7, space_buns: 5.0, undercut: 3.0, long_curly: 4.2, afro_puff: 8.5, pompadour: 6.0, mullet: 2.0, side_shave: 2.0, braid_crown: 2.2,
 };
 
 /** HAIR_LIFT do cabelo com este chapéu (a crista do moicano achata embaixo de coroa/tiara/chapéu de festa) */
@@ -2284,7 +2284,10 @@ export function hairLiftOf(hair: string | null | undefined, hat: string | null |
  */
 export function bustViewBox(an: Anatomy, cfg?: Partial<Pick<AvatarConfig, 'hair' | 'hat'>>): { x: number; y: number; w: number; h: number } {
   const f = faceDims(an);
-  const lift = hatLiftOf(cfg?.hat, hairLiftOf(cfg?.hair, cfg?.hat, 1.9));
+  const hairLift = hairLiftOf(cfg?.hair, cfg?.hat, 1.9);
+  // chapéu alto (cartola, bruxa, festa, coroa): no máximo ~3 de reserva acima do cabelo — a ponta é cortada pelo
+  // círculo em vez de o rosto encolher 15–20% na miniatura de 56 px
+  const lift = Math.min(hatLiftOf(cfg?.hat, hairLift), hairLift + 3.0);
   const top = Math.max(0, f.crownY - lift * an.head.s - 1);
   const eyeY = headAnchors(an).eyeL[1];
   // olhos a 42% da altura; tamanho limitado (cabelo muito alto não encolhe demais o rosto; nem fica colado no ombro)

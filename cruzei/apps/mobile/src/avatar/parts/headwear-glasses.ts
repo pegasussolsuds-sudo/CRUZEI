@@ -6,7 +6,7 @@
 // Ordem: sombra na pele → hastes → lentes → ponte → aros → plaquetas/rebites/brilhos.
 
 import type { LayerCtx } from '../ctx';
-import { speckle } from '../shading';
+import { lum, speckle } from '../shading';
 import type { AvatarGradient, AvatarStop } from '../types';
 
 import { GOLD_STOPS, SILVER_STOPS, blob, boxOf, fleck, gem, metalGrad, neon, smoothPath, sparkle, taperPath, tones, type HeadFrame, type SP, type Tones } from './headwear-kit';
@@ -306,6 +306,7 @@ function drawPair(ctx: LayerCtx, hf: HeadFrame, eb: EyeBox, p: PairSpec): LensOu
   });
   const head = hf.head;
   const mid = frameMid(p.mat);
+  const darkSkin = lum(ctx.col.skin) < 0.15;
 
   // 1. sombra da armação na pele (recortada na cabeça) e, na lente escura, a sombra colorida na bochecha
   let sh = '';
@@ -336,11 +337,15 @@ function drawPair(ctx: LayerCtx, hf: HeadFrame, eb: EyeBox, p: PairSpec): LensOu
   // 3. lentes: tinta (ou gradiente), reflexo diagonal, borda da lente e brilho
   for (const L of lenses) {
     const b = boxOf(L.inner);
+    // lente clara: tinta quase nula e reflexo estreito encostado na borda de fora (com 0,12 de tinta e a faixa larga
+    // passando na íris, o olho ficava cinza-azulado e a lente leitosa; na pele escura o disco clareava a pele)
+    // (a tinta de ~0,04 que sobraria é um véu invisível: a lente clara fica só com o reflexo — uma camada a menos)
+    const clearLens = !p.lens.stops && !p.lens.tint;
     if (p.lens.stops) ctx.push(L.lensD, p.lens.tint ?? '#20242E', { gf: { t: 'l', x1: b.x + b.w * 0.5, y1: b.y, x2: b.x + b.w * 0.5, y2: b.y + b.h, s: p.lens.stops } });
-    else ctx.push(L.lensD, p.lens.tint ?? '#E4F0FF', { o: p.lens.o ?? 0.12 });
-    const r = p.lens.refl ?? 0.32;
+    else if (!clearLens) ctx.push(L.lensD, p.lens.tint as string, { o: p.lens.o ?? 0.12 });
+    const r = clearLens ? Math.min(p.lens.refl ?? 0.15, 0.18) * (darkSkin ? 0.65 : 1) : (p.lens.refl ?? 0.32);
     const band = (a: number, w: number): string => `M${(b.x + b.w * a).toFixed(2)},${(b.y + b.h + 0.2).toFixed(2)}L${(b.x + b.w * (a + 0.45)).toFixed(2)},${(b.y - 0.2).toFixed(2)}L${(b.x + b.w * (a + 0.45 + w)).toFixed(2)},${(b.y - 0.2).toFixed(2)}L${(b.x + b.w * (a + w)).toFixed(2)},${(b.y + b.h + 0.2).toFixed(2)}Z`;
-    ctx.push(band(0.02, 0.2), '#FFFFFF', { o: r, cp: L.lensD });
+    ctx.push(clearLens ? band(-0.16, 0.12) : band(0.02, 0.2), '#FFFFFF', { o: r, cp: L.lensD });
     if (!lite) ctx.push(band(0.34, 0.07), '#FFFFFF', { o: r * 0.7, cp: L.lensD });
     if (p.lens.dark) ctx.push(blob(b.x + b.w * 0.55, b.y + b.h * 0.86, b.w * 0.5, b.h * 0.16, -0.08), '#A9C1E2', { o: 0.2, cp: L.lensD, ...(lite ? {} : { b: 0.35 }) });
     if (!lite) ctx.stroke(smoothPath(runWhere(L.inner, (q) => q[1] > cy + hBot * 0.1), false), '#FFFFFF', 0.2 * s, { o: 0.22, cp: L.lensD });
@@ -434,7 +439,9 @@ const ACETATE_BLACK = tones('#17161C');
 function round(ctx: LayerCtx, hf: HeadFrame): void {
   const eb = eyeBox(hf);
   const r = Math.min(eb.hw * 0.98, eb.hh * 1.25);
-  drawPair(ctx, hf, eb, { shape: circleShape(r), th: 0.58 * eb.s, mat: { kind: 'acetate', t: tones('#7A4520'), tortoise: true, gloss: 0.55 }, lens: {}, bridge: 'key', rivets: true });
+  // casco claro na pele escura: o marrom #7A4520 sumia no tom da pele e a miniatura não lia óculos
+  const shell = lum(ctx.col.skin) < 0.15 ? '#B8783A' : '#7A4520';
+  drawPair(ctx, hf, eb, { shape: circleShape(r), th: 0.58 * eb.s, mat: { kind: 'acetate', t: tones(shell), tortoise: true, gloss: lum(ctx.col.skin) < 0.15 ? 0.9 : 0.55 }, lens: {}, bridge: 'key', rivets: true });
 }
 
 function square(ctx: LayerCtx, hf: HeadFrame): void {

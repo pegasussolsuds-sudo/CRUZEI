@@ -1,7 +1,9 @@
 // Camadas do Metch no mapa nativo — porta 1:1 do addCruzeiLayers do antigo mapbox-html.ts (mesmos ids, ordem, tamanhos
 // por zoom, cores e filtros). O que pulsava com imagem animada (sonar, anéis, auras, onda do pino) virou camada circle com
 // paint recalculado pelo relógio do motor (canal 'phase'): muda só uniform, sem relayout de símbolo. Cada anel só
-// acompanha o relógio quando o canal 'rings' diz que ele tem o que mostrar; parado, nem re-renderiza.
+// acompanha o relógio quando o canal 'rings' diz que ele tem o que mostrar; parado, nem re-renderiza. O pulso dura uns
+// segundos (RING_BURST_MS no motor): depois a fase vem RING_REST e cada anel fica num desenho fixo (resting), porque cada
+// passo do pulso faz o MapLibre redesenhar o mapa inteiro.
 // Ordem de montagem = ordem de desenho (de baixo pra cima). <Layer> do MLRN: paint/layout em kebab-case da style-spec.
 
 import React, { memo, useEffect, useMemo, useRef } from 'react';
@@ -18,9 +20,12 @@ import {
 
 import type { MapTheme } from '../bridge';
 import { MAP_FONTS } from './theme';
-import { IMG, type MapImageEntry } from './contracts';
+import { IMG, bubbleOffset, figOffset, type MapImageEntry } from './contracts';
 import { useChannel, useChannelSelector, useChannelWhen } from './engine/channels';
-import { SRC, type MapChannels, type MapEngine } from './engine/MapEngine';
+import { SRC, type MapEngine } from './engine/MapEngine';
+
+/** fase de repouso (RING_REST do motor): anel parado */
+const resting = (phase: number) => phase < 0;
 
 type Expr = unknown[];
 type Engine = MapEngine;
@@ -77,6 +82,18 @@ const HAS_AURA = filterOf(['has', 'aura']);
 const SONAR_FILTERS: FilterSpecification[] = [1, 2, 3].map((v) => filterOf(['all', HOT, ['==', ['get', 'sonar'], `sonar-${v}`]]));
 const SIZE_N = [0.42, 0.72, 0.95];
 const SIZE_B = [0.5, 0.85, 1.1];
+const r2 = (v: number) => Math.round(v * 100) / 100;
+/**
+ * deslocamento do ícone e da bolha (âncora bottom): constante por tamanho de imagem, então sai do estilo pela marca `b`
+ * (figura no tamanho do boost) em vez de ir num array em cada feature a cada envio da fonte
+ */
+const FIG_OFF: Expr = ['case', ['has', 'b'], ['literal', [0, r2(figOffset(IMG.figBoost))]], ['literal', [0, r2(figOffset(IMG.fig))]]];
+const PH_OFF: Expr = ['case', ['has', 'b'], ['literal', [0, r2(bubbleOffset(IMG.figBoost))]], ['literal', [0, r2(bubbleOffset(IMG.fig))]]];
+/**
+ * fontes GeoJSON fatiadas até o z16 (acima disso o MapLibre estica o tile do z16): cada envio refaz menos tiles nos Workers
+ * (no z17 eram até 4x mais, no z18 16x) e cada tile de pessoas leva um atlas próprio dos ícones que usa
+ */
+const SOURCE_MAXZOOM = 16;
 
 /** sem transição: o relógio troca o paint a cada tick (a transição padrão de 300 ms borraria o ciclo) */
 const NO_T = { duration: 0, delay: 0 };
@@ -113,7 +130,7 @@ function userStyle(boost: boolean): SymbolStyle {
       'icon-anchor': 'bottom',
       'icon-pitch-alignment': 'viewport',
       'icon-rotation-alignment': 'viewport',
-      'icon-offset': ['get', 'off'],
+      'icon-offset': FIG_OFF,
       'icon-size': sizeExpr(boost ? SIZE_B : SIZE_N),
     }),
     paint: symbolPaint({ 'icon-opacity': S_ALPHA }),
@@ -128,7 +145,7 @@ function photoStyle(boost: boolean): SymbolStyle {
       'icon-anchor': 'bottom',
       'icon-pitch-alignment': 'viewport',
       'icon-rotation-alignment': 'viewport',
-      'icon-offset': ['get', 'poff'],
+      'icon-offset': PH_OFF,
       'icon-size': sizeExpr(boost ? SIZE_B : SIZE_N),
     }),
     paint: symbolPaint({ 'icon-opacity': PH_ALPHA }),
@@ -275,7 +292,7 @@ const STYLE = {
       'icon-anchor': 'bottom',
       'icon-pitch-alignment': 'viewport',
       'icon-rotation-alignment': 'viewport',
-      'icon-offset': ['get', 'off'],
+      'icon-offset': FIG_OFF,
       'icon-size': zoomScale([
         [12, 0.55],
         [15, 0.9],
@@ -304,7 +321,7 @@ const STYLE = {
       'icon-anchor': 'bottom',
       'icon-pitch-alignment': 'viewport',
       'icon-rotation-alignment': 'viewport',
-      'icon-offset': ['get', 'poff'],
+      'icon-offset': PH_OFF,
       // 1.18x: a foto do selecionado cresce mais que o boneco
       'icon-size': zoomScale([
         [12, 0.65],
@@ -333,17 +350,21 @@ const STYLE = {
 };
 
 // ---------- fontes ----------
-/** uma fonte GeoJSON por canal; a ref vai pro motor (feature-state é por fonte) */
-function Source({ engine, name, id }: { engine: Engine; name: keyof MapChannels; id: string }) {
-  const data = useChannel(engine.ch, name) as GeoJSON.FeatureCollection;
+/**
+ * uma fonte GeoJSON por canal; a ref vai pro motor (feature-state é por fonte). O canal entrega o JSON pronto (o motor já
+ * serializou pra comparar com o último envio): o MLRN passa a string direto, sem JSON.stringify a cada render. É sempre o
+ * valor ENTREGUE: com o dedo no mapa o motor segura os lotes e nada aqui re-renderiza
+ */
+const Source = memo(function Source({ engine, name, id }: { engine: Engine; name: keyof typeof SRC; id: string }) {
+  const data = useChannel(engine.ch, name);
   const ref = useRef<GeoJSONSourceRef>(null);
   useEffect(() => {
     engine.attachSource(id, ref);
     return () => engine.attachSource(id, null);
   }, [engine, id]);
   // users sem cluster nativo: os grupos já chegam prontos do motor (supercluster)
-  return <GeoJSONSource ref={ref} id={id} data={data} />;
-}
+  return <GeoJSONSource ref={ref} id={id} data={data} maxzoom={SOURCE_MAXZOOM} />;
+});
 
 // ---------- imagens (um <Images> por grupo: desmontar o grupo tira as imagens do estilo) ----------
 const ImageGroup = memo(function ImageGroup({ images }: { images: Record<string, MapImageEntry> }) {
@@ -390,7 +411,8 @@ const SonarLevel = memo(function SonarLevel({ engine, v }: { engine: Engine; v: 
   return (
     <>
       {Array.from({ length: v }, (_, i) => {
-        const t = (phase / period + i / v) % 1;
+        // parado: os anéis espalhados do centro pra fora (lê como sonar sem mexer)
+        const t = resting(phase) ? (i + 0.5) / v : (phase / period + i / v) % 1;
         const r = 10 + (SONAR_MAX_R - 10) * t;
         return (
           <Layer
@@ -409,7 +431,7 @@ const SonarLevel = memo(function SonarLevel({ engine, v }: { engine: Engine; v: 
 
 /** auras (boost/premium+) por baixo das figuras: gradiente radial = círculo com blur; o raio externo pulsa */
 function auraPaint(phase: number, stops: [number, number][], color: string): CirclePaint {
-  const pulse = 0.85 + 0.15 * Math.sin(phase * 3);
+  const pulse = resting(phase) ? 1 : 0.85 + 0.15 * Math.sin(phase * 3);
   const c = IMG.aura / 2;
   return circlePaint({
     ...CIRCLE_NO_T,
@@ -454,7 +476,7 @@ const AuraSpot = memo(function AuraSpot({ engine }: { engine: Engine }) {
 const SelRing = memo(function SelRing({ engine }: { engine: Engine }) {
   const active = useChannelSelector(engine.ch, 'rings', (r) => r.sel);
   const phase = useChannelWhen(engine.ch, 'phase', active);
-  const pulse = 0.5 + 0.5 * Math.sin(phase * 4);
+  const pulse = resting(phase) ? 0.5 : 0.5 + 0.5 * Math.sin(phase * 4);
   const c = IMG.aura / 2;
   const paint = ringPaint(c - 6 - 3 * pulse, 3, '#7FFF00', [
     [12, 0.45],
@@ -468,7 +490,7 @@ const MeRing = memo(function MeRing({ engine }: { engine: Engine }) {
   const active = useChannelSelector(engine.ch, 'rings', (r) => r.me);
   const phase = useChannelWhen(engine.ch, 'phase', active);
   const c = IMG.ring / 2;
-  const t = (phase % 2.2) / 2.2;
+  const t = resting(phase) ? 0.35 : (phase % 2.2) / 2.2;
   const r = 14 + (c - 6 - 14) * t;
   const paint = ringPaint(r, 2.5, rgba('127,255,0', 0.7 * (1 - t)), [
     [12, 0.7],
@@ -543,7 +565,7 @@ const PinLayers = memo(function PinLayers({ engine }: { engine: Engine }) {
     <>
       <Layer type="symbol" id="cz-pin-glow" source={SRC.pin} layout={glowLayout} paint={glowPaint} />
       {[0, 1].map((i) => {
-        const t = (phase / 2.2 + i / 2) % 1;
+        const t = resting(phase) ? (i + 0.5) / 2 : (phase / 2.2 + i / 2) % 1;
         return (
           <Layer
             key={`p${i}`}

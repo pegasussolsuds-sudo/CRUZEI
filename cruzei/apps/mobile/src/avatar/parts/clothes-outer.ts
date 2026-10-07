@@ -11,9 +11,8 @@ import { fmt } from '../geometry';
 import { blob, isLite, leather, lodCtx, lum, metal, mix, starPath, weave } from '../shading';
 import type { Pt } from '../types';
 
-import { curvesSurface, flagFolds, surfacePath, type FlagFold, type FlagSurface } from './flags';
-
 import {
+  FRONT_OUTERS,
   NONE,
   SIDES,
   armG,
@@ -38,6 +37,7 @@ import {
   type Tone,
 } from './clothes-kit';
 import { lapels, mockCollar, shirtCollar } from './clothes-tops';
+import { curvesSurface, flagFolds, surfacePath, type FlagFold, type FlagSurface } from './flags';
 
 // ===============================================================================================================
 // Corte: contorno com folga, barra, abertura da frente e painéis
@@ -199,12 +199,32 @@ export function drawOuter(ctx0: LayerCtx): void {
   const ctx = lodCtx(ctx0);
   const id = ctx.cfg.outer;
   const o = outerDef(ctx.cfg);
-  if (!o || !id || id === NONE) return;
+  if (!o || !id || id === NONE || prideCapeReplaces(ctx)) return;
   ctx.group('body');
   if (id === 'cape') return capeFront(ctx);
   if (id === 'mantle') return mantleFront(ctx);
   if (id === 'mecha') return mechaHarness(ctx);
   frontOuter(ctx, id, o);
+}
+
+/**
+ * capa do orgulho + capa/manto na sobreposição: a do orgulho substitui (as duas juntas sobravam um filete de arco-íris
+ * contornando a capa lisa, que lia como falha)
+ */
+function prideCapeReplaces(ctx: LayerCtx): boolean {
+  return ctx.cfg.pride === 'cape' && (ctx.cfg.outer === 'cape' || ctx.cfg.outer === 'mantle');
+}
+
+/**
+ * abertura da frente da sobreposição (o vão entre os painéis, da gola até a barra) — a gravata desce DENTRO dela e
+ * termina onde a frente fecha. null = sem sobreposição de frente
+ */
+export function outerOpening(ctx: LayerCtx): { gap: (y: number) => number; top: number; hemY: number } | null {
+  const id = ctx.cfg.outer;
+  const o = outerDef(ctx.cfg);
+  if (!o || !id || !FRONT_OUTERS.has(id)) return null;
+  const hemY = outerHemY(ctx.an, o);
+  return { gap: gapFn(ctx.an, id, hemY), top: ctx.an.collarY - 2.6, hemY };
 }
 
 function frontOuter(ctx: LayerCtx, id: string, o: OuterDef): void {
@@ -383,8 +403,11 @@ function belt(ctx: LayerCtx, cut: OuterCut, y: number, c: string, t: Tone): void
   const band = smoothPath([[xl, y - 0.9 - tl, 0], [xr, y - 0.9 + tl, 0], [xr, y + 0.9 + tl, 0], [xl, y + 0.9 - tl, 0]]);
   ctx.push(band, '#0A0610', { o: 0.25, ...(lite ? {} : { b: 0.4 }), cp: cut.d });
   ctx.push(band, c, { gf: { t: 'l', x1: an.cx, y1: y - 1, x2: an.cx, y2: y + 1, s: [[0, t.light], [0.5, t.base], [1, t.shade]] }, cp: cut.d });
-  const bx = an.cx - 0.3;
-  ctx.stroke(smoothPath([[bx - 1.3, y - 1.2, 0], [bx + 1.3, y - 1.2, 0], [bx + 1.3, y + 1.2, 0], [bx - 1.3, y + 1.2, 0]], true, 0), '#C8B07A', lite ? 0.6 : 0.45);
+  // fivela: no meio quando a frente está fechada; na jaqueta aberta, na ponta do cinto do painel esquerdo (antes ficava
+  // no meio do corpo, flutuando sobre a camiseta no vão, sem cinto ligando)
+  const g = cut.gap(y);
+  const bx = g > 1.0 ? an.cx - g - 1.6 : an.cx - 0.3;
+  ctx.stroke(smoothPath([[bx - 1.3, y - 1.2, 0], [bx + 1.3, y - 1.2, 0], [bx + 1.3, y + 1.2, 0], [bx - 1.3, y + 1.2, 0]], true, 0), '#C8B07A', lite ? 0.6 : 0.45, { cp: cut.d });
 }
 
 /** puffer: gomos horizontais com brilho em cima e sombra embaixo (corpo) */
@@ -590,7 +613,7 @@ function surfaceEdge(s: FlagSurface): string {
 export function outerBack(ctx0: LayerCtx): void {
   const ctx = lodCtx(ctx0);
   const id = ctx.cfg.outer;
-  if (id !== 'cape' && id !== 'mantle') return;
+  if ((id !== 'cape' && id !== 'mantle') || prideCapeReplaces(ctx)) return;
   const { an } = ctx;
   const lite = isLite(ctx);
   const { c, t, lining } = cloakTones(ctx);
@@ -705,7 +728,7 @@ function furCollar(ctx: LayerCtx, sw: number, y0: number): void {
   const fur = smoothPath([...top, [cx + sw + 0.5, spine[N][1] + 0.9], ...bot.reverse(), [cx - sw - 0.5, spine[0][1] + 0.9]]);
   // sombra que o rolo faz no peito e nos ombros (recortada no corpo, não vaza)
   const body = smoothPath(torsoPts(an, { top: an.collarY - 4 }));
-  ctx.push(smoothPath(bot.map((p) => [p[0], p[1] + 1.1] as SP).concat(top.map((p) => [p[0], p[1] + 1.4] as SP).reverse())), '#0A0610', { o: 0.32, ...(lite ? {} : { b: 0.8 }), cp: body });
+  ctx.push(taperPath(bot.map((p) => [p[0], p[1] + 0.5] as SP), (k) => 1.1 * Math.sin(Math.PI * Math.min(1, k * 1.1 + 0.02)) + 0.2), '#0A0610', { o: 0.22, ...(lite ? {} : { b: 0.6 }), cp: body });
   // rolo: luz de cima, miolo creme e sombra própria embaixo (volume de cilindro)
   const yT = Math.min(...top.map((p) => p[1]));
   const yB = Math.max(...bot.map((p) => p[1]));
