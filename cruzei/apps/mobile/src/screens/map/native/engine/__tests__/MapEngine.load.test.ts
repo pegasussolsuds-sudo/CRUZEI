@@ -200,7 +200,8 @@ describe('fontes de pessoas sob 300 pessoas andando', () => {
       for (const f of engine.features(k)) {
         const p = f.properties as Record<string, unknown>;
         if (p.cluster) continue;
-        for (const key of Object.keys(p)) expect(['id', 'img', 'sz', 'label', 'aura', 'ph', 'b']).toContain(key);
+        // ('h' = escondida pelo dado até a figura ou a cor chegar: layers.tsx S_ALPHA)
+        for (const key of Object.keys(p)) expect(['id', 'img', 'sz', 'label', 'aura', 'ph', 'b', 'h']).toContain(key);
         for (const c of (f.geometry as GeoJSON.Point).coordinates) expect(Math.abs(c * 1e6 - Math.round(c * 1e6))).toBeLessThan(1e-6);
       }
     }

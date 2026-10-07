@@ -17,11 +17,12 @@ import { monoNow } from '../../../../services/frameBatch';
 const DIR_NAME = 'mapimg-v1';
 const DEFAULT_BUDGET_MS = 8;
 /**
- * um desenho é indivisível (figura ~15–25 ms no aparelho): a fatia que passou do orçamento devolve a thread JS por até
- * isto antes da próxima, pra o React, os toques e o motor rodarem entre um desenho e outro. Numa rajada (primeira abertura,
- * refetch com gente nova) a thread JS fica ~25% livre em vez de colada no raster, sem atrasar muito as figuras
+ * um desenho é indivisível (figura ~15–25 ms no aparelho): a fatia que passou do orçamento devolve a thread JS pelo mesmo
+ * tempo que gastou, até isto, antes da próxima, pra o React, os toques e o motor rodarem entre um desenho e outro. Numa
+ * rajada (primeira abertura, grupo abrindo) a thread JS fica ~45% livre (com 8 ms eram ~25%). Atrasar as figuras não
+ * aparece: quem espera a figura fica escondido até ela chegar (MapEngine.gate), e não mais de silhueta cinza
  */
-const MAX_REST_MS = 8;
+const MAX_REST_MS = 16;
 /** limites da pasta: passou disso, a limpeza apaga os mais antigos até ~75% (pra não limpar de novo logo) */
 const MAX_FILES = 4000;
 const MAX_BYTES = 80 * 1024 * 1024;

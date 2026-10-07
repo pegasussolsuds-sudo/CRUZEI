@@ -91,8 +91,8 @@ const moveSome = (people: MapUser[], R: () => number, step: number) =>
     return user(u.id, at((p.lng - ME[0]) / M_LNG + (R() - 0.5) * step, (p.lat - ME[1]) / M_LAT + (R() - 0.5) * step), i);
   });
 
-function setup(zoom: number, emit: (ev: MapEvent) => void = () => {}) {
-  const engine = new MapEngine({ emit, initTheme: 'night', initTier: 'high' });
+function setup(zoom: number, emit: (ev: MapEvent) => void = () => {}, tier: 'high' | 'mid' | 'low' = 'high') {
+  const engine = new MapEngine({ emit, initTheme: 'night', initTier: tier });
   engine.attach({ current: { queryRenderedFeatures: () => Promise.resolve([]) } } as never, { current: { setStop: () => Promise.resolve() } } as never);
   for (const id of Object.values(SRC)) engine.attachSource(id, { current: { setFeatureStates: () => Promise.resolve(), setFeatureState: () => Promise.resolve() } } as never);
   engine.onStyleLoaded();
@@ -168,9 +168,12 @@ describe('canais com o lote preso (hold)', () => {
 describe('dedo no mapa', () => {
   it('arrastar 2 s sob 300 pessoas andando, refetch com gente nova, eu andando e figuras animando: zero commits; no fim um lote com tudo certo', async () => {
     const R = rnd(21);
-    const { engine, cam, me } = setup(17);
+    // grade de 45 m (o raio do grupo no z17 é ~40 m: todo mundo solto) e tier low (teto de 30 figuras). Desde a rodada 4
+    // quem está num grupo não sai andando dele, e era essa gente que enchia o teto e trocava a dona das vagas na multidão
+    // aleatória; com todo mundo solto e o teto apertado, o arraste e a gente nova ainda trocam dona de vaga
+    const { engine, cam, me } = setup(17, () => {}, 'low');
     const P = engine as unknown as { figs: Map<string, { own: boolean; imgReady: boolean }> };
-    let people = crowd(300, R);
+    let people = Array.from({ length: 300 }, (_, k) => user('p' + k, at(((k % 15) - 7) * 45, (Math.floor(k / 15) - 10) * 45), k));
     engine.run({ fn: 'setPin', args: [{ id: 'bar', lat: at(40, 60).lat, lng: at(40, 60).lng, name: 'Bar do Léo', emoji: '🍺', nightlife: true }, false] });
     engine.run({ fn: 'setData', args: [{ users: people, pois: [] }] });
     await jest.advanceTimersByTimeAsync(8000);
@@ -321,7 +324,8 @@ describe('revisão da rodada 3', () => {
   it('quem anda fica onde foi desenhado durante o gesto e retoma dali ao soltar (sem salto), sem rasterizar quadro à toa', async () => {
     const R = rnd(33);
     const { engine, cam } = setup(18.5);
-    let people = crowd(120, R, 120);
+    // grade de 25 m (o raio do grupo no z18 é ~20 m): quem anda é quem está solto (rodada 4: de dentro de um grupo ninguém anda)
+    let people = Array.from({ length: 63 }, (_, k) => user('p' + k, at(((k % 7) - 3) * 25, (Math.floor(k / 7) - 3) * 25), k));
     engine.run({ fn: 'setData', args: [{ users: people, pois: [] }] });
     await jest.advanceTimersByTimeAsync(8000);
     people = moveSome(people, R, 40);

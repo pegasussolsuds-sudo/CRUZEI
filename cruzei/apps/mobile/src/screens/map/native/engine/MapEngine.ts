@@ -119,6 +119,8 @@ export const SRC = {
   invisible: 'invisible',
 } as const;
 const PERSON_SOURCES = [SRC.users, SRC.usersBoost, SRC.movers, SRC.spot];
+/** os mesmos, pelo nome do canal (o lote que leva qualquer um deles acende quem esperava a imagem) */
+const PERSON_CHANNELS: readonly SourceName[] = ['users', 'usersBoost', 'movers', 'spot'];
 
 /** camadas que contam como toque numa pessoa */
 export const TAP_PERSON_LAYERS = ['cz-users', 'cz-users-photo', 'cz-users-boost', 'cz-users-boost-photo', 'cz-movers', 'cz-movers-photo', 'cz-spot', 'cz-spot-photo', 'cz-users-dot', 'cz-users-boost-dot', 'cz-movers-dot'];
@@ -195,6 +197,11 @@ const MOVERS_CROWD_MS = { some: 125, many: 200 } as const;
 /** intervalo mínimo entre dois commits do React vindos do mapa (lote de canais): normal e com multidão andando */
 const COMMIT_GAP_MS = { normal: 66, crowd: 125 } as const;
 /**
+ * mapa cheio: com mais de 6 andando, a movers e os commits já vão no ritmo de multidão. Desde a rodada 4 quem está num grupo
+ * não anda: com 300 na resposta ficam ~5–10 andando (eram ~40) e o ritmo de pouca gente (66 ms) dobrava os commits sob carga
+ */
+const CROWD_USERS = 100;
+/**
  * Vagas de imagem: cada figura própria (e cada bolha de foto) ocupa um NOME fixo do <Images> (czf0… / czF0… / czb0…) e trocar
  * de pessoa é só trocar o arquivo daquele nome. No MapLibre, nome novo (o MLRN registra 1x1 e depois o bitmap, tamanho
  * diferente) ou removido = relayout de TODOS os tiles com símbolo, inclusive os rótulos do mapa base; mesmo nome e mesmo
@@ -215,13 +222,37 @@ const SLOT_SETTLE_EXTRA_MS = 120;
 /** vagas além do teto de figuras: quem entra na tela não espera as que acabaram de soltar esfriarem */
 const SLOT_SLACK = 8;
 /**
- * vaga da folga (além do teto do tier) parada há tanto tempo sai do <Images> e solta o bitmap; a limpeza roda no máximo a
- * cada SLOT_TRIM_MS (1 relayout por limpeza). Até o teto as vagas ficam: soltar e recriar a cada refetch seria relayout
+ * vaga livre parada há tanto tempo sai do <Images> e solta o bitmap, além da metade do teto de vagas do tipo (slotKeep), que
+ * fica registrada livre: a próxima abertura de grupo reaproveita o nome (troca só o arquivo) em vez de criar dezenas de nomes
+ * novos, cada um um relayout de todos os tiles com símbolo. Vaga livre não está em atlas de tile nenhum (nenhuma feature
+ * aponta pra ela): custa só o bitmap no nativo, ~200 KB por figura (34 no tier high, ~7 MB). A limpeza roda no máximo a
+ * cada SLOT_TRIM_MS (1 relayout por limpeza)
  */
-const SLOT_IDLE_MS = 60_000;
+const SLOT_IDLE_MS = 20_000;
 const SLOT_TRIM_MS = 10_000;
-/** vagas de boost (imagem maior, rara) que ficam registradas paradas; acima disso as paradas saem como as da folga */
-const SLOT_KEEP_BOOST = 20;
+/**
+ * figura própria de quem saiu da tela ou voltou pro grupo e ficou assim por tanto tempo: solta (vaga, bolha e quadros). Voltar
+ * não redesenha (a figura parada está no disco): só registra e assenta, e o grupo só abre quando estiver pronta
+ */
+const OWN_IDLE_MS = 12_000;
+/**
+ * grupo abrindo (zoom inteiro novo, toque no grupo): os grupos do zoom novo só vão pro mapa quando as figuras (ou silhuetas
+ * coloridas) de quem se solta na tela estão prontas, no máximo depois disto (com 1 s o grupo ficava fechado até ~0,8 s
+ * depois de a câmera parar e parecia lentidão). Quem não ficou pronto a tempo entra com fade quando a imagem chega: a
+ * silhueta cinza não aparece (o dado leva 'h', ver featureFor)
+ */
+const OPEN_MAX_MS = 500;
+/**
+ * pessoa solta sem imagem pronta (só teria o boneco cinza) fica escondida e entra com este fade (feature-state 'g') quando a
+ * imagem chega; quem sai de um grupo na tela entra com o mesmo fade
+ */
+const REVEAL_MS = 180;
+/** o fade começa depois do lote que levou a imagem nova pro nativo (o tile da fonte é refeito num worker) */
+const REVEAL_DELAY_MS = 50;
+/** rebalanceOwn pedido pela movers (alguém andou pra dentro da tela sem figura): no máximo um a cada tanto */
+const MOVER_REBALANCE_MS = 250;
+/** imagem provisória cinza (silhueta sem a cor da pessoa): só aparece como último recurso (Fig.noTint) */
+const isGrayImg = (img: unknown): boolean => img === GENERIC_FIG;
 /**
  * silhueta de quem fica além do teto: roupa e tom de pele da pessoa numa paleta curta (compartilhada por muita gente; cada
  * variante é um nome no <Images>), no máximo SIL_TINT_MAX variantes coloridas (passou disso, a do visual sem cor)
@@ -301,6 +332,11 @@ interface Fig {
   staticRef: MapImageRef | null;
   /** tentativas da figura estática que falharam (memória apertada, escrita): tenta de novo até STATIC_TRIES */
   staticTries: number;
+  /**
+   * a figura parada falhou (raster/escrita): enquanto não sai, a pessoa usa a silhueta colorida como quem está além do teto
+   * (e a cinza visível se não houver cor). Sem isso ficava escondida esperando uma figura que não vem
+   */
+  failed: boolean;
   /** a imagem av-<id> já está registrada e a feature pode apontar pra ela */
   imgReady: boolean;
   /** espera antes de apontar a feature pra vaga; cancelada quando a vaga solta (a vaga seguinte tem a espera dela) */
@@ -322,6 +358,18 @@ interface Fig {
   phSlot: Slot | null;
   /** chegou andando e ainda está na fonte movers até a próxima republicação da users (sem sumir no meio) */
   parked: boolean;
+  /** escondida esperando a imagem ('g' = 0 nas PERSON_SOURCES); `gated` = alguma fonte pode ter 'g' ≠ 1 (limpa ao sair) */
+  hid: boolean;
+  gated: boolean;
+  /** muda a cada esconder: um fade marcado antes não acende quem voltou a ficar sem imagem */
+  gateSeq: number;
+  /**
+   * nada a caminho além da cinza: sem vaga de silhueta colorida (cota gasta) ou sem a cor (definição do avatar ausente). A
+   * silhueta cinza aparece (último recurso; antes a pessoa sumia do mapa)
+   */
+  noTint: boolean;
+  /** desde quando a figura própria não aparece solta na tela (0 = aparece) */
+  unseen: number;
 }
 
 /** espera de assentamento de uma imagem (afterImages): o timer da vez ou o aviso do lote do <Images> que ela espera */
@@ -356,11 +404,14 @@ export interface EngineStats {
   tints: number;
 }
 
+/** chaves do feature-state das pessoas (o estilo multiplica 'a' e 'g'; 'pa' só na bolha) */
+type AlphaKey = 'a' | 'pa' | 'g';
+
 interface AlphaTween {
   source: string;
   id: string;
-  /** 'a' = figura/bolha/nome (entrada, saída, destaque); 'pa' = só a bolha de foto (fade quando chega) */
-  key: 'a' | 'pa';
+  /** 'a' = figura/bolha/nome (entrada, saída, destaque); 'pa' = só a bolha de foto (fade quando chega); 'g' = imagem pronta */
+  key: AlphaKey;
   from: number;
   to: number;
   start: number;
@@ -505,7 +556,25 @@ export class MapEngine {
   /** índice dos grupos publicado agora e o anterior (um toque pode chegar com o quadro de antes da republicação) */
   private usersIndex: UsersIndex | null = null;
   private prevUsersIndex: UsersIndex | null = null;
+  /** zoom inteiro dos grupos publicados (com o grupo abrindo, fica atrás do da câmera até as figuras ficarem prontas) */
   private clusterZoom = -1;
+  /** grupo abrindo: o zoom inteiro de destino, os grupos/soltos dele e desde quando espera as figuras */
+  private openTo: number | null = null;
+  private openFeats: Feature[] = [];
+  private openSince = 0;
+  private openTimer: ReturnType<typeof setTimeout> | null = null;
+  /** quem saiu solto (fora de grupo) na última publicação de cada fonte de pessoas */
+  private soloUsers = new Set<string>();
+  private soloBoost = new Set<string>();
+  private soloMovers = new Set<string>();
+  /** publicações das fontes de pessoas: a pedida e a que já saiu num lote pro nativo (o fade espera a imagem chegar lá) */
+  private pubGen = 0;
+  private flushedGen = 0;
+  /** fades de entrada esperando o lote: id -> geração da publicação com a imagem pronta e o gateSeq de quando pediu */
+  private readonly revealQ = new Map<string, { gen: number; seq: number }>();
+  private ownTrimTimer: ReturnType<typeof setTimeout> | null = null;
+  private slotTrimTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastMoverRebalance = -Infinity;
   /** o MLRN instalado não tem setFeatureState: o destaque esconde a figura de baixo tirando-a das fontes */
   private noFeatureState = false;
   private readyFallback: ReturnType<typeof setTimeout> | null = null;
@@ -548,8 +617,8 @@ export class MapEngine {
   private readonly leaving = new Map<string, FigUser>();
   private readonly defs = new Map<string, AvatarDef>();
   private readonly keyWaiters = new Map<string, Set<string>>();
+  /** silhuetas coloridas prontas: chave -> nome da vaga 's' */
   private readonly silReady = new Map<string, string>();
-  private readonly silPending = new Map<string, string>();
   private readonly groups = new Map<string, Record<string, MapImageEntry>>();
   private readonly pools: Record<SlotKind, Slot[]> = { f: [], F: [], b: [], s: [] };
   private slotSeq = 0;
@@ -651,6 +720,12 @@ export class MapEngine {
       this.imgWaiters.clear();
       for (const fn of waiting) fn();
     });
+    // o lote que leva as fontes de pessoas: quem esperava escondido pela imagem acende depois dele (com o dedo no mapa não sai)
+    const onPeople = () => {
+      this.flushedGen = this.pubGen;
+      this.drainReveals();
+    };
+    for (const k of PERSON_CHANNELS) this.ch.subscribe(k, onPeople);
     this.camera = new CameraCtl(() => this.camRef?.current ?? null);
     this.unkeep = mapImages.keep(this.livePaths);
     this.unidle = mapImages.onIdle(this.releaseDrawCaches);
@@ -718,6 +793,11 @@ export class MapEngine {
     this.momentSeq = [];
     if (this.slotRetry) clearTimeout(this.slotRetry);
     this.slotRetry = null;
+    if (this.ownTrimTimer) clearTimeout(this.ownTrimTimer);
+    this.ownTrimTimer = null;
+    if (this.slotTrimTimer) clearTimeout(this.slotTrimTimer);
+    this.slotTrimTimer = null;
+    this.cancelOpen();
   }
 
   private emit(ev: MapEvent): void {
@@ -734,6 +814,7 @@ export class MapEngine {
     this.json.set(name, s);
     this.counts.set(name, fc.features.length);
     if (SRC_KEEP_FC.includes(name)) this.fcs.set(name, fc);
+    if (PERSON_CHANNELS.includes(name)) this.pubGen++; // fontes de pessoas (o fade da imagem nova espera o lote)
     this.sends[name] = (this.sends[name] ?? 0) + 1;
     this.bytes[name] = (this.bytes[name] ?? 0) + s.length;
     this.ch.set(name, s);
@@ -758,8 +839,7 @@ export class MapEngine {
     for (const g of this.groups.values()) images += Object.keys(g).length;
     const own: string[] = [];
     for (const [id, f] of this.figs) if (f.own && id !== 'me') own.push(id);
-    let tints = 0;
-    for (const k of this.silReady.keys()) if (k.startsWith('silc|')) tints++;
+    const tints = this.silReady.size;
     return {
       sends: { ...this.sends },
       bytes: { ...this.bytes },
@@ -777,6 +857,11 @@ export class MapEngine {
     return kind === 's' ? SIL_TINT_MAX : (FIG_CAP[this.tier] ?? FIG_CAP.mid) + SLOT_SLACK;
   }
 
+  /** vagas livres que ficam registradas paradas (ver SLOT_IDLE_MS) */
+  private slotKeep(kind: SlotKind): number {
+    return Math.ceil(this.slotMax(kind) / 2);
+  }
+
   /** pega uma vaga livre (a que soltou há mais tempo) ou cria uma, até slotMax; null = todas ocupadas ou esfriando */
   private acquire(kind: SlotKind, owner: string): Slot | null {
     const now = monoNow();
@@ -785,10 +870,22 @@ export class MapEngine {
     for (const s of pool) if (s.owner == null && s.freeAt <= now && (!best || s.freeAt < best.freeAt)) best = s;
     // eu, selecionado e o match não esperam vaga esfriar (o toque responde na hora): passam do teto, a limpeza devolve
     if (!best && (pool.length < this.slotMax(kind) || this.isPinned(owner))) {
-      const i = this.slotSeq++;
-      // prefixo próprio: nome igual a um ícone do sprite do mapa base faria o MLRN pular o registro
-      best = { name: kind === 's' ? `silc-${i}` : `cz${kind}${i}`, group: `img-${kind}${Math.floor(i / SLOT_GROUP)}`, owner: null, freeAt: 0 };
-      pool.push(best);
+      const make = (): Slot => {
+        const i = this.slotSeq++;
+        // prefixo próprio: nome igual a um ícone do sprite do mapa base faria o MLRN pular o registro
+        const s: Slot = { name: kind === 's' ? `silc-${i}` : `cz${kind}${i}`, group: `img-${kind}${Math.floor(i / SLOT_GROUP)}`, owner: null, freeAt: 0 };
+        pool.push(s);
+        return s;
+      };
+      best = make();
+      // figura e cor têm o tamanho da silhueta cinza: o resto do grupo de vagas nasce junto, registrado com ela (nenhuma
+      // feature aponta pra vaga livre). Numa abertura de grupo, um relayout pra até SLOT_GROUP nomes novos em vez de um por
+      // figura que fica pronta; a próxima figura só troca o arquivo (mesmo nome e tamanho: remenda o atlas)
+      const gray = kind === 'f' || kind === 's' ? mapImages.get(`fig-generic|${figVersion()}`) : undefined;
+      while (gray && this.slotSeq % SLOT_GROUP && pool.length < this.slotMax(kind)) {
+        const s = make();
+        this.setImage(s.group, s.name, gray);
+      }
     }
     if (!best) {
       this.slotWaiters.add(owner);
@@ -810,26 +907,56 @@ export class MapEngine {
 
   /** depois de uma republicação das fontes: as vagas soltas começam a esfriar; as paradas há muito tempo saem */
   private coolSlots(): void {
-    const now = monoNow();
-    const at = now + SLOT_COOL_MS;
+    const at = monoNow() + SLOT_COOL_MS;
     // com o lote preso (dedo no mapa) a republicação sem a referência não foi ao nativo: esfria no 1º push depois de soltar
     if (!this.ch.isHeld) for (const kind of SLOT_KINDS) for (const s of this.pools[kind]) if (s.owner == null && s.freeAt === Infinity) s.freeAt = at;
     if (this.slotWaiters.size) this.scheduleSlotRetry();
-    if (now - this.lastTrim < SLOT_TRIM_MS) return;
-    this.lastTrim = now;
-    // solta o bitmap das vagas da folga paradas (e de tudo acima do teto, se o tier caiu), todas de uma vez: um relayout só
+    this.trimSlots();
+  }
+
+  /**
+   * teto real de imagens vivas: por tipo ficam as vagas em uso + slotKeep livres; as livres paradas há SLOT_IDLE_MS saem do
+   * <Images>, todas de uma vez (um relayout só, no máximo a cada SLOT_TRIM_MS). Só vaga já esfriada (ninguém aponta)
+   */
+  private trimSlots(): void {
+    const now = monoNow();
+    if (this.slotTrimTimer) clearTimeout(this.slotTrimTimer);
+    this.slotTrimTimer = null;
+    const due = now - this.lastTrim >= SLOT_TRIM_MS;
+    let next = Infinity;
+    let dropped = false;
     for (const kind of SLOT_KINDS) {
       const pool = this.pools[kind];
-      let spare = pool.length - (kind === 'F' ? SLOT_KEEP_BOOST : this.slotMax(kind) - SLOT_SLACK);
+      let spare = pool.length - this.slotKeep(kind);
+      for (const sl of pool) if (sl.owner != null) spare--;
       if (spare <= 0) continue;
-      const idle = pool.filter((sl) => sl.owner == null && now - sl.freeAt > SLOT_IDLE_MS).sort((a, b) => a.freeAt - b.freeAt);
+      // livres e já esfriadas (freeAt finito), da que soltou há mais tempo pra mais nova
+      const idle = pool.filter((sl) => sl.owner == null && Number.isFinite(sl.freeAt)).sort((a, b) => a.freeAt - b.freeAt);
       const drop = new Set<Slot>();
       for (const sl of idle) {
-        if (spare-- <= 0) break;
+        if (spare <= 0) break;
+        const at = sl.freeAt + SLOT_IDLE_MS;
+        if (!due || at > now) {
+          next = Math.min(next, at);
+          break;
+        }
+        spare--;
         drop.add(sl);
         this.dropImage(sl.group, sl.name);
       }
-      if (drop.size) this.pools[kind] = pool.filter((sl) => !drop.has(sl));
+      if (drop.size) {
+        this.pools[kind] = pool.filter((sl) => !drop.has(sl));
+        dropped = true;
+      }
+    }
+    if (dropped) this.lastTrim = now;
+    // a próxima limpeza (o mapa parado não republica nada que chame esta): no fim da espera, respeitando o intervalo
+    if (Number.isFinite(next) && !this.disposed) {
+      const at = Math.max(next, this.lastTrim + SLOT_TRIM_MS);
+      this.slotTrimTimer = setTimeout(() => {
+        this.slotTrimTimer = null;
+        this.trimSlots();
+      }, Math.max(0, at - now) + 10);
     }
   }
 
@@ -975,6 +1102,11 @@ export class MapEngine {
   onRegionDidChange(e: ViewStateChangeEvent & { renderFps?: number }): void {
     this.updateCamera(e, false);
     this.camera.flushPadding();
+    // câmera parou com um grupo que a pinça abriu: as figuras começam agora (o moveEnded vem 250 ms depois) e o prazo também
+    if (this.openTo != null && !this.openSince) {
+      this.rebalanceOwn();
+      this.tryOpen();
+    }
     const fps = e?.renderFps;
     if (this.active && typeof fps === 'number' && Number.isFinite(fps) && fps > 0) this.emit({ type: 'perf', fps: Math.min(60, Math.round(fps)) });
   }
@@ -993,8 +1125,10 @@ export class MapEngine {
     if (!userMoved && !animated && this.camera.programmatic === 0 && prev && (Math.abs(prev.zoom - s.zoom) > 0.05 || distM(prev.center, s.center) > 15)) userMoved = true;
     this.lastMoveEnd = { center: s.center, zoom: s.zoom };
     if (this.located) this.emit({ type: 'moveend', lat: s.center[1], lng: s.center[0], zoom: s.zoom, userMoved });
-    // o que entrou na tela ganha figura própria (e quem ficou longe solta a dele, se passou do teto)
+    // o que entrou na tela ganha figura própria (e quem ficou longe solta a dele, se passou do teto); o grupo que a pinça
+    // abriu espera essas figuras
     this.rebalanceOwn();
+    this.tryOpen();
     this.updateLod();
     // olhou outro pedaço do mapa: o sonar dos lugares em alta pulsa um pouco ali
     this.pulseRings();
@@ -1012,13 +1146,77 @@ export class MapEngine {
     if (gesture && !was) this.stopIdleCam();
     if (this.camera.gestureActive !== was) this.updateCommitGap();
     // grupos mudam no zoom inteiro (igual ao cluster por tile do nativo); quem se soltou de um grupo ganha figura
-    if (this.usersIndex && clusterZoomOf(cam.zoom) !== this.clusterZoom) {
-      this.publishClusters();
-      // no meio da pinça não registra dezenas de imagens a cada zoom inteiro: o moveEnded (250 ms parado) rebalanceia
-      if (!this.camera.gestureActive) this.rebalanceOwn();
+    if (this.usersIndex) {
+      const z = clusterZoomOf(cam.zoom);
+      if (z !== (this.openTo ?? this.clusterZoom)) this.retargetClusters(z);
     }
     this.updateHorizon(cam.pitch);
     return true;
+  }
+
+  /**
+   * Zoom inteiro novo. Fechando (zoom menor): os grupos juntam na hora. Abrindo: quem vai se soltar na tela ganha figura
+   * agora e os grupos do zoom novo só vão pro mapa quando elas estiverem prontas (tryOpen); até lá ficam os de antes.
+   */
+  private retargetClusters(z: number): void {
+    const gesture = this.camera.gestureActive;
+    if (z <= this.clusterZoom) {
+      this.cancelOpen();
+      this.publishClusters();
+      if (!gesture) this.rebalanceOwn();
+      return;
+    }
+    // abrindo de novo na mesma animação/pinça (z17 e depois z18): o prazo segue contando do primeiro pedido. Num toque no grupo
+    // (650 ms) o z17 cruza aos ~240 ms e o grupo abre no máximo ~90 ms depois de a câmera parar
+    this.openTo = z;
+    this.openFeats = this.clustersAt(z);
+    // no meio da pinça não registra dezenas de imagens a cada zoom inteiro: o moveEnded (250 ms parado) rebalanceia e abre
+    if (gesture) return;
+    this.rebalanceOwn();
+    this.tryOpen();
+  }
+
+  private clustersAt(z: number): Feature[] {
+    return this.usersIndex ? (this.usersIndex.getClusters(WORLD_BBOX, z) as Feature[]) : [];
+  }
+
+  /** abre o grupo se ninguém que se solta na tela ainda espera a imagem (ou se a espera passou de OPEN_MAX_MS) */
+  private tryOpen(): void {
+    if (this.openTo == null || this.disposed) return;
+    const now = monoNow();
+    if (!this.openSince) {
+      this.openSince = now;
+      this.openTimer = setTimeout(() => {
+        this.openTimer = null;
+        this.tryOpen();
+      }, OPEN_MAX_MS);
+    }
+    if (now - this.openSince < OPEN_MAX_MS && this.openWaiting()) return;
+    this.cancelOpen();
+    this.publishClusters();
+  }
+
+  private openWaiting(): boolean {
+    const b = this.camera.state.bounds;
+    for (const ft of this.openFeats) {
+      const p = ft.properties as Record<string, unknown> | null;
+      if (!p || p.cluster || typeof p.id !== 'string') continue;
+      const f = this.figs.get(p.id);
+      const u = this.users.get(p.id);
+      // sem nada a caminho (a cinza é o último recurso): não espera
+      if (!u || !f?.pos || f.noTint || !inBounds(f.pos, b, 0.1)) continue;
+      // figura própria assentando (a que falhou não: usa a cor), ou silhueta colorida pedida e ainda não pronta
+      if (f.own && !f.failed ? !f.imgReady : this.tintWaiting(u)) return true;
+    }
+    return false;
+  }
+
+  private cancelOpen(): void {
+    this.openTo = null;
+    this.openFeats = [];
+    this.openSince = 0;
+    if (this.openTimer) clearTimeout(this.openTimer);
+    this.openTimer = null;
   }
 
   /** névoa do horizonte proporcional ao pitch, com throttle (a última mudança sempre entra) */
@@ -1064,7 +1262,11 @@ export class MapEngine {
       this.emit({ type: 'pinTap', id: String(props(pin).id ?? '') });
       return;
     }
-    const person = hits.find((f) => 'sz' in props(f) && typeof props(f).id === 'string');
+    // pessoa escondida esperando a imagem (dado 'h' ou feature-state 'g' = 0) não conta: o toque passa pro grupo de baixo
+    const person = hits.find((f) => {
+      const p = props(f);
+      return 'sz' in p && typeof p.id === 'string' && !('h' in p) && !this.figs.get(p.id)?.hid;
+    });
     if (person) {
       const uid = String(props(person).id);
       this.emote(uid, 'sig');
@@ -1387,6 +1589,7 @@ export class MapEngine {
         staticKey: null,
         staticRef: null,
         staticTries: 0,
+        failed: false,
         imgReady: false,
         settling: null,
         frameKey: null,
@@ -1400,6 +1603,11 @@ export class MapEngine {
         slot: null,
         phSlot: null,
         parked: false,
+        hid: false,
+        gated: false,
+        gateSeq: 0,
+        noTint: false,
+        unseen: 0,
       };
       this.figs.set(id, f);
     }
@@ -1455,35 +1663,45 @@ export class MapEngine {
       if (!f.frameKey) this.showFig(f, f.staticRef);
       return;
     }
-    if (f.staticKey !== key) f.staticTries = 0;
+    if (f.staticKey !== key) {
+      f.staticTries = 0;
+      f.failed = false;
+    }
     f.staticKey = key;
     f.staticRef = null;
     const hit = mapImages.get(key);
     if (hit) {
       f.staticRef = hit;
+      f.failed = false;
       if (!f.frameKey) this.showFig(f, hit);
       return;
     }
     const dim = f.dim;
     const mirror = f.mirror;
+    const fail = () => {
+      if (!this.alive(f) || f.staticKey !== key) return;
+      // falhou (superfície do Skia sem memória, escrita no disco): a pessoa usa a silhueta colorida já (o rebalanceOwn do
+      // próximo push pede a cor) e tenta de novo depois da trava do store (5 s)
+      if (!f.failed) {
+        f.failed = true;
+        this.schedulePush(0, this.inView(f));
+      }
+      if (++f.staticTries <= STATIC_TRIES) {
+        setTimeout(() => {
+          if (this.alive(f) && f.staticKey === key && !f.staticRef) this.wantStatic(f);
+        }, STATIC_RETRY_MS);
+      }
+    };
     mapImages
       .request(key, this.priorityOf(f), () => mapDraw.figure(def ?? null, look, dim, null, mirror), IMG_SCALE)
       .then((ref) => {
+        if (!ref) return fail();
         if (!this.alive(f) || f.staticKey !== key) return;
-        if (!ref) {
-          // falhou (superfície do Skia sem memória, escrita no disco): tenta de novo depois da trava do store (5 s),
-          // em vez de esperar o próximo refetch com a silhueta na tela
-          if (++f.staticTries <= STATIC_TRIES) {
-            setTimeout(() => {
-              if (this.alive(f) && f.staticKey === key && !f.staticRef) this.wantStatic(f);
-            }, STATIC_RETRY_MS);
-          }
-          return;
-        }
         f.staticRef = ref;
+        f.failed = false;
         if (!f.frameKey) this.showFig(f, ref);
       })
-      .catch(() => {});
+      .catch(fail);
   }
 
   private showFig(f: Fig, ref: MapImageRef): void {
@@ -1539,6 +1757,9 @@ export class MapEngine {
     if (f.own) {
       f.own = false;
       f.imgReady = false;
+      f.unseen = 0;
+      f.failed = false;
+      this.demoteStatic(f);
       f.staticKey = null;
       f.staticRef = null;
       f.frameKey = null;
@@ -1549,6 +1770,14 @@ export class MapEngine {
       f.phSlot = null;
     }
     f.dim = IMG.fig;
+  }
+
+  /**
+   * figura parada pedida e ainda na fila de quem saiu do teto ou do mapa: vai pro fim da fila (depois dos quadros), pra não
+   * atrasar quem vai aparecer. Não cancela: outra pessoa com o mesmo visual pode estar esperando a mesma chave
+   */
+  private demoteStatic(f: Fig): void {
+    if (f.staticKey && !f.staticRef) mapImages.reprioritize(f.staticKey, FRAME_PRIORITY * 4);
   }
 
   /** solta a vaga da figura e cancela a espera dela: um timer velho marcaria pronta a vaga seguinte antes do arquivo novo */
@@ -1566,6 +1795,7 @@ export class MapEngine {
     // invalida o objeto: toda tarefa assíncrona em voo (desenho, foto) cai fora nos guards
     f.own = false;
     f.ph = null;
+    this.demoteStatic(f);
     f.staticKey = null;
     this.dropFrames(f);
     if (id === 'me') this.dropGroup('p:me');
@@ -1576,14 +1806,85 @@ export class MapEngine {
     // o feature-state fica guardado por id na fonte mesmo sem a feature: quem voltar não pode nascer invisível
     for (const src of f.alphaDirty) this.setAlpha(src, id, 1);
     // nem com a bolha apagada (saiu no meio do fade da foto): 'pa' volta a 1 em todas as fontes
-    this.tweens = this.tweens.filter((t) => !(t.id === id && t.key === 'pa'));
+    this.tweens = this.tweens.filter((t) => !(t.id === id && (t.key === 'pa' || t.key === 'g')));
     for (const s of PERSON_SOURCES) {
       const k = `${s}|${id}|pa`;
       if (!this.lastAlpha.has(k)) continue;
       this.setAlpha(s, id, 1, 'pa');
       this.lastAlpha.delete(k);
     }
+    // nem escondida esperando imagem ('g')
+    this.revealQ.delete(id);
+    if (f.gated) for (const s of PERSON_SOURCES) this.setAlpha(s, id, 1, 'g');
     this.figs.delete(id);
+  }
+
+  // ---------- quem aparece solto só aparece com a imagem pronta ----------
+  /**
+   * Passa pelas pessoas soltas de uma publicação (depois do publish). A silhueta cinza nunca aparece porque o DADO a esconde
+   * (featureFor põe 'h', o estilo zera a opacidade e o rótulo): vale na ordem em que o nativo aplicar fonte e feature-state.
+   * Aqui fica só o fade de entrada: sem imagem pronta a pessoa fica com 'g' = 0 e, quando a imagem chega, acende com fade
+   * depois do lote que leva a fonte. Quem acabou de sair de um grupo na tela (não estava solta em nenhuma fonte) também entra
+   * com o fade, em vez de pipocar — menos o selecionado/match, que já está no destaque (o fade apagaria o spot).
+   */
+  private gate(feats: Feature[], src: 'users' | 'usersBoost' | 'movers'): boolean {
+    const next = new Set<string>();
+    let orphan = false;
+    for (const ft of feats) {
+      const p = ft.properties as Record<string, unknown> | null;
+      if (!p || p.cluster || typeof p.id !== 'string') continue;
+      const id = p.id;
+      next.add(id);
+      const f = this.figs.get(id);
+      if (!f) continue;
+      this.gateOne(f, p.img, src === 'users' && !this.isSolo(id) && this.inView(f) && !this.isPinned(id));
+      // escondida na tela sem nada a caminho (nem figura nem cor pedida): quem andou pra dentro da tela
+      if (f.hid && (!f.own || f.failed) && !f.noTint && f.user && this.inView(f) && !this.tintPending.has(this.tintKeyOf(f.user) ?? '')) orphan = true;
+    }
+    if (src === 'users') this.soloUsers = next;
+    else if (src === 'usersBoost') this.soloBoost = next;
+    else this.soloMovers = next;
+    // a publicação não mudou nada (o JSON igual já tinha saído): acende sem esperar outro lote
+    if (this.revealQ.size && this.flushedGen >= this.pubGen) this.drainReveals();
+    return orphan;
+  }
+
+  /** `fresh` = acabou de sair de um grupo na tela: entra com o fade mesmo já com a imagem pronta */
+  private gateOne(f: Fig, img: unknown, fresh: boolean): void {
+    const ok = f.noTint || !isGrayImg(img);
+    if (!ok || fresh) this.hide(f);
+    if (ok && f.hid && !this.revealQ.has(f.id)) this.revealQ.set(f.id, { gen: this.pubGen, seq: f.gateSeq });
+  }
+
+  private isSolo(id: string): boolean {
+    return this.soloUsers.has(id) || this.soloBoost.has(id) || this.soloMovers.has(id);
+  }
+
+  private hide(f: Fig): void {
+    f.gateSeq++;
+    this.revealQ.delete(f.id);
+    if (f.hid) return;
+    f.hid = true;
+    f.gated = true;
+    this.tweens = this.tweens.filter((t) => !(t.id === f.id && t.key === 'g'));
+    for (const s of PERSON_SOURCES) this.setAlpha(s, f.id, 0, 'g');
+  }
+
+  /** fades cuja publicação já saiu num lote pro nativo: acendem REVEAL_DELAY_MS depois (o tile é refeito num worker) */
+  private drainReveals(): void {
+    const ready: [string, number][] = [];
+    for (const [id, r] of this.revealQ) if (r.gen <= this.flushedGen) ready.push([id, r.seq]);
+    if (!ready.length) return;
+    for (const [id] of ready) this.revealQ.delete(id);
+    setTimeout(() => {
+      const now = monoNow();
+      for (const [id, seq] of ready) {
+        const f = this.figs.get(id);
+        if (!f || !f.hid || f.gateSeq !== seq) continue; // saiu, ou voltou a ficar sem imagem no meio
+        f.hid = false;
+        for (const s of PERSON_SOURCES) this.addTween({ source: s, id, key: 'g', from: 0, to: 1, start: now, dur: REVEAL_MS });
+      }
+    }, REVEAL_DELAY_MS);
   }
 
   /**
@@ -1597,6 +1898,7 @@ export class MapEngine {
     if (this.disposed || !this.users.size) return;
     const s = this.camera.state;
     const cap = FIG_CAP[this.tier] ?? FIG_CAP.mid;
+    const now = monoNow();
     const shown = new Map<string, number>(); // id -> ordem (distância do centro em m; boost e match na frente)
     // longe (zoom < FAR_ZOOM) as pessoas são pontos: ninguém precisa de figura
     if (s.zoom >= FAR_ZOOM) {
@@ -1610,7 +1912,8 @@ export class MapEngine {
           shown.set(p.id, first + distM(f.pos, s.center));
         }
       };
-      take(this.features('users'));
+      // grupo abrindo: quem vai se soltar no zoom novo já conta (a figura fica pronta antes de o grupo abrir)
+      take(this.openTo != null ? this.openFeats : this.features('users'));
       take(this.features('usersBoost'));
       take(this.features('movers'));
     }
@@ -1618,7 +1921,12 @@ export class MapEngine {
     const want = new Set(order.slice(0, cap).map(([id]) => id));
     for (const id of [this.selected, this.momentUserId]) if (id && this.users.has(id)) want.add(id);
     let own = 0;
-    for (const [id, f] of this.figs) if (f.own && id !== 'me') own++;
+    const noTint0 = new Set<string>();
+    for (const [id, f] of this.figs) {
+      if (f.noTint) noTint0.add(id);
+      f.noTint = false;
+      if (f.own && id !== 'me') own++;
+    }
     for (const id of want) {
       const f = this.figs.get(id);
       const u = this.users.get(id);
@@ -1628,38 +1936,94 @@ export class MapEngine {
       }
     }
     // além do teto mas solto na tela: silhueta com a roupa e a pele da pessoa, do centro pra fora, até SIL_TINT_MAX cores
-    // vivas. A cor que ninguém solto na tela usa mais solta a vaga (esfria como as figuras) e serve pra outra cor
-    const tinted = new Set<string>();
+    // vivas. A cor que ninguém solto na tela usa mais solta a vaga ANTES de pedir as novas (esfria como as figuras): sem isso
+    // as de fora achavam a cota cheia de cores velhas nesta passada
+    const need = new Map<string, FigUser>();
+    const keyOfId = new Map<string, string>();
     for (const [id] of order) {
-      const u = want.has(id) ? undefined : this.users.get(id);
-      if (u) this.wantTint(u, tinted);
+      const f = this.figs.get(id);
+      const u = this.users.get(id);
+      if (!f || !u) continue;
+      const key = this.tintKeyOf(u);
+      if (want.has(id) && !f.failed) {
+        // sem a definição do avatar a figura nem começa: a cinza aparece (último recurso)
+        if (u.avatarKey && !this.defs.has(u.avatarKey)) {
+          f.noTint = true;
+          continue;
+        }
+        // figura própria a caminho dispensa a cor, menos a cor já pronta: segura até a figura assentar (sem piscar)
+        if (f.imgReady || !key || !this.silReady.has(key)) continue;
+      }
+      if (!key) {
+        f.noTint = true; // sem a cor (definição ausente): a cinza aparece
+        continue;
+      }
+      keyOfId.set(id, key);
+      if (!need.has(key)) need.set(key, u);
     }
     for (const [key, slot] of this.tintPending) {
-      if (tinted.has(key)) continue;
+      if (need.has(key)) continue;
       this.tintPending.delete(key);
       this.silReady.delete(key);
       this.release(slot);
     }
-    if (own <= cap) return;
-    // passou do teto: solta primeiro quem não aparece (num grupo ou fora da tela), do mais longe pro mais perto; se não
-    // bastar, quem aparece mas ficou fora do top-N desta câmera (sobrou de uma posição anterior: sem isso, arrastar o
-    // mapa somava figura até todo mundo solto na tela). Eu, selecionado e match estão em `want` e nunca soltam
+    const lacking = new Set<string>();
+    for (const [key, u] of need) if (!this.requestTint(key, u)) lacking.add(key);
+    if (lacking.size) for (const [id, key] of keyOfId) if (lacking.has(key)) (this.figs.get(id) as Fig).noTint = true;
+    // quem passou a ter (ou deixou de ter) a cinza como último recurso: o dado 'h' sai do noTint (featureFor), republica
+    let flip = false;
+    for (const [id, f] of this.figs) if (f.noTint !== noTint0.has(id)) flip = true;
+    // Quem soltar: (1) quem não aparece solto na tela há OWN_IDLE_MS (voltou pro grupo, saiu da tela): antes ficava com a
+    // figura até o teto apertar, e depois de abrir um grupo as ~60 vagas, bolhas e o atlas dos tiles ficavam a sessão
+    // inteira; (2) passou do teto: quem não aparece, do mais longe pro mais perto, e se não bastar quem aparece mas ficou
+    // fora do top-N desta câmera. Eu, selecionado e match estão em `want` e nunca soltam
     const spare: { f: Fig; d: number }[] = [];
-    for (const [id, f] of this.figs) {
-      if (!f.own || id === 'me' || want.has(id) || f.leaving || !f.user) continue;
-      const order = shown.get(id);
-      spare.push({ f, d: order === undefined ? Infinity : order });
-    }
-    spare.sort((a, b) => b.d - a.d);
+    let wake = Infinity;
     let dropped = 0;
-    for (const { f } of spare) {
-      if (own <= cap) break;
-      this.useGeneric(f.user as FigUser);
-      own--;
-      dropped++;
+    for (const [id, f] of this.figs) {
+      if (!f.own || id === 'me' || !f.user) continue;
+      const d = want.has(id) ? -Infinity : shown.get(id);
+      if (d !== undefined) f.unseen = 0;
+      else if (!f.unseen) f.unseen = now;
+      if (want.has(id) || f.leaving) continue;
+      if (f.unseen && now - f.unseen >= OWN_IDLE_MS) {
+        this.useGeneric(f.user);
+        own--;
+        dropped++;
+        continue;
+      }
+      if (f.unseen) wake = Math.min(wake, f.unseen + OWN_IDLE_MS);
+      spare.push({ f, d: d === undefined ? Infinity : d });
     }
-    // a feature de quem soltou ainda aponta pra av-<id> (já fora do estilo): volta pra silhueta no próximo push
-    if (dropped) this.schedulePush(0);
+    if (own > cap) {
+      spare.sort((a, b) => b.d - a.d);
+      for (const { f } of spare) {
+        if (own <= cap) break;
+        this.useGeneric(f.user as FigUser);
+        own--;
+        dropped++;
+      }
+    }
+    // o raster na ordem de quem vai aparecer: a prioridade do pedido era a distância ao centro de quando foi pedido
+    for (const id of want) {
+      const f = this.figs.get(id);
+      if (f?.own && f.staticKey && !f.staticRef) mapImages.reprioritize(f.staticKey, this.priorityOf(f));
+    }
+    // a feature de quem soltou ainda aponta pra vaga dele: volta pra provisória no próximo push
+    if (dropped || flip) this.schedulePush(0, flip);
+    this.armOwnTrim(wake - now);
+  }
+
+  /** a próxima figura parada fora da tela vence OWN_IDLE_MS mesmo com o mapa parado (nada republica): rebalanceia então */
+  private armOwnTrim(ms: number): void {
+    if (this.ownTrimTimer) clearTimeout(this.ownTrimTimer);
+    this.ownTrimTimer = null;
+    if (!Number.isFinite(ms) || this.disposed) return;
+    this.ownTrimTimer = setTimeout(() => {
+      this.ownTrimTimer = null;
+      // no meio do gesto o moveEnded rebalanceia (e arma de novo)
+      if (!this.camera.gestureActive) this.rebalanceOwn();
+    }, Math.max(0, ms) + 50);
   }
 
   defineAvatars(defs: AvatarDefs): void {
@@ -1938,23 +2302,26 @@ export class MapEngine {
   // Features
   // =====================================================================
   /**
-   * Silhueta provisória com o visual da pessoa (anel de presença, anel premium, selo, véu anônimo) enquanto o desenho do
-   * avatar não fica pronto ou pra quem está fora do teto de figuras. Poucas combinações, compartilhadas: a poça de luz
-   * segue só boost/premium+ (a cor própria da aura ficaria uma variante por pessoa) e a silhueta não espelha (é simétrica).
-   * Quem fica além do teto e aparece solto na tela ganha a versão colorida (roupa e pele da pessoa: silTintOf), pedida no
-   * rebalanceOwn; aqui ela só é usada quando já está pronta.
+   * Imagem provisória de quem não tem a figura própria pronta: a silhueta colorida da pessoa (roupa e pele: silTintOf, com o
+   * anel de presença, o anel premium, o selo e o véu anônimo), pedida no rebalanceOwn pra quem fica além do teto e aparece
+   * solto na tela. Sem ela, a silhueta cinza compartilhada — que nunca aparece: a pessoa solta fica escondida ('g' = 0, ver
+   * gate) até a imagem chegar. Antes havia uma silhueta cinza por visual (sil-N), e era ela que pipocava na transição.
    */
-  private placeholderOf(u: FigUser, dim: Dim): string {
+  private placeholderOf(u: FigUser): string {
+    const key = this.tintKeyOf(u);
+    return (key && this.silReady.get(key)) || GENERIC_FIG;
+  }
+
+  /** a silhueta colorida da pessoa (com cor conhecida) ainda não está pronta */
+  private tintWaiting(u: FigUser): boolean {
+    const key = this.tintKeyOf(u);
+    return key != null && !this.silReady.has(key);
+  }
+
+  /** chave da silhueta colorida: visual sem a aura (a poça só segue boost/premium+) no tamanho normal; null sem a cor */
+  private tintKeyOf(u: FigUser): string | null {
     const look = { ...this.lookOf(u), aura: '' };
-    const sig = `${this.lookSig(look)}|${dim.w}x${dim.h}|${figVersion()}`;
-    const tint = this.tintKey(u, sig);
-    const colored = tint ? this.silReady.get(tint) : undefined;
-    if (colored) return colored;
-    const key = `sil|${sig}`;
-    const ready = this.silReady.get(key);
-    if (ready) return ready;
-    this.requestSil(key, look, dim);
-    return GENERIC_FIG;
+    return this.tintKey(u, `${this.lookSig(look)}|${IMG.fig.w}x${IMG.fig.h}|${figVersion()}`);
   }
 
   /** cor da silhueta por visual (cache: a users republica as 300 pessoas e cada uma consultaria a paleta) */
@@ -1976,17 +2343,16 @@ export class MapEngine {
     return t ? `silc|${sig}|${t.id}` : null;
   }
 
-  /** pede a silhueta colorida de quem está além do teto (numa vaga 's'; `tinted` junta as cores pedidas nesta passada) */
-  private wantTint(u: FigUser, tinted: Set<string>): void {
-    const look = { ...this.lookOf(u), aura: '' };
-    const sig = `${this.lookSig(look)}|${IMG.fig.w}x${IMG.fig.h}|${figVersion()}`;
-    const key = this.tintKey(u, sig);
-    if (!key) return;
-    tinted.add(key);
-    if (this.tintPending.has(key)) return;
+  /**
+   * pede a silhueta colorida `key` (numa vaga 's') com o visual de `u`. false = cota gasta (todas as vagas com uma cor em
+   * uso): quem precisa dela fica com a cinza visível, o último recurso. Vaga só esfriando conta como a caminho (o retry)
+   */
+  private requestTint(key: string, u: FigUser): boolean {
+    if (this.tintPending.has(key)) return true;
     const slot = this.acquire('s', key);
-    if (!slot) return; // todas ocupadas ou esfriando: o retry das vagas chama o rebalance de novo
+    if (!slot) return this.pools.s.some((sl) => sl.owner == null);
     this.tintPending.set(key, slot);
+    const look = { ...this.lookOf(u), aura: '' };
     const t = this.tintOfKey(u.avatarKey) as NonNullable<ReturnType<typeof silTintOf>>;
     const tint = { body: t.body, skin: t.skin };
     mapImages
@@ -1998,29 +2364,13 @@ export class MapEngine {
         this.afterImages(SLOT_SETTLE_EXTRA_MS, () => {
           if (this.tintPending.get(key) !== slot) return;
           this.silReady.set(key, slot.name);
-          this.schedulePush(0);
+          // a cor chegou: quem esperava escondido acende no próximo push (urgente: o grupo pode estar esperando por ela)
+          this.schedulePush(0, true);
           this.pushMe();
         });
       })
       .catch(() => {});
-  }
-
-  private requestSil(key: string, look: FigureLook, dim: Dim): void {
-    if (this.silPending.has(key)) return;
-    const name = 'sil-' + (this.silPending.size + 1);
-    this.silPending.set(key, name);
-    mapImages
-      .request(key, -1.5, () => mapDraw.figure(null, look, dim, null, false), IMG_SCALE)
-      .then((ref) => {
-        if (!ref || this.disposed) return;
-        this.setImage('sil', name, ref);
-        this.afterImages(0, () => {
-          this.silReady.set(key, name);
-          this.schedulePush(0);
-          this.pushMe();
-        });
-      })
-      .catch(() => {});
+    return true;
   }
 
   /**
@@ -2031,10 +2381,13 @@ export class MapEngine {
     const ready = f.own && f.imgReady;
     const props: Record<string, unknown> = {
       id: u.id,
-      img: ready ? this.imgName(f) : this.placeholderOf(u, IMG.fig),
+      img: ready ? this.imgName(f) : this.placeholderOf(u),
       sz: Math.round(f.sz * szMul * 1000) / 1000,
     };
     if (ready && f.dim === IMG.figBoost) props.b = 1;
+    // a cinza com a figura ou a cor a caminho: o estilo esconde a pessoa inteira (figura, nome, aura, foto) pelo DADO. O fade
+    // ('g') sozinho dependia de o nativo aplicar a fonte nova antes de o fade acabar; o tile atrasado mostrava a cinza velha
+    if (isGrayImg(props.img) && !f.noTint) props.h = 1;
     // campos vazios ficam de fora (menos JSON a cada republicação da fonte)
     const label = u.isAnonymous ? '' : u.label || u.name || '';
     if (label) props.label = label;
@@ -2101,38 +2454,45 @@ export class MapEngine {
     }
     this.loadClusters(normal);
     this.publish('usersBoost', fc(boosted));
+    this.gate(boosted, 'usersBoost');
     this.publish('movers', fc(movers));
+    this.gate(movers, 'movers');
     this.setRings({ aura, auraBoost: boosted.length > 0 });
     this.rebalanceOwn();
+    this.tryOpen();
   }
 
-  /** reindexa os grupos com as pessoas paradas e publica a fonte users no zoom atual */
+  /** reindexa os grupos com as pessoas paradas e publica a fonte users (no zoom dos grupos publicados, se um abre) */
   private loadClusters(points: Feature[]): void {
     this.prevUsersIndex = this.usersIndex;
     if (!points.length) {
       this.usersIndex = null;
       this.clusterZoom = -1;
+      this.cancelOpen();
       this.publish('users', EMPTY_FC);
+      this.gate([], 'users');
       return;
     }
     const index: UsersIndex = new Supercluster({ radius: CLUSTER_RADIUS, maxZoom: CLUSTER_MAX_ZOOM, extent: 512 });
     // toda feature daqui é Point (featureFor)
     index.load(points as Supercluster.PointFeature<GeoJSON.GeoJsonProperties>[]);
     this.usersIndex = index;
-    this.clusterZoom = -1;
+    if (this.openTo != null) this.openFeats = this.clustersAt(this.openTo);
     this.publishClusters();
   }
 
   /**
-   * Fonte users = grupos + pessoas soltas no zoom inteiro atual. Os grupos saem com as mesmas propriedades do antigo
-   * cluster nativo (cluster, cluster_id, point_count, point_count_abbreviated); pessoas soltas são as features originais.
+   * Fonte users = grupos + pessoas soltas no zoom inteiro da câmera (com um grupo abrindo, no de antes: tryOpen). Os grupos
+   * saem com as mesmas propriedades do antigo cluster nativo (cluster, cluster_id, point_count, point_count_abbreviated);
+   * pessoas soltas são as features originais.
    */
   private publishClusters(): void {
-    const index = this.usersIndex;
-    if (!index) return;
-    const z = clusterZoomOf(this.camera.state.zoom);
+    if (!this.usersIndex) return;
+    const z = this.openTo != null && this.clusterZoom >= 0 ? this.clusterZoom : clusterZoomOf(this.camera.state.zoom);
     this.clusterZoom = z;
-    this.publish('users', fc(index.getClusters(WORLD_BBOX, z) as Feature[]));
+    const feats = this.clustersAt(z);
+    this.publish('users', fc(feats));
+    this.gate(feats, 'users');
   }
 
   private pushMovers(): void {
@@ -2143,13 +2503,20 @@ export class MapEngine {
       if ((f?.move || f?.parked) && f.pos && id !== hidden) movers.push(this.featureFor(u, f, f.pos, u.isBoosted ? 1.17 : 1));
     }
     this.publish('movers', fc(movers));
+    // quem entrou na tela andando ganha a figura (ou a cor) agora, não só no próximo push da users (até 1 s com multidão);
+    // no máximo a cada MOVER_REBALANCE_MS (a movers republica a 5–15 Hz)
+    const now = monoNow();
+    if (this.gate(movers, 'movers') && !this.camera.gestureActive && now - this.lastMoverRebalance >= MOVER_REBALANCE_MS) {
+      this.lastMoverRebalance = now;
+      this.rebalanceOwn();
+    }
   }
 
   private pushMe(): void {
     const f = this.figs.get('me');
     if (!f?.pos || !this.me) return;
     const dim = f.dim;
-    const props: Record<string, unknown> = { img: f.imgReady ? this.imgName(f) : f.user ? this.placeholderOf(f.user, IMG.fig) : GENERIC_FIG, off: [0, figOffset(f.imgReady ? dim : IMG.fig)] };
+    const props: Record<string, unknown> = { img: f.imgReady ? this.imgName(f) : f.user ? this.placeholderOf(f.user) : GENERIC_FIG, off: [0, figOffset(f.imgReady ? dim : IMG.fig)] };
     if (typeof this.me.heading === 'number') props.heading = this.me.heading;
     if (f.ph?.ready) {
       props.ph = 'ph-me';
@@ -2177,6 +2544,9 @@ export class MapEngine {
     const feat = this.featureFor(u, f, f.pos, u.isBoosted ? 1.17 : 1);
     if (u.isBoosted) (feat.properties as Record<string, unknown>).aura = 1;
     this.publish('spot', fc([feat]));
+    // escolhida na lista, de dentro de um grupo: o anel no chão sai na hora e a figura entra quando o desenho chega
+    this.gateOne(f, (feat.properties as Record<string, unknown>).img, false);
+    if (this.revealQ.size && this.flushedGen >= this.pubGen) this.drainReveals();
     this.setRings({ spotAura: u.isBoosted ? 'boost' : u.premiumTier === 'premium_plus' ? 'plus' : null });
   }
 
@@ -2230,11 +2600,12 @@ export class MapEngine {
         for (const src of PERSON_SOURCES) this.setAlpha(src, u.id, 1);
       }
       f.leaving = 0;
-      // posição mudou: a pessoa ANDA até lá (na tela e dentro do teto; o resto chega direto); na 1ª carga todo mundo já
-      // nasce no lugar
+      // posição mudou: a pessoa ANDA até lá (na tela, solta e dentro do teto; o resto chega direto); na 1ª carga todo mundo
+      // já nasce no lugar. Quem está dentro de um grupo não anda: a fonte movers não agrupa, e cada refetch abria o grupo
+      // em dezenas de bonecos empilhados (e cinza, sem figura) andando pra fora dele até reagrupar
       if ((prev.has(u.id) || wasLeaving) && !isFirst) {
         const wasMoving = Boolean(f.move);
-        const canWalk = wasMoving || (walking < (MOVE_CAP[this.tier] ?? MOVE_CAP.mid) && (!f.pos || inBounds(f.pos, this.camera.state.bounds, 0.15) || inBounds(to, this.camera.state.bounds, 0.15)));
+        const canWalk = wasMoving || (walking < (MOVE_CAP[this.tier] ?? MOVE_CAP.mid) && this.isSolo(u.id) && (!f.pos || inBounds(f.pos, this.camera.state.bounds, 0.15) || inBounds(to, this.camera.state.bounds, 0.15)));
         this.startMove(f, to, now, canWalk);
         if (f.move && !wasMoving) walking++;
       } else {
@@ -2428,12 +2799,15 @@ export class MapEngine {
     this.retargetParticles();
   }
 
-  private setAlpha(source: string, id: string, a: number, key: 'a' | 'pa' = 'a'): void {
-    const k = `${source}|${id}|${key}`;
-    const last = this.lastAlpha.get(k);
-    if (last === a) return;
-    this.lastAlpha.set(k, a);
-    if (this.lastAlpha.size > 4000) this.lastAlpha.clear();
+  private setAlpha(source: string, id: string, a: number, key: AlphaKey = 'a'): void {
+    // 'g' não passa pelo lastAlpha (o estado fica na figura: hid/gated) — 300 pessoas x 3 fontes encheriam o mapa à toa
+    if (key !== 'g') {
+      const k = `${source}|${id}|${key}`;
+      const last = this.lastAlpha.get(k);
+      if (last === a) return;
+      this.lastAlpha.set(k, a);
+      if (this.lastAlpha.size > 4000) this.lastAlpha.clear();
+    }
     if (key === 'a') {
       const f = this.figs.get(id);
       if (f) {
@@ -2865,7 +3239,7 @@ export class MapEngine {
    * no gesto sai num lote só quando ele acaba (moveend, 250 ms sem a câmera mexer)
    */
   private updateCommitGap(): void {
-    this.ch.minGapMs = this.tier === 'low' || this.walkers > 15 ? COMMIT_GAP_MS.crowd : COMMIT_GAP_MS.normal;
+    this.ch.minGapMs = this.tier === 'low' || this.crowdWalking() ? COMMIT_GAP_MS.crowd : COMMIT_GAP_MS.normal;
     const gesture = this.camera.gestureActive && this.active && !this.disposed;
     if (gesture === this.ch.isHeld) return;
     this.ch.hold(gesture);
@@ -2886,7 +3260,15 @@ export class MapEngine {
   /** ritmo da fonte movers: o do tier com pouca gente andando, mais espaçado com multidão (MOVERS_CROWD_MS) */
   private moversGap(): number {
     const base = MOVERS_MS[this.tier] ?? MOVERS_MS.mid;
-    return this.walkers > 15 ? Math.max(base, MOVERS_CROWD_MS.many) : this.walkers > 6 ? Math.max(base, MOVERS_CROWD_MS.some) : base;
+    return this.crowdWalking() ? Math.max(base, MOVERS_CROWD_MS.many) : this.walkers > 6 ? Math.max(base, MOVERS_CROWD_MS.some) : base;
+  }
+
+  /**
+   * muita gente andando, ou mais de 6 andando num mapa cheio (CROWD_USERS). Com 1–6 andando a movers fica no ritmo do tier:
+   * a 5 Hz um veículo a 13 m/s anda ~9 px por passo no z20 (o passo aparece)
+   */
+  private crowdWalking(): boolean {
+    return this.walkers > 15 || (this.walkers > 6 && this.users.size > CROWD_USERS);
   }
 
   /** eu, o selecionado e o match: sempre animam e os quadros deles furam a fila */

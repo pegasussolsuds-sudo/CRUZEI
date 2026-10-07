@@ -63,7 +63,15 @@ const LABEL: Record<MapTheme, { text: string; halo: string }> = {
 const FAR_ZOOM = 13;
 const PHOTO_MIN_ZOOM = 14;
 /** feature-state só vale em paint: entrada/saída/destaque mexem em icon-opacity ('a') */
-const S_ALPHA: Expr = ['coalesce', ['feature-state', 'a'], 1];
+const A_ALPHA: Expr = ['coalesce', ['feature-state', 'a'], 1];
+/**
+ * x 'g' (fade de entrada quando a imagem chega) x 'h' (no DADO: a feature ainda aponta pra silhueta cinza e a figura ou a cor
+ * está a caminho). O 'h' esconde pela própria feature, então vale qualquer que seja a ordem em que o nativo aplica a fonte
+ * nova e o feature-state
+ */
+const S_ALPHA: Expr = ['*', A_ALPHA, ['coalesce', ['feature-state', 'g'], 1], ['case', ['has', 'h'], 0, 1]];
+/** rótulo da pessoa: quem está escondida pelo dado nem entra na colisão (senão sumia com o nome de quem está do lado) */
+const LABEL_FIELD: Expr = ['case', ['has', 'h'], '', ['coalesce', ['get', 'label'], '']];
 /** bolha de foto: alfa da pessoa x fade próprio da foto ('pa') */
 const PH_ALPHA: Expr = ['*', S_ALPHA, ['coalesce', ['feature-state', 'pa'], 1]];
 /** lugar em alta / evento aparece maior */
@@ -153,7 +161,7 @@ function photoStyle(boost: boolean): SymbolStyle {
 }
 
 const LABEL_LAYOUT = symbolLayout({
-  'text-field': ['coalesce', ['get', 'label'], ''],
+  'text-field': LABEL_FIELD,
   'text-font': FONT,
   'text-size': 11,
   'text-anchor': 'top',
@@ -176,7 +184,8 @@ function dotPaint(color: string): CirclePaint {
     'circle-color': color,
     'circle-stroke-color': '#0A0A1A',
     'circle-stroke-width': 1.2,
-    'circle-opacity': S_ALPHA,
+    // ponto de longe não depende de imagem: só a entrada/saída ('a')
+    'circle-opacity': A_ALPHA,
     'circle-pitch-alignment': 'map',
   });
 }
@@ -298,7 +307,7 @@ const STYLE = {
         [15, 0.9],
         [18, 1.15],
       ]),
-      'text-field': ['coalesce', ['get', 'label'], ''],
+      'text-field': LABEL_FIELD,
       'text-font': FONT,
       'text-size': 12,
       'text-anchor': 'top',
